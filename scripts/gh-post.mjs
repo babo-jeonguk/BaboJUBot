@@ -6,10 +6,17 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  hasErrorCode,
+  orIfMissing,
+  orIfUnreadable,
+} from "@babojubot/contracts";
+
+import {
   gitIgnores,
   ignoredDotFolderPattern,
   loadIgnoredDotFolders,
 } from "./ignored-dot-folders.mjs";
+import { linkTargets, parseMarkdown } from "./markdown.mjs";
 
 const scriptRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -41,16 +48,6 @@ function parseGitHubRepository(remote) {
   return match ? { owner: match[1], name: match[2] } : null;
 }
 
-/** 없는 파일이면 undefined. 그 밖의 읽기 오류는 드러낸다. */
-function readIfPresent(file) {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  }
-}
-
 /**
  * `root`가 속한 메인 checkout 폴더. git 명령 없이 `.git`을 읽는다(`git rev-parse --git-common-dir`와 같은 답): `.git`이 폴더면
  * `root` 자신, worktree의 `.git` 파일이면 그것이 가리키는 폴더의 `commondir`가 가리키는 `.git`의 부모다. checkout이 아니면 undefined.
@@ -66,7 +63,12 @@ function mainCheckout(root) {
   const gitDir = /^gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
   if (!gitDir) throw new Error(`${dotGit} does not name a gitdir`);
   const worktreeDir = path.resolve(root, gitDir);
-  const common = readIfPresent(path.join(worktreeDir, "commondir"));
+  // 없으면 commondir가 없는 worktree다. 그 밖의 읽기 오류는 드러낸다.
+  const common = orIfMissing(
+    () => fs.readFileSync(path.join(worktreeDir, "commondir"), "utf8"),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
   const commonDir =
     common === undefined
       ? worktreeDir
@@ -82,12 +84,13 @@ export function loadContext(root = scriptRoot) {
   const main = mainCheckout(root);
   if (main) roots.add(main);
   for (const location of [...roots]) {
-    try {
-      roots.add(fs.realpathSync(location));
-    } catch (error) {
-      // 없는 경로는 접두사로 쓰지 않는다. 그 밖의 오류는 드러낸다.
-      if (error.code !== "ENOENT") throw error;
-    }
+    // 없는 경로는 접두사로 쓰지 않는다. 그 밖의 오류는 드러낸다.
+    const real = orIfMissing(
+      () => fs.realpathSync(location),
+      hasErrorCode("ENOENT"),
+      undefined
+    );
+    if (real !== undefined) roots.add(real);
   }
   const refs = new Map();
   let origin;
@@ -165,23 +168,7 @@ function repositoryPathFromUrl(url, context) {
 
 /** URL 인코딩을 푼 글자. 잘못된 인코딩(URIError)은 그대로 판정한다. */
 function decodedOrAsIs(text) {
-  try {
-    return decodeURIComponent(text);
-  } catch (error) {
-    if (error instanceof URIError) return text;
-    throw error;
-  }
-}
-
-function linkTargets(line) {
-  const targets = [];
-  for (const match of line.matchAll(/\]\(\s*<?([^)\s>]+)/g))
-    targets.push(match[1]);
-  for (const match of line.matchAll(/href=["']([^"']+)["']/gi))
-    targets.push(match[1]);
-  for (const match of line.matchAll(/https?:\/\/[^\s)<>\]"'`]+/g))
-    targets.push(match[0]);
-  return targets;
+  return orIfUnreadable(() => decodeURIComponent(text), text);
 }
 
 function linkedRepositoryPath(target, context) {
@@ -193,22 +180,33 @@ function linkedRepositoryPath(target, context) {
   return local.startsWith("/") ? null : local;
 }
 
+/**
+ * 게시문에서 독자가 열 수 없는 경로를 찾는다. 점 폴더 경로는 글자로(코드 표기 안 포함), 링크는 CommonMark·GFM 구문 트리로 본다
+ * (인라인 링크·이미지·자동 링크·맨 주소·참조식 링크 정의·raw HTML의 href, 코드 안 글은 링크가 아님). 이 컴퓨터의 저장소 절대 경로는
+ * 먼저 뗀다. 줄마다 같은 대상은 한 번만 낸다.
+ */
 export function findLocalOnlyReferences(text, context) {
-  const findings = [];
-  text.split(/\r?\n/).forEach((original, index) => {
-    let line = original;
-    for (const prefix of context.roots) line = line.split(prefix).join("");
-    const references = new Set();
+  let stripped = text;
+  for (const prefix of context.roots)
+    stripped = stripped.split(prefix).join("");
+  const byLine = new Map();
+  const add = (line, reference) => {
+    if (!byLine.has(line)) byLine.set(line, new Set());
+    byLine.get(line).add(reference);
+  };
+  stripped.split(/\r?\n/).forEach((line, index) => {
     for (const match of line.matchAll(context.dotFolderPath))
-      references.add(match[0].trim().replace(/^[`'"(]/, ""));
-    for (const target of linkTargets(line)) {
-      const relative = linkedRepositoryPath(target, context);
-      if (relative && context.isIgnored(relative)) references.add(target);
-    }
-    for (const reference of references)
-      findings.push({ line: index + 1, reference });
+      add(index + 1, match[0].trim().replace(/^[`'"(]/, ""));
   });
-  return findings;
+  for (const { url, line } of linkTargets(parseMarkdown(stripped))) {
+    const relative = linkedRepositoryPath(url, context);
+    if (relative && context.isIgnored(relative)) add(line, url);
+  }
+  return [...byLine.keys()]
+    .sort((a, b) => a - b)
+    .flatMap((line) =>
+      [...byLine.get(line)].map((reference) => ({ line, reference }))
+    );
 }
 
 // gh issue/pr 하위 명령에서 게시되는 글을 받는 옵션. 값이 파일이면 "file".

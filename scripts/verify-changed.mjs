@@ -1,7 +1,7 @@
 // 바뀐 파일을 보고 돌릴 검사 명령을 정해 실행한다. `pnpm verify:changed -- --dry-run`은 명령만 출력한다.
 // 공용 설정이 바뀌면 전체 lint·typecheck·check를, 패키지 파일이 바뀌면 그 패키지와 그 패키지를 쓰는 패키지의
-// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고
-// 나머지 묶음은 그 묶음의 시험이 보는 파일이나 저장소 뿌리(scripts·.agents)가 쓰는 패키지가 바뀌었을 때만 돌린다.
+// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고(코드 지도 검사가
+// 코드의 파일·이름 변경도 보므로 코드만 바뀌어도 돈다) 나머지 묶음은 그 묶음의 시험이 보는 파일이나 저장소 뿌리(scripts·.agents)가 쓰는 패키지가 바뀌었을 때만 돌린다.
 // `--tests`는 완료 검사용으로, 같은 범위의 패키지 시험과 (뿌리에 닿으면) 뿌리 시험(pnpm test:root)을 더한다.
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";

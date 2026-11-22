@@ -4,11 +4,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
+
 import {
   gitIgnores,
   ignoredDotFolderPattern,
   loadIgnoredDotFolders,
 } from "./ignored-dot-folders.mjs";
+import { linkTargets, parseMarkdown } from "./markdown.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [".gitignore", "AGENTS.md", "GLOSSARY.md", "docs/features.md"];
@@ -34,13 +37,12 @@ for (const relative of repositoryFiles) {
   if (!relative.endsWith(".md")) continue;
   const location = path.join(root, relative);
   // index에는 있지만 작업 트리에서 지운 파일은 검사하지 않는다. 그 밖의 읽기 오류는 드러낸다.
-  let content;
-  try {
-    content = fs.readFileSync(location, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") continue;
-    throw error;
-  }
+  const content = orIfMissing(
+    () => fs.readFileSync(location, "utf8"),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
+  if (content === undefined) continue;
   markdownFiles++;
   if (!toolDefinitions.some((prefix) => relative.startsWith(prefix)))
     content.split("\n").forEach((line, index) => {
@@ -49,15 +51,18 @@ for (const relative of repositoryFiles) {
         `Path to Git-ignored folder ${relative}:${index + 1}`
       );
     });
-  for (const match of content.matchAll(/\]\(([^)\s]+)\)/g)) {
-    const target = match[1];
-    if (/^(https?:|mailto:|#)/.test(target)) continue;
-    const local = target.split("#")[0];
+  // 링크는 CommonMark·GFM 구문 트리로 읽는다: 참조식 링크 정의도 링크이고, 코드 안 글은 링크가 아니다.
+  for (const { url, line } of linkTargets(parseMarkdown(content))) {
+    if (/^(https?:|mailto:|#)/.test(url)) continue;
+    const local = url.split("#")[0];
     const resolved = path.resolve(path.dirname(location), local);
-    assert(fs.existsSync(resolved), `Broken local link ${location}: ${target}`);
+    assert(
+      fs.existsSync(resolved),
+      `Broken local link ${location}:${line}: ${url}`
+    );
     assert(
       !gitIgnores(root, resolved),
-      `Link to Git-ignored path ${location}: ${target}`
+      `Link to Git-ignored path ${location}:${line}: ${url}`
     );
   }
 }
