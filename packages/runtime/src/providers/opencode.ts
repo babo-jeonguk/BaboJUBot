@@ -1,5 +1,7 @@
-import { lstatSync } from "node:fs";
-import { mkdir, mkdtemp, lstat, writeFile } from "node:fs/promises";
+import { constants, lstatSync } from "node:fs";
+import { mkdir, mkdtemp, lstat, open, rm, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
@@ -22,6 +24,7 @@ import {
   usageAmount,
 } from "@babojubot/contracts";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
+import { inFolder } from "./pinned-folder.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
 import { TreeLaunchRefused } from "@babojubot/process";
@@ -175,62 +178,159 @@ function goKey(dataHome: string): string | undefined {
     db?.close();
   }
 }
+/** 확인한 저장소를 개인 폴더로 복사해 읽는 최대 크기. 이보다 크면 확인하지 않고 남은 로그인으로 본다. */
+const residueCopyMaxBytes = 512 * 1024 * 1024;
+/** 저장소를 개인 폴더로 복사할 때 읽는 조각. */
+const residueChunkBytes = 1024 * 1024;
+/**
+ * 링크를 따라가지 않고 FIFO에서 기다리지도 않은 채 이름을 연다. 없음과 링크를 값으로 가르고, 그 밖의 열기 오류는 던진다.
+ */
+async function openResidueFile(
+  at: string
+): Promise<FileHandle | "absent" | "unsafe"> {
+  try {
+    return await open(
+      at,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
+  } catch (error) {
+    if (hasErrorCode("ENOENT")(error)) return "absent";
+    if (hasErrorCode("ELOOP")(error)) return "unsafe";
+    throw error;
+  }
+}
+/**
+ * 확인한 폴더 안의 로그인 저장소 하나를 개인 폴더로 복사한다. 일반 파일이 아니거나(폴더·FIFO 등) 크기 제한을 넘으면 `unsafe`다.
+ * 다 읽은 파일 핸들은 하나를 닫지 못해도 모두 닫고 원인을 남긴다.
+ */
+async function copyResidueFile(
+  source: string,
+  destination: string,
+  limit: number
+): Promise<{ copied: number } | "absent" | "unsafe"> {
+  const from = await openResidueFile(source);
+  if (from === "absent" || from === "unsafe") return from;
+  let to: FileHandle | undefined;
+  try {
+    const info = await from.stat();
+    if (!info.isFile() || info.size > limit) return "unsafe";
+    to = await open(destination, "wx", 0o600);
+    const buffer = Buffer.alloc(residueChunkBytes);
+    let copied = 0;
+    for (;;) {
+      const { bytesRead } = await from.read(buffer, 0, buffer.length);
+      if (bytesRead === 0) break;
+      copied += bytesRead;
+      if (copied > limit) return "unsafe";
+      await writeAll(to, buffer.subarray(0, bytesRead));
+    }
+    return { copied };
+  } finally {
+    const opened = to;
+    await Promise.all([
+      continueAfterFailure(
+        () => from.close(),
+        (error) =>
+          console.warn(
+            `[provider] a login store handle could not be closed (${failureCode(error)})`
+          )
+      ),
+      opened === undefined
+        ? undefined
+        : continueAfterFailure(
+            () => opened.close(),
+            (error) =>
+              console.warn(
+                `[provider] a login store handle could not be closed (${failureCode(error)})`
+              )
+          ),
+    ]);
+  }
+}
+/** 파일 핸들에 다 쓸 때까지 쓴다. */
+async function writeAll(file: FileHandle, buffer: Buffer): Promise<void> {
+  let written = 0;
+  while (written < buffer.length) {
+    const { bytesWritten } = await file.write(
+      buffer,
+      written,
+      buffer.length - written
+    );
+    written += bytesWritten;
+  }
+}
 /**
  * 조직의 제품 폴더에 남은 로그인 흔적이 있는가. 서버를 띄우기 전에 보므로, 그 폴더의 로그인을 읽을 수 있는
- * 컨테이너는 시작하지 않는다. 값은 읽지 않고 표의 개수만 센다.
+ * 컨테이너는 시작하지 않는다. 값은 읽지 않고 표의 개수만 센다. 저장소는 확인한 폴더의 handle로 열어 개인 폴더에 복사한 뒤 읽는다:
+ * 링크는 따라가지 않고 FIFO에서는 기다리지 않으며, 복사본의 크기가 제한을 넘으면 남은 로그인으로 본다.
  */
-async function openCodeLoginResidue(dataHome: string): Promise<boolean> {
-  const folder = path.join(dataHome, "opencode");
-  if (
-    await orIfMissing(
-      async () => {
-        await lstat(path.join(folder, "auth.json"));
-        return true;
-      },
-      hasErrorCode("ENOENT", "ENOTDIR"),
-      false
-    )
-  )
-    return true;
-  const file = path.join(folder, "opencode.db");
-  if (
-    !(await orIfMissing(
-      async () => {
-        await lstat(file);
-        return true;
-      },
-      hasErrorCode("ENOENT", "ENOTDIR"),
-      false
-    ))
-  )
-    return false;
-  let db: DatabaseSync | undefined;
-  try {
-    return orIfProbeFailed(
-      () => {
-        db = new DatabaseSync(file, { readOnly: true });
-        for (const table of ["credential", "account", "control_account"]) {
+async function openCodeLoginResidue(organization: string): Promise<boolean> {
+  return orIfProbeFailed(
+    async () => {
+      const reached = await inFolder(
+        organization,
+        ["data", "opencode"],
+        async (folder) => {
+          if (
+            await orIfMissing(
+              async () => {
+                await lstat(folder.at("auth.json"));
+                return true;
+              },
+              hasErrorCode("ENOENT", "ENOTDIR"),
+              false
+            )
+          )
+            return true;
+          const copyFolder = await mkdtemp(
+            path.join(os.tmpdir(), "babojubot-opencode-residue-")
+          );
+          let db: DatabaseSync | undefined;
           try {
-            const row = db
-              .prepare(`select count(*) as n from "${table}"`)
-              .get() as { n?: unknown } | undefined;
-            if (typeof row?.n === "number" && row.n > 0) return true;
-          } catch (error) {
-            // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
-            if (!/no such table/i.test(String(error))) throw error;
+            const copy = path.join(copyFolder, "opencode.db");
+            const main = await copyResidueFile(
+              folder.at("opencode.db"),
+              copy,
+              residueCopyMaxBytes
+            );
+            if (main === "absent") return false;
+            if (main === "unsafe") return true;
+            const wal = await copyResidueFile(
+              folder.at("opencode.db-wal"),
+              `${copy}-wal`,
+              residueCopyMaxBytes - main.copied
+            );
+            if (wal === "unsafe") return true;
+            db = new DatabaseSync(copy);
+            for (const table of ["credential", "account", "control_account"]) {
+              try {
+                const row = db
+                  .prepare(`select count(*) as n from "${table}"`)
+                  .get() as { n?: unknown } | undefined;
+                if (typeof row?.n === "number" && row.n > 0) return true;
+              } catch (error) {
+                // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
+                if (!/no such table/i.test(String(error))) throw error;
+              }
+            }
+            return false;
+          } finally {
+            try {
+              db?.close();
+            } finally {
+              await rm(copyFolder, { recursive: true, force: true });
+            }
           }
         }
-        return false;
-      },
-      true,
-      (error) =>
-        console.warn(
-          `[provider] the OpenCode login store could not be read; it counts as a remaining login (${failureCode(error)})`
-        )
-    );
-  } finally {
-    db?.close();
-  }
+      );
+      return reached.reached ? reached.value : reached.miss === "link";
+    },
+    true,
+    (error) =>
+      console.warn(
+        `[provider] the OpenCode login store could not be read; it counts as a remaining login (${failureCode(error)})`
+      )
+  );
 }
 export function createOpenCodeProvider(options: {
   dataDir: string;
@@ -647,10 +747,7 @@ export function createOpenCodeProvider(options: {
           await Promise.all(copies);
         }
         // 격리 실행은 조직 폴더에 남은 로그인을 컨테이너가 읽을 수 있으므로, 서버를 띄우기 전에 확인하고 시작하지 않는다.
-        if (
-          placement.container &&
-          (await openCodeLoginResidue(path.join(organization, "data")))
-        )
+        if (placement.container && (await openCodeLoginResidue(organization)))
           return { ...failure(), error: residueRefusal };
         let container: ContainerLaunch | undefined;
         try {

@@ -1,7 +1,6 @@
 import { open, readdir } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { constants } from "node:fs";
-import path from "node:path";
 import {
   addUsage,
   continueAfterFailure,
@@ -15,6 +14,7 @@ import {
   type SessionMaintenance,
   type UsageAmount,
 } from "@babojubot/contracts";
+import { inFolder } from "./pinned-folder.ts";
 import { record } from "./record.ts";
 
 const unreadable = Symbol("unreadable");
@@ -37,41 +37,54 @@ async function sessionTranscripts<T>(
   read: (file: FileHandle, size: number) => Promise<T | undefined>
 ): Promise<T | undefined> {
   if (!/^[a-zA-Z0-9-]+$/.test(id)) return;
-  const projects = path.join(home, "config/projects");
-  const folders = await continueAfterFailure(
+  const listed = await continueAfterFailure(
     () =>
-      orIfMissing(
-        () => readdir(projects, { withFileTypes: true }),
-        hasErrorCode("ENOENT", "ENOTDIR"),
-        undefined
+      inFolder(home, ["config", "projects"], (folder) =>
+        orIfMissing(
+          () => readdir(folder.path, { withFileTypes: true }),
+          hasErrorCode("ENOENT", "ENOTDIR"),
+          undefined
+        )
       ),
     (error) =>
       console.warn(
         `[provider] the Claude session folders could not be read (${failureCode(error)})`
       )
   );
+  if (!listed?.reached) return;
+  const folders = listed.value;
   if (!folders) return;
-  for (const folder of folders) {
-    if (!folder.isDirectory()) continue;
-    let file;
-    try {
-      file = await open(
-        path.join(projects, folder.name, `${id}.jsonl`),
-        constants.O_RDONLY | constants.O_NOFOLLOW
-      );
-      const info = await file.stat();
-      if (!info.isFile()) continue;
-      const value = await read(file, info.size);
-      if (value !== undefined) return value;
-    } catch (error) {
-      if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
+  for (const entry of folders) {
+    if (!entry.isDirectory()) continue;
+    const found = await continueAfterFailure(
+      () =>
+        inFolder(home, ["config", "projects", entry.name], async (folder) => {
+          let file;
+          try {
+            file = await open(
+              folder.at(`${id}.jsonl`),
+              constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+            );
+            const info = await file.stat();
+            if (!info.isFile()) return;
+            return await read(file, info.size);
+          } catch (error) {
+            if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
+              console.warn(
+                `[provider] a Claude session transcript could not be read (${failureCode(error)})`
+              );
+            /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
+          } finally {
+            await file?.close();
+          }
+        }),
+      (error) =>
         console.warn(
           `[provider] a Claude session transcript could not be read (${failureCode(error)})`
-        );
-      /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
-    } finally {
-      await file?.close();
-    }
+        )
+    );
+    if (!found?.reached) continue;
+    if (found.value !== undefined) return found.value;
   }
 }
 
