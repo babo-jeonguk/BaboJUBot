@@ -16,6 +16,45 @@ permissions:
   - action: edit
     resource: "*"
     effect: allow
+  # Test helpers the test scope (scripts/test-files.mjs testFiles) names in a package's src. `*` also crosses `/`,
+  # so an allow reopens sub folders, where the same names are product code. The denials below (secrets, test
+  # files, settings) come later and still win there.
+  - action: edit
+    resource: "*packages/runtime/src/testing.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/runtime/src/runtime-contract.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/runtime/src/providers/test-folders.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/runtime/src/providers/*-support.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/runtime/src/providers/*/*"
+    effect: allow
+  - action: edit
+    resource: "*packages/process/src/testing.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/process/src/test-cleanup.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/process/src/test-folders.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/process/src/*-support.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/process/src/*/*"
+    effect: allow
+  - action: edit
+    resource: "*packages/db/src/testing.*"
+    effect: deny
+  - action: edit
+    resource: "*packages/db/src/test-cluster.*"
+    effect: deny
   - action: edit
     resource: ".env*"
     effect: deny
@@ -28,6 +67,7 @@ permissions:
   - action: edit
     resource: ".reference-cache/**"
     effect: deny
+  # Test files and test folders anywhere, and the test folders the test scope names.
   - action: edit
     resource: "*.test.*"
     effect: deny
@@ -35,40 +75,16 @@ permissions:
     resource: "*.spec.*"
     effect: deny
   - action: edit
-    resource: "*/test/*"
+    resource: "*apps/server/test/*"
     effect: deny
   - action: edit
-    resource: "*/e2e/*"
+    resource: "*apps/web/test/*"
+    effect: deny
+  - action: edit
+    resource: "*apps/web/e2e/*"
     effect: deny
   - action: edit
     resource: "*/test-fixtures/*"
-    effect: deny
-  - action: edit
-    resource: "*/fixtures/*"
-    effect: deny
-  - action: edit
-    resource: "*/testing.*"
-    effect: deny
-  - action: edit
-    resource: "*/test-support.*"
-    effect: deny
-  - action: edit
-    resource: "*/test-folders.*"
-    effect: deny
-  - action: edit
-    resource: "*/test-cluster.*"
-    effect: deny
-  - action: edit
-    resource: "*/test-cleanup.*"
-    effect: deny
-  - action: edit
-    resource: "*/runtime-contract.*"
-    effect: deny
-  - action: edit
-    resource: "*/process/src/*-support.*"
-    effect: deny
-  - action: edit
-    resource: "*/providers/*-support.*"
     effect: deny
   - action: edit
     resource: "*eslint.config.*"

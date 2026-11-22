@@ -101,6 +101,13 @@ test("the code worker may edit a product file named like a test helper or placed
     ]);
   });
   const product = [...new Set(twins)].filter((file) => !isTestFile(file));
+  // Reopening sub folders must not reopen what the later rules deny there.
+  for (const file of [
+    "packages/process/src/sample/.env",
+    "packages/runtime/src/providers/sample/package.json",
+    "packages/runtime/src/providers/sample/sample.test.ts",
+  ])
+    assert.ok(isProtected(rules, file), file);
   assert.ok(product.length > 0);
   assert.deepEqual(
     product.filter((file) => isProtected(rules, file)),
