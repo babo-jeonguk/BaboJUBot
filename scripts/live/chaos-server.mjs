@@ -13,7 +13,7 @@ import {
   hasErrorCode,
   orIfMissing,
 } from "@babojubot/contracts";
-import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
+import { launchTree, prepareSupervisor } from "@babojubot/process";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
 import { sharedVariables } from "@babojubot/runtime";
 
@@ -79,8 +79,8 @@ export function chaosServer({
       { replace: true }
     );
     rmSync(files.info, { force: true });
-    // Windows는 묶음 실행기 없이 띄우지 않는다(이 검사가 남긴 서버를 끌 수 없다). 다른 시스템에서는 아무것도 하지 않는다.
-    await prepareJobObjectLauncher(harnessDir);
+    // 감독 실행기 없이는 띄우지 않는다(이 검사가 남긴 서버를 끌 수 없다). 준비하지 못하면 launchTree가 그 이유로 거절한다.
+    await prepareSupervisor();
     child = launchTree({
       command: [process.execPath],
       args: [fileURLToPath(import.meta.url), files.config],

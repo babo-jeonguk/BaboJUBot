@@ -14,6 +14,7 @@
     "./launcher-setup": "./src/launcher-setup-support.ts"
   },
   "scripts": {
+    "build": "node supervisor/build.mjs",
     "test": "vitest run && vitest run --config vitest.alone.config.ts",
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:src": "tsc -p tsconfig.src.json",
