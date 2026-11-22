@@ -21,8 +21,8 @@ if (typeof ownerMark !== "string")
 /** 이름이 우리 표시가 있는 일반 파일인가. 한 번 연 파일에서 종류를 보고 읽는다. 없으면 `"missing"`이다. */
 async function owned(name: string): Promise<boolean | "missing"> {
   const opened = await openRegularFile(name);
-  if (opened === "missing") return "missing";
-  if (opened === "not-regular") return false;
+  if (typeof opened === "string")
+    return opened === "missing" ? "missing" : false;
   try {
     const text = await opened.handle.readFile("utf8");
     const parsed = orIfUnreadable((): unknown => JSON.parse(text), undefined);

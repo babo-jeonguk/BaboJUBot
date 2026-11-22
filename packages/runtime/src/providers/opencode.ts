@@ -184,8 +184,8 @@ const residueCopyMaxBytes = 512 * 1024 * 1024;
 /** 저장소를 개인 폴더로 복사할 때 읽는 조각. */
 const residueChunkBytes = 1024 * 1024;
 /**
- * 확인한 폴더 안의 로그인 저장소 하나를 개인 폴더로 복사한다. 없으면 `absent`, 링크·일반 파일 아님·크기 제한 초과면 `unsafe`다.
- * 다 읽은 파일 핸들은 하나를 닫지 못해도 모두 닫고 원인을 남긴다.
+ * 확인한 폴더 안의 로그인 저장소 하나를 개인 폴더로 복사한다. 없으면 `absent`, 링크·일반 파일 아님·확인 사이에 바뀐 자리·크기
+ * 제한 초과면 `unsafe`다. 다 읽은 파일 핸들은 하나를 닫지 못해도 모두 닫고 원인을 남긴다.
  */
 async function copyResidueFile(
   folder: Folder,
@@ -195,7 +195,7 @@ async function copyResidueFile(
 ): Promise<{ copied: number } | "absent" | "unsafe"> {
   const opened = await openRegularFile(folder.at(name));
   if (opened === "missing") return "absent";
-  if (opened === "not-regular") return "unsafe";
+  if (typeof opened === "string") return "unsafe";
   const from = opened.handle;
   let to: FileHandle | undefined;
   try {

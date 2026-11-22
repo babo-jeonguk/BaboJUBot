@@ -264,8 +264,9 @@ export class Workspaces {
 
 /**
  * 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. 표식은 `@babojubot/files`의
- * `openRegularFile`로 한 번 열고, 그 handle의 종류·크기·내용으로 판정한다. 열기가 던진 오류(위 칸이 폴더가 아님·위 폴더
- * 순환·권한 등)는 "표식을 읽을 수 없습니다(코드)"로 알린다.
+ * `openRegularFile`로 한 번 열고, 그 handle의 종류·크기·내용으로 판정한다. `"changed"`(열 때와 그 직후 사이에 자리가 바뀜)는
+ * 읽을 수 없는 것으로 본다. 열기가 던진 오류(위 칸이 폴더가 아님·위 폴더 순환·권한 등)는 "표식을 읽을 수 없습니다(코드)"로
+ * 알린다.
  */
 async function readIdentity(file: string) {
   let opened;
@@ -276,6 +277,14 @@ async function readIdentity(file: string) {
   }
   if (opened === "missing") return undefined;
   if (opened === "not-regular") return null;
+  if (opened === "changed")
+    throw identityBlocked(
+      "읽을",
+      file,
+      Object.assign(new Error("the mark changed while it was opened"), {
+        code: "changed",
+      })
+    );
   const { handle, info } = opened;
   try {
     if (info.size > BigInt(identityMaxBytes)) return null;
