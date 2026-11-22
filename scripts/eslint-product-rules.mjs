@@ -11,6 +11,7 @@ import {
   originOf,
   repositoryPath,
   targetOf,
+  variableIn,
   workspacePackages,
 } from "./eslint-imports.mjs";
 import {
@@ -1419,6 +1420,157 @@ const noUndeclaredImport = {
   },
 };
 
+/** 경로로 상태를 보는 fs 함수: 확인. */
+const pathChecks = new Set([
+  "stat",
+  "statSync",
+  "lstat",
+  "lstatSync",
+  "access",
+  "accessSync",
+  "exists",
+  "existsSync",
+]);
+/** 경로를 다시 열어 내용을 읽거나 쓰는 fs 함수: 사용. 마지막 칸의 링크를 따라간다. */
+const pathUses = new Set([
+  "readFile",
+  "readFileSync",
+  "writeFile",
+  "writeFileSync",
+  "appendFile",
+  "appendFileSync",
+  "open",
+  "openSync",
+  "createReadStream",
+  "createWriteStream",
+]);
+/** 있는지만 본 뒤 읽기는 그 사이 사라져도 읽기가 실패할 뿐이라 짚지 않는다(CodeQL js/file-system-race와 같다). */
+const existenceChecks = new Set(["exists", "existsSync"]);
+const reads = new Set(["readFile", "readFileSync", "createReadStream"]);
+
+/** fs에서 온 함수면 그 이름. `node:fs`·`node:fs/promises`·`fs.promises`의 이름, 별칭·구조 분해·require로 받아도 같다(`originOf`). */
+function fsFunction(context, callee) {
+  const origin = originOf(context.sourceCode.getScope(callee), callee);
+  if (!origin?.module || origin.path.length !== 1) return undefined;
+  return origin.module === "fs" || origin.module === "fs/promises"
+    ? origin.path[0]
+    : undefined;
+}
+
+/**
+ * 두 경로 식이 같은 경로인가. 글자가 같고, 그 안의 이름이 모두 같은 변수이며 처음 값 뒤로 다시 대입하지 않은 것이어야 한다
+ * (CodeQL js/file-system-race는 같은 문자열이거나 같은 접근 경로가 흘러간 값으로 본다. 여기서는 그 가운데 모양으로 보이는 것만).
+ */
+function samePath(context, a, b) {
+  const { sourceCode } = context;
+  if (sourceCode.getText(a) !== sourceCode.getText(b)) return false;
+  const names = (node) => {
+    const found = [];
+    const visit = (at) => {
+      if (!at || typeof at.type !== "string") return;
+      if (at.type === "Identifier") {
+        // 속성 이름(`a.b`의 b)은 변수가 아니다.
+        const parent = at.parent;
+        if (
+          parent?.type === "MemberExpression" &&
+          parent.property === at &&
+          !parent.computed
+        )
+          return;
+        found.push(at);
+        return;
+      }
+      if (at.type.endsWith("Function") || at.type === "ArrowFunctionExpression")
+        return;
+      for (const key of sourceCode.visitorKeys[at.type] ?? [])
+        for (const child of [at[key]].flat()) visit(child);
+    };
+    visit(node);
+    return found;
+  };
+  const left = names(a);
+  const right = names(b);
+  if (left.length !== right.length) return false;
+  return left.every((name, i) => {
+    const one = variableIn(sourceCode.getScope(name), name.name);
+    const two = variableIn(sourceCode.getScope(right[i]), right[i].name);
+    if (one !== two) return false;
+    // 선언 없는 전역(`process`)은 같은 것으로 본다. 처음 값(선언의 초기값·매개변수) 뒤에 다시 대입한 변수는 무엇을 담는지 모른다.
+    return !one || !one.references.some((ref) => ref.isWrite() && !ref.init);
+  });
+}
+const bodyTypes = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+const enclosingFunction = (node) => {
+  for (let at = node.parent; at; at = at.parent)
+    if (bodyTypes.has(at.type)) return at;
+  return undefined;
+};
+
+/**
+ * 경로로 파일의 상태를 확인한 뒤(`stat`·`lstat`·`access`·`exists`) 같은 경로를 다시 열어 읽거나 쓰는 것(`readFile`·`writeFile`·
+ * `appendFile`·`open`·스트림)을 막는다(#242, CWE-367). 그 사이 경로가 다른 파일·링크로 바뀌면 확인하지 않은 대상을 쓴다.
+ * 한 번 연 파일 handle에서 `stat`하고 읽는다. 링크를 따라가면 안 되면 POSIX의 `O_NOFOLLOW`로 연다.
+ * 선례: CodeQL `js/file-system-race`(확인 목록·사용 목록·있는지 본 뒤 읽기 제외가 같다), Node 문서의 fs.stat·fs.access 경고.
+ * 같은 경로: 글자가 같고 그 안의 이름이 모두 같은, 다시 대입하지 않은 변수일 때. 순서: 사용이 확인을 감싼 함수 안에서 확인 뒤에
+ * 나올 때(콜백 안 포함). 지우기·이름 바꾸기(`rm`·`unlink`·`rename`)는 이름 자체에 하는 일이라 링크를 따라가 다른 대상의 내용을
+ * 읽거나 쓰지 않으므로 보지 않는다(CodeQL도 같다).
+ * 알려진 한계: 확인이나 사용을 감싼 함수(`exists(target)`처럼 이름이 다른 지역 함수)를 거친 것, 다른 함수에서 확인한 경로,
+ * 계산이 달라 글자가 다른 같은 경로는 보지 않는다. 리뷰가 본다.
+ */
+const noCheckThenReopen = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Disallow reopening a path by name after checking its state by name",
+    },
+    schema: [],
+    messages: {
+      reopen:
+        "{{check}}({{path}})로 확인한 경로를 {{use}}로 다시 엽니다. 그 사이 경로가 다른 파일이나 링크로 바뀌면 확인하지 않은 대상을 읽거나 씁니다(CWE-367). 한 번 연 파일 handle에서 stat하고 읽거나 쓰세요(링크를 따라가면 안 되면 O_NOFOLLOW로 엽니다). 없으면 만들기는 확인 없이 'wx'로 열고 EEXIST를 받습니다.",
+    },
+  },
+  create(context) {
+    /** 지금까지 본 확인 호출: `{ name, node, path, scope }`. */
+    const checks = [];
+    return {
+      CallExpression(node) {
+        const name = fsFunction(context, node.callee);
+        const target = node.arguments[0];
+        if (!name || !target || target.type === "SpreadElement") return;
+        if (pathChecks.has(name)) {
+          checks.push({ name, path: target, within: enclosingFunction(node) });
+          return;
+        }
+        if (!pathUses.has(name)) return;
+        const check = checks.find(
+          (each) =>
+            each.path.range[1] <= target.range[0] &&
+            (each.within === undefined ||
+              (each.within.range[0] <= node.range[0] &&
+                node.range[1] <= each.within.range[1])) &&
+            !(existenceChecks.has(each.name) && reads.has(name)) &&
+            samePath(context, each.path, target)
+        );
+        if (check)
+          context.report({
+            node,
+            messageId: "reopen",
+            data: {
+              check: check.name,
+              path: context.sourceCode.getText(check.path),
+              use: name,
+            },
+          });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -1436,5 +1588,6 @@ export default {
     "package-entry-only": packageEntryOnly,
     "no-failure-collecting": noFailureCollecting,
     "no-group-stop-import": noGroupStopImport,
+    "no-check-then-reopen": noCheckThenReopen,
   },
 };
