@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { credentialResidue, residueRefusal } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink, readLogin } from "./login-link.ts";
-import { hasErrorCode } from "@babojubot/contracts";
 import { inFolder } from "@babojubot/files";
 
 /**
@@ -85,10 +84,11 @@ export function fileLogin(
   };
   /**
    * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 실행 시도마다 그 위에 자기 로그인 파일을 넣는 자리다(Docker는 넣을 자리가 있어야 한다).
-   * 자리 표시는 확인한 폴더 안의 임시 이름에 먼저 쓰고, 자리가 비어 있을 때만 `link`로 제자리에 나타나게 하므로 다른 실행 시도는
-   * 아무것도 없거나 완성된 자리 표시를 본다. 이미 있는 자리 표시는 바꾸지 않는다(다른 컨테이너가 그 위에 자기 로그인을 넣었을 수
-   * 있고, 파일을 바꾸면 그 연결이 떨어져 나간다). 그 밖의 것은 `rename`으로 한 번에 바꾼다. 자리로 가는 폴더 칸은 확인한 폴더의
-   * handle을 거쳐 내려가므로, 다른 실행 시도의 컨테이너가 그 칸을 링크로 바꿔도 그 너머를 쓰지 않는다.
+   * 이미 있는 자리 표시는 바꾸지 않는다(다른 컨테이너가 그 위에 자기 로그인을 넣었을 수 있고, 파일을 바꾸면 그 연결이 떨어져 나간다).
+   * 그 밖에는 자리 표시를 확인한 폴더 안의 임시 이름에 쓰고 `rename` 한 번으로 제자리에 두므로, 다른 실행 시도는 이전 것이나 완성된
+   * 자리 표시만 보고 비어 있거나 반쯤 쓰인 파일은 보지 않는다. hard link를 쓰지 않으므로 링크를 만들 수 없는 디스크(#209)에서도
+   * 된다. 자리가 비어 있는 것을 둘 다 본 두 실행 시도는 같은 내용을 각각 제자리로 옮기고, 나중 것이 먼저 것을 바꾼다. 자리로 가는
+   * 폴더 칸은 확인한 폴더의 handle을 거쳐 내려가므로, 다른 실행 시도의 컨테이너가 그 칸을 링크로 바꿔도 그 너머를 쓰지 않는다.
    */
   const placePlaceholder = async (organization: string) => {
     const placed = await inFolder(
@@ -96,22 +96,16 @@ export function fileLogin(
       loginParts,
       async (folder) => {
         const loginAt = folder.at(loginName);
+        // 이미 있는 자리 표시는 바꾸지 않는다. 같은 조직의 다른 컨테이너가 그 위에 자기 로그인을 넣고 있을 수 있고, 파일을 바꾸면 그 연결이 떨어져 나간다.
+        if (await shape.isStandIn(loginAt)) return;
+        // 완성된 자리 표시를 임시 이름에 쓰고 이름 바꾸기 한 번으로 제자리에 둔다. 다른 실행 시도는 이전 것이나 완성된 자리 표시만 본다.
+        // 링크를 만들 수 없는 디스크(#209)에서도 되도록 hard link를 쓰지 않는다. 이름 자체에 하는 일이라 그 자리의 링크를 따라가지 않는다.
         const temporary = folder.at(`.${loginName}.${randomUUID()}.tmp`);
         await writeFile(temporary, shape.contents(""), {
           mode: 0o600,
           flag: "wx",
         });
         try {
-          try {
-            // 완성된 자리 표시를 한 번에 나타나게 한다. 자리가 비어 있을 때만 만든다.
-            await link(temporary, loginAt);
-            return;
-          } catch (error) {
-            if (!hasErrorCode("EEXIST")(error)) throw error;
-          }
-          // 이미 있는 자리 표시는 바꾸지 않는다. 같은 조직의 다른 컨테이너가 그 위에 자기 로그인을 넣고 있을 수 있다.
-          if (await shape.isStandIn(loginAt)) return;
-          // 자리 표시가 아닌 것은 한 번에 바꾼다(이름 자체에 하는 일이라 링크를 따라가지 않는다).
           await rename(temporary, loginAt);
         } finally {
           await rm(temporary, { force: true });
