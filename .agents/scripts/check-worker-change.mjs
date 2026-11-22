@@ -9,7 +9,7 @@
 // `*` in a pattern matches any characters, `/` included, as in OpenCode permissions.
 // Exit codes: 0 no problem found; 1 problem found; 2 usage.
 import { execFileSync, spawnSync } from "node:child_process";
-import { parse } from "yaml";
+import { editRules, isProtected, matcher } from "./worker-permissions.mjs";
 
 const USAGE =
   "usage: check-worker-change.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
@@ -50,14 +50,6 @@ function fail(reasons) {
   process.exit(1);
 }
 
-function matcher(pattern) {
-  const source = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replaceAll("*", ".*")
-    .replaceAll("?", ".");
-  return new RegExp(`^${source}$`, "s");
-}
-
 function git(root, ...args) {
   return execFileSync("git", args, {
     cwd: root,
@@ -83,22 +75,12 @@ function changedFiles(root, base) {
 }
 
 // Read from the base commit: the change under review must not decide what it may change.
-// OpenCode applies the last rule that matches, so a later allow can reopen a denied path.
-function editRules(root, base) {
-  const definition = git(
-    root,
-    "show",
-    `${base}:.opencode/agents/dev-worker.md`
+function baseEditRules(root, base) {
+  const rules = editRules(
+    git(root, "show", `${base}:.opencode/agents/dev-worker.md`)
   );
-  const frontmatter = definition.match(/^---\n([\s\S]*?)\n---/)?.[1];
-  if (!frontmatter) fail(["dev-worker.md has no frontmatter"]);
-  return parse(frontmatter)
-    .permissions.filter((rule) => rule.action === "edit")
-    .map((rule) => ({ ...rule, matches: matcher(rule.resource) }));
-}
-
-function isProtected(rules, file) {
-  return rules.findLast((rule) => rule.matches.test(file))?.effect === "deny";
+  if (!rules) fail(["dev-worker.md has no frontmatter"]);
+  return rules;
 }
 
 function runTest(root, command) {
@@ -128,7 +110,7 @@ const head = git(root, "rev-parse", "HEAD").trim();
 const base = git(root, "rev-parse", `${options.base}^{commit}`).trim();
 if (head !== base) fail([`HEAD moved from ${base} to ${head}`]);
 
-const rules = editRules(root, base);
+const rules = baseEditRules(root, base);
 const allowed = options.allow.map(matcher);
 const reported = new Set(options.reported);
 
