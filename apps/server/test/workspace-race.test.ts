@@ -33,8 +33,9 @@ async function organizations() {
     );
   return { root, base, mine, other };
 }
+// 읽는 프로세스의 파일 작업(작업 폴더 옮기기와 node:fs/promises의 확인·열기) 앞마다 한 단계씩 센다.
 const interrupt = `{
-  const fs = require("node:fs");
+  const fs = process.getBuiltinModule("node:fs");
   const plan = JSON.parse(process.env.PLAN);
   let step = 0, busy = false;
   const quietly = (work) => {
@@ -58,9 +59,9 @@ const interrupt = `{
         fs.renameSync(plan.from + "-kept", plan.from);
       });
   };
-  for (const name of ["lstatSync", "statSync", "openSync", "readSync", "readlinkSync"]) {
-    const real = fs[name];
-    fs[name] = (...args) => { tick(); return real(...args); };
+  for (const name of ["lstat", "stat", "open", "readlink"]) {
+    const real = fs.promises[name];
+    fs.promises[name] = (...args) => { tick(); return real(...args); };
   }
   const chdir = process.chdir;
   process.chdir = (directory) => { tick(); chdir(directory); };
@@ -204,12 +205,12 @@ withLinks(
 
 // 링크를 링크로 확인한 바로 뒤에 그 링크가 사라지거나 다른 것으로 바뀌면 파일이 바뀐 것이다. 서버 오류가 아니다(리뷰 2회차 P3).
 const vanish = `{
-  const fs = require("node:fs");
+  const fs = process.getBuiltinModule("node:fs");
   const plan = JSON.parse(process.env.PLAN);
-  const lstat = fs.lstatSync;
+  const lstat = fs.promises.lstat;
   let done = false;
-  fs.lstatSync = (...args) => {
-    const info = lstat(...args);
+  fs.promises.lstat = async (...args) => {
+    const info = await lstat(...args);
     if (!done && args[0] === plan.name && info.isSymbolicLink()) {
       done = true;
       fs.unlinkSync(plan.path);

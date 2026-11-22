@@ -919,3 +919,52 @@ test("product code does not reopen by name a path it has just checked by name", 
       place
     );
 });
+const ownOpenRule = ["product/no-own-untrusted-open"];
+
+// 다른 쪽이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 여는 방식(링크를 따라가지 않고 FIFO에서 기다리지 않는 열기, 파일
+// 식별 dev·ino 대조)은 @babojubot/files만 정한다(#277·#278). 밖에서 다시 적으면 판마다 어긋난다. 글로 넣는 코드(별도 프로세스의
+// 스크립트 문자열)도 같은 이름을 담으면 본다.
+test("product code outside @babojubot/files does not write its own open of a place others can change", async () => {
+  const own = {
+    "an O_NOFOLLOW open": `import { constants } from "node:fs";\nimport { open } from "node:fs/promises";\nexport const read = (file: string) => open(file, constants.O_RDONLY | constants.O_NOFOLLOW);\n`,
+    "an O_NONBLOCK open through fs.constants": `import fs from "node:fs";\nexport const read = (file: string) => fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);\n`,
+    "a destructured flag": `import { constants } from "node:fs";\nconst { O_NOFOLLOW } = constants;\nexport const flags = O_NOFOLLOW;\n`,
+    "a computed flag name": `import { constants } from "node:fs";\nexport const flags = constants["O_NONBLOCK"];\n`,
+    "a dev and ino comparison": `import type { Stats } from "node:fs";\nexport const same = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;\n`,
+    "a destructured ino": `import type { Stats } from "node:fs";\nexport const id = ({ dev, ino }: Stats) => \`\${dev}:\${ino}\`;\n`,
+    "a flag in script text": `export const script = \`\nconst fs = require("node:fs");\nfs.openSync(name, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);\n\`;\n`,
+    "an ino comparison in script text": `export const script = "const same = (a, b) => a.dev === b.dev && a.ino === b.ino;";\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(own)) {
+      const [message, ...rest] = await lint(code, place, ownOpenRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /@babojubot\/files/);
+    }
+  const kept = {
+    "the shared open": `import { openRegularFile } from "@babojubot/files";\nexport const read = (file: string) => openRegularFile(file);\n`,
+    "other open flags": `import { constants } from "node:fs";\nimport { open } from "node:fs/promises";\nexport const write = (file: string) => open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);\n`,
+    "a device alone": `import type { Stats } from "node:fs";\nexport const sameDevice = (a: Stats, b: Stats) => a.dev === b.dev;\n`,
+    "a name that only contains the letters": `const casino = "inode O_NOFOLLOWING";\nexport const label = casino;\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(kept))
+      assert.deepEqual(
+        await lint(code, place, ownOpenRule),
+        [],
+        `${place}: ${shape}`
+      );
+  // 열기 방식을 정하는 곳(@babojubot/files)과 시험 코드는 보지 않는다.
+  for (const place of [
+    "packages/files/src/regular-file.ts",
+    "packages/files/src/regular-file.test.ts",
+    ...testPlaces,
+  ])
+    for (const [shape, code] of Object.entries(own))
+      assert.deepEqual(
+        await lint(code, place, ownOpenRule),
+        [],
+        `${place}: ${shape}`
+      );
+});

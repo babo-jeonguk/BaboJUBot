@@ -12,7 +12,7 @@ import {
   cleanupAntigravityWorkspaces,
   createAntigravityProvider as unownedAntigravityProvider,
 } from "./antigravity.ts";
-import { configScript, ownerMark } from "./antigravity-config.ts";
+import { configScriptFile, ownerMark } from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -58,9 +58,10 @@ async function workspace() {
   };
 }
 
-// 스크립트의 파일 작업 앞마다 끼어들 수 있게 해서 돌린다.
+// 스크립트의 파일 작업(작업 폴더 옮기기와 node:fs/promises의 확인·열기·지우기) 앞마다 끼어들 수 있게 해서 돌린다. 바꾼 함수가
+// 스크립트가 가져오는 ES module(@babojubot/files 포함)에도 보이게 한다(node:module syncBuiltinESMExports).
 const interrupt = `{
-  const fs = require("node:fs");
+  const fs = process.getBuiltinModule("node:fs");
   const plan = JSON.parse(process.env.PLAN);
   let step = 0, busy = false;
   const quietly = (work) => {
@@ -82,38 +83,25 @@ const interrupt = `{
         fs.renameSync(plan.from + "-kept", plan.from);
       });
   };
-  for (const name of [
-    "lstatSync", "statSync", "openSync", "fstatSync", "readdirSync", "mkdirSync",
-    "writeFileSync", "linkSync", "unlinkSync",
-  ]) {
-    const real = fs[name];
-    fs[name] = (...args) => {
-      tick();
-      if (
-        name === "unlinkSync" &&
-        plan.unlinkError &&
-        String(args[0]).endsWith(".tmp")
-      )
-        throw Object.assign(new Error("locked"), { code: "EBUSY" });
-      if (name === "linkSync" && plan.linkError)
-        throw Object.assign(new Error("link failed"), { code: plan.linkError });
-      if (name === "linkSync" && plan.createFirst) {
-        busy = true;
-        fs.writeFileSync(plan.createFirst, "사용자 설정");
-        busy = false;
-      }
-      return real(...args);
-    };
+  for (const name of ["lstat", "stat", "open", "readdir", "unlink"]) {
+    const real = fs.promises[name];
+    fs.promises[name] = (...args) => { tick(); return real(...args); };
   }
   const chdir = process.chdir;
   process.chdir = (directory) => { tick(); chdir(directory); };
+  process.getBuiltinModule("node:module").syncBuiltinESMExports();
 }
 `;
-const script = (cwd: string, op: "clear", plan: Record<string, unknown> = {}) =>
+const script = (cwd: string, plan: Record<string, unknown> = {}) =>
   new Promise<number>((resolve) => {
     const child = execFile(
       process.execPath,
-      ["-e", interrupt + configScript, JSON.stringify([op])],
+      [
+        "--import",
+        `data:text/javascript,${encodeURIComponent(interrupt)}`,
+        configScriptFile,
+        JSON.stringify([ownerMark]),
+      ],
       {
         cwd,
         env: {
@@ -157,7 +145,7 @@ it("never removes another organization's file when .agents is swapped at any mom
     const { cwd, agents, config, otherAgents, otherConfig } = await workspace();
     await writeFile(config, ownedLeftover);
     await writeFile(otherConfig, ownedLeftover);
-    const status = await script(cwd, "clear", {
+    const status = await script(cwd, {
       ...plan,
       from: agents,
       to: otherAgents,
