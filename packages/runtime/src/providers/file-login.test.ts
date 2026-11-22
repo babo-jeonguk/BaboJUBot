@@ -70,5 +70,32 @@ describe.skipIf(process.platform === "win32")(
         JSON.stringify({ token: "" })
       );
     });
+
+    // 격리 실행의 컨테이너가 심어 둔 링크는 격리를 끈 뒤에도 남는다. 이 컴퓨터의 실행이 조직 자리에 링크를 만들며 그 링크를 따라가면
+    // 연결의 원본 로그인을 set-aside로 옮기거나 지운다.
+    it("does not follow a folder link an isolated run left when a host run links the login", async () => {
+      const root = await folders.make("babojubot-file-login-");
+      const login = fileLogin(root, "nested", nested);
+      const original = path.join(root, "providers", "nested", "login", "token");
+      await mkdir(path.dirname(original), { recursive: true });
+      await writeFile(original, "REAL LOGIN");
+      const organization = path.join(
+        root,
+        "providers",
+        "nested",
+        "organizations",
+        organizationId
+      );
+      await mkdir(path.join(organization, ".gemini"), { recursive: true });
+      await symlink(
+        path.join("..", "..", "..", "login"),
+        path.join(organization, ".gemini", "antigravity-cli")
+      );
+
+      await expect(login.prepare(organizationId, false)).rejects.toThrow(
+        /not a folder/
+      );
+      expect(await readFile(original, "utf8")).toBe("REAL LOGIN");
+    });
   }
 );

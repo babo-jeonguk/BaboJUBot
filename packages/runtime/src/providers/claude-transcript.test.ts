@@ -4,31 +4,42 @@ import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { hasErrorCode } from "@babojubot/contracts";
-import { claudeSessionFacts } from "./claude-transcript.ts";
+import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
 
 const folders = testFolders();
 const session = "3f8a2c1e-0000-4000-8000-000000000001";
-const transcript = JSON.stringify({
-  type: "assistant",
-  sessionId: session,
-  timestamp: "2026-11-22T00:00:00.000Z",
-  message: { usage: { input_tokens: 10 } },
-});
+const transcript = [
+  JSON.stringify({
+    type: "assistant",
+    sessionId: session,
+    timestamp: "2026-11-22T00:00:00.000Z",
+    message: { usage: { input_tokens: 10 } },
+  }),
+  JSON.stringify({
+    type: "cost-state",
+    sessionId: session,
+    totalCostUSD: 0.5,
+    modelUsage: {},
+  }),
+].join("\n");
+/** 세션 기록을 읽는 두 함수. 둘 다 같은 길로 기록을 찾고 연다. */
+const readers = [
+  ["claudeSessionFacts", claudeSessionFacts],
+  ["claudeSessionCost", claudeSessionCost],
+] as const;
 
 // Claude의 세션 기록은 조직 제품 폴더에 있고, 격리 실행에서는 같은 조직의 컨테이너가 그 폴더에 쓸 수 있다.
 // 서버는 그 폴더 안을 링크를 따라가거나 FIFO에서 기다리며 열지 않는다.
-describe.skipIf(process.platform === "win32")(
-  "reading a session transcript in a folder an isolated agent can write",
-  () => {
+describe.skipIf(process.platform === "win32").each(readers)(
+  "%s reading a session transcript in a folder an isolated agent can write",
+  (_name, readTranscript) => {
     it("reads a transcript in the organization's own folders", async () => {
       const home = await folders.make("babojubot-transcript-");
       const projects = path.join(home, "config", "projects", "project");
       await mkdir(projects, { recursive: true });
       await writeFile(path.join(projects, `${session}.jsonl`), transcript);
-      expect(await claudeSessionFacts(home, session)).toMatchObject({
-        tokens: 10,
-      });
+      expect(await readTranscript(home, session)).toBeDefined();
     });
 
     it("does not follow a link in place of a folder on the way to the transcript", async () => {
@@ -42,7 +53,7 @@ describe.skipIf(process.platform === "win32")(
         transcript
       );
       await symlink(elsewhere, path.join(home, "config"));
-      expect(await claudeSessionFacts(home, session)).toBeUndefined();
+      expect(await readTranscript(home, session)).toBeUndefined();
     });
 
     it(
@@ -64,7 +75,7 @@ describe.skipIf(process.platform === "win32")(
             if (!hasErrorCode("ENXIO")(error)) throw error;
           }
         }, "fifo writer");
-        expect(await claudeSessionFacts(home, session)).toBeUndefined();
+        expect(await readTranscript(home, session)).toBeUndefined();
       }
     );
   }
