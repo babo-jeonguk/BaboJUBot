@@ -426,31 +426,51 @@ impl Job {
         }
         Ok(())
     }
+}
 
-    /// Ends everything in the job and waits, within a limit, until nothing in it runs and the program's end can be read. A failed end
-    /// does not skip the wait: whether the job emptied is still what tells. A failed read is tried again until the limit.
-    fn end(&self) -> StopResult {
-        let mut failures = attempt::Failures::default();
+/// The system calls a stop makes on the job, kept apart from the stop's order (`end_job`) so that order can be tested without a job.
+trait JobReach {
+    /// Ends everything in the job.
+    fn terminate(&self) -> Result<(), String>;
+    /// How many processes of the job still run.
+    fn active(&self) -> Result<usize, String>;
+    /// Waits, within a limit, until the program's end can be read.
+    fn wait_for_program(&self) -> StopResult;
+}
+
+impl JobReach for Job {
+    fn terminate(&self) -> Result<(), String> {
         // SAFETY: valid handle.
         if unsafe { TerminateJobObject(self.job, 1) } == 0 {
-            failures.note(Err(format!(
+            return Err(format!(
                 "the job object could not be ended: error {}",
                 last_error()
-            )));
+            ));
         }
-        let left = attempt::wait_until_empty(
-            protocol::END_LIMIT,
-            || self.active().map(|active| active as usize),
-            || Ok(()),
-            &mut failures,
-        );
-        match left {
-            attempt::Left::Count(0) => self.wait_for_program(),
-            attempt::Left::Count(left) => {
-                Err(failures.reason(&left.to_string(), "the job object did not empty"))
-            }
-            attempt::Left::Unknown(why) => Err(failures.reason("unknown", &why)),
+        Ok(())
+    }
+
+    fn active(&self) -> Result<usize, String> {
+        Job::active(self).map(|active| active as usize)
+    }
+
+    fn wait_for_program(&self) -> StopResult {
+        Job::wait_for_program(self)
+    }
+}
+
+/// Ends everything in the job and waits, within `limit`, until nothing in it runs and the program's end can be read. A failed end
+/// does not skip the wait: whether the job emptied is still what tells. A failed read is tried again until the limit.
+fn end_job(reach: &impl JobReach, limit: Duration) -> StopResult {
+    let mut failures = attempt::Failures::default();
+    failures.note(reach.terminate());
+    let left = attempt::wait_until_empty(limit, || reach.active(), || Ok(()), &mut failures);
+    match left {
+        attempt::Left::Count(0) => reach.wait_for_program(),
+        attempt::Left::Count(left) => {
+            Err(failures.reason(&left.to_string(), "the job object did not empty"))
         }
+        attempt::Left::Unknown(why) => Err(failures.reason("unknown", &why)),
     }
 }
 
@@ -469,7 +489,7 @@ impl Tree for Job {
 
     /// Windows ends the job at once; there is no grace.
     fn stop(&mut self, _grace: Duration) -> (Option<Exit>, StopResult) {
-        let result = self.end();
+        let result = end_job(self, protocol::END_LIMIT);
         (self.exit(), result)
     }
 }
