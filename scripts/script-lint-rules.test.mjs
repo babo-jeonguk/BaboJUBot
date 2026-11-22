@@ -322,8 +322,7 @@ test("long-running children are launched only through the shared launch", async 
   }
   // 실행 소유 파일(공용 실행과 그것이 서는 실행, 데몬을 띄우는 pg_ctl)과 시험 코드는 범위 밖이다.
   for (const place of [
-    "packages/process/src/launch.ts",
-    "packages/process/src/supervisor.ts",
+    "packages/process/src/supervised.ts",
     "packages/process/src/bounded-command.ts",
     "packages/runtime/src/providers/container.ts",
     "packages/db/src/embedded.ts",
@@ -491,7 +490,7 @@ const boundedCommands = [
 
 test("launch owners end short commands at their time limit", async () => {
   for (const place of [
-    "packages/process/src/supervisor.ts",
+    "packages/process/src/supervised.ts",
     "packages/runtime/src/providers/recovery.ts",
     "packages/db/src/embedded.ts",
   ]) {
@@ -983,7 +982,7 @@ const productOriginCases = [
   })),
   {
     rule: "product/bounded-command",
-    place: "packages/process/src/supervisor.ts",
+    place: "packages/process/src/supervised.ts",
     value: { module: "node:child_process", path: ["execFile"] },
     use: (r) => `${r}("ps", [], () => {});\n`,
   },
