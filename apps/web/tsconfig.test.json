@@ -3,10 +3,12 @@
   "include": [
     "e2e",
     "test",
-    "src/**/*.test.ts",
-    "src/**/*.test.tsx",
-    "src/**/*.d.ts",
-    "vitest.config.ts",
-    "playwright.config.ts"
+    "src/**/*.test.*",
+    "src/**/*.spec.*",
+    "src/**/*.d.*",
+    "vitest.config.*",
+    "vitest.*.config.*",
+    "playwright.config.*",
+    "playwright.*.config.*"
   ]
 }

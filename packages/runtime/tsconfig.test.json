@@ -1,14 +1,13 @@
 {
   "extends": "./tsconfig.json",
   "include": [
-    "src/**/*.test.ts",
-    "src/**/*.test.tsx",
-    "src/testing.ts",
-    "src/test-cleanup.ts",
-    "src/runtime-contract.ts",
-    "src/providers/test-support.ts",
-    "src/providers/test-folders.ts",
-    "src/providers/*-support.ts",
-    "vitest.config.ts"
+    "src/**/*.test.*",
+    "src/**/*.spec.*",
+    "src/testing.*",
+    "src/runtime-contract.*",
+    "src/providers/test-folders.*",
+    "src/providers/*-support.*",
+    "vitest.config.*",
+    "vitest.*.config.*"
   ]
 }

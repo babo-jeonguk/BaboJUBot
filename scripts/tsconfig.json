@@ -1,6 +1,6 @@
 // eslint.config.js가 개발 스크립트를 타입 정보로 검사할 때 쓴다(Promise 규칙). 타입 검사(tsc)는 하지 않는다.
 {
   "extends": "../tsconfig.base.json",
-  "compilerOptions": { "allowJs": true, "checkJs": false },
-  "include": ["**/*.mjs"]
+  "compilerOptions": { "checkJs": false },
+  "include": ["**/*"]
 }
