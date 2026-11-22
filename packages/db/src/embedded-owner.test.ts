@@ -7,17 +7,32 @@ import os from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
-import { attemptAll } from "@babojubot/contracts";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { startEmbeddedCluster } from "./embedded.ts";
+import {
+  ephemeralCluster,
+  startEmbeddedCluster,
+  type EmbeddedCluster,
+  type EmbeddedOptions,
+} from "./embedded.ts";
 
-// 내장 DB 폴더 주인의 연결(#268, #275 외부 리뷰 1회차). 주인 연결은 이 사용자 전용 폴더에만 두고, 다른 프로세스는 기록의 자리로
+// 내장 DB 폴더 주인의 연결(#268, #275 외부 리뷰 1·2회차). 주인 연결은 이 사용자 전용 폴더에만 두고, 다른 프로세스는 기록의 자리로
 // 연결만 해 볼 뿐 지우지 않는다. 연 연결은 실패한 길에서도 닫는다. 소켓 경로 한도는 바이트로 잰다. Windows는 named pipe라
 // 파일·경로 한도가 없어 이 파일의 시험은 POSIX에서만 돈다.
 const inject = vi.hoisted(() => ({
   /** 주인 기록(`<dataDir>.owner/<번호>`)을 붙이는 hard link가 이 오류로 실패한다. */
   recordFails: undefined as Error | undefined,
+  /** 임시 cluster 폴더(`babojubot-pg-…`)를 지우면 이 오류로 실패한다. */
+  removeFails: undefined as Error | undefined,
 }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const rm: typeof real.rm = async (target, options) => {
+    if (inject.removeFails && String(target).includes("babojubot-pg-"))
+      throw inject.removeFails;
+    return real.rm(target, options);
+  };
+  return { ...real, rm, default: { ...real, rm } };
+});
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
   const linkSync = ((existing, target) => {
@@ -33,17 +48,33 @@ const ownerSocket = /^babojubot-owner-[0-9a-f]{16}\.sock$/;
 
 /**
  * 이 시험만 쓰는 임시 폴더를 이 프로세스의 임시 폴더로 둔다(제품은 그 아래 `babojubot-<uid>`에 주인 연결을 둔다). 사용자 실행
- * 폴더(`XDG_RUNTIME_DIR`)는 비워 임시 폴더를 쓰게 한다.
+ * 폴더(`XDG_RUNTIME_DIR`)는 비워 임시 폴더를 쓰게 한다. 그 안에서 띄운 cluster는 `cleanup.own`으로 맡겨, 멈춘 것을 확인한 뒤에만
+ * 폴더를 지운다(STD-4).
  */
 async function ownTemporaryFolder(name = "babojubot-owner-tmp-") {
   const base = await fsp.mkdtemp(path.join(os.tmpdir(), name));
-  onTestFinished(() => removeFolder(base));
+  const cleanup = folderCleanup(() => removeFolder(base));
+  onTestFinished(cleanup.cleanUp);
   vi.stubEnv("TMPDIR", base);
   vi.stubEnv("XDG_RUNTIME_DIR", "");
   onTestFinished(() => {
     vi.unstubAllEnvs();
   });
-  return base;
+  return { base, cleanup };
+}
+
+/**
+ * cluster를 띄우고 바로 그 멈춤을 폴더 정리에 맡긴다. 돌려준 `stop`은 한 번만 멈춘다(시험이 멈춰도 정리가 다시 멈추지 않는다).
+ */
+async function startOwned(
+  cleanup: ReturnType<typeof folderCleanup>,
+  options: EmbeddedOptions
+) {
+  const cluster = await startEmbeddedCluster(options);
+  let stopping: Promise<void> | undefined;
+  const stop = () => (stopping ??= cluster.stop());
+  cleanup.own(stop);
+  return { cluster, stop };
 }
 
 /** `folder` 안에서 지금 연결을 받는 주인 소켓들. */
@@ -86,7 +117,7 @@ describe.runIf(posix)(
   () => {
     // STD-2: 주인 연결을 연 뒤 기록을 쓰지 못하면, 이번에 연 연결을 닫고 실패한다. 연결이 남으면 주인이 아닌 프로세스가 주인처럼 보인다.
     it("closes the connection it opened when its owner record cannot be written", async () => {
-      const base = await ownTemporaryFolder();
+      const { base } = await ownTemporaryFolder();
       const failure = Object.assign(
         new Error("injected: the owner record could not be written"),
         { code: "EIO" }
@@ -105,35 +136,85 @@ describe.runIf(posix)(
 
     // 권고: 한 프로세스가 같은 폴더를 동시에 두 번 열어도 주인 연결은 하나만 남는다. 앞 연결을 덮어 잃으면 내려놓을 때 닫지 못한다.
     it("keeps a single owner connection when one process opens the same folder twice at once", async () => {
-      const base = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
-      const opened = await Promise.allSettled([
-        startEmbeddedCluster({ dataDir, persistent: true }),
-        startEmbeddedCluster({ dataDir, persistent: true }),
-      ]);
-      const started = opened.flatMap((each) =>
-        each.status === "fulfilled" ? [each.value] : []
+      const stops: (() => Promise<void>)[] = [];
+      const opened = await Promise.allSettled(
+        [0, 1].map(async () => {
+          const { stop } = await startOwned(cleanup, {
+            dataDir,
+            persistent: true,
+          });
+          stops.push(stop);
+        })
       );
       const refused = opened.flatMap((each) =>
         each.status === "rejected" ? [each.reason] : []
       );
-      onTestFinished(() =>
-        attemptAll(started.map((cluster) => () => cluster.stop()))
-      );
-      expect(started).toHaveLength(1);
+      expect(stops).toHaveLength(1);
       expect(refused).toEqual([
         expect.objectContaining({
           message: expect.stringContaining("in use by a running process"),
         }),
       ]);
       expect(await listeningUnder(base)).toHaveLength(1);
-      await started[0]!.stop();
+      await stops[0]!();
       expect(await listeningUnder(base)).toEqual([]);
     }, 60_000);
 
+    // STD-3: 임시 cluster는 Postgres를 멈춘 뒤 폴더 지우기가 실패해도 주인 연결을 닫는다. 폴더 지우기와 연결 닫기는 서로 독립이라,
+    // 앞이 실패해도 뒤를 하고 실패는 모아 알린다. 남은 폴더는 주인이 없으니 다음 시작의 남은 cluster 정리가 가져가 지운다.
+    it("releases its owner connection when removing its temporary folder fails after Postgres stopped", async () => {
+      const { base, cleanup } = await ownTemporaryFolder();
+      const options = await ephemeralCluster();
+      const failure = Object.assign(
+        new Error("injected: the temporary folder could not be removed"),
+        { code: "EBUSY" }
+      );
+      const cluster: EmbeddedCluster = await startEmbeddedCluster(options);
+      // 시험의 멈춤이 기대한 대로 실패하면, 정리는 남은 폴더만 지운다(Postgres는 이미 멈췄다).
+      let stopping: Promise<void> | undefined;
+      cleanup.own(() => (stopping ??= cluster.stop()));
+      inject.removeFails = failure;
+      onTestFinished(() => {
+        inject.removeFails = undefined;
+      });
+      stopping = cluster.stop();
+      await expect(stopping).rejects.toThrow(failure.message);
+      stopping = Promise.resolve();
+      inject.removeFails = undefined;
+      expect(await listeningUnder(base)).toEqual([]);
+    }, 60_000);
+
+    // SPEC-3: 후보 폴더를 쓸 수 없으면(그 자리에 파일이 있음, 쓰기 권한 없음) 그 후보만 건너뛰고 다음 후보(`/tmp`)로 간다.
+    it("moves on to the next folder when a candidate is a file", async () => {
+      const { base, cleanup } = await ownTemporaryFolder();
+      fs.writeFileSync(privateFolder(base), "");
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      const { stop } = await startOwned(cleanup, { dataDir, persistent: true });
+      await stop();
+    }, 60_000);
+
+    it.skipIf(process.getuid?.() === 0)(
+      "moves on to the next folder when a candidate cannot be written",
+      async () => {
+        const { base, cleanup } = await ownTemporaryFolder();
+        // 남이 읽거나 쓸 수 없는(0o077 조건은 맞는) 폴더지만 이 사용자도 쓸 수 없다(0500).
+        fs.mkdirSync(privateFolder(base), { mode: 0o500 });
+        cleanup.own(() => fsp.chmod(privateFolder(base), 0o700));
+        const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+        const { stop } = await startOwned(cleanup, {
+          dataDir,
+          persistent: true,
+        });
+        await stop();
+      },
+      60_000
+    );
+
     // SPEC-2·STD-1: 기록이 가리키는 소켓은 연결만 해 본다. 다른 폴더의, 이름만 같은 죽은 소켓을 지우지 않는다(주인이 죽었다는 판단은 그대로).
     it("never removes a socket that an owner record points to", async () => {
-      const base = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const elsewhere = await fsp.mkdtemp(path.join(base, "elsewhere-"));
       const stale = path.join(
         elsewhere,
@@ -163,9 +244,7 @@ describe.runIf(posix)(
         path.join(owners, "1"),
         JSON.stringify({ pid: holder.pid, persistent: true, handle: stale })
       );
-      const cluster = await startEmbeddedCluster({ dataDir, persistent: true });
-      const cleanup = folderCleanup(() => cluster.stop());
-      onTestFinished(cleanup.cleanUp);
+      await startOwned(cleanup, { dataDir, persistent: true });
       expect(fs.lstatSync(stale).isSocket()).toBe(true);
     }, 60_000);
 
@@ -176,12 +255,13 @@ describe.runIf(posix)(
       // 글자 수로는 한도 안, 바이트로는 한도 밖인 폴더 이름(한 글자 3바이트).
       const letters = limit - parent.length - 60;
       expect(letters).toBeGreaterThan(10);
-      const base = await ownTemporaryFolder(`${"한".repeat(letters)}-`);
+      const { base, cleanup } = await ownTemporaryFolder(
+        `${"한".repeat(letters)}-`
+      );
       expect(Buffer.byteLength(base)).toBeGreaterThan(limit);
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
-      const cluster = await startEmbeddedCluster({ dataDir, persistent: true });
-      await cluster.stop();
-      await removeFolder(`${dataDir}.owner`);
+      const { stop } = await startOwned(cleanup, { dataDir, persistent: true });
+      await stop();
     }, 60_000);
   }
 );

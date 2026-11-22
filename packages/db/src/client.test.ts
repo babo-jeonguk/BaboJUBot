@@ -32,19 +32,27 @@ describe("embedded Postgres lifetime", () => {
   // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
   it("reports what closing is doing, from the connections to stopping Postgres", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    onTestFinished(() => removeCluster(dataDir));
+    const cluster = folderCleanup(() => removeCluster(dataDir));
+    onTestFinished(cluster.cleanUp);
     const handle = await openDatabase({
       embedded: { dataDir, persistent: false },
     });
+    // 닫기는 이 시험의 대상이다. 시험이 닫기 전에 실패해도 정리가 닫은 뒤에 폴더를 지운다(한 번만 닫는다).
+    let closing: Promise<void> | undefined;
+    const close = () => (closing ??= handle.close());
+    cluster.own(close);
     expect(handle.progress()).toBe("open");
     const seen = new Set<string>();
     let closed = false;
-    const closing = handle.close().finally(() => (closed = true));
+    void close().then(
+      () => (closed = true),
+      () => (closed = true)
+    );
     while (!closed) {
       seen.add(handle.progress());
       await new Promise((resolve) => setImmediate(resolve));
     }
-    await closing;
+    await close();
     expect(handle.progress()).toBe("closed");
     expect(seen).toContain("stopping Postgres (fast)");
     expect(
@@ -217,7 +225,10 @@ describe("embedded Postgres lifetime", () => {
       const handle = await openDatabase({
         embedded: { dataDir, persistent: true },
       });
-      await handle.close();
+      let closing: Promise<void> | undefined;
+      const close = () => (closing ??= handle.close());
+      cluster.own(close);
+      await close();
     },
     60_000
   );
@@ -469,11 +480,13 @@ describe("a Postgres left by a killed process", () => {
       );
       const cluster = folderCleanup(() => removeCluster(dataDir));
       onTestFinished(cluster.cleanUp);
-      await (
-        await openDatabase({
-          embedded: { dataDir, persistent: true },
-        })
-      ).close();
+      const opened = await openDatabase({
+        embedded: { dataDir, persistent: true },
+      });
+      let closing: Promise<void> | undefined;
+      const close = () => (closing ??= opened.close());
+      cluster.own(close);
+      await close();
       const unrelated = spawn(
         process.execPath,
         ["-e", "setInterval(() => {}, 1000)"],
