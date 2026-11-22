@@ -10,6 +10,7 @@ import pg from "pg";
 import {
   continueAfterFailure,
   failureCode,
+  settled,
   hasErrorCode,
   orIfMissing,
   orIfProbeFailed,
@@ -554,69 +555,111 @@ function removeQuietly(file: string) {
 /**
  * 주인 연결(#268). 번호(pid)는 주인이 죽은 뒤 다른 프로그램에 다시 주어지거나, 부모가 거두지 않은 채(좀비) 남아 신호 0에 "살아 있음"으로
  * 답할 수 있다. 그래서 주인은 주인인 동안 연결 하나를 듣고, 다른 프로세스는 그 연결에 닿는지로 주인이 살아 있는지 본다. 주인이 죽으면
- * OS가 연결을 닫는다. VS Code가 한 사용자 데이터 폴더를 한 프로세스만 쓰게 하는 방식과 같다(IPC 핸들을 듣고, 닿지 않으면 남은 것으로
- * 보고 치운다). 소켓 파일 경로는 OS의 길이 한도(Linux 107, macOS 103) 안에 둔다.
+ * OS가 연결을 닫는다. VS Code가 한 사용자 데이터 폴더를 한 프로세스만 쓰게 하는 방식과 같다(IPC 핸들을 듣고, 닿지 않으면 남은 것으로 본다).
+ *
+ * - 소켓 파일은 이 사용자 전용 폴더(`babojubot-<uid>`, 이 사용자 소유·0700·링크 아님, XDG Base Directory의 `XDG_RUNTIME_DIR` 요건과 같다)에만
+ *   둔다. 주인마다 새 무작위 이름으로 들으므로 남은 파일이 다음 주인을 막지 않는다.
+ * - 기록에서 읽은 자리는 연결만 해 본다. 지우지 않는다: 기록이 가리키는 파일을 남이 지우면, 그 경로가 다른 폴더나 다른 파일로 바뀌는
+ *   틈을 막을 수 없다(PostgreSQL도 소켓 잠금 파일을 지울 때 소유권에 기대며 그 위험을 밝힌다). 주인이 죽어 남은 소켓은 이 사용자의
+ *   프로세스가 자기 전용 폴더를 훑어 치운다.
+ * - 소켓 경로 한도(Linux 107, macOS 103)는 완성 경로의 UTF-8 바이트로 잰다.
  */
 const handlePrefix = "babojubot-owner-";
 const socketPathLimit: Partial<Record<NodeJS.Platform, number>> = {
   linux: 107,
   darwin: 103,
 };
+const ownerSocketName = /^babojubot-owner-[0-9a-f]{16}\.sock$/;
+const ownerPipe = /^\\\\\.\\pipe\\babojubot-owner-[0-9a-f]{32}$/;
 /** 이 프로세스가 주인으로 듣는 연결. 주인 기록 폴더 → 그 연결. */
 const held = new Map<string, { handle: string; server: net.Server }>();
-
-/** 소켓 파일 이름: 접두어 + 16진 16자 + `.sock`(37자). Windows named pipe 이름은 16진 32자다. */
-const socketName = (id: string) => `${handlePrefix}${id.slice(0, 16)}.sock`;
-const socketNameLength = socketName("0".repeat(16)).length;
+/** 이 프로세스가 남은 소켓을 이미 훑은 전용 폴더. */
+const swept = new Set<string>();
 
 /**
- * 소켓 파일을 둘 폴더. Linux는 사용자 전용 실행 폴더(`XDG_RUNTIME_DIR`), 없으면 임시 폴더다. 그 경로가 길어 소켓 경로가 OS 한도를
- * 넘으면(임시 폴더를 깊게 바꾼 경우) `/tmp` 아래 이 사용자 전용 폴더를 쓴다. 그 폴더는 이 사용자의 것이고 남이 읽거나 쓸 수 없고
- * 링크가 아닐 때만 쓴다.
+ * 주인 소켓을 둘 이 사용자 전용 폴더. 후보(Linux의 `XDG_RUNTIME_DIR`, 임시 폴더, `/tmp`) 아래 `babojubot-<uid>` 가운데 소켓 경로가
+ * 바이트 한도 안에 드는 첫 자리를 쓴다. 그 폴더가 이 사용자 소유의 0700 폴더(링크 아님)가 아니면 다음 후보로 가고, 모두 안 되면
+ * 그 이유들과 함께 던진다.
  */
-function socketFolder() {
+function privateSocketFolder() {
   const limit = socketPathLimit[process.platform] ?? 103;
-  const fits = (base: string) => base.length + 1 + socketNameLength < limit;
-  const preferred =
-    process.platform !== "darwin" && process.env.XDG_RUNTIME_DIR
-      ? process.env.XDG_RUNTIME_DIR
-      : os.tmpdir();
-  if (fits(preferred)) return preferred;
   const uid = process.getuid!();
-  const own = path.join("/tmp", `babojubot-${uid}`);
-  fs.mkdirSync(own, { mode: 0o700, recursive: true });
-  const stat = fs.lstatSync(own);
-  if (
-    !stat.isDirectory() ||
-    stat.uid !== uid ||
-    (stat.mode & 0o077) !== 0 ||
-    !fits(own)
-  )
-    throw new Error(
-      `no safe folder for embedded Postgres owner connections: ${preferred} is too long for a socket and ${own} is not a private folder of this user`
-    );
-  return own;
+  const sample = `${handlePrefix}${"0".repeat(16)}.sock`;
+  const bases = [
+    ...(process.platform !== "darwin" && process.env.XDG_RUNTIME_DIR
+      ? [process.env.XDG_RUNTIME_DIR]
+      : []),
+    os.tmpdir(),
+    "/tmp",
+  ];
+  const folders = [...new Set(bases)]
+    .map((base) => path.join(base, `babojubot-${uid}`))
+    .filter((folder) => Buffer.byteLength(path.join(folder, sample)) < limit);
+  for (const folder of folders) {
+    fs.mkdirSync(folder, { mode: 0o700, recursive: true });
+    const stat = fs.lstatSync(folder);
+    if (stat.isDirectory() && stat.uid === uid && (stat.mode & 0o077) === 0)
+      return folder;
+  }
+  throw new Error(
+    `no private folder for embedded Postgres owner connections: none of ${bases.join(", ")} gives a folder of this user only (mode 0700, not a link) whose socket path fits ${limit} bytes`
+  );
 }
 
 /** 새 주인 연결의 자리. */
 function newHandle() {
   const id = randomUUID().replaceAll("-", "");
   if (process.platform === "win32") return `\\\\.\\pipe\\${handlePrefix}${id}`;
-  return path.join(socketFolder(), socketName(id));
+  const folder = privateSocketFolder();
+  sweepStaleSockets(folder);
+  return path.join(folder, `${handlePrefix}${id.slice(0, 16)}.sock`);
 }
 
-/** 이 프로세스가 연 주인 연결의 자리인가. 기록에서 읽은 자리는 이 모양일 때만 믿는다(지울 수 있는 파일을 이것으로 묶는다). */
-function isOwnerHandle(handle: string) {
-  if (process.platform === "win32")
-    return new RegExp(
-      `^\\\\\\\\\\.\\\\pipe\\\\${handlePrefix}[0-9a-f]{32}$`
-    ).test(handle);
-  return new RegExp(`^${handlePrefix}[0-9a-f]{16}\\.sock$`).test(
-    path.basename(handle)
-  );
+/**
+ * 이 사용자 전용 폴더에 남은 주인 소켓(주인이 강제로 끝나 남긴 파일)을 치운다. 프로세스마다 폴더당 한 번이다. 연결을 받는 소켓은
+ * 살아 있는 주인의 것이라 둔다. 폴더는 이 사용자만 쓸 수 있어, 확인과 지우기 사이에 그 자리를 바꿀 수 있는 것은 이 사용자의 프로세스뿐이다.
+ */
+function sweepStaleSockets(folder: string) {
+  if (swept.has(folder)) return;
+  swept.add(folder);
+  const names =
+    continueAfterFailure(
+      () => fs.readdirSync(folder),
+      (error) =>
+        console.error(
+          `[db] stale owner connections in ${folder} could not be listed; they are harmless`,
+          error
+        )
+    ) ?? [];
+  // 남은 파일 치우기는 덤이라 주인 되기를 기다리게 하지 않는다. 확인하지 못한 소켓은 둔다.
+  void (async () => {
+    for (const name of names.filter((each) => ownerSocketName.test(each))) {
+      const socket = path.join(folder, name);
+      const answered = await continueAfterFailure(
+        () => connectsTo(socket),
+        (error) =>
+          console.error(
+            `[db] whether ${socket} still has an owner could not be checked; it is left`,
+            error
+          )
+      );
+      if (answered !== false) continue;
+      continueAfterFailure(
+        () => {
+          if (fs.lstatSync(socket, { throwIfNoEntry: false })?.isSocket())
+            fs.unlinkSync(socket);
+        },
+        (error) =>
+          console.error(
+            `[db] a stale owner connection ${socket} could not be removed; it is harmless`,
+            error
+          )
+      );
+    }
+  })();
 }
 
-/** 이 주인 기록 폴더의 주인으로 연결 하나를 듣는다. 이 프로세스가 끝날 때까지 붙잡지 않는다(unref). */
+/** 이 주인 기록 폴더의 주인으로 연결 하나를 듣는다. 이 프로세스가 끝날 때까지 붙잡지 않는다(unref). 들은 자리를 돌려준다. */
 async function holdConnection(dir: string) {
   const handle = newHandle();
   const server = net.createServer((socket) => socket.destroy());
@@ -640,41 +683,21 @@ function dropConnection(dir: string) {
   connection.server.close();
 }
 
-/** 주인이 죽어 남은 소켓 파일. 이 모양의 소켓만 지운다. 이미 없으면 그만이다. */
-function removeStaleSocket(handle: string) {
-  if (process.platform === "win32") return;
-  continueAfterFailure(
-    () => {
-      const stat = fs.lstatSync(handle, { throwIfNoEntry: false });
-      if (stat?.isSocket()) fs.rmSync(handle, { force: true });
-    },
-    (error) =>
-      console.error(
-        `[db] a stale owner connection ${handle} could not be removed; it is harmless`,
-        error
-      )
-  );
-}
-
 /** 주인 연결에 닿는지 보는 상한. 같은 컴퓨터의 연결이라 곧 답한다. */
 const ownerCheckMs = 5_000;
 
 /**
- * 기록한 주인이 지금 살아 있는가. 주인 연결에 닿으면 살아 있고, 그 자리가 없거나(ENOENT) 듣는 쪽이 없으면(ECONNREFUSED) 죽었다.
- * 그 밖의 실패나 상한 초과는 모르는 것이라 원인과 함께 던진다(손대지 않는다). 예전 형식 기록(연결 없음)은 이 판 전에 쓴 것이라
- * 번호로만 본다(`legacyOwnerAlive`).
+ * 그 자리의 연결에 닿는가. 닿으면 true, 그 자리가 없거나(ENOENT) 듣는 쪽이 없으면(ECONNREFUSED) false다. 그 밖의 실패나 상한
+ * 초과는 모르는 것이라 원인과 함께 거절한다. 연결만 해 보고 아무것도 지우지 않는다.
  */
-async function ownerAlive(dir: string, owner: Owner): Promise<boolean> {
-  if (owner.handle === undefined) return legacyOwnerAlive(owner.pid);
-  if (held.get(dir)?.handle === owner.handle) return true;
-  const handle = owner.handle;
+function connectsTo(handle: string): Promise<boolean> {
   return new Promise<boolean>((resolve, reject) => {
     const socket = net.connect(handle);
     const timer = setTimeout(() => {
       socket.destroy();
       reject(
         new Error(
-          `whether the owner of ${dir} runs could not be checked: its connection did not answer within ${ownerCheckMs} ms`
+          `the connection ${handle} did not answer within ${ownerCheckMs} ms`
         )
       );
     }, ownerCheckMs);
@@ -685,18 +708,26 @@ async function ownerAlive(dir: string, owner: Owner): Promise<boolean> {
     });
     socket.once("error", (error) => {
       clearTimeout(timer);
-      if (hasErrorCode("ENOENT", "ECONNREFUSED")(error)) {
-        removeStaleSocket(handle);
-        resolve(false);
-        return;
-      }
-      reject(
-        new Error(`whether the owner of ${dir} runs could not be checked`, {
-          cause: error,
-        })
-      );
+      if (hasErrorCode("ENOENT", "ECONNREFUSED")(error)) resolve(false);
+      else reject(error);
     });
   });
+}
+
+/**
+ * 기록한 주인이 지금 살아 있는가. 주인 연결에 닿으면 살아 있고, 닿지 않으면 죽었다. 확인하지 못하면 원인과 함께 던진다(손대지 않는다).
+ * 예전 형식 기록(연결 없음)은 이 판 전에 쓴 것이라 번호로만 본다(`legacyOwnerAlive`).
+ */
+async function ownerAlive(dir: string, owner: Owner): Promise<boolean> {
+  if (owner.handle === undefined) return legacyOwnerAlive(owner.pid);
+  if (held.get(dir)?.handle === owner.handle) return true;
+  try {
+    return await connectsTo(owner.handle);
+  } catch (error) {
+    throw new Error(`whether the owner of ${dir} runs could not be checked`, {
+      cause: error,
+    });
+  }
 }
 
 /**
@@ -712,53 +743,89 @@ function legacyOwnerAlive(pid: number) {
   }
 }
 
+/** 주인 기록 폴더마다 진행 중인 획득. 한 프로세스 안에서 같은 폴더의 획득은 앞 획득이 끝난 뒤에 한다. */
+const acquiring = new Map<string, Promise<unknown>>();
+
 /**
  * 이 dataDir의 주인이 된다. 지금 기록의 주인이 살아 있으면 실패한다. 죽었거나 내려놓았으면 주인 연결을 듣고, 그 자리를 담아 다음
- * 번호를 만든다. 돌려주는 `previous`는 바로 전 세대의 죽은 주인이다(남은 Postgres를 멈춰도 되는지 판단할 때 쓴다).
+ * 번호를 만든다. 돌려주는 `previous`는 바로 전 세대의 죽은 주인이다(남은 Postgres를 멈춰도 되는지 판단할 때 쓴다). 한 프로세스 안의
+ * 같은 폴더 획득은 차례로 한다(앞 획득의 연결을 덮어 잃지 않게). 이번에 연 연결은 실패하면 닫는다. 이미 쥔 연결(ephemeralCluster가 먼저
+ * 얻은 것)은 그대로 둔다.
  */
 async function acquireOwner(
   dataDir: string,
   persistent: boolean
 ): Promise<Lease> {
   const dir = ownerDir(dataDir);
-  fs.mkdirSync(dir, { recursive: true });
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const { generation, owner } = latest(dir);
-    if (owner && (await ownerAlive(dir, owner))) {
-      // 임시 cluster는 ephemeralCluster가 만들 때 이 프로세스가 이미 주인이 되었다.
-      if (
-        owner.handle !== undefined &&
-        held.get(dir)?.handle === owner.handle &&
-        !owner.persistent &&
-        !persistent
-      )
-        return { generation, previous: undefined };
-      throw new Error(
-        `embedded Postgres in ${dataDir} is in use by a running process (pid ${owner.pid}). Stop that process first. If no BaboJUBot process uses it, delete ${dir}.`
-      );
-    }
-    const handle = held.get(dir)?.handle ?? (await holdConnection(dir));
-    const mine = generation + 1;
-    const record: Owner = { pid: process.pid, persistent, handle };
-    if (!claim(dir, mine, record)) continue;
-    if (latest(dir).generation !== mine) {
-      removeQuietly(path.join(dir, String(mine)));
-      continue;
-    }
-    for (const old of generations(dir))
-      if (old < mine) removeQuietly(path.join(dir, String(old)));
-    return { generation: mine, previous: owner };
+  const before = acquiring.get(dir) ?? Promise.resolve();
+  // 앞 획득의 결과는 그 획득을 부른 쪽이 받는다. 여기서는 끝난 뒤에 이어 할 뿐이다.
+  const turn = settled(before).then(() =>
+    takeOwnership(dataDir, dir, persistent)
+  );
+  acquiring.set(dir, turn);
+  try {
+    return await turn;
+  } finally {
+    if (acquiring.get(dir) === turn) acquiring.delete(dir);
   }
-  dropConnection(dir);
-  throw new Error(`could not take ownership of ${dataDir}`);
+}
+
+async function takeOwnership(
+  dataDir: string,
+  dir: string,
+  persistent: boolean
+): Promise<Lease> {
+  fs.mkdirSync(dir, { recursive: true });
+  /** 이번 획득이 연 주인 연결. 실패하면 이것만 닫는다. */
+  let opened = false;
+  try {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const { generation, owner } = latest(dir);
+      if (owner && (await ownerAlive(dir, owner))) {
+        // 임시 cluster는 ephemeralCluster가 만들 때 이 프로세스가 이미 주인이 되었다.
+        if (
+          owner.handle !== undefined &&
+          held.get(dir)?.handle === owner.handle &&
+          !owner.persistent &&
+          !persistent
+        )
+          return { generation, previous: undefined };
+        throw new Error(
+          `embedded Postgres in ${dataDir} is in use by a running process (pid ${owner.pid}). Stop that process first. If no BaboJUBot process uses it, delete ${dir}.`
+        );
+      }
+      let handle = held.get(dir)?.handle;
+      if (handle === undefined) {
+        handle = await holdConnection(dir);
+        opened = true;
+      }
+      const mine = generation + 1;
+      const record: Owner = { pid: process.pid, persistent, handle };
+      if (!claim(dir, mine, record)) continue;
+      if (latest(dir).generation !== mine) {
+        removeQuietly(path.join(dir, String(mine)));
+        continue;
+      }
+      for (const old of generations(dir))
+        if (old < mine) removeQuietly(path.join(dir, String(old)));
+      opened = false;
+      return { generation: mine, previous: owner };
+    }
+    throw new Error(`could not take ownership of ${dataDir}`);
+  } finally {
+    if (opened) dropConnection(dir);
+  }
 }
 
 /** 주인을 내려놓는다. 다음 번호에 내려놓음을 남기거나, 시작하지 못했을 때는 치운 죽은 주인을 되돌려 남긴다. 주인 연결도 닫는다. */
 function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
   const dir = ownerDir(dataDir);
-  if (claim(dir, lease.generation + 1, restore ?? { released: true }))
-    removeQuietly(path.join(dir, String(lease.generation)));
-  dropConnection(dir);
+  try {
+    if (claim(dir, lease.generation + 1, restore ?? { released: true }))
+      removeQuietly(path.join(dir, String(lease.generation)));
+  } finally {
+    dropConnection(dir);
+  }
 }
 
 function readOwnerFile(file: string): Owner | undefined {
@@ -783,7 +850,10 @@ function readOwnerFile(file: string): Owner | undefined {
   if (!("handle" in owner)) return { pid, persistent };
   // 주인 연결이 있는 기록은 이 판이 쓴 모양이어야 한다. 아니면 해석할 수 없는 기록이다.
   const { handle } = owner;
-  return typeof handle === "string" && isOwnerHandle(handle)
+  return typeof handle === "string" &&
+    (process.platform === "win32"
+      ? ownerPipe.test(handle)
+      : path.isAbsolute(handle) && ownerSocketName.test(path.basename(handle)))
     ? { pid, persistent, handle }
     : undefined;
 }
