@@ -11,13 +11,17 @@
 //!                                     The supervisor exits right after
 //! ```
 //!
-//! The server writes `stop <grace ms>` (end the tree, report, exit), `kill-leader` (end the program only, as a crash would) and
-//! `interrupt` (SIGINT to the program's process group; nothing on Windows). The end of the channel means the server is gone and
+//! Before the program runs, the server writes `env <NAME>=<VALUE>` lines (the run's marker: the program gets them on top of the
+//! supervisor's own environment, and the supervisor itself does not carry them, so marker cleanup never reaches the supervisor) and
+//! then `start`. The supervisor starts the program only after `start`; the end of the channel before it ends the supervisor.
+//!
+//! Then the server writes `stop <grace ms>` (end the tree, report, exit), `kill-leader` (end the program only, as a crash would)
+//! and `interrupt` (SIGINT to the program's process group; nothing on Windows). The end of the channel means the server is gone and
 //! does what `stop` does with the default grace. A line this supervisor does not know is ignored.
 
 use std::time::Duration;
 
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 /// The grace after SIGTERM when the channel ends without a stop (the server is gone).
 pub const DEFAULT_GRACE: Duration = Duration::from_millis(2000);
 /// How long a stop waits, after the last signal, until nothing of the tree runs.
@@ -69,6 +73,43 @@ fn parse(line: &str) -> Option<Command> {
     }
     let grace = line.strip_prefix("stop ")?.parse::<u64>().ok()?;
     Some(Command::Stop(Duration::from_millis(grace)))
+}
+
+/// What the server asked for before the start: the environment entries for the program, and what arrived after `start`.
+pub struct Start {
+    pub env: Vec<(String, String)>,
+    pub rest: Vec<u8>,
+}
+
+/// Reads the server's `env` lines until `start`. `None` when the channel ends or termination is requested first: nothing ran.
+pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) -> Option<Start> {
+    let mut pending: Vec<u8> = Vec::new();
+    let mut env = Vec::new();
+    loop {
+        if termination.requested() {
+            return None;
+        }
+        match channel.read(POLL) {
+            Read::Closed => return None,
+            Read::Nothing => {}
+            Read::Bytes(bytes) => pending.extend_from_slice(&bytes),
+        }
+        while let Some(newline) = pending.iter().position(|&byte| byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=newline).collect();
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim_end();
+            if line == "start" {
+                return Some(Start { env, rest: pending });
+            }
+            if let Some((name, value)) = line
+                .strip_prefix("env ")
+                .and_then(|entry| entry.split_once('='))
+                && !name.is_empty()
+            {
+                env.push((name.to_owned(), value.to_owned()));
+            }
+        }
+    }
 }
 
 /// Splits what arrives on the channel into commands. A line may arrive in pieces.
@@ -131,10 +172,19 @@ pub fn supervise(
     channel: &mut impl Channel,
     tree: &mut impl Tree,
     termination: &impl Termination,
+    already: &[u8],
 ) -> i32 {
     let mut commands = Commands::default();
     let mut exited = false;
+    let mut waiting = commands.push(already);
     let grace = 'run: loop {
+        for command in waiting.drain(..) {
+            match command {
+                Command::Stop(grace) => break 'run grace,
+                Command::KillLeader => tree.kill_leader(),
+                Command::Interrupt => tree.interrupt(),
+            }
+        }
         tree.tend();
         if !exited && let Some(exit) = tree.leader_exit() {
             channel.write_line(&exit_line(&exit));

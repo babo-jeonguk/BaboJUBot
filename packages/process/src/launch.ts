@@ -1,22 +1,31 @@
-import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { Readable, Writable, type Duplex } from "node:stream";
-import { attemptAll, failureCode, settled } from "@babojubot/contracts";
-import { processStartTicks, stopLeaseHolders, withLease } from "./lease.ts";
+import { Readable, Writable } from "node:stream";
+import { settled } from "@babojubot/contracts";
 import {
-  readSupervisorLine,
-  supervisorLaunch,
-  supervisorProblem,
-} from "./supervisor.ts";
+  endLimitMs,
+  startError,
+  superviseTree,
+  within,
+  type LaunchedTree,
+  type TreeLaunch,
+} from "./supervised.ts";
+import { supervisorLaunch, supervisorProblem } from "./supervisor.ts";
 
 export { prepareSupervisor } from "./supervisor.ts";
+export type {
+  LaunchedTree,
+  TreeExit,
+  TreeLaunch,
+  TreeStart,
+  TreeStdio,
+} from "./supervised.ts";
 
 /**
  * 공용 실행(#262). 프로그램을 띄우면서, 그렇게 띄운 프로그램과 그 자손 전체(트리)를 끄는 `stop()`을 함께 돌려준다.
  * 띄우는 방법과 끄는 방법은 한 쌍이라 따로 쓰지 않는다. 오래 도는 자식은 제품 코드·개발 스크립트 모두 이것으로 띄운다(lint).
  *
- * 세 OS 모두 실행 시도마다 감독 실행기(`supervisor.ts`) 하나가 프로그램을 띄우고 그 트리를 쥔다(#268). 공용 실행은 실행기와 넷째
- * 표준 핸들의 제어 통로로 말하고, 서버가 사라져 통로가 끝나면 실행기가 스스로 트리를 끈다.
+ * 세 OS 모두 실행 시도마다 감독 실행기(`supervisor.ts`) 하나가 프로그램을 띄우고 그 트리를 쥔다(#268). 실행기를 띄우고 넷째 표준
+ * 핸들의 제어 통로로 말하는 일은 `supervised.ts`가 맡고(준비의 시험 실행도 같은 코드), 서버가 사라져 통로가 끝나면 실행기가 스스로 트리를 끈다.
  *
  * | 시스템 | 실행기가 쥐는 것 | `stop()` |
  * | --- | --- | --- |
@@ -31,54 +40,6 @@ export { prepareSupervisor } from "./supervisor.ts";
  * 실행기 없이 띄우는 길은 두지 않는다(#262·#268 사용자 결정). 그 길의 끄기는 서버가 죽었을 때 트리를 끄지 못하고, 번호로 찾아 끄는
  * 복구를 남긴다.
  */
-
-/** 표준 입력·출력·오류. `"pipe"`는 셋 모두 파이프다. 숫자는 이미 연 파일 기술자다. */
-export type TreeStdio =
-  | "pipe"
-  | readonly [
-      "ignore" | "pipe",
-      "ignore" | "pipe" | number,
-      "ignore" | "pipe" | number,
-    ];
-
-export type TreeLaunch = {
-  command: readonly [string, ...string[]];
-  args: readonly string[];
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  stdio: TreeStdio;
-};
-
-/** 띄운 결과. */
-export type TreeStart =
-  /** 돈다. `stop()`이 트리 전체의 끝을 확인한다. */
-  | { kind: "running" }
-  /** 프로그램이 시작하지 못했다. 시작 오류(ENOENT 등)는 `error`에 그대로 둔다. */
-  | { kind: "failed"; reason: string; error?: unknown };
-
-export type TreeExit = { code: number | null; signal: NodeJS.Signals | null };
-
-export type LaunchedTree<In = Writable | null, Out = Readable | null> = {
-  /** 이 트리를 쥔 감독 실행기의 번호. 실행기를 띄우지 못했으면 없다. */
-  pid: number | undefined;
-  /** 이 트리의 표식. 서버 재시작 뒤 복구 기록에 남긴다. */
-  lease: string;
-  stdin: In;
-  stdout: Out;
-  stderr: Out;
-  started: Promise<TreeStart>;
-  /** 대표가 끝났다. 시작하지 못했어도 이행한다. 자손은 `stop()`까지 남는다. */
-  exited: Promise<TreeExit>;
-  /** 대표의 그룹에 중단(SIGINT)을 보내게 한다. 끄기가 아니다. Windows에는 없다. */
-  interrupt(): void;
-  /** 사고 재현용: 대표만 강제로 끝낸다. 자손은 남고 `stop()`이 끈다. 끄기 대신 쓰지 않는다. */
-  killLeader(): void;
-  /**
-   * 트리 전체를 끄고 끝난 것을 상한 안에서 확인한다. 확인하지 못하면 원인과 함께 던진다. 여러 번 불러도 한 번만 끄고 같은 결과를
-   * 돌려준다. `graceMs`는 SIGTERM 뒤 스스로 끝나기를 기다리는 시간이다(첫 부름의 값만 쓴다. Windows는 바로 끈다).
-   */
-  stop(options?: { graceMs?: number }): Promise<void>;
-};
 
 /**
  * 감독 실행기를 쓸 수 없어 프로그램을 띄우지 않았다. 문구는 제품이 쓴 안내라 실행 시도의 실패 원인으로 그대로 보인다
@@ -101,48 +62,6 @@ const refusedFor = (problem: string) =>
   new TreeLaunchRefused(
     `감독 실행기를 준비하지 못해 프로그램을 시작하지 않았습니다. 이유: ${problem}`
   );
-
-/** 실행기가 시작 응답(`ok`·`failed`·`not-started`)을 쓸 때까지의 상한. 실행기는 프로그램을 띄운 직후 답한다. */
-const supervisorStartLimitMs = 10_000;
-/** 실행기가 끄기를 받고 트리가 끝났다고 답할 때까지의 상한(유예 뒤). 실행기가 마지막 신호 뒤 끝을 기다리는 10초에 여유를 둔다. */
-const supervisorStopLimitMs = 20_000;
-/** 실행기가 끝나거나 대표의 끝이 전달되기를 기다리는 상한. 트리가 끝나 출력이 닫히기를 기다리는 상한도 같다. */
-const endLimitMs = 10_000;
-
-const windows = () => process.platform === "win32";
-
-/** `promise`를 `ms` 안에 기다린다. 넘기면 `what`과 함께 던진다. */
-async function within<T>(promise: Promise<T>, ms: number, what: string) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${what} within ${ms} ms`)),
-          ms
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** 프로그램이 시작하지 못한 오류. Node.js의 spawn 시작 오류와 같은 모양(`code`·`syscall`·`path`)이다. */
-function startError(options: TreeLaunch, code: string, reason?: string) {
-  const [command] = options.command;
-  return Object.assign(
-    new Error(`spawn ${command} ${code}${reason ? ` (${reason})` : ""}`),
-    {
-      code,
-      errno: code,
-      syscall: `spawn ${command}`,
-      path: command,
-      spawnargs: [...options.command.slice(1), ...options.args],
-    }
-  );
-}
 
 /**
  * 찾지 못한 프로그램(Windows). 아무것도 띄우지 않고 cross-spawn과 같은 시작 오류(ENOENT)로 끝난 트리를 돌려준다.
@@ -176,242 +95,13 @@ export function launchTree(
 export function launchTree(options: TreeLaunch): LaunchedTree;
 export function launchTree(options: TreeLaunch): LaunchedTree {
   const lease = randomUUID();
-  const env = withLease(options.env, lease);
-  const stdio =
-    options.stdio === "pipe"
-      ? (["pipe", "pipe", "pipe"] as const)
-      : options.stdio;
   const supervised = supervisorLaunch(options.command, options.args, {
     env: options.env,
     cwd: options.cwd,
   });
   if (supervised.kind === "not-found") return missingProgram(options, lease);
   if (supervised.kind === "unavailable") throw refusedFor(supervised.reason);
-  // 실행기를 띄우지 못하면(백신이 지웠거나 막음) 프로그램은 시작하지 않은 채 시작 실패로 끝난다(아래 error). Linux·macOS의 실행기는
-  // 자기 세션에서 돌아, 터미널의 중단(Ctrl-C)이 서버의 그룹에 가도 실행기는 받지 않고 통로가 끝날 때 트리를 끈다. Windows의
-  // 실행기는 Node.js의 묶음 안에 두어, 서버가 강제로 끝나면 실행기와 그 묶음도 함께 끝난다.
-  const child = spawnChild(supervised.launch.file, supervised.launch.args, {
-    ...supervised.launch.options,
-    cwd: options.cwd,
-    env,
-    stdio: [...stdio, "pipe"],
-    windowsHide: true,
-    detached: !windows(),
-  });
-  const control = (child.stdio[3] ?? undefined) as Duplex | undefined;
-  const pid = child.pid;
-  // 표식을 읽을 수 없는 프로그램은 이 트리가 시작한 뒤에 생겼을 때만 우리 것일 수 있다. 실행기의 시작 시각을 기준으로 둔다(Linux).
-  const since =
-    process.platform === "linux" && pid ? processStartTicks(pid) : undefined;
-
-  let reportStart!: (start: TreeStart) => void;
-  const started = new Promise<TreeStart>((resolve) => {
-    let done = false;
-    reportStart = (start) => {
-      if (done) return;
-      done = true;
-      resolve(start);
-    };
-  });
-  let leaderDone = false;
-  let reportExit!: (exit: TreeExit) => void;
-  const exited = new Promise<TreeExit>((resolve) => {
-    reportExit = (exit) => {
-      if (leaderDone) return;
-      leaderDone = true;
-      resolve(exit);
-    };
-  });
-  child.on("error", (error) => {
-    // 띄운 뒤의 오류(신호를 보내지 못함 등)는 끝남이 아니다. 끝났는지는 stop()이 확인하고, 그 오류는 원인으로 남긴다.
-    if (pid !== undefined) {
-      console.warn(
-        `[provider] a supervisor reported an error; stop() checks whether its tree ended (${failureCode(error)})`
-      );
-      return;
-    }
-    reportStart({ kind: "failed", reason: error.message, error });
-    reportExit({ code: null, signal: null });
-  });
-
-  /** 실행기의 끄기 답. `undefined`는 답 없이 통로가 닫혔다는 뜻이다. */
-  let reportEnd!: (end: string | undefined) => void;
-  const ended = new Promise<string | undefined>((resolve) => {
-    let done = false;
-    reportEnd = (end) => {
-      if (done) return;
-      done = true;
-      resolve(end);
-    };
-  });
-  let supervisorExit: TreeExit | undefined;
-  /** 제어 통로가 실패했으면 그 오류 이름. */
-  let controlFailure: string | undefined;
-  /** 실행기가 끝나고 통로가 닫혔다. */
-  const supervisorGone = Promise.all([
-    new Promise<void>((resolve) => {
-      if (control) control.once("close", () => resolve());
-      else resolve();
-    }),
-    new Promise<void>((resolve) =>
-      child.once("exit", (code, signal) => {
-        supervisorExit = { code, signal };
-        resolve();
-      })
-    ),
-  ]);
-  let pending = "";
-  control?.on("data", (chunk: Buffer) => {
-    pending += chunk.toString();
-    for (let newline; (newline = pending.indexOf("\n")) >= 0;) {
-      const message = readSupervisorLine(pending.slice(0, newline));
-      pending = pending.slice(newline + 1);
-      if (message?.kind === "ok") reportStart({ kind: "running" });
-      else if (message?.kind === "failed")
-        reportStart({ kind: "failed", reason: message.reason });
-      else if (message?.kind === "not-started") {
-        const error = startError(options, message.code, message.reason);
-        reportStart({ kind: "failed", reason: error.message, error });
-      } else if (message?.kind === "exit")
-        reportExit({ code: message.code, signal: message.signal });
-      else if (message?.kind === "ended") reportEnd("ended");
-      else if (message?.kind === "left") reportEnd(`left: ${message.detail}`);
-    }
-  });
-  // 통로의 읽기·쓰기 실패. 끝났는지는 실행기의 답과 통로의 닫힘으로 판단하고, 답 없이 닫혔으면 이 원인을 함께 알린다.
-  control?.on("error", (error) => {
-    controlFailure = failureCode(error);
-  });
-  void supervisorGone.then(() => {
-    // 실행기가 답 없이 끝났다(시작 실패, 강제 종료).
-    reportStart({
-      kind: "failed",
-      reason: "the supervisor ended before it reported",
-    });
-    reportExit(supervisorExit ?? { code: null, signal: null });
-    reportEnd(undefined);
-  });
-  const send = (command: string) => {
-    if (control && !control.destroyed && control.writable)
-      control.write(`${command}\n`);
-  };
-
-  /** 실행기에 끄기를 보내고, 트리가 끝났다는 답과 실행기의 끝을 기다린다. */
-  const stopThroughSupervisor = async (graceMs: number) => {
-    send(`stop ${graceMs}`);
-    const end = await within(
-      ended,
-      graceMs + supervisorStopLimitMs,
-      "the supervisor did not answer the stop"
-    );
-    if (end === undefined)
-      throw new Error(
-        `the supervisor ended without confirming that its programs ended${controlFailure ? ` (control channel: ${controlFailure})` : ""}`
-      );
-    if (end !== "ended")
-      throw new Error(`programs of this tree did not end (${end})`);
-    await within(supervisorGone, endLimitMs, "the supervisor did not exit");
-  };
-  /** Linux·macOS: 그룹 밖(새 세션)으로 나간 자손을 표식으로 찾아 끈다. 실행기가 끝난 뒤에 한다(실행기도 표식을 가진다). */
-  const stopMarked = async () => {
-    let left: number[];
-    try {
-      // 실행기의 시작 시각을 읽지 못했으면 가장 넓게 본다.
-      ({ left } = await stopLeaseHolders(lease, { since: since ?? 0 }));
-    } catch (error) {
-      throw new Error(
-        "programs with this tree's marker could not be looked up",
-        {
-          cause: error,
-        }
-      );
-    }
-    if (left.length)
-      throw new Error(
-        `programs with this tree's marker did not stop: ${left.join(", ")}`
-      );
-  };
-  /**
-   * 시작 응답 전에 멈춘 실행기: 쥔 실행기 프로세스를 끄고 그 끝을 상한 안에서 확인한 뒤, 트리의 프로그램이 끝났는지는 확인하지
-   * 못했다는 원인과 함께 던진다.
-   */
-  const endSilentSupervisor = async (cause: unknown): Promise<never> => {
-    child.kill("SIGKILL");
-    await within(
-      supervisorGone,
-      endLimitMs,
-      `process ${pid} (the supervisor) did not end`
-    );
-    throw new Error(
-      `the supervisor did not report its start within ${supervisorStartLimitMs} ms; it was ended, and whether its programs ended is unknown`,
-      { cause }
-    );
-  };
-  const stopTree = async (graceMs: number) => {
-    if (pid === undefined) {
-      await within(
-        exited,
-        endLimitMs,
-        "a program that did not start did not end"
-      );
-      return;
-    }
-    // 시작 응답을 상한 없이 기다리지 않는다. 실행기는 프로그램을 띄운 직후 답한다.
-    let start: TreeStart;
-    try {
-      start = await within(
-        started,
-        supervisorStartLimitMs,
-        "the supervisor did not report its start"
-      );
-    } catch (error) {
-      return endSilentSupervisor(error);
-    }
-    if (start.kind === "failed") {
-      await within(
-        exited,
-        endLimitMs,
-        "a program that did not start did not end"
-      );
-      return;
-    }
-    // 실행기의 끄기와 표식 정리는 서로 독립이다. 실행기가 그룹을 끄지 못해도 새 세션으로 나간 자손을 끄고, 실패는 모아 함께 던진다.
-    // Windows는 묶음이 트리 전체라 표식 정리가 없다.
-    await attemptAll(
-      [
-        () => stopThroughSupervisor(graceMs),
-        ...(windows() ? [] : [stopMarked]),
-      ],
-      "this tree did not stop"
-    );
-    // 트리가 끝났으면 대표도 끝났다. 그 끝(exit)이 전달될 때까지 기다린다.
-    await within(exited, endLimitMs, `the program did not report its end`);
-  };
-  let stopping: Promise<void> | undefined;
-
-  return {
-    pid,
-    lease,
-    stdin: child.stdin,
-    stdout: child.stdout,
-    stderr: child.stderr,
-    started,
-    exited,
-    interrupt: () => {
-      if (!leaderDone) send("interrupt");
-    },
-    killLeader: () => {
-      if (!leaderDone) send("kill-leader");
-    },
-    stop: (stopOptions) => {
-      if (!stopping) {
-        stopping = stopTree(stopOptions?.graceMs ?? 2000);
-        // 부른 쪽이 결과를 받는다. 끄기를 먼저 시작하고 결과는 나중에 받는 쪽(제품의 정리)도 있어 처리되지 않은 거부로 두지 않는다.
-        void settled(stopping);
-      }
-      return stopping;
-    },
-  };
+  return superviseTree(supervised.launch, options, lease).tree;
 }
 
 /** 끝까지 돌린 트리의 결과. `stopped`는 끝나기 전에 끈 이유다. */

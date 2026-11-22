@@ -1,10 +1,15 @@
-import spawn from "cross-spawn";
-import { spawn as spawnChild } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { boundChild, type BoundedExit } from "./bounded-command.ts";
+import {
+  resolvedCommand,
+  superviseTree,
+  windowsLaunch,
+  type SupervisorCommand,
+} from "./supervised.ts";
+
+export { supervisorProtocol } from "./supervised.ts";
 
 /**
  * 감독 실행기(#268). 세 OS 모두 실행 시도마다 이 Rust 프로그램(`packages/process/supervisor`) 하나가 프로그램을 띄우고 그 트리를
@@ -13,12 +18,11 @@ import { boundChild, type BoundedExit } from "./bounded-command.ts";
  * 있고, 서버가 사라져 통로가 끝나면 실행기가 스스로 트리를 끈다. 실행기를 준비하지 못하면 공용 실행이 프로그램을 띄우지 않고
  * 거절한다(Node.js가 직접 띄우는 길은 없다).
  *
- * 서버는 시작할 때 실행기를 찾아 해가 없는 시험 실행으로 약속대로 도는지 본다. 실행기는 저장소 소스에서 빌드한다
+ * 서버는 시작할 때 실행기를 찾아 해가 없는 시험 실행으로 약속대로 도는지 본다. 시험 실행은 실제 실행과 같은 코드(`supervised.ts`)로
+ * 띄우고 끈다. 실행기는 저장소 소스에서 빌드한다
  * (`pnpm --filter @babojubot/process run build`). 실행 파일은 Git에 넣지 않는다.
  */
 
-/** 이 서버가 쓰는 제어 통로의 약속 판. 실행기가 첫 줄로 알리는 판과 같아야 한다(`protocol.rs`의 `PROTOCOL`). */
-export const supervisorProtocol = 1;
 const trialLimitMs = 15_000;
 const windows = () => process.platform === "win32";
 
@@ -52,109 +56,9 @@ export type Supervisor =
   { ok: true; file: string } | { ok: false; reason: string };
 let supervisor: Supervisor | undefined;
 
-/** 실행기가 제어 통로에 쓰는 한 줄. 모르는 줄이면 `undefined`다. */
-export type SupervisorMessage =
-  | { kind: "hello"; protocol: number }
-  | { kind: "ok"; pid: number }
-  | { kind: "failed"; reason: string }
-  | { kind: "not-started"; code: string; reason: string }
-  | { kind: "exit"; code: number | null; signal: NodeJS.Signals | null }
-  | { kind: "ended" }
-  | { kind: "left"; detail: string };
-
-export function readSupervisorLine(
-  text: string
-): SupervisorMessage | undefined {
-  const line = text.trimEnd();
-  let match: RegExpExecArray | null;
-  if ((match = /^babojubot-supervisor (\d+)$/.exec(line)))
-    return { kind: "hello", protocol: Number(match[1]) };
-  if ((match = /^ok (\d+)$/.exec(line)))
-    return { kind: "ok", pid: Number(match[1]) };
-  if ((match = /^failed: (.*)$/.exec(line)))
-    return { kind: "failed", reason: match[1]! };
-  if ((match = /^not-started ([A-Z0-9]+): (.*)$/.exec(line)))
-    return { kind: "not-started", code: match[1]!, reason: match[2]! };
-  if ((match = /^exit (-?\d+)$/.exec(line)))
-    return { kind: "exit", code: Number(match[1]), signal: null };
-  if ((match = /^exit-signal (SIG[A-Z0-9]+)$/.exec(line)))
-    return { kind: "exit", code: null, signal: match[1] as NodeJS.Signals };
-  if (line === "ended") return { kind: "ended" };
-  if ((match = /^left: (.*)$/.exec(line)))
-    return { kind: "left", detail: match[1]! };
-  return undefined;
-}
-
-/** Windows 명령줄 한 인수를 MSVCRT 규칙으로 감싼다. Node.js(libuv)가 인수를 넘길 때와 같은 결과로 풀린다. */
-function quoteWindowsArgument(arg: string) {
-  if (arg === "") return '""';
-  if (!/[ \t"]/.test(arg)) return arg;
-  if (!/["\\]/.test(arg)) return `"${arg}"`;
-  let quoted = '"',
-    slashes = 0;
-  for (const char of arg) {
-    if (char === "\\") {
-      slashes++;
-      continue;
-    }
-    quoted += "\\".repeat(char === '"' ? slashes * 2 + 1 : slashes) + char;
-    slashes = 0;
-  }
-  return quoted + "\\".repeat(slashes * 2) + '"';
-}
-
-/**
- * Windows: cross-spawn이 실제로 띄울 프로그램과 명령줄. `.cmd` 시작 파일은 cmd.exe 경유와 그 인수 처리까지 그대로다.
- * 프로그램을 찾지 못하면 `undefined`다.
- */
-function resolvedCommand(
-  command: string,
-  args: readonly string[],
-  options: { env: NodeJS.ProcessEnv; cwd: string }
-) {
-  type Parsed = {
-    command: string;
-    args: string[];
-    file?: string;
-    options: { windowsVerbatimArguments?: boolean };
-  };
-  const parse = (spawn as unknown as { _parse: (...a: unknown[]) => Parsed })
-    ._parse;
-  const parsed = parse(command, args, options);
-  if (!parsed.file) return undefined;
-  const application = parse(parsed.command, [], options).file;
-  if (!application) return undefined;
-  const verbatim = parsed.options.windowsVerbatimArguments === true;
-  return {
-    application,
-    commandLine: [parsed.command, ...parsed.args]
-      .map((arg) => (verbatim ? arg : quoteWindowsArgument(arg)))
-      .join(" "),
-  };
-}
-
-/** 실행기로 띄우는 Node.js spawn 인자. Windows는 명령줄을 다시 감싸지 않고 그대로 넘긴다. */
-type Launch = {
-  file: string;
-  args: string[];
-  options: { argv0?: string; windowsVerbatimArguments?: boolean };
-};
-
-function windowsLaunch(
-  file: string,
-  application: string,
-  commandLine: string
-): Launch {
-  return {
-    file,
-    args: [Buffer.from(application, "utf8").toString("hex"), commandLine],
-    options: { argv0: `"${file}"`, windowsVerbatimArguments: true },
-  };
-}
-
 /** 실행기로 띄우는 방법, 또는 띄울 수 없는 이유. */
 export type SupervisorLaunch =
-  | { kind: "launch"; launch: Launch }
+  | { kind: "launch"; launch: SupervisorCommand }
   /** 쓸 수 없다: 준비하다 실패했거나 이 프로세스가 준비를 부르지 않았다. 이유는 `supervisorProblem`과 같다. */
   | { kind: "unavailable"; reason: string }
   /** Windows: 프로그램을 찾지 못했다. cross-spawn으로 띄우면 cmd.exe가 돌다 끝나며 시작 실패(ENOENT)로 알린다. */
@@ -196,92 +100,66 @@ const windowsFolder = () =>
   process.env.SystemRoot ?? process.env.windir ?? "C:\\Windows";
 
 /**
- * 실행기를 띄워 제어 통로의 약속대로 도는지 본다. 해가 없는 `exit 7`을 실행기 아래에서 돌려, 약속 판, 시작 결과 `ok`, 프로그램 끝
- * `exit 7`을 받은 뒤 끄기를 보내 `ended`를 받고, 실행기가 끝나 통로가 닫혀야 성공이다. 모두 시한 안에 끝을 보장한다.
+ * 실행기를 띄워 실제 실행과 같은 약속대로 도는지 본다(`superviseTree`, 같은 해석기와 순서 검사). 해가 없는 `exit 7`을 실행기 아래에서
+ * 돌려, 약속 판 → 시작(`ok`) → 프로그램 끝 `exit 7` → 끄기 → `ended` → 실행기의 정상 종료와 통로의 닫힘까지 모두 와야 성공이다.
+ * 빠지거나 순서가 어긋나면 거부한다. 이 모두에 시한 하나를 둔다: 넘기면 실행기를 강제로 끝내고 통로를 닫은 뒤 준비 실패로 다룬다.
  */
 async function trial(file: string): Promise<Supervisor> {
-  const launch = windows()
+  const command = windows()
     ? windowsLaunch(
         file,
         path.join(windowsFolder(), "System32", "cmd.exe"),
         "cmd.exe /d /c exit 7"
       )
     : { file, args: ["/bin/sh", "-c", "exit 7"], options: {} };
-  const child = spawnChild(launch.file, launch.args, {
-    ...launch.options,
-    stdio: ["ignore", "ignore", "pipe", "pipe"],
-    windowsHide: true,
-    detached: !windows(),
-  });
-  const control = child.stdio[3] as Duplex | null;
-  const lines: string[] = [];
-  let problem: string | undefined;
-  let ended = false;
-  const giveUp = new AbortController();
-  const fail = (reason: string) => {
-    problem ??= reason;
-    giveUp.abort();
-  };
-  let pending = "";
-  control?.on("data", (chunk: Buffer) => {
-    pending += chunk.toString();
-    for (let newline; (newline = pending.indexOf("\n")) >= 0;) {
-      const line = pending.slice(0, newline).trimEnd();
-      pending = pending.slice(newline + 1);
-      lines.push(line);
-      const message = readSupervisorLine(line);
-      if (lines.length === 1) {
-        if (message?.kind !== "hello")
-          fail(
-            `the supervisor's first line was ${JSON.stringify(line)}, not its protocol`
-          );
-        else if (message.protocol !== supervisorProtocol)
-          fail(
-            `the supervisor speaks protocol ${message.protocol}, this server needs ${supervisorProtocol}; build it again ("pnpm --filter @babojubot/process run build") or install the matching package`
-          );
-      } else if (message?.kind === "failed" || message?.kind === "not-started")
-        fail(message.reason);
-      else if (message?.kind === "exit" && message.code === 7)
-        control.write("stop 0\n");
-      else if (message?.kind === "ended") ended = true;
-      else if (message?.kind === "left")
-        fail(`the supervisor's trial left programs running: ${message.detail}`);
+  const { tree, abandon } = superviseTree(
+    command,
+    {
+      command: windows() ? ["cmd.exe"] : ["/bin/sh"],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+    randomUUID()
+  );
+  const run = async (): Promise<Supervisor> => {
+    const start = await tree.started;
+    if (start.kind === "failed") {
+      await tree.stop();
+      return { ok: false, reason: start.reason };
     }
-  });
-  // 실행기가 끝나 통로가 닫히면 쓰기가 실패할 수 있다. 결과는 받은 줄로 판단하고, 통로의 첫 실패는 이유에 함께 적는다.
-  let controlError: string | undefined;
-  control?.on("error", (error) => {
-    controlError ??= error.message;
-  });
-  // 통로의 반대쪽 끝은 실행기만 쥔다(프로그램은 물려받지 않는다). 실행기가 끝나면 닫힌다.
-  const controlClosed = new Promise<void>((resolve) => {
-    if (control) control.once("close", () => resolve());
-    else resolve();
-  });
-  let stderr = "";
-  child.stderr?.on("data", (chunk: Buffer) => {
-    stderr = (stderr + chunk.toString()).slice(0, 4096);
-  });
-  let exit: BoundedExit;
-  try {
-    // 시한에 SIGKILL로 끝내고 끝을 보장한다. 끝나지 않으면 준비 실패로 다룬다. 실행기가 끝나면 그 통로도 곧 닫히므로 닫힘도 기다린다.
-    [exit] = await Promise.all([
-      boundChild(child, { limitMs: trialLimitMs, signal: giveUp.signal }),
-      controlClosed,
-    ]);
-  } catch (error) {
-    control?.destroy();
-    return {
-      ok: false,
-      reason: `the supervisor's trial did not end: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-  if (problem !== undefined) return { ok: false, reason: problem };
-  if (ended && exit.code === 0) return { ok: true, file };
-  return {
-    ok: false,
-    reason: `the supervisor's trial ended with ${exit.killed ? "its time limit" : (exit.signal ?? `code ${exit.code}`)} after ${JSON.stringify(lines)}${controlError ? ` (control channel error: ${controlError})` : ""}${stderr ? `: ${stderr.trim()}` : ""}`,
+    const exit = await tree.exited;
+    if (exit.code !== 7) {
+      await tree.stop();
+      return {
+        ok: false,
+        reason: `the supervisor's trial program ended with ${exit.signal ?? `code ${exit.code}`}, not code 7`,
+      };
+    }
+    await tree.stop({ graceMs: 0 });
+    return { ok: true, file };
   };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      run().catch((error: unknown) => ({
+        ok: false as const,
+        reason: `the supervisor's trial did not end as it should: ${error instanceof Error ? error.message : String(error)}`,
+      })),
+      new Promise<Supervisor>((resolve) => {
+        timer = setTimeout(() => {
+          abandon();
+          resolve({
+            ok: false,
+            reason: `the supervisor's trial did not finish within ${trialLimitMs} ms`,
+          });
+        }, trialLimitMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

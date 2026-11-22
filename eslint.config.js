@@ -73,9 +73,8 @@ const processOwners = [
 // 프로세스 패키지(@babojubot/process)에서 프로그램을 직접 띄워도 되는 파일. 공용 실행과, 그 위에 놓을 수 없는 실행이다.
 // 그 밖의 파일(표식 조회 등)은 이 파일들의 함수로 띄운다.
 const processPackageOwners = [
-  "launch.ts", // 공용 실행: 띄우기와 그 트리의 끄기(stop)를 한 쌍으로 돌려준다
+  "supervised.ts", // 감독 실행기 아래의 트리: 실행 시도(launch.ts)와 준비의 시험 실행(supervisor.ts)이 같이 띄우고 끈다
   "bounded-command.ts", // 공용 실행 위에 놓을 수 없는 짧은 명령: 시한에 SIGKILL과 끝 보장
-  "supervisor.ts", // 감독 실행기를 찾고 시험 실행한다. 공용 실행이 그 실행기 위에 서므로 그 위에는 놓을 수 없다
   "ps.ts", // ps 한 칸 조회: "대상 없음" 계약(출력 없이 1)을 한곳에 둔다
 ].map((name) => `packages/process/src/${name}`);
 // 제품 코드·개발 스크립트에서 오래 도는 자식을 child_process·cross-spawn으로 직접 띄워도 되는 파일. 그 밖은 공용 실행

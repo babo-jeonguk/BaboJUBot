@@ -551,7 +551,7 @@ enum StartFailure {
     NotStarted(&'static str, String),
 }
 
-fn start(arguments: &[OsString]) -> Result<Leader, StartFailure> {
+fn start(arguments: &[OsString], env: &[(String, String)]) -> Result<Leader, StartFailure> {
     let Some((program, rest)) = arguments.split_first() else {
         return Err(StartFailure::Failed(
             "the supervisor was not given a program".to_owned(),
@@ -559,7 +559,10 @@ fn start(arguments: &[OsString]) -> Result<Leader, StartFailure> {
     };
     prepare_system().map_err(StartFailure::Failed)?;
     let mut command = Command::new(program);
-    command.args(rest).process_group(0);
+    command
+        .args(rest)
+        .envs(env.iter().map(|(name, value)| (name, value)))
+        .process_group(0);
     die_with_supervisor(&mut command);
     match command.spawn() {
         Ok(child) => {
@@ -609,8 +612,11 @@ pub fn run() -> i32 {
         ));
         return 1;
     }
+    let Some(start_request) = protocol::read_start(&mut control, &Signals) else {
+        return 1;
+    };
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let mut leader = match start(&arguments) {
+    let mut leader = match start(&arguments, &start_request.env) {
         Ok(leader) => leader,
         Err(StartFailure::Failed(why)) => {
             control.write_line(&format!("failed: {why}"));
@@ -623,5 +629,5 @@ pub fn run() -> i32 {
     };
     control.write_line(&format!("ok {}", leader.pid));
     release_standard_streams();
-    protocol::supervise(&mut control, &mut leader, &Signals)
+    protocol::supervise(&mut control, &mut leader, &Signals, &start_request.rest)
 }

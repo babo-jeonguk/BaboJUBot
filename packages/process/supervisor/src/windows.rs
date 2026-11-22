@@ -23,7 +23,7 @@ use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{
     GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
 };
-use windows_sys::Win32::System::Environment::GetCommandLineW;
+use windows_sys::Win32::System::Environment::{GetCommandLineW, SetEnvironmentVariableW};
 use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
@@ -553,6 +553,21 @@ pub fn run() -> i32 {
         }
     };
     control.write_line(&protocol::hello());
+    let Some(start_request) = protocol::read_start(&mut control, &NoTermination) else {
+        return 1;
+    };
+    // The program inherits this environment. Windows has no marker cleanup, so the supervisor may carry the entries itself.
+    for (name, value) in &start_request.env {
+        let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        // SAFETY: NUL-terminated strings.
+        if unsafe { SetEnvironmentVariableW(wide(name).as_ptr(), wide(value).as_ptr()) } == 0 {
+            control.write_line(&format!(
+                "failed: the program's environment could not be set (error {})",
+                last_error()
+            ));
+            return 1;
+        }
+    }
     let mut job = match start() {
         Ok(job) => job,
         Err(StartFailure::Failed(why)) => {
@@ -566,5 +581,5 @@ pub fn run() -> i32 {
     };
     control.write_line(&format!("ok {}", job.pid));
     release_standard_handles();
-    protocol::supervise(&mut control, &mut job, &NoTermination)
+    protocol::supervise(&mut control, &mut job, &NoTermination, &start_request.rest)
 }

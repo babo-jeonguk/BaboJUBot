@@ -67,6 +67,27 @@ export function withLease(
   };
 }
 
+/**
+ * 새로 띄울 트리의 환경을 표식과 나머지로 나눈다(표식은 `withLease`와 같다). 감독 실행기는 나머지만 받아 표식을 지니지 않고, 표식은
+ * 제어 통로로 받아 프로그램에만 준다. 그래서 표식 정리가 트리의 관리자인 실행기에 닿지 않는다(#268).
+ */
+export function leaseEnvironment(
+  env: NodeJS.ProcessEnv,
+  lease: string,
+  own: NodeJS.ProcessEnv = process.env
+) {
+  const full = withLease(env, lease, own);
+  const leases = Object.entries(full).flatMap(([name, value]) =>
+    leaseNamePattern.test(name) && value !== undefined
+      ? [[name, value] as const]
+      : []
+  );
+  const rest = Object.fromEntries(
+    Object.entries(full).filter(([name]) => !leaseNamePattern.test(name))
+  );
+  return { env: rest, leases };
+}
+
 /** 끝났거나(ENOENT·ESRCH) 다른 사용자의 것이라 읽을 수 없는(EACCES·EPERM) 프로세스의 /proc 읽기 오류. */
 const unreadable = hasErrorCode("ENOENT", "ESRCH", "EACCES", "EPERM");
 
