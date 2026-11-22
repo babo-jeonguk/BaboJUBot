@@ -13,7 +13,7 @@
 | 지도 접근 이름·키보드 안내                                        | research-map.tsx `mapAriaLabels`                                                                                                                                 | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts)                 |
 | 종류·연결 종류·노드 검색 선택기                                   | research-map.tsx `ChipRadios`·`NodePicker`                                                                                                                       | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts)                 |
 | 지도의 글 대체                                                    | research-map.tsx `MapTextView`                                                                                                                                   | [접근성 E2E](../../../apps/web/e2e/keyboard-a11y.spec.ts)                 |
-| 큰 지도의 끌기·선택 비용                                          | research-map.tsx `EdgeLayer`·`focusCss`·`reuse`, [research-map.css](../../../apps/web/src/research-map.css)                                                      | [성능 측정](../../../apps/web/e2e/research-map-perf.spec.ts) `MAP_PERF=1` |
+| 큰 지도의 끌기·선택 비용                                          | research-map.tsx `EdgeLayer`·`focusCss`·`reuse`, [research-map.css](../../../apps/web/src/research-map.css)                                                      | [성능 측정](../../../apps/web/e2e/research-map-perf.spec.ts)(MAP_PERF=1일 때만 돎) |
 
 ## 연결 경로
 

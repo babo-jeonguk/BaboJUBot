@@ -9,7 +9,7 @@
 | 사본·revision 저장과 조회                  | db/harness.ts `editInstructionCopy`·`insertInstructionCopies`·`listInstructionRevisions`·`findInstructionRevision`; migration 0009                                       | 사본 편집 API                                      |
 | 편집 API·본문 크기 상한                    | server/app.ts `/agents/:agentId/instructions/:copyId`·`jsonBodyLimitBytes`                                                                                               | 사본 편집 API                                      |
 | 편집 뒤 다음 실행 시도의 bundle·새 세션    | db/runs.ts `claimNextRun`, core/run.ts `planRunStart`                                                                                                                    | 사본 편집 API                                      |
-| 사본 편집기·revision 목록·이동 차단        | agents.tsx `InstructionCopies`·`RevisionList`·`RevisionView`, api.ts `useEditInstructionCopy`·`useInstructionRevisions`, main.tsx `useBlocker`                           | 사본 편집 E2E                                      |
+| 사본 편집기·revision 목록·이동 차단        | agents.tsx `InstructionCopies`·`RevisionList`·`RevisionView`, api.ts `useEditInstructionCopy`·`useInstructionRevisions`, main.tsx(data router: react-router useBlocker의 전제)                           | 사본 편집 E2E                                      |
 
 ## 연결 경로
 
