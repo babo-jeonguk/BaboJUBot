@@ -1,15 +1,10 @@
 import { randomUUID } from "node:crypto";
-import {
-  lstat,
-  mkdir,
-  readFile,
-  realpath,
-  rename,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, realpath, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   artifactFileMaxBytes,
+  continueAfterFailure,
+  failureCode,
   orIfUnreadable,
   type ArtifactFileRead,
   type ArtifactFileRefusal,
@@ -22,6 +17,7 @@ import {
   recordWorkspaceIdentity,
   type Database,
 } from "@babojubot/db";
+import { openRegularFile } from "@babojubot/files";
 import { runTree } from "@babojubot/process";
 
 const identityFile = "workspace-identity.json";
@@ -510,18 +506,37 @@ export class Workspaces {
   }
 }
 
-/** 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. */
+/**
+ * 표식 파일이 말하는 조직 ID. 없으면 `undefined`, 있는데 읽을 수 없으면 `null`이다. 표식은 `@babojubot/files`의
+ * `openRegularFile`로 한 번 열고, 그 handle의 종류·크기·내용으로 판정한다. 열기가 던진 오류(위 칸이 폴더가 아님·위 폴더
+ * 순환·권한 등)는 "표식을 읽을 수 없습니다(코드)"로 알린다.
+ */
 async function readIdentity(file: string) {
-  let info;
+  let opened;
   try {
-    info = await lstat(file);
+    opened = await openRegularFile(file);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw identityBlocked("읽을", file, e);
   }
-  if (!info.isFile() || info.size > identityMaxBytes) return null;
+  if (opened === "missing") return undefined;
+  if (opened === "not-regular") return null;
+  const { handle, info } = opened;
   try {
-    const value: unknown = JSON.parse(await readFile(file, "utf8"));
+    if (info.size > BigInt(identityMaxBytes)) return null;
+    const buffer = Buffer.alloc(identityMaxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        length,
+        buffer.length - length,
+        length
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > identityMaxBytes) return null;
+    const value: unknown = JSON.parse(buffer.toString("utf8", 0, length));
     return typeof value === "object" &&
       value !== null &&
       "organizationId" in value &&
@@ -531,8 +546,17 @@ async function readIdentity(file: string) {
   } catch (e) {
     if (e instanceof SyntaxError) return null;
     throw identityBlocked("읽을", file, e);
+  } finally {
+    await continueAfterFailure(
+      () => handle.close(),
+      (error) =>
+        console.warn(
+          `[workspace] a file handle could not be closed (${failureCode(error)})`
+        )
+    );
   }
 }
+
 async function exists(target: string) {
   try {
     await lstat(target);

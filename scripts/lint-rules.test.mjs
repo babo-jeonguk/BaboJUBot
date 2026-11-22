@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
+import { ESLint } from "eslint";
 import { fileURLToPath } from "node:url";
 import { accessShapes } from "./lint-access-shapes.mjs";
 import { ruleLinter } from "./lint-rule-testing.mjs";
@@ -104,37 +105,166 @@ test("code outside tests may remove a folder directly", async () => {
     );
 });
 
-test("a lint exception needs a reason, names its rules and is removed once unused", async () => {
-  const place = "scripts/lint-sample.mjs";
-  const rules = async (code) =>
-    (await lint(code, place)).map((m) => m.ruleId ?? m.message);
+// 주석은 lint 규칙을 바꾸지 못한다(#270). 주석 한 줄로 파일 전체·구간·줄에서 규칙을 끄거나 경고로 낮추면 그 위반이 사라지고, 주석의 설정은
+// 설정 파일보다 우선해 막는 규칙까지 같은 주석으로 끌 수 있다. 예외는 eslint.config.js에 파일·규칙을 좁혀 이유와 함께 둔다.
+// 시험 코드는 시험 규칙(`tests/no-fixed-time-wait`)으로, 제품 코드·스크립트는 모든 코드가 받는 규칙(`no-empty-pattern`)으로 본다.
+const sleep = "await new Promise((resolve) => setTimeout(resolve, 50));\n";
+const commentedAreas = [
+  { places: testPlaces, rule: "tests/no-fixed-time-wait", violation: sleep },
+  {
+    places: [
+      "scripts/lint-sample.mjs",
+      "packages/core/src/lint-sample.ts",
+      "apps/web/src/lint-sample.tsx",
+    ],
+    rule: "no-empty-pattern",
+    violation: "const {} = {};\n",
+  },
+];
+const directive = "@eslint-community/eslint-comments/no-use";
+const liftingComments = {
+  "lowers a rule to a warning": (rule, code) =>
+    `/* eslint ${rule}: "warn" -- 이유 */\n${code}`,
+  "turns a rule off": (rule, code) =>
+    `/* eslint ${rule}: "off" -- 이유 */\n${code}`,
+  "turns off the rule that bans such comments first": (rule, code) =>
+    `/* eslint ${directive}: "off", ${rule}: "off" -- 이유 */\n${code}`,
+  "disables a rule to the end of the file": (rule, code) =>
+    `/* eslint-disable ${rule} -- 이유 */\n${code}`,
+  "disables every rule to the end of the file": (rule, code) =>
+    `/* eslint-disable */\n${code}`,
+  "disables a rule over a range": (rule, code) =>
+    `/* eslint-disable ${rule} -- 이유 */\n${code}/* eslint-enable ${rule} -- 이유 */\n`,
+  "disables a rule on the next line": (rule, code) =>
+    `// eslint-disable-next-line ${rule} -- 이유\n${code}`,
+  "disables a rule on its line": (rule, code) =>
+    `${code.trimEnd()} // eslint-disable-line ${rule} -- 이유\n`,
+};
 
+for (const [shape, comment] of Object.entries(liftingComments))
+  test(`a comment that ${shape} does not lift the rule`, async () => {
+    for (const { places, rule, violation } of commentedAreas)
+      for (const place of places) {
+        const code = comment(rule, violation);
+        const messages = await lint(code, place, [rule, directive]);
+        assert.deepEqual(
+          messages.filter((m) => m.ruleId === rule).map((m) => m.severity),
+          [2],
+          `${place}: ${code}`
+        );
+        // 효과 없는 주석도 남지 않게 오류로 짚는다(본보기로 베껴지지 않게).
+        assert.ok(
+          messages.some((m) => m.ruleId === directive && m.severity === 2),
+          `${place}: the comment is not reported`
+        );
+      }
+  });
+
+// no-use가 알아보는 지시 주석 종류 전부(@eslint-community/eslint-plugin-eslint-comments 4.8.1 `lib/internal/utils.js`의
+// DIRECTIVE_PATTERN, https://eslint-community.github.io/eslint-plugin-eslint-comments/rules/no-use.html). 블록 주석이면 모두, 줄 주석이면
+// 두 `-line` 종류만 지시 주석이다(같은 파일의 LINE_COMMENT_PATTERN). ESLint가 지시 주석으로 읽는 것(주석 설정을 읽지 않을 때 "has no
+// effect"로 알림)과 no-use가 짚는 것이 모양마다 같아야, ESLint가 새로 읽는 모양이 생겨도 효과 없는 주석이 오류 없이 남지 않는다.
+const directiveKinds = {
+  eslint: 'eslint no-empty-pattern: "off"',
+  "eslint-env": "eslint-env browser",
+  "eslint-enable": "eslint-enable no-empty-pattern",
+  "eslint-disable": "eslint-disable no-empty-pattern",
+  "eslint-disable-line": "eslint-disable-line no-empty-pattern",
+  "eslint-disable-next-line": "eslint-disable-next-line no-empty-pattern",
+  exported: "exported answer",
+  global: "global answer",
+  globals: "globals answer",
+};
+
+test("every directive comment ESLint reads is reported in every code area, and only those", async () => {
+  const eslint = new ESLint({
+    cwd: repository,
+    ruleFilter: ({ ruleId }) => ruleId === directive,
+    overrideConfig: [
+      {
+        languageOptions: {
+          parserOptions: { projectService: false, project: null },
+        },
+      },
+    ],
+  });
+  const places = [
+    ...testPlaces,
+    "scripts/lint-sample.mjs",
+    "packages/core/src/lint-sample.ts",
+    "apps/web/src/lint-sample.tsx",
+  ];
+  const wrong = [];
+  let read = 0;
+  for (const place of places)
+    for (const [kind, text] of Object.entries(directiveKinds))
+      for (const comment of [`/* ${text} -- 이유 */`, `// ${text} -- 이유`]) {
+        const [result] = await eslint.lintText(
+          `${comment}\nexport const a = 1;\n`,
+          { filePath: place }
+        );
+        const reported = result.messages.some((m) => m.ruleId === directive);
+        const eslintReads = result.messages.some(
+          (m) => m.ruleId === null && /has no effect/.test(m.message)
+        );
+        if (eslintReads) read += 1;
+        if (reported !== eslintReads)
+          wrong.push(
+            `${place} ${kind} ${comment}: no-use ${reported}, ESLint reads ${eslintReads}`
+          );
+      }
+  assert.deepEqual(wrong, []);
+  // 아홉 종류의 블록 주석과 두 `-line` 종류의 줄 주석: 자리마다 11개.
+  assert.equal(read, places.length * 11);
+});
+
+test("a comment does not declare a global", async () => {
+  const code = "/* global answer -- 이유 */\nexport const a = answer;\n";
+  const messages = await lint(code, "scripts/lint-sample.mjs", [
+    "no-undef",
+    directive,
+  ]);
+  assert.deepEqual(messages.map((m) => m.ruleId).sort(), [
+    directive,
+    "no-undef",
+  ]);
+});
+
+test("a Playwright fixture may take its dependencies as an empty pattern in test code without an exception", async () => {
+  const fixture = `export const fixtures = { baseURL: async ({}, use) => {\n  await use("http://127.0.0.1");\n} };\n`;
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(fixture, place, ["no-empty-pattern"]),
+      [],
+      place
+    );
+  // 매개변수가 아닌 빈 분해는 그대로 짚는다.
+  for (const place of testPlaces)
+    assert.equal(
+      (await lint("const {} = {};\n", place, ["no-empty-pattern"])).length,
+      1,
+      place
+    );
+});
+
+test("a regex may hold a control character only in the file that holds the NUL-free pattern", async () => {
+  const code = "export const nulFree = /^[^\\x00]*$/;\n";
   assert.deepEqual(
-    await rules(
-      "// eslint-disable-next-line no-empty-pattern\nconst {} = {};\n"
-    ),
-    ["@eslint-community/eslint-comments/require-description"]
-  );
-  assert.deepEqual(
-    await rules(
-      "/* eslint-disable -- 이유 */\nconst {} = {};\n/* eslint-enable -- 이유 */\n"
-    ),
-    ["@eslint-community/eslint-comments/no-unlimited-disable"]
-  );
-  assert.deepEqual(
-    await rules(
-      "// eslint-disable-next-line no-empty-pattern -- 이유\nconst {} = {};\n"
-    ),
+    await lint(code, "packages/contracts/src/nul-free.ts", [
+      "no-control-regex",
+    ]),
     []
   );
-  // 쓰이지 않는 예외는 경고가 아니라 오류다.
-  const unused = await lint(
-    "// eslint-disable-next-line no-empty-pattern -- 이유\nconst a = 1;\nexport { a };\n",
-    place
-  );
-  assert.equal(unused.length, 1);
-  assert.equal(unused[0].severity, 2);
-  assert.match(unused[0].message, /Unused eslint-disable directive/);
+  for (const place of [
+    "packages/contracts/src/task.ts",
+    "scripts/lint-sample.mjs",
+    ...testPlaces,
+  ])
+    assert.equal(
+      (await lint(code, place, ["no-control-regex"])).length,
+      1,
+      place
+    );
 });
 
 /** 경과 시간 단언 규칙의 메시지만. */
