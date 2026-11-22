@@ -27,19 +27,20 @@ export const findings = {
 };
 /** 볼륨이 성공할 수 있는 사례 결과. 그 밖(unverified·defect·missing)은 모두 실패다. */
 export const accepted = new Set(["pass", "limitation", "n/a"]);
-const marks = {
-  pass: "✅ pass",
-  limitation: "⚠️ limitation",
-  "n/a": "➖ n/a",
-  unverified: "❓ unverified",
-  defect: "❌ defect",
-  missing: "❌ not run",
-};
+// 사례 결과는 결과 파일에서 온다. 일반 객체로 찾으면 물려받은 이름이 걸리므로 Map으로 찾고 모은다.
+const marks = new Map([
+  ["pass", "✅ pass"],
+  ["limitation", "⚠️ limitation"],
+  ["n/a", "➖ n/a"],
+  ["unverified", "❓ unverified"],
+  ["defect", "❌ defect"],
+  ["missing", "❌ not run"],
+]);
 
 /** 볼륨 하나의 결과. */
 export function summarize(volume, meta, report) {
   const problems = [];
-  const outcomes = {};
+  const outcomes = new Map();
   let environment;
   if (!meta) problems.push("no run record");
   else if (meta.error) problems.push(meta.error);
@@ -56,26 +57,28 @@ export function summarize(volume, meta, report) {
           `${path.basename(file.name)} › ${test.title}: ${(test.failureMessages?.[0] ?? "").split("\n")[0]}`
         );
         if (id)
-          outcomes[id] = {
+          outcomes.set(id, {
             outcome: "defect",
             detail: (test.failureMessages?.[0] ?? "").split("\n")[0],
-          };
+          });
         continue;
       }
       for (const note of test.meta?.cases ?? [])
-        outcomes[note.id] ??= { outcome: note.outcome, detail: note.detail };
-      if (id && id !== "ENV" && !outcomes[id])
-        outcomes[id] = {
+        if (!outcomes.has(note.id))
+          outcomes.set(note.id, { outcome: note.outcome, detail: note.detail });
+      if (id && id !== "ENV" && !outcomes.has(id))
+        outcomes.set(id, {
           outcome: test.status === "passed" ? "missing" : "unverified",
           detail: `test ${test.status} without a recorded outcome`,
-        };
+        });
     }
   if (report && report.numFailedTests > 0)
     problems.push(`${report.numFailedTests} failed tests`);
   if (report && !environment) problems.push("environment not identified");
   for (const id of caseIds) {
-    outcomes[id] ??= { outcome: "missing", detail: "not run" };
-    const { outcome, detail } = outcomes[id];
+    if (!outcomes.has(id))
+      outcomes.set(id, { outcome: "missing", detail: "not run" });
+    const { outcome, detail } = outcomes.get(id);
     if (!accepted.has(outcome))
       problems.push(`${id} ${outcome}${detail ? `: ${detail}` : ""}`);
   }
@@ -91,7 +94,7 @@ export function summarize(volume, meta, report) {
           total: report.numTotalTests,
         }
       : undefined,
-    outcomes,
+    outcomes: Object.fromEntries(outcomes),
     failures,
     problems,
   };
@@ -113,20 +116,20 @@ export function render(summaries) {
   lines.push(`| --- | ${summaries.map(() => "---").join(" | ")} |`);
   for (const id of caseIds)
     lines.push(
-      `| ${id} | ${summaries.map((s) => marks[s.outcomes[id].outcome]).join(" | ")} |`
+      `| ${id} | ${summaries.map((s) => marks.get(s.outcomes[id].outcome)).join(" | ")} |`
     );
   for (const [finding, id] of Object.entries(findings))
     lines.push(
-      `| ${finding} (${id}) | ${summaries.map((s) => marks[s.outcomes[id].outcome]).join(" | ")} |`
+      `| ${finding} (${id}) | ${summaries.map((s) => marks.get(s.outcomes[id].outcome)).join(" | ")} |`
     );
   lines.push(
     "",
     "| Count | " + summaries.map((s) => s.volume).join(" | ") + " |"
   );
   lines.push(`| --- | ${summaries.map(() => "---").join(" | ")} |`);
-  for (const outcome of Object.keys(marks))
+  for (const [outcome, mark] of marks)
     lines.push(
-      `| ${marks[outcome]} | ${summaries.map((s) => caseIds.filter((id) => s.outcomes[id].outcome === outcome).length).join(" | ")} |`
+      `| ${mark} | ${summaries.map((s) => caseIds.filter((id) => s.outcomes[id].outcome === outcome).length).join(" | ")} |`
     );
   lines.push("", "### Notes");
   for (const s of summaries) {
@@ -138,7 +141,7 @@ export function render(summaries) {
     for (const failure of s.failures) lines.push(`- ❌ ${failure}`);
     for (const id of caseIds) {
       const { outcome, detail } = s.outcomes[id];
-      if (detail) lines.push(`- ${id} ${marks[outcome]}: ${detail}`);
+      if (detail) lines.push(`- ${id} ${marks.get(outcome)}: ${detail}`);
     }
   }
   return `${lines.join("\n")}\n`;

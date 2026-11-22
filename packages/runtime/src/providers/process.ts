@@ -99,9 +99,12 @@ export function providerEnvironment(
         .split(",")
         .map((name) => name.trim())
         .filter(Boolean);
+  // 이름은 사용자 설정에서 온다. process.env도 물려받은 이름(constructor)에 함수를 돌려주므로 가진 변수인지 본다.
   const picked = [...sharedVariables, ...named].flatMap(
     (name): [string, string][] => {
-      const value = process.env[name];
+      const value = Object.hasOwn(process.env, name)
+        ? process.env[name]
+        : undefined;
       return value === undefined ? [] : [[name, value]];
     }
   );

@@ -38,6 +38,15 @@ it("passes only the variables named for that connection", () => {
   ).toBeUndefined();
 });
 
+// 이름은 사용자 설정에서 온다. process.env도 물려받은 이름(constructor·toString)에 함수를 돌려주므로 그 이름은 환경에 없는 변수다
+// (#281 리뷰 REC-1과 같은 모양).
+it("passes no inherited name written in the connection's list", () => {
+  vi.stubEnv("BABOJUBOT_CLAUDE_WORK_PASS_ENV", "constructor, toString");
+  const env = providerEnvironment("claude-work", "/product", {});
+  expect(Object.hasOwn(env, "constructor")).toBe(false);
+  expect(Object.hasOwn(env, "toString")).toBe(false);
+});
+
 it("lets the program location be chosen for a connection", () => {
   expect(commandFor("claude", "claude")).toEqual(["claude"]);
   vi.stubEnv("BABOJUBOT_CLAUDE_WORK_COMMAND", "/opt/claude/bin/claude");

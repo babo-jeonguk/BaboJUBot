@@ -6,22 +6,36 @@ if (process.argv.includes("--version")) {
   console.log("opencode v9.9.9");
   process.exit(0);
 }
+/**
+ * 옵션 뒤의 값. 옵션이 없으면 null이고, 값 없이 끝나면 실행을 멈춘다.
+ * @param {string} name
+ */
+function optionValue(name) {
+  const at = process.argv.indexOf(name);
+  if (at < 0) return null;
+  const value = process.argv[at + 1];
+  if (value === undefined) throw new Error(`synthetic: ${name} needs a value`);
+  return value;
+}
+/** 실행의 데이터 폴더(XDG_DATA_HOME). 시험이 실행마다 준다. */
+function dataHome() {
+  const folder = process.env.XDG_DATA_HOME;
+  if (!folder) throw new Error("synthetic: XDG_DATA_HOME is not set");
+  return folder;
+}
 // --recording이면 응답과 이벤트는 실제 출력의 정제본(opencode-recorded.json)을 쓰고, 동작만 이 파일이 연기한다.
-const recordingAt = process.argv.indexOf("--recording");
+const recordingFile = optionValue("--recording");
 const recording =
-  recordingAt < 0
+  recordingFile === null
     ? null
-    : JSON.parse(await readFile(process.argv[recordingAt + 1], "utf8"));
+    : JSON.parse(await readFile(recordingFile, "utf8"));
 // --usage면 그 파일의 세션 누계({ before, after }: { tokens, cost })를 실행 전·후 값으로 쓴다.
-const usageAt = process.argv.indexOf("--usage");
+const usageFile = optionValue("--usage");
 const usage =
-  usageAt < 0
-    ? null
-    : JSON.parse(await readFile(process.argv[usageAt + 1], "utf8"));
+  usageFile === null ? null : JSON.parse(await readFile(usageFile, "utf8"));
 // --fail면 본 실행 요청에 그 파일의 `error`로 2.2.6 `session.execution.failed`(data.error: type·message·선택 status·response.body)를 낸다.
 // 합성 재생이며 실제 SSE 녹화가 아니다. `foreign`이면 먼저 다른 세션의 실패를 낸다. 본 실행 요청마다 `<파일>.prompts`에 한 줄 남긴다.
-const failAt = process.argv.indexOf("--fail");
-const failFile = failAt < 0 ? null : process.argv[failAt + 1];
+const failFile = optionValue("--fail");
 const failing = failFile ? JSON.parse(await readFile(failFile, "utf8")) : null;
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
   subscribers = new Set();
@@ -110,6 +124,8 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(401).end();
       return;
     }
+    if (req.url === undefined)
+      throw new Error("synthetic: request without a URL");
     const pathname = new URL(req.url, "http://localhost").pathname;
     const json = (data) => {
       res.setHeader("content-type", "application/json");
@@ -197,10 +213,7 @@ const server = http.createServer(async (req, res) => {
     }
     // 2.2.5의 `GET`/`POST /api/credential`(Credential.Entry·CreateInput). 로그인은 그 실행의 데이터 폴더에 둔다.
     if (pathname === "/api/credential") {
-      const store = path.join(
-        process.env.XDG_DATA_HOME,
-        "synthetic-credentials.json"
-      );
+      const store = path.join(dataHome(), "synthetic-credentials.json");
       const stored = JSON.parse(
         await readFile(store, "utf8").catch(() => "[]")
       );
@@ -214,7 +227,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         // 시험이 로그인 저장을 붙잡아 둘 수 있다: 데이터 폴더에 `hold-credential`이 있으면 도착을 알리고 그 파일이 지워질 때까지 기다린다.
-        const hold = path.join(process.env.XDG_DATA_HOME, "hold-credential");
+        const hold = path.join(dataHome(), "hold-credential");
         if (
           await stat(hold).then(
             () => true,
@@ -237,7 +250,7 @@ const server = http.createServer(async (req, res) => {
           active: input.activate ?? false,
           value: input.value,
         };
-        await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+        await mkdir(dataHome(), { recursive: true });
         await writeFile(store, JSON.stringify([...stored, entry]));
         json({ data: entry });
         return;
@@ -319,11 +332,8 @@ const server = http.createServer(async (req, res) => {
       if (body === "실행 유지 연습" || body === "끼워 넣기 연습") return;
       if (body === "느린 작업")
         await new Promise((resolve) => setTimeout(resolve, 10500));
-      const noteFile = path.join(
-        process.env.XDG_DATA_HOME,
-        session.id + ".note"
-      );
-      await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+      const noteFile = path.join(dataHome(), session.id + ".note");
+      await mkdir(dataHome(), { recursive: true });
       if (body.startsWith("메모해 주세요: "))
         await writeFile(noteFile, body.slice("메모해 주세요: ".length));
       await finish(
@@ -351,11 +361,10 @@ const server = http.createServer(async (req, res) => {
 // --startup-race <gate>면 같은 데이터 폴더에서 다른 서버가 뜨는 중일 때 끝난다. 실제 2.2.6이 새 폴더의 DB를 둘이 함께 만들다
 // 하나가 끝나는 것(`table … already exists`, #147)의 합성이다. 뜨는 중인 구간은 시험이 정한다: `<gate>` 파일이 생길 때까지
 // 뜨지 않는다. gate에 닿으면 `<gate>.reached`를 남긴다. 시험은 다른 실행이 차례를 기다린다는 신호를 받은 뒤에 gate를 연다.
-const startupRaceAt = process.argv.indexOf("--startup-race");
-if (startupRaceAt >= 0) {
-  const gate = process.argv[startupRaceAt + 1];
-  await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
-  const starting = path.join(process.env.XDG_DATA_HOME, "starting");
+const gate = optionValue("--startup-race");
+if (gate !== null) {
+  await mkdir(dataHome(), { recursive: true });
+  const starting = path.join(dataHome(), "starting");
   try {
     await writeFile(starting, "", { flag: "wx" });
   } catch {
@@ -370,11 +379,12 @@ if (startupRaceAt >= 0) {
   });
   await rm(starting);
 }
-server.listen(0, "127.0.0.1", () =>
-  console.log(
-    JSON.stringify({ url: "http://127.0.0.1:" + server.address().port })
-  )
-);
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error("synthetic: the server has no TCP address");
+  console.log(JSON.stringify({ url: "http://127.0.0.1:" + address.port }));
+});
 process.stdin.resume();
 process.stdin.on("end", () => {
   server.closeAllConnections();

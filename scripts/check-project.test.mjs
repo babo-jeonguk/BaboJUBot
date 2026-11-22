@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,15 +28,15 @@ function runChecker(fixture) {
 }
 
 function runCheckerFailure(fixture) {
-  try {
-    runChecker(fixture);
-  } catch (error) {
-    return {
-      status: error.status,
-      output: `${error.stdout ?? ""}${error.stderr ?? ""}`,
-    };
-  }
-  assert.fail("check-project.mjs unexpectedly succeeded");
+  const result = spawnSync(process.execPath, ["scripts/check-project.mjs"], {
+    cwd: fixture,
+    encoding: "utf8",
+    timeout: 30_000,
+    stdio: "pipe",
+  });
+  if (result.error) throw result.error;
+  assert.notEqual(result.status, 0, "check-project.mjs unexpectedly succeeded");
+  return { status: result.status, output: `${result.stdout}${result.stderr}` };
 }
 
 /** check-project.mjs를 돌릴 임시 저장소. 필수 파일과 스크립트를 넣고 저장소의 node_modules를 잇는다. */

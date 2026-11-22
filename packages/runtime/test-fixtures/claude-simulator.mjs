@@ -9,7 +9,18 @@ const argv = process.argv
   .filter(
     (_, i, all) => all[i - 1] !== "--recording" && all[i] !== "--recording"
   );
-const option = (name) => argv[argv.indexOf(name) + 1];
+/** @param {string} name */
+const option = (name) => {
+  const value = argv[argv.indexOf(name) + 1];
+  if (value === undefined) throw new Error(`synthetic: ${name} needs a value`);
+  return value;
+};
+/** 시험이 이 프로그램에 주는 HOME(세션 메모를 둔다). */
+function home() {
+  const folder = process.env.HOME;
+  if (!folder) throw new Error("synthetic: HOME is not set");
+  return folder;
+}
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 if (argv.includes("--version")) {
   console.log("9.9.9 (Claude Code)");
@@ -26,7 +37,7 @@ if (id === "expired") {
 }
 let note = "";
 try {
-  note = await readFile(path.join(process.env.HOME, id + ".note"), "utf8");
+  note = await readFile(path.join(home(), id + ".note"), "utf8");
 } catch {
   /* A fresh synthetic session has no note. */
 }
@@ -102,7 +113,7 @@ for await (const line of lines) {
   }
   if (body.startsWith("메모해 주세요: ")) {
     note = body.slice("메모해 주세요: ".length);
-    await writeFile(path.join(process.env.HOME, id + ".note"), note);
+    await writeFile(path.join(home(), id + ".note"), note);
   }
   await reply(body === "세션 메모를 알려 주세요" ? note || "없음" : "완료");
   lines.close();

@@ -87,7 +87,9 @@ function patternPath(pattern, target) {
  * - vitest: `it`은 `test`, `assert`·`expect.assert`는 `chai.assert`.
  * - Playwright(@playwright/test): 기본 내보내기는 `test`, `test.expect`는 `expect`, `expect.extend(…)`·`expect.configure(…)`가
  *   돌려준 값도 `expect`.
+ * @typedef {{ module?: string, global?: string, path: string[] }} Origin
  */
+/** @type {Array<[Origin, Origin]>} */
 const sameValues = [
   [
     { module: "process", path: [] },
@@ -104,10 +106,12 @@ const sameValues = [
     "clearInterval",
     "setImmediate",
     "clearImmediate",
-  ].map((name) => [
-    { module: "timers", path: [name] },
-    { global: name, path: [] },
-  ]),
+  ].map(
+    /** @returns {[Origin, Origin]} */ (name) => [
+      { module: "timers", path: [name] },
+      { global: name, path: [] },
+    ]
+  ),
   [
     { module: "perf_hooks", path: ["performance"] },
     { global: "performance", path: [] },

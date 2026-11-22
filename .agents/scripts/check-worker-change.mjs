@@ -18,6 +18,7 @@ const OUTPUT_LINES = 40;
 const TEST_LIMIT_MS = 30 * 60_000;
 
 function parseArgs(argv) {
+  /** @type {{ base: string, allow: string[], reported: string[], test: string[] }} */
   const options = { base: "", allow: [], reported: [], test: [] };
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index]?.replace(/^--/, "");
@@ -118,6 +119,7 @@ function checkChange() {
   const files = changedFiles(root, base);
   if (files.length === 0) fail(["no files changed"]);
   const reasons = files.flatMap((file) => {
+    /** @type {string[]} */
     const found = [];
     if (isProtected(rules, file)) found.push(`protected file changed: ${file}`);
     else if (!allowed.some((pattern) => pattern.test(file)))

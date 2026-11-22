@@ -4,6 +4,10 @@
 import { spawn } from "node:child_process";
 
 const [program, baseURL, ...args] = process.argv.slice(2);
+if (program === undefined || baseURL === undefined)
+  throw new Error(
+    "usage: node opencode-local-model.mjs <opencode program> <model address> <opencode arguments...>"
+  );
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}");
 config.enabled_providers = ["fixture"];
 config.providers = {
@@ -38,8 +42,9 @@ const child = spawn(program, args, {
     OPENCODE_DISABLE_FREE_MODELS: "1",
   },
 });
-for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])
-  process.on(signal, () => child.kill(signal));
+/** @type {NodeJS.Signals[]} */
+const forwarded = ["SIGTERM", "SIGINT", "SIGHUP"];
+for (const signal of forwarded) process.on(signal, () => child.kill(signal));
 child.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);

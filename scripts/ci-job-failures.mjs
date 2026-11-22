@@ -9,6 +9,10 @@ export const kindLabels = {
   unknown: "알 수 없음",
 };
 
+/** @typedef {keyof typeof kindLabels} Kind */
+/** @typedef {{ name: string, result: string, expected: string }} Failure 판정이 실패로 센 job */
+/** @typedef {Failure & { kind: Kind, reason: string }} Row */
+
 // 실행 컴퓨터를 받지 못한 job에 GitHub가 남기는 주석. 공개 API 계약은 아니므로 다른 세 표시와 함께일 때만 믿는다.
 const notAcquired = /The job was not acquired by Runner/;
 const requestTimeoutMs = 10_000;
@@ -18,10 +22,10 @@ const stoppedResults = new Set(["cancelled", "abandoned"]);
 const lookupDeadlineMs = 60_000;
 
 /**
- * @param {{ name: string, result: string, expected: string }[]} failures 판정이 실패로 센 job
+ * @param {Failure[]} failures 판정이 실패로 센 job
  * @param {{ apiUrl?: string, repository?: string, runId?: string, runAttempt?: string, token?: string,
  *   fetch?: typeof globalThis.fetch, deadline?: AbortSignal }} context 조회 전체 시한(`deadline`)은 시험이 신호로 넣는다. 기본은 60초다.
- * @returns {Promise<{ name: string, result: string, expected: string, kind: keyof kindLabels, reason: string }[]>}
+ * @returns {Promise<Row[]>}
  */
 export async function classifyFailures(failures, context) {
   if (failures.length === 0) return [];
@@ -36,6 +40,7 @@ export async function classifyFailures(failures, context) {
     return unknownRows(failures, `job 목록 조회 실패: ${message(error)}`);
   }
   const attempt = Number(context.runAttempt);
+  /** @type {Row[]} */
   const rows = [];
   for (const each of failures) {
     // 이전 시도의 같은 이름 job은 이번 판정의 근거가 아니다.
@@ -55,11 +60,17 @@ export async function classifyFailures(failures, context) {
   return rows;
 }
 
-/** 분류하지 못한 실패를 "알 수 없음"으로 남긴다. */
+/**
+ * 분류하지 못한 실패를 "알 수 없음"으로 남긴다.
+ * @param {Failure[]} failures
+ * @param {string} reason
+ * @returns {Row[]}
+ */
 export function unknownRows(failures, reason) {
   return failures.map((each) => ({ ...each, kind: "unknown", reason }));
 }
 
+/** @returns {Promise<{ kind: Kind, reason: string }>} */
 async function classifyJob(failure, job, context) {
   const stepCount = job.steps?.length ?? 0;
   const hasRunner = job.runner_id > 0;
@@ -120,6 +131,7 @@ async function listAttemptJobs(context) {
 async function fetchAll(url, context, pickList) {
   const fetch = context.fetch ?? globalThis.fetch;
   const all = [];
+  /** @type {string | undefined} */
   let next = `${url}?per_page=100&page=1`;
   for (let page = 0; next; page += 1) {
     if (page >= 50) throw new Error("쪽이 너무 많음");

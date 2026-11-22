@@ -70,6 +70,7 @@ test("a failing database close after a passed check is reported and the folder i
 
 test("a server that does not start leaves no database or folder behind", async () => {
   const { closed, options } = resources();
+  /** @type {string | undefined} */
   let workspace;
   await assert.rejects(
     withCheckServer(
@@ -85,6 +86,8 @@ test("a server that does not start leaves no database or folder behind", async (
     /server did not start/
   );
   assert.deepEqual(closed, ["database"]);
+  // 서버를 띄우려 했어야 그 폴더가 지워졌는지 볼 수 있다.
+  assert.ok(workspace, "the server was not started with a workspace");
   assert.equal(existsSync(workspace), false);
 });
 

@@ -113,7 +113,7 @@ if (checked.problem) {
     startedAt,
     log: (line) => console.log(line),
   }));
-if (stop.signal.aborted) summary.interrupted = true;
+if (stop.signal.aborted) summary = { ...summary, interrupted: true };
 const { file, evidence } = await writeEvidence(evidenceDir, summary, secrets);
 for (const scene of evidence.scenes)
   console.log(

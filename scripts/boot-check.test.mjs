@@ -22,7 +22,12 @@ import {
   processAlive as isAlive,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
-import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
+import {
+  attemptAll,
+  attemptEach,
+  combinedFailure,
+  hasErrorCode,
+} from "@babojubot/contracts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const oldDefaultPort = 38417;
@@ -41,7 +46,7 @@ test(
         if (listener)
           await new Promise((resolve, reject) =>
             listener.server.close((error) =>
-              error ? reject(error) : resolve()
+              error ? reject(error) : resolve(undefined)
             )
           );
       });
@@ -116,17 +121,24 @@ test(
       { stdio: "ignore" }
     );
     try {
+      const unrelatedPid = unrelated.pid;
+      assert.ok(
+        unrelatedPid !== undefined,
+        "the unrelated process did not start"
+      );
       const result = await supervise(
         ["scripts/test-fixtures/stuck-run.mjs"],
-        { ...process.env, UNRELATED_PID: String(unrelated.pid) },
+        { ...process.env, UNRELATED_PID: String(unrelatedPid) },
         { overrunMs: 1_000, graceMs: 500 }
       );
       const output = describe(result);
-      const started = JSON.parse(result.stdout.trim().split("\n")[0]);
+      const [firstLine] = result.stdout.trim().split("\n");
+      assert.ok(firstLine, output);
+      const started = JSON.parse(firstLine);
       assert.equal(result.overrun, true, output);
       assert.equal(isAlive(started.inGroup), false, output);
       assert.equal(isAlive(started.escaped), false, output);
-      assert.equal(isAlive(unrelated.pid), true, output);
+      assert.equal(isAlive(unrelatedPid), true, output);
       assert.notDeepEqual(result.leftBehind, noLeftovers, output);
       assert.deepEqual(result.leftAfterCleanup, noLeftovers, output);
     } finally {
@@ -189,14 +201,18 @@ test(
       console.log(JSON.stringify({ escaped: escaped.pid }));
     `;
     // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
-    const { result, error } = await supervise(["-e", script], process.env).then(
+    /** @type {{ result?: Supervised, error?: unknown }} */
+    const outcome = await supervise(["-e", script], process.env).then(
       (result) => ({ result }),
       (error) => ({ error })
     );
+    const reported = outcome.error instanceof Error ? outcome.error : undefined;
     const escaped = Number(
-      /"escaped":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
+      /"escaped":(\d+)/.exec(
+        reported?.message ?? outcome.result?.stdout ?? ""
+      )?.[1]
     );
-    const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
+    const scope = /could not clean up (\S+)/.exec(reported?.message ?? "")?.[1];
     // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
     await withCleanup(async (defer) => {
       const folder = folderCleanup(async () => {
@@ -211,14 +227,18 @@ test(
             `the escaped process (pid ${escaped}) did not end in 10s`
           );
       });
-      assert.ok(error, "the supervisor did not report the running process");
-      assert.ok(scope, error.message);
-      const messages = String(error.cause?.message);
+      assert.ok(
+        reported,
+        `the supervisor did not report the running process: ${String(outcome.error)}`
+      );
+      assert.ok(scope, reported.message);
+      assert.ok(reported.cause instanceof Error, reported.message);
+      const messages = reported.cause.message;
       assert.match(
         messages,
         /wait for the folder's processes to end: still running/
       );
-      assert.match(messages, new RegExp(`kept ${RegExp.escape(scope)}`));
+      assert.ok(messages.includes(`kept ${scope}`), messages);
       assert.equal(existsSync(scope), true, `${scope} was removed`);
     });
   }
@@ -246,14 +266,18 @@ test(
       console.log(JSON.stringify({ held: held.pid }));
     `;
     // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
-    const { result, error } = await supervise(["-e", script], process.env).then(
+    /** @type {{ result?: Supervised, error?: unknown }} */
+    const outcome = await supervise(["-e", script], process.env).then(
       (result) => ({ result }),
       (error) => ({ error })
     );
+    const reported = outcome.error instanceof Error ? outcome.error : undefined;
     const held = Number(
-      /"held":(\d+)/.exec(error?.message ?? result.stdout)?.[1]
+      /"held":(\d+)/.exec(
+        reported?.message ?? outcome.result?.stdout ?? ""
+      )?.[1]
     );
-    const scope = /could not clean up (\S+)/.exec(error?.message ?? "")?.[1];
+    const scope = /could not clean up (\S+)/.exec(reported?.message ?? "")?.[1];
     // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
     await withCleanup(async (defer) => {
       const folder = folderCleanup(async () => {
@@ -268,11 +292,15 @@ test(
             `the process holding the output (pid ${held}) did not end in 10s`
           );
       });
-      assert.ok(error, "the supervisor did not report the held output");
-      assert.ok(scope, error.message);
-      assert.match(
-        String(error.cause?.message),
-        new RegExp(`kept ${RegExp.escape(scope)}`)
+      assert.ok(
+        reported,
+        `the supervisor did not report the held output: ${String(outcome.error)}`
+      );
+      assert.ok(scope, reported.message);
+      assert.ok(reported.cause instanceof Error, reported.message);
+      assert.ok(
+        reported.cause.message.includes(`kept ${scope}`),
+        reported.cause.message
       );
       assert.equal(existsSync(scope), true, `${scope} was removed`);
     });
@@ -283,6 +311,7 @@ const noLeftovers = { folders: [], processes: [] };
 
 /** 부모 셸에 남은 실제 서비스 설정을 흉내 낸다. boot-check는 이것을 서버에 넘기지 않아야 한다. */
 function pollutedEnv() {
+  /** @type {NodeJS.ProcessEnv} */
   const env = {
     ...process.env,
     DATABASE_URL: "postgres://synthetic:synthetic@127.0.0.1:1/unused",
@@ -311,11 +340,11 @@ async function occupyOldDefaultPort() {
   try {
     await new Promise((resolve, reject) => {
       server.once("error", reject);
-      server.listen(oldDefaultPort, "127.0.0.1", resolve);
+      server.listen(oldDefaultPort, "127.0.0.1", () => resolve(undefined));
     });
     return { server, requests: () => requests };
   } catch (error) {
-    if (error?.code === "EADDRINUSE") return undefined;
+    if (hasErrorCode("EADDRINUSE")(error)) return undefined;
     throw error;
   }
 }
@@ -326,6 +355,17 @@ async function occupyOldDefaultPort() {
  * 치우기는 실행이 어떻게 끝났든 따로 시도하고(`attemptEach`), 실패한 단계는 원래 실패와 함께 알린다. 치우기 실패는 그 폴더와
  * 실행 결과를 문구에, 실패한 단계들을 `cause`에 담는다.
  */
+/**
+ * @typedef {{ folders: string[], processes: string[] }} Leftovers
+ * @typedef {{ code: number | null, signal: NodeJS.Signals | null, error?: Error, stdout: string, stderr: string,
+ *   overrun: boolean, leftBehind: Leftovers, leftAfterCleanup?: Leftovers }} Supervised
+ */
+/**
+ * @param {string[]} args
+ * @param {NodeJS.ProcessEnv} env
+ * @param {{ overrunMs?: number, graceMs?: number }} [limits]
+ * @returns {Promise<Supervised>}
+ */
 async function supervise(
   args,
   env,
@@ -333,6 +373,7 @@ async function supervise(
 ) {
   const scope = await mkdtemp(path.join(tmpdir(), "boot-check-supervised-"));
   let child;
+  /** @type {Supervised | undefined} */
   let result;
   // 띄운 실행의 출력 통로가 닫힌 것을 확인했는가. 띄우지 못했으면 확인할 출력이 없다.
   let outputClosed = true;
@@ -395,6 +436,7 @@ async function supervise(
     throw combinedFailure(failures, "the supervised run failed", {
       cause: failures[0],
     });
+  if (!result) throw new Error("the supervised run left no result");
   return result;
 }
 
@@ -427,7 +469,10 @@ async function cleanUpScope(scope, child, outputClosed) {
     try {
       await work();
     } catch (error) {
-      throw new Error(`${what}: ${error?.message ?? error}`, { cause: error });
+      throw new Error(
+        `${what}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      );
     }
   };
   // POSIX에서 그룹에 남은 자식. Windows는 트리를 부모가 살아 있을 때만 따라갈 수 있어 forceStop에서 끝냈다.
@@ -483,7 +528,7 @@ function signalGroup(child, signal) {
   try {
     process.kill(-child.pid, signal);
   } catch (error) {
-    if (error.code !== "ESRCH") throw error;
+    if (!hasErrorCode("ESRCH")(error)) throw error;
   }
 }
 
@@ -510,7 +555,9 @@ async function stopPostmasters(scope) {
   await attemptAll(
     postmasterPids(scope).map((pid) => async () => {
       if (!commandLine(pid).includes(scope)) return;
-      for (const signal of ["SIGQUIT", "SIGKILL"]) {
+      /** @type {NodeJS.Signals[]} */
+      const signals = ["SIGQUIT", "SIGKILL"];
+      for (const signal of signals) {
         if (!killUnlessGone(pid, signal)) return;
         if (await waitUntil(() => !isAlive(pid), 10_000)) return;
       }
@@ -526,7 +573,7 @@ function postmasterPids(scope) {
     try {
       pid = Number(readFileSync(file, "utf8").split("\n")[0]);
     } catch (error) {
-      if (error.code === "ENOENT") continue;
+      if (hasErrorCode("ENOENT")(error)) continue;
       throw error;
     }
     if (Number.isInteger(pid) && pid > 0) pids.push(pid);

@@ -573,12 +573,13 @@ function moveTabFocus(e: KeyboardEvent<HTMLElement>) {
   ];
   const at = tabs.findIndex((tab) => tab === e.target);
   if (at < 0) return;
-  const next = {
-    ArrowRight: (at + 1) % tabs.length,
-    ArrowLeft: (at - 1 + tabs.length) % tabs.length,
-    Home: 0,
-    End: tabs.length - 1,
-  }[e.key];
+  // 일반 객체로 찾으면 물려받은 이름이 걸리므로 Map으로 찾는다(CODING_STANDARDS.md#제품-코드).
+  const next = new Map([
+    ["ArrowRight", (at + 1) % tabs.length],
+    ["ArrowLeft", (at - 1 + tabs.length) % tabs.length],
+    ["Home", 0],
+    ["End", tabs.length - 1],
+  ]).get(e.key);
   if (next === undefined) return;
   e.preventDefault();
   tabs[next]!.focus();

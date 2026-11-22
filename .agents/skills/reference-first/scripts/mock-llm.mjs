@@ -88,6 +88,10 @@ async function stream(res, message) {
     created: Math.floor(Date.now() / 1000),
     model: MODEL,
   };
+  /**
+   * @param {object} delta
+   * @param {string | null} [finish]
+   */
   const send = (delta, finish = null) =>
     res.write(
       `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`

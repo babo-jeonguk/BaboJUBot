@@ -16,9 +16,15 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 if (args.includes("login")) process.exit(0);
-const script = JSON.parse(readFileSync(args[0], "utf8"));
+const [scriptFile] = args;
+if (scriptFile === undefined)
+  throw new Error(
+    "usage: codex-peer.synthetic.mjs <script.json> [arguments...]"
+  );
+const script = JSON.parse(readFileSync(scriptFile, "utf8"));
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
-const seen = {};
+/** 요청 이름별로 받은 수. 이름은 상대가 보낸 프레임에서 오므로 일반 객체 대신 Map에 센다. */
+const seen = new Map();
 appendFileSync(script.log, JSON.stringify({ pid: process.pid }) + "\n");
 const input = createInterface({ input: process.stdin });
 input.on("line", async (line) => {
@@ -26,12 +32,14 @@ input.on("line", async (line) => {
   appendFileSync(script.log, line + "\n");
   const frame = JSON.parse(line);
   if (frame.id === undefined) return;
-  const steps = script.steps[frame.method] ?? [{}];
-  const index = seen[frame.method] ?? 0;
-  seen[frame.method] = index + 1;
+  const steps = Object.hasOwn(script.steps, frame.method)
+    ? script.steps[frame.method]
+    : [{}];
+  const index = seen.get(frame.method) ?? 0;
+  seen.set(frame.method, index + 1);
   const step = steps[Math.min(index, steps.length - 1)];
   if (step.holdUntil) {
-    const release = path.join(path.dirname(args[0]), step.holdUntil);
+    const release = path.join(path.dirname(scriptFile), step.holdUntil);
     while (!existsSync(release)) await new Promise((r) => setTimeout(r, 10));
   }
   if (step.delayMs) await new Promise((r) => setTimeout(r, step.delayMs));

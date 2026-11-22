@@ -79,18 +79,24 @@ export const findSection = (slug: string) =>
  * 섹션 목록에 없는 상세 경로가 속한 섹션. 실행 시도는 에이전트에, 승인 요청은 대시보드에, 산출물은 작업에,
  * 결과 제출은 결과 검토에 속한다.
  */
-const detailSection: Record<string, string> = {
-  runs: "agents",
-  approvals: "dashboard",
-  artifacts: "artifacts",
-  results: "review",
-};
+const detailSection = new Map([
+  ["runs", "agents"],
+  ["approvals", "dashboard"],
+  ["artifacts", "artifacts"],
+  ["results", "review"],
+]);
+/**
+ * 주소의 섹션 자리(`/orgs/:orgId/:section`)가 가리키는 섹션. 사용자가 주소에 무엇이든 적을 수 있어, 일반 객체로 찾으면
+ * 물려받은 이름(constructor)이 함수를 섹션으로 돌려준다(CODING_STANDARDS.md#제품-코드).
+ */
+export const sectionOfPath = (segment: string) =>
+  detailSection.get(segment) ?? segment;
 
 function useCurrent() {
   const org = useMatch("/orgs/:orgId/*")?.params.orgId;
   const matched = useMatch("/orgs/:orgId/:section/*")?.params.section;
   const section = matched
-    ? (detailSection[matched] ?? matched)
+    ? sectionOfPath(matched)
     : org
       ? defaultSection
       : undefined;

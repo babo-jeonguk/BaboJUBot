@@ -114,7 +114,8 @@ export function mcpRoutes(
     const body = Object.create(null) as Record<string, unknown>;
     const names: readonly string[] = orgTools[name].params;
     for (const key of names)
-      if (key in args) pathParams[key] = (args as Record<string, unknown>)[key];
+      if (Object.hasOwn(args, key))
+        pathParams[key] = (args as Record<string, unknown>)[key];
     for (const [key, value] of Object.entries(args))
       if (!names.includes(key)) body[key] = value;
     let operationKey: unknown = req.headers[idempotencyKeyHeader];
@@ -123,7 +124,7 @@ export function mcpRoutes(
       meta &&
       typeof meta === "object" &&
       !Array.isArray(meta) &&
-      idempotencyKeyHeader in meta
+      Object.hasOwn(meta, idempotencyKeyHeader)
     ) {
       const key = (meta as Record<string, unknown>)[idempotencyKeyHeader];
       if (

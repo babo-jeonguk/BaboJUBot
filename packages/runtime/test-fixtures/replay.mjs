@@ -2,7 +2,10 @@
 // No model or network requests. Mismatched input fails closed.
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
-const recording = JSON.parse(await readFile(process.argv[2], "utf8"));
+const recordingFile = process.argv[2];
+if (recordingFile === undefined)
+  throw new Error("usage: replay.mjs <recording> <arguments...>");
+const recording = JSON.parse(await readFile(recordingFile, "utf8"));
 if (process.argv.includes("--version")) {
   console.log(recording.version ?? "9.9.9 (Claude Code)");
   process.exit(0);
@@ -16,7 +19,8 @@ for (const [flag, value] of Object.entries(recording.argv ?? {})) {
 }
 for (const [flag, content] of Object.entries(recording.argvFile ?? {})) {
   const i = process.argv.indexOf(flag);
-  if (i < 0 || (await readFile(process.argv[i + 1], "utf8")) !== content)
+  const file = i < 0 ? undefined : process.argv[i + 1];
+  if (file === undefined || (await readFile(file, "utf8")) !== content)
     process.exit(25);
 }
 const input = createInterface({ input: process.stdin })[Symbol.asyncIterator]();

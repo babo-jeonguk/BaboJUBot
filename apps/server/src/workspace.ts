@@ -458,26 +458,28 @@ export class Workspaces {
     const extension = path.extname(name).toLowerCase();
     let content = "";
     let format: ArtifactSnapshot["format"] = "binary";
-    const binaryTypes: Record<string, string> = {
-      ".pdf": "application/pdf",
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".zip": "application/zip",
-      ".svg": "image/svg+xml",
-      ".html": "text/html",
-    };
-    let mediaType = binaryTypes[extension] ?? "application/octet-stream";
-    const textTypes: Record<string, string> = {
-      ".md": "text/markdown",
-      ".markdown": "text/markdown",
-      ".txt": "text/plain",
-      ".csv": "text/csv",
-      ".json": "application/json",
-      ".log": "text/plain",
-      ".tsv": "text/tab-separated-values",
-    };
-    if (textTypes[extension]) {
+    // 확장자는 에이전트가 지은 파일 이름에서 온다. 일반 객체로 찾지 않고 Map으로 찾는다(CODING_STANDARDS.md#제품-코드).
+    const binaryTypes = new Map([
+      [".pdf", "application/pdf"],
+      [".png", "image/png"],
+      [".jpg", "image/jpeg"],
+      [".jpeg", "image/jpeg"],
+      [".zip", "application/zip"],
+      [".svg", "image/svg+xml"],
+      [".html", "text/html"],
+    ]);
+    let mediaType = binaryTypes.get(extension) ?? "application/octet-stream";
+    const textTypes = new Map([
+      [".md", "text/markdown"],
+      [".markdown", "text/markdown"],
+      [".txt", "text/plain"],
+      [".csv", "text/csv"],
+      [".json", "application/json"],
+      [".log", "text/plain"],
+      [".tsv", "text/tab-separated-values"],
+    ]);
+    const textType = textTypes.get(extension);
+    if (textType) {
       const text = orIfUnreadable(
         () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
         undefined
@@ -485,7 +487,7 @@ export class Workspaces {
       // Invalid UTF-8 remains a binary artifact.
       if (text !== undefined && !text.includes("\0")) {
         content = text;
-        mediaType = textTypes[extension]!;
+        mediaType = textType;
         format = mediaType === "text/markdown" ? "markdown" : "text";
       }
     }

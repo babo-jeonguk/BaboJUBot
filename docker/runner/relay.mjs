@@ -71,17 +71,21 @@ function offer(port) {
   // Node 24의 fetch도 프록시 환경을 따르게 한다.
   env.NODE_USE_ENV_PROXY = "1";
   const child = spawn(program, args, { stdio: "inherit", env });
-  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"])
-    process.on(signal, () => child.kill(signal));
+  /** @type {NodeJS.Signals[]} */
+  const forwarded = ["SIGTERM", "SIGINT", "SIGHUP"];
+  for (const signal of forwarded) process.on(signal, () => child.kill(signal));
   child.on("error", (error) => {
-    console.error(
-      `babojubot relay: ${program} could not start (${error.code})`
-    );
+    const code = "code" in error ? error.code : undefined;
+    console.error(`babojubot relay: ${program} could not start (${code})`);
     process.exit(127);
   });
   child.on("exit", (code, signal) => {
     stopping = true;
-    process.exit(code ?? 128 + (os.constants.signals[signal] ?? 1));
+    process.exit(
+      code ??
+        128 +
+          ((signal === null ? undefined : os.constants.signals[signal]) ?? 1)
+    );
   });
 })().catch((error) => {
   console.error(`babojubot relay: ${error.code ?? "failed"}`);

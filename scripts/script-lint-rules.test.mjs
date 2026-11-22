@@ -191,7 +191,9 @@ test("cleanup chains in finally and catch blocks are reported in product code an
       // 무엇이 남는지와 쓸 수단·작성 기준을 알려 준다.
       assert.match(
         message.message,
-        shape in caughtChains ? /한 try…catch/ : /차례로 기다리거나/
+        Object.hasOwn(caughtChains, shape)
+          ? /한 try…catch/
+          : /차례로 기다리거나/
       );
       assert.match(message.message, /AggregateError/);
       assert.match(message.message, /withCleanup/);

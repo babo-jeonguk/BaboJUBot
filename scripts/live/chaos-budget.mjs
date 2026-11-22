@@ -19,7 +19,10 @@ import {
   orIfUnreadable,
 } from "@babojubot/contracts";
 
-/** 이슈 #154에서 합의한 상한. 여기보다 크게 실행하지 않는다. */
+/**
+ * 이슈 #154에서 합의한 상한. 여기보다 크게 실행하지 않는다. 시험은 더 짧은 시한을 넘기므로 값은 숫자로 둔다.
+ * @type {Readonly<{ maxLiveRuns: number, totalMs: number, sceneMs: number, longCommandSeconds: number, inputTokenAdvisory: number, sceneRuns: Readonly<Record<string, number> & { default: number }> }>}
+ */
 export const limits = Object.freeze({
   /** 전체 실제 모델 실행 수(자동 재실행·실패·서버 복구로 시작한 실행 포함). */
   maxLiveRuns: 24,
