@@ -549,7 +549,10 @@ export function superviseTree(
         `the supervisor confirmed the end but exited with ${supervisorExit?.signal ?? `code ${supervisorExit?.code}`}`
       );
   };
-  /** Linux·macOS: 그룹 밖(새 세션)으로 나간 자손을 표식으로 찾아 끈다. 실행기는 표식을 지니지 않고, 이것은 실행기가 끝난 뒤에 한다. */
+  /**
+   * Linux·macOS: 그룹 밖(새 세션)으로 나간 자손을 표식으로 찾아 끈다. 실행기는 표식을 지니지 않고, 이것은 실행기가 끝난 뒤에 한다.
+   * Linux는 실행기가 그룹 밖의 고아까지 끄므로 트리 밖으로 나간 것을 위한 둘째 겹이고, macOS는 이것이 새 세션 자손을 끄는 수단이다.
+   */
   const stopMarked = async () => {
     let left: number[];
     try {

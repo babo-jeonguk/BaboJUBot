@@ -224,36 +224,60 @@ impl Leader {
         ))
     }
 
+    /// What still runs of the tree: the group's live members and, on Linux, the orphans outside the group that this supervisor took in.
     fn live_members(&self) -> Result<usize, String> {
-        live_group_members(self.pid)
-            .map_err(|error| format!("unknown (the process group could not be listed: {error})"))
+        let group = live_group_members(self.pid)
+            .map_err(|error| format!("unknown (the process group could not be listed: {error})"))?;
+        Ok(group + orphans_outside(self.pid)?.len())
     }
 
-    /// Waits until no live process is left in the group, or until `limit`. Gives how many are left.
-    fn wait_until_empty(&self, limit: Duration) -> Result<usize, String> {
+    fn signal_tree(&self, signal: libc::c_int) -> Result<(), String> {
+        self.signal_group(signal)?;
+        for orphan in orphans_outside(self.pid)? {
+            // SAFETY: kill has no memory effects. The orphan is this supervisor's unreaped child, so its id is still that process's.
+            if unsafe { libc::kill(orphan, signal) } != 0 && errno() != libc::ESRCH {
+                return Err(format!(
+                    "unknown (a program that left the process group could not be signalled: {})",
+                    io::Error::last_os_error()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Waits until nothing of the tree runs, or until `limit`. Gives how many are left. `repeat` is sent again on every look, so it
+    /// also reaches orphans taken in during the wait (a program's children are taken in when it ends).
+    fn wait_until_empty(
+        &self,
+        limit: Duration,
+        repeat: Option<libc::c_int>,
+    ) -> Result<usize, String> {
         let deadline = Instant::now() + limit;
         loop {
             let left = self.live_members()?;
             if left == 0 || Instant::now() >= deadline {
                 return Ok(left);
             }
+            if let Some(signal) = repeat {
+                self.signal_tree(signal)?;
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
     }
 
-    /// SIGTERM, the grace, SIGKILL, then a bounded wait until no live process is left in the group.
-    fn end_group(&self, grace: Duration) -> StopResult {
+    /// SIGTERM, the grace, SIGKILL, then a bounded wait until nothing of the tree runs.
+    fn end_tree(&self, grace: Duration) -> StopResult {
         let mut left = self.live_members()?;
         if left > 0 {
-            self.signal_group(libc::SIGTERM)?;
-            left = self.wait_until_empty(grace)?;
+            self.signal_tree(libc::SIGTERM)?;
+            left = self.wait_until_empty(grace, None)?;
         }
         if left > 0 {
-            self.signal_group(libc::SIGKILL)?;
-            left = self.wait_until_empty(protocol::END_LIMIT)?;
+            self.signal_tree(libc::SIGKILL)?;
+            left = self.wait_until_empty(protocol::END_LIMIT, Some(libc::SIGKILL))?;
         }
         if left > 0 {
-            return Err(format!("{left} (the process group did not end)"));
+            return Err(format!("{left} (the tree did not end)"));
         }
         Ok(())
     }
@@ -322,7 +346,7 @@ impl Tree for Leader {
     }
 
     fn stop(&mut self, grace: Duration) -> (Option<Exit>, StopResult) {
-        if let Err(left) = self.end_group(grace) {
+        if let Err(left) = self.end_tree(grace) {
             // Something of the group still runs. The program stays unreaped so its ids stay taken.
             return (self.peek(), Err(left));
         }
@@ -356,20 +380,32 @@ fn live_group_members(group: libc::pid_t) -> io::Result<usize> {
             }
             Err(error) => return Err(error),
         };
-        // The fields after the command name, which ends with the last ") ": state, parent, process group, ...
-        let Some((_, rest)) = stat.rsplit_once(") ") else {
-            continue;
-        };
-        let mut fields = rest.split(' ');
-        let state = fields.next().unwrap_or("");
-        let pgrp = fields
-            .nth(1)
-            .and_then(|field| field.parse::<libc::pid_t>().ok());
-        if pgrp == Some(group) && state != "Z" && state != "X" {
+        if group_member_runs(&stat, group) {
             count += 1;
         }
     }
     Ok(count)
+}
+
+/// Linux: whether `/proc/<id>/stat` is of a process in `group` that still runs. The state is the main thread's: a process of several
+/// threads (Node.js) shows its main thread as a zombie while its other threads still end, and its children go to the supervisor only
+/// once the last thread is gone. So a zombie still runs while it counts more than one thread.
+#[cfg(target_os = "linux")]
+fn group_member_runs(stat: &str, group: libc::pid_t) -> bool {
+    // The fields after the command name, which ends with the last ") ": state, parent, process group, ..., thread count (the 18th).
+    let Some((_, rest)) = stat.rsplit_once(") ") else {
+        return false;
+    };
+    let fields: Vec<&str> = rest.split(' ').collect();
+    let state = fields.first().copied().unwrap_or("");
+    let pgrp = fields
+        .get(2)
+        .and_then(|field| field.parse::<libc::pid_t>().ok());
+    let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
+    if pgrp != Some(group) || state == "X" {
+        return false;
+    }
+    state != "Z" || threads.is_none_or(|threads| threads > 1)
 }
 
 #[cfg(target_os = "macos")]
@@ -426,8 +462,10 @@ fn live_group_members(group: libc::pid_t) -> io::Result<usize> {
 
 /// Linux: the supervisor takes in the tree's orphans (subreaper): a live orphan's id cannot go to another process, because only this
 /// supervisor reaps it. Like an init process (tini, dumb-init), the supervisor reaps an orphan as soon as it ends, so an ended program
-/// does not linger as a zombie that looks alive to others. Only the program itself stays unreaped until the last group signal. The
-/// program also dies with the supervisor (parent-death signal). Neither reaches what left for a new session by itself.
+/// does not linger as a zombie that looks alive to others. Only the program itself stays unreaped until the last group signal. A stop
+/// ends the orphans that left the group (a new session) along with the group, so what left the group ends with the tree even when
+/// the server's marker cleanup does not get to it. A descendant that left the group while its parent still runs is reached once the
+/// stop ends that parent. The program also dies with the supervisor (parent-death signal).
 #[cfg(target_os = "linux")]
 fn prepare_system() -> Result<(), String> {
     // SAFETY: a zeroed sigaction is valid, and the handler only stores to an atomic.
@@ -520,9 +558,38 @@ fn reap_ended_orphans(program: libc::pid_t) {
     }
 }
 
+/// Linux: the orphans this supervisor took in that still run outside the program's group (those in it go with the group signals).
+/// Ended ones are reaped on the way. Each one is this supervisor's unreaped child, so its id is not given to another process.
+#[cfg(target_os = "linux")]
+fn orphans_outside(program: libc::pid_t) -> Result<Vec<libc::pid_t>, String> {
+    let children = children().map_err(|error| {
+        format!("unknown (the programs that left the process group could not be listed: {error})")
+    })?;
+    let mut running = Vec::new();
+    for child in children.into_iter().filter(|&child| child != program) {
+        let mut status = 0;
+        // SAFETY: valid pointer to status; WNOHANG leaves a running child alone.
+        if unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) } != 0 {
+            // Reaped now, or no longer this supervisor's child.
+            continue;
+        }
+        // SAFETY: getpgid has no memory effects; the id is this supervisor's running child.
+        if unsafe { libc::getpgid(child) } != program {
+            running.push(child);
+        }
+    }
+    Ok(running)
+}
+
 /// macOS has no subreaper: the program is the supervisor's only child, and it stays unreaped until the last group signal.
 #[cfg(target_os = "macos")]
 fn reap_ended_orphans(_program: libc::pid_t) {}
+
+/// macOS: what left the group is not this supervisor's child; the server's marker cleanup ends it after the supervisor ends.
+#[cfg(target_os = "macos")]
+fn orphans_outside(_program: libc::pid_t) -> Result<Vec<libc::pid_t>, String> {
+    Ok(Vec::new())
+}
 
 #[cfg(target_os = "linux")]
 fn die_with_supervisor(command: &mut Command) {
@@ -635,4 +702,32 @@ pub fn run() -> i32 {
     control.write_message(&format!("ok {}", leader.pid));
     release_standard_streams();
     protocol::supervise(&mut control, &mut leader, &Signals, start_request)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::group_member_runs;
+
+    /// A `/proc/<id>/stat` line of process 200 in group 100 (the command name has the separator in it), with its state and threads.
+    fn stat(state: &str, threads: u32) -> String {
+        format!(
+            "200 (node ) S x) {state} 100 100 100 0 -1 4194304 92 0 0 0 0 0 0 0 20 0 {threads} 0 148788766 5980160 392"
+        )
+    }
+
+    #[test]
+    fn a_member_runs_until_its_last_thread_ends() {
+        assert!(group_member_runs(&stat("S", 1), 100));
+        assert!(group_member_runs(&stat("R", 7), 100));
+        // Node.js ended by a signal: the main thread is a zombie while the other threads still end; its children are not handed over yet.
+        assert!(group_member_runs(&stat("Z", 7), 100));
+        assert!(!group_member_runs(&stat("Z", 1), 100));
+        assert!(!group_member_runs(&stat("X", 1), 100));
+    }
+
+    #[test]
+    fn a_process_of_another_group_is_not_a_member() {
+        assert!(!group_member_runs(&stat("S", 1), 101));
+        assert!(!group_member_runs("garbage", 100));
+    }
 }

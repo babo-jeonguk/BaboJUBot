@@ -412,7 +412,21 @@ impl Job {
         Ok(accounting.ActiveProcesses)
     }
 
-    /// Ends everything in the job and waits, within a limit, until nothing in it runs.
+    /// The job counts a process out before the process's handle is signalled, so an emptied job does not yet mean the program's end
+    /// can be read. Waits for the handle within the limit.
+    fn wait_for_program(&self) -> StopResult {
+        let limit = protocol::END_LIMIT.as_millis() as u32;
+        // SAFETY: valid handle.
+        if unsafe { WaitForSingleObject(self.process, limit) } != WAIT_OBJECT_0 {
+            return Err(
+                "unknown (the job object emptied, but the program's end could not be read)"
+                    .to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Ends everything in the job and waits, within a limit, until nothing in it runs and the program's end can be read.
     fn end(&self) -> StopResult {
         // SAFETY: valid handle.
         if unsafe { TerminateJobObject(self.job, 1) } == 0 {
@@ -425,7 +439,7 @@ impl Job {
         loop {
             let active = self.active()?;
             if active == 0 {
-                return Ok(());
+                return self.wait_for_program();
             }
             if Instant::now() >= deadline {
                 return Err(format!("{active} (the job object did not empty)"));

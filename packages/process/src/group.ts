@@ -1,10 +1,11 @@
 // 프로세스 그룹 끄기. runtime의 재시작 복구만 쓴다(eslint.config.js의 no-group-stop-import). 실행 중인 트리는 감독 실행기가 끈다(#268).
 import { readFileSync, readdirSync } from "node:fs";
+import { statFields, statRuns } from "./proc-stat.ts";
+function fieldsOf(pid: number) {
+  return statFields(readFileSync(`/proc/${pid}/stat`, "utf8"));
+}
 export function identity(pid: number) {
-  const fields = readFileSync(`/proc/${pid}/stat`, "utf8")
-    .split(") ")
-    .at(-1)!
-    .split(" ");
+  const fields = fieldsOf(pid);
   return { pid, start: fields[19], group: Number(fields[2]), state: fields[0] };
 }
 export function members(group: number) {
@@ -12,9 +13,10 @@ export function members(group: number) {
     .filter((name) => /^\d+$/.test(name))
     .flatMap((name) => {
       try {
-        const info = identity(Number(name));
-        return info.group === group && info.state !== "Z" && info.state !== "X"
-          ? [info]
+        const pid = Number(name);
+        const fields = fieldsOf(pid);
+        return Number(fields[2]) === group && statRuns(fields)
+          ? [{ pid, start: fields[19], group, state: fields[0] }]
           : [];
       } catch (e) {
         if (
@@ -29,7 +31,7 @@ export function members(group: number) {
     });
 }
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/** 그룹에 살아 있는 프로세스가 있는가. Linux는 좀비를 빼고 세고, 그 밖의 POSIX는 신호 0으로 확인한다. */
+/** 그룹에 살아 있는 프로세스가 있는가. Linux는 끝난 프로세스(마지막 스레드까지 끝난 좀비)를 빼고 세고, 그 밖의 POSIX는 신호 0으로 확인한다. */
 export function groupAlive(group: number) {
   if (process.platform === "win32") return false;
   if (process.platform === "linux") return members(group).length > 0;

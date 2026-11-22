@@ -10,6 +10,7 @@ import {
 } from "@babojubot/contracts";
 import { runCommand } from "./bounded-command.ts";
 import { type Clock, realClock } from "./clock.ts";
+import { statFields, statRuns } from "./proc-stat.ts";
 
 /**
  * 실행 시도의 표식. 실행 시도마다 고유한 값을 프로그램 환경에 넣으면 그 자손이 모두 물려받는다.
@@ -123,7 +124,7 @@ export function processStartTicks(pid: number): number | undefined {
       )
   );
   if (stat === undefined) return undefined;
-  const start = Number(stat.split(") ").at(-1)!.split(" ")[19]);
+  const start = Number(statFields(stat)[19]);
   return Number.isFinite(start) ? start : undefined;
 }
 
@@ -167,9 +168,9 @@ async function mayBeOurs(
     undefined
   );
   if (stat === undefined) return false;
-  const fields = stat.split(") ").at(-1)!.split(" ");
-  // 끝났지만 거두어지지 않은 프로세스(좀비)는 산 것이 아니다.
-  if (fields[0] === "Z" || fields[0] === "X") return false;
+  const fields = statFields(stat);
+  // 끝났지만 거두어지지 않은 프로세스(마지막 스레드까지 끝난 좀비)는 산 것이 아니다.
+  if (!statRuns(fields)) return false;
   const start = Number(fields[19]);
   if (!Number.isFinite(start) || start < since) return false;
   // 실행 시도의 자손은 서버의 cgroup을 물려받는다. 다른 cgroup(데스크톱 앱·systemd 서비스)의 프로그램은 우리 것이 아니다.

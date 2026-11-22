@@ -199,7 +199,8 @@ describe("launchTree", () => {
   });
 
   // 서버가 강제로 끝나면 제어 통로가 끊기고, 감독 실행기가 자기 트리(대표와 같은 그룹의 자손, Windows는 묶음 전체)를 끄고 끝을
-  // 확인한다(#268). 다음 시작의 복구에 맡기지 않는다. 새 세션으로 나간 자손의 정리는 아직 서버 쪽 표식 정리가 맡는다.
+  // 확인한다(#268). 다음 시작의 복구에 맡기지 않는다. Linux는 그룹 밖으로 나간 고아도 실행기가 끈다. macOS의 새 세션 자손은 아직
+  // 다음 시작의 표식 정리가 맡는다.
   // 서버는 이 시험이 띄운 트리의 대표이고, killLeader로 서버만 강제로 끝낸다.
   it("stops the tree when the process that launched it is killed", async () => {
     const leader = unique("leader");
