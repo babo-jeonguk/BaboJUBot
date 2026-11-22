@@ -1,6 +1,7 @@
-// eslint.config.js가 agent 도구 스크립트를 타입 정보로 검사할 때 쓴다(Promise 규칙). 타입 검사(tsc)는 하지 않는다.
+// eslint.config.js가 agent 도구 스크립트를 타입 정보로 검사할 때 쓰고, pnpm typecheck:js(scripts/typecheck-js.mjs)가 타입 검사한다.
+// JS를 .ts로 옮기기 전까지 암시적 any만 끈다(#270 PR 3a). 옮긴 영역은 제품 코드와 같은 엄격 설정을 받는다.
 {
   "extends": "../tsconfig.base.json",
-  "compilerOptions": { "checkJs": false },
+  "compilerOptions": { "checkJs": true, "noImplicitAny": false },
   "include": ["**/*"]
 }
