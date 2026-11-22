@@ -152,13 +152,23 @@ const fileWideComments = {
 for (const [shape, code] of Object.entries(fileWideComments))
   test(`a comment that ${shape} does not lift a test rule`, async () => {
     for (const place of testPlaces) {
-      const errors = (await lint(code, place)).filter(
+      const messages = await lint(code, place);
+      const errors = messages.filter(
         (m) => m.ruleId === "tests/no-fixed-time-wait"
       );
       assert.deepEqual(
         errors.map((m) => m.severity),
         [2],
         `${place}: ${code}`
+      );
+      // 효과 없는 주석도 남지 않게 오류로 짚는다(본보기로 베껴지지 않게).
+      assert.ok(
+        messages.some(
+          (m) =>
+            m.ruleId === "@eslint-community/eslint-comments/no-use" &&
+            m.severity === 2
+        ),
+        `${place}: the comment is not reported`
       );
     }
   });
