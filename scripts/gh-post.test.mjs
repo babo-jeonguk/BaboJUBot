@@ -34,6 +34,7 @@ function createFixture() {
     ".gitignore",
     "scripts/gh-post.mjs",
     "scripts/ignored-dot-folders.mjs",
+    "scripts/markdown.mjs",
   ]) {
     fs.mkdirSync(path.dirname(path.join(fixture, relative)), {
       recursive: true,
@@ -53,6 +54,12 @@ function createFixture() {
   git(fixture, "add", ".");
   git(fixture, "commit", "-q", "-m", "init");
   git(fixture, "branch", "fix/1-x");
+  // 복사한 스크립트가 저장소의 Markdown 파서를 가져가도록 node_modules를 잇는다(커밋 뒤라 fixture의 Git에는 들지 않는다).
+  fs.symlinkSync(
+    path.join(repository, "node_modules"),
+    path.join(fixture, "node_modules"),
+    "junction"
+  );
   return fixture;
 }
 
@@ -76,6 +83,10 @@ test("published text rejects references readers cannot open", async () => {
       "https://github.com/acme/demo/blob/main/test-results/a/trace.zip",
       "[캐시](https://github.com/Acme/Demo/tree/main/.reference-cache/issue-1)",
       "[브랜치 파일](https://github.com/acme/demo/blob/fix/1-x/data/a.md)",
+      // 참조식 링크 정의(CommonMark §4.7)도 링크다.
+      "[보고서][r]\n\n[r]: playwright-report/index.html",
+      "[trace]: ./test-results/a/trace.zip",
+      '<a href="playwright-report/index.html">보고서</a>',
     ];
     for (const text of rejected)
       assert.notEqual(
@@ -100,6 +111,10 @@ test("published text allows names, product settings, prose and committed links",
       "[다른 저장소](https://github.com/other/repo/blob/main/.scratch/x.md)",
       "[밖](../../outside.md) 그리고 ::/0 같은 표기",
       "저장소 밖 임시 폴더에 남긴다.",
+      // 코드 블록·코드 스팬 안 글은 링크가 아니다(CommonMark §4.5·§6.1). 점 폴더 경로는 코드 안도 따로 본다.
+      "```\n[보고서](playwright-report/index.html)\n```",
+      "`[보고서](playwright-report/index.html)`",
+      "`https://github.com/acme/demo/blob/main/test-results/a/trace.zip`",
     ];
     for (const text of allowed)
       assert.deepEqual(
@@ -107,6 +122,18 @@ test("published text allows names, product settings, prose and committed links",
         [],
         `expected allowed: ${text}`
       );
+  });
+});
+
+test("a reference definition finding names the definition's line", async () => {
+  await withFixture((fixture) => {
+    const findings = findLocalOnlyReferences(
+      "[보고서][r]를 본다.\n\n[r]: playwright-report/index.html",
+      loadContext(fixture)
+    );
+    assert.deepEqual(findings, [
+      { line: 3, reference: "playwright-report/index.html" },
+    ]);
   });
 });
 

@@ -23,4 +23,4 @@
   → updateAgentProfile(core planAgentProfileChange) → EventHub → 다른 탭 재조회 / 다음 실행 시도의 runContext.team
 ```
 
-이름 겹침은 `planAgentProfileChange`, 얼굴이 기본으로 돌아가는 증상은 rows.ts `toAgent`에서 시작합니다.
+이름 겹침은 core/agent-profile.ts `planAgentProfileChange`, 얼굴이 기본으로 돌아가는 증상은 rows.ts `toAgent`에서 시작합니다.
