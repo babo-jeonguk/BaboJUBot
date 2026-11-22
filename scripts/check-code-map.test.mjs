@@ -290,6 +290,29 @@ test("reads only the code map index and its section files", async () => {
   );
 });
 
+test("skips listed paths that are not regular files, such as a link to a folder", async () => {
+  const problems = await withCleanup((defer) => {
+    const root = mkdtempSync(path.join(tmpdir(), "babojubot-code-map-"));
+    defer(() => removeFolder(root));
+    const files = {
+      ...core,
+      [area]: table(["실행 시작", "`planRunGone`", ""]),
+    };
+    writeFiles(root, files);
+    // Git은 폴더를 가리키는 링크를 파일 하나로 적는다(.claude/skills/reference-first).
+    mkdirSync(path.join(root, ".claude/skills/reference-first"), {
+      recursive: true,
+    });
+    return findCodeMapProblems({
+      root,
+      files: [...Object.keys(files), ".claude/skills/reference-first"],
+    });
+  });
+  assert.deepEqual(problems, [
+    `${area}:5: 없는 이름 \`planRunGone\` — 저장소 코드 전체에서 찾음`,
+  ]);
+});
+
 test("the command checks Git's file list and fails with the problems", async () => {
   await withCleanup((defer) => {
     const fixture = mkdtempSync(path.join(tmpdir(), "babojubot-code-map-cli-"));
