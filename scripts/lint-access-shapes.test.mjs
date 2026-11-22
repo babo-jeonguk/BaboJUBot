@@ -7,7 +7,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { accessShapes } from "./lint-access-shapes.mjs";
+import { accessShapes, skippedShapes } from "./lint-access-shapes.mjs";
 
 const repository = path.resolve(import.meta.dirname, "..");
 
@@ -101,4 +101,34 @@ test("every access shape the generator makes reaches the same value as the canon
     }
   }
   assert.deepEqual(wrong, []);
+});
+
+test("the generator leaves out shapes a module's format cannot reach, with the reason", () => {
+  const reasons = (value) =>
+    skippedShapes(value).map(({ shape, reason }) => `${shape}: ${reason}`);
+  // vitest의 CJS 입구는 require하면 던진다.
+  assert.match(
+    reasons({ module: "vitest", path: ["expect"] }).join("\n"),
+    /^require: require하면 던진다: Vitest cannot be imported/m
+  );
+  // CJS와 ESM 입구를 함께 둔 패키지는 require 모양을 만들지 않는다.
+  assert.match(
+    reasons({ module: "@playwright/test", path: ["test"] }).join("\n"),
+    /^require: CJS 입구와 ESM 입구가 따로/m
+  );
+  // module.exports가 함수인 CJS는 require 결과 자체가 기본 값이고, 빠지는 모양이 없다.
+  assert.deepEqual(reasons({ module: "cross-spawn", path: ["default"] }), []);
+  assert.ok(
+    accessShapes({
+      value: { module: "cross-spawn", path: ["default"] },
+      use: (ref) => ref,
+    }).some(({ code }) =>
+      code.includes('const requiredTool = require("cross-spawn")')
+    )
+  );
+  // 전역은 가져오는 모양이 없다.
+  assert.match(
+    reasons({ global: "JSON", path: ["parse"] })[0],
+    /전역 값은 가져오는 모양이 없다/
+  );
 });
