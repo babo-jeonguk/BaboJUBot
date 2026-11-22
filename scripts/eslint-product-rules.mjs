@@ -1266,7 +1266,7 @@ const noFailureCollecting = {
   },
 };
 
-const groupStoppers = new Set(["stopProcessGroup", "interruptProcessGroup"]);
+const groupStoppers = new Set(["stopProcessGroup"]);
 /** 그룹 끄기를 담은 파일: 그룹 끄기 자체와 그것을 다시 내보내는 복구 입구(확장자를 뗀 저장소 기준 경로). */
 const groupFiles = new Set([
   "packages/process/src/group",
@@ -1274,9 +1274,9 @@ const groupFiles = new Set([
 ]);
 
 /**
- * 그룹 끄기의 반쪽(`stopProcessGroup`·`interruptProcessGroup`)만 가져다 쓰지 못하게 한다. 그룹 끄기는 그룹으로 띄운 트리에만 맞고,
+ * 그룹 끄기의 반쪽(`stopProcessGroup`)만 가져다 쓰지 못하게 한다. 그룹 끄기는 그룹으로 띄운 트리에만 맞고,
  * 띄운 방법을 모르는 쪽이 빌려 쓰면 Windows에서 아무것도 끄지 않고 성공하거나 새 세션으로 나간 자식을 놓친다(#262).
- * 설정이 이 규칙을 빼는 파일(공용 실행 launch.ts, 그룹 끄기 group.ts와 복구 입구 recovery.ts, runtime의 재시작 복구) 밖에서
+ * 설정이 이 규칙을 빼는 파일(그룹 끄기 group.ts와 복구 입구 recovery.ts, runtime의 재시작 복구) 밖에서
  * - 어디서든 그 두 이름을 가져오거나 다시 내보내는 것,
  * - 그룹 끄기를 담은 파일(group.ts·복구 입구)의 모듈 객체를 통째로 받거나 다시 내보내는 것(`export *`·`import * as`·통째로 받은 `require`)
  * 을 막는다. 파일은 경로 철자가 아니라 대상으로 판정한다(공용 판정의 `targetOf`): 상대 경로·자기 패키지 이름(`@babojubot/process/recovery`)·

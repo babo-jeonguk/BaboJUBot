@@ -5,7 +5,7 @@ import { testReport } from "../../vitest.reports.ts";
 export default defineConfig({
   test: {
     reporters: [...configDefaults.reporters, ...testReport("server-files")],
-    // Windows는 묶음 실행기 없이 프로그램을 띄우지 않는다(#262). 파일 읽기 프로세스도 같다.
+    // 세 OS 모두 감독 실행기 없이 프로그램을 띄우지 않는다(#268). 파일 읽기 프로세스도 같다.
     setupFiles: ["@babojubot/process/launcher-setup"],
     include: [
       "test/workspace.test.ts",

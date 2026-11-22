@@ -71,13 +71,12 @@ const processOwners = [
 // 프로세스 패키지(@babojubot/process)에서 프로그램을 직접 띄워도 되는 파일. 공용 실행과, 그 위에 놓을 수 없는 실행이다.
 // 그 밖의 파일(표식 조회 등)은 이 파일들의 함수로 띄운다.
 const processPackageOwners = [
-  "launch.ts", // 공용 실행: 띄우기와 그 트리의 끄기(stop)를 한 쌍으로 돌려준다
+  "supervised.ts", // 감독 실행기 아래의 트리: 실행 시도(launch.ts)와 준비의 시험 실행(supervisor.ts)이 같이 띄우고 끈다
   "bounded-command.ts", // 공용 실행 위에 놓을 수 없는 짧은 명령: 시한에 SIGKILL과 끝 보장
-  "job-object.ts", // Windows 묶음 실행기를 만들고 시험한다. 실행기 위에는 놓을 수 없다
   "ps.ts", // ps 한 칸 조회: "대상 없음" 계약(출력 없이 1)을 한곳에 둔다
 ].map((name) => `packages/process/src/${name}`);
 // 제품 코드·개발 스크립트에서 오래 도는 자식을 child_process·cross-spawn으로 직접 띄워도 되는 파일. 그 밖은 공용 실행
-// (@babojubot/process)으로 띄운다(product/no-direct-launch). 위 두 목록은 공용 실행 자신과 그것이 서는 실행(짧은 명령, 묶음 실행기,
+// (@babojubot/process)으로 띄운다(product/no-direct-launch). 위 두 목록은 공용 실행 자신과 그것이 서는 실행(짧은 명령, 감독 실행기,
 // 복구 보조 명령, 대화형 로그인 등)이다. 그 밖은 공용 실행의 끄기가 맞지 않는 실행만 둔다.
 const launchOwners = [
   ...processOwners,
@@ -142,7 +141,7 @@ function launchBoundary(files, owners, launchMessage) {
 const dbScopeWhy =
   "db(Control Plane)가 프로바이더 adapter 패키지(runtime)에 기대면 저장소가 실행 계층에 묶입니다.";
 const processEntries = {
-  // 제품 코드: 공용 실행·짧은 명령·시계·묶음 실행기 준비와 폴더 지우기.
+  // 제품 코드: 공용 실행·짧은 명령·시계·감독 실행기 준비와 폴더 지우기.
   product: ["@babojubot/process", "@babojubot/process/remove-folder"],
   // 개발 스크립트: 제품 코드의 입구와, 사고 재현 스크립트가 쓰는 프로세스 확인·정리.
   scripts: [
@@ -590,12 +589,11 @@ export default defineConfig([
     rules: { "product/bounded-command": "error" },
   },
   {
-    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 공용 실행(launch.ts)과 그룹 끄기·복구 입구, runtime의 재시작 복구만 그 이름과 그 파일을
+    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 그룹 끄기·복구 입구와 runtime의 재시작 복구만 그 이름과 그 파일을
     // 가져온다. 파일은 경로 철자가 아니라 대상으로 판정한다(자기 패키지 이름·상대 경로 모두).
     files: [...productFiles, ...scriptFiles],
     ignores: [
       ...scriptIgnores,
-      "packages/process/src/launch.ts",
       "packages/process/src/group.ts",
       "packages/process/src/recovery.ts",
       "packages/runtime/src/providers/recovery.ts",

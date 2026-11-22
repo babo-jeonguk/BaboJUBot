@@ -1,0 +1,32 @@
+# Control channel order (#274 review 2): what the supervisor may write in each phase, and the phase after it. "stop" is the
+# server's stop request. Anything not listed here breaks the protocol. The TS reader (src/supervised.ts) follows only this
+# table; the Rust tests check that what the supervisor writes keeps to it. Both check the sequences below.
+#   transition <phase> <event> <next phase>
+#   accept|reject <event> ...   a whole sequence from the first phase (hello)
+transition hello hello starting
+transition starting ok running
+transition starting failed done
+transition starting not-started done
+transition running exit exited
+transition running stop stopping
+transition exited stop stopping-exited
+transition stopping exit stopping-exited
+transition stopping left done
+transition stopping-exited ended done
+transition stopping-exited left done
+accept hello ok exit stop ended
+accept hello ok stop exit ended
+accept hello ok stop left
+accept hello ok stop exit left
+accept hello ok exit stop left
+accept hello failed
+accept hello not-started
+reject ok
+reject hello hello
+reject hello exit
+reject hello ok ended
+reject hello ok stop ended
+reject hello ok exit exit
+reject hello ok exit ended
+reject hello ok stop exit exit
+reject hello failed ok

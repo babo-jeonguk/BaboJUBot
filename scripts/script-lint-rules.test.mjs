@@ -322,8 +322,7 @@ test("long-running children are launched only through the shared launch", async 
   }
   // 실행 소유 파일(공용 실행과 그것이 서는 실행, 데몬을 띄우는 pg_ctl)과 시험 코드는 범위 밖이다.
   for (const place of [
-    "packages/process/src/launch.ts",
-    "packages/process/src/job-object.ts",
+    "packages/process/src/supervised.ts",
     "packages/process/src/bounded-command.ts",
     "packages/runtime/src/providers/container.ts",
     "packages/db/src/embedded.ts",
@@ -350,9 +349,9 @@ const outsideHalves = {
     "apps/server/src/app.ts",
     `import { stopProcessGroup } from "@babojubot/process/recovery";\nawait stopProcessGroup(1);\n`,
   ],
-  "interruptProcessGroup in runtime": [
+  "stopProcessGroup called in runtime": [
     "packages/runtime/src/providers/process.ts",
-    `import { interruptProcessGroup } from "@babojubot/process/recovery";\ninterruptProcessGroup(1);\n`,
+    `import { stopProcessGroup } from "@babojubot/process/recovery";\nawait stopProcessGroup(1, { graceMs: 0 });\n`,
   ],
   "stopProcessGroup re-exported by runtime": [
     "packages/runtime/src/index.ts",
@@ -363,9 +362,9 @@ const outsideHalves = {
     "apps/server/src/app.ts",
     `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
   ],
-  "interruptProcessGroup taken from a dynamic import": [
+  "stopProcessGroup taken from a dynamic import of the recovery entry": [
     ".agents/scripts/run-worker.mjs",
-    `const { interruptProcessGroup } = await import("@babojubot/process/recovery");\nvoid interruptProcessGroup;\n`,
+    `const { stopProcessGroup } = await import("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
   ],
   // 불러오는 함수는 출처로 알아본다: 이름을 바꿔 가져온 createRequire도 같다(#266 리뷰 SPEC-2).
   "stopProcessGroup taken from a renamed createRequire": [
@@ -373,15 +372,19 @@ const outsideHalves = {
     `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { stopProcessGroup } = load("@babojubot/process/recovery");\nvoid stopProcessGroup;\n`,
   ],
 };
-// 프로세스 패키지 안에서 공용 실행과 복구 입구 밖이 그룹 끄기를 가져오는 모양.
+// 프로세스 패키지 안에서 복구 입구 밖이(공용 실행 포함) 그룹 끄기를 가져오는 모양.
 const insideHalves = {
+  "stopProcessGroup in launch.ts": [
+    "packages/process/src/launch.ts",
+    `import { stopProcessGroup } from "./group.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
+  ],
   "stopProcessGroup in lease.ts": [
     "packages/process/src/lease.ts",
     `import { stopProcessGroup } from "./group.ts";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
   ],
-  "interruptProcessGroup re-exported by the entry": [
+  "stopProcessGroup re-exported by the entry": [
     "packages/process/src/index.ts",
-    `export { interruptProcessGroup } from "./group.ts";\n`,
+    `export { stopProcessGroup } from "./group.ts";\n`,
   ],
   "everything from group.ts re-exported": [
     "packages/process/src/index.ts",
@@ -404,9 +407,9 @@ const insideHalves = {
     "packages/process/src/lease.ts",
     `import { stopProcessGroup } from "./group";\nexport const stop = (pid: number) => stopProcessGroup(pid);\n`,
   ],
-  "interruptProcessGroup through the src folder": [
+  "stopProcessGroup through the src folder": [
     "packages/process/src/clock.ts",
-    `export { interruptProcessGroup } from "../src/group.ts";\n`,
+    `export { stopProcessGroup } from "../src/group.ts";\n`,
   ],
   "the recovery entry taken whole by the package's own name": [
     "packages/process/src/index.ts",
@@ -427,12 +430,9 @@ test("the process group stop stays inside the shared launch and the restart reco
     assert.match(message.message, /stop\(\)/);
     assert.match(message.message, /CODING_STANDARDS\.md#제품-코드/);
   }
-  // 막지 않는 모양: 공용 실행과 복구 입구, runtime의 재시작 복구, 그룹 끄기가 아닌 함수, 시험 코드.
+  // 막지 않는 모양: 복구 입구, runtime의 재시작 복구, 그룹 끄기가 아닌 함수, 시험 코드. 공용 실행(launch.ts)은 감독 실행기로
+  // 끄므로 그룹 끄기를 가져오지 않는다(#268, 위 insideHalves).
   const kept = [
-    [
-      "packages/process/src/launch.ts",
-      `import { interruptProcessGroup, stopProcessGroup } from "./group.ts";\nvoid [interruptProcessGroup, stopProcessGroup];\n`,
-    ],
     [
       "packages/process/src/recovery.ts",
       `export { groupAlive, stopProcessGroup } from "./group.ts";\n`,
@@ -490,7 +490,7 @@ const boundedCommands = [
 
 test("launch owners end short commands at their time limit", async () => {
   for (const place of [
-    "packages/process/src/job-object.ts",
+    "packages/process/src/supervised.ts",
     "packages/runtime/src/providers/recovery.ts",
     "packages/db/src/embedded.ts",
   ]) {
@@ -982,7 +982,7 @@ const productOriginCases = [
   })),
   {
     rule: "product/bounded-command",
-    place: "packages/process/src/job-object.ts",
+    place: "packages/process/src/supervised.ts",
     value: { module: "node:child_process", path: ["execFile"] },
     use: (r) => `${r}("ps", [], () => {});\n`,
   },

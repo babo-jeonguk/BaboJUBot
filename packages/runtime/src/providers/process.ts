@@ -10,7 +10,7 @@ import {
 import {
   launchTree,
   realClock,
-  requireJobObject,
+  requireSupervisor,
   runTree,
   TreeLaunchRefused,
   type Clock,
@@ -31,8 +31,8 @@ export const startupLimitMs = 5 * 60 * 1000;
 const defaultMaxLineLength = 64 * 1024 * 1024;
 /** JSON으로 읽지 못한 줄. 들어온 `unknown`과 겹치지 않는 값이다. */
 const unreadable = Symbol("unreadable");
-/** 프로그램이 끝난 뒤 남은 출력을 읽을 시간. 남긴 자식이 출력을 쥐고 있어 출력이 닫히지 않을 때만 쓰인다. */
-const exitDrainMs = 1000;
+/** 트리를 끈 뒤 출력이 닫히기를 기다리는 상한. 트리가 끝났으면 출력을 쥔 프로그램이 없어 곧 닫힌다. 넘기면 트리 밖의 누군가가 출력을 쥔 것이다. */
+const outputCloseLimitMs = 10_000;
 
 /** 프로그램 출력이 로그인 문제를 말하는가. 공개 기록에 옮기지 않고 판단에만 쓴다. */
 export const saysLoginProblem = (text: unknown) =>
@@ -150,7 +150,7 @@ export async function runProbe(
       overflow: "truncate",
     });
   } catch (error) {
-    // Windows에서 묶음 실행기를 쓸 수 없어 띄우지 않았다. 그 이유를 그대로 알린다.
+    // 감독 실행기를 쓸 수 없어 띄우지 않았다. 그 이유를 그대로 알린다.
     if (error instanceof TreeLaunchRefused) throw failed(error, {});
     // 끝났음을 확인하지 못했다. 그 트리는 남았을 수 있다.
     throw failed(new Error("Program did not stop", { cause: error }), {
@@ -218,8 +218,8 @@ export function startProcess(options: {
   const name = options.container
     ? `babojubot-${crypto.randomUUID()}`
     : undefined;
-  // Windows에서 묶음 실행기를 쓸 수 없으면 아무것도 열기 전에 그 이유로 거절한다(TreeLaunchRefused, 실행 시도의 실패 원인으로 보인다).
-  requireJobObject();
+  // 감독 실행기를 쓸 수 없으면 아무것도 열기 전에 그 이유로 거절한다(TreeLaunchRefused, 실행 시도의 실패 원인으로 보인다).
+  requireSupervisor();
   // 컨테이너는 네트워크가 없다. 이 실행 시도의 중계를 먼저 열고(못 열면 띄우지 않고 던진다) 그 폴더를 넣는다. 끝나면 닫는다.
   const relay = options.container?.settings.relay.open({
     identity: options.container.relay.identity,
@@ -361,21 +361,23 @@ export function startProcess(options: {
   const exited = new Promise<void>((resolve) => {
     reportExit = resolve;
   });
+  const outputsClosed = Promise.all([
+    outputEnd(tree.stdout),
+    outputEnd(tree.stderr),
+  ]);
   const done = new Promise<{
     code: number | null;
     broken: boolean;
     stderr: string;
   }>((resolve) => {
-    let drain: unknown;
-    let outputClosed = false;
+    /**
+     * 프로그램이 끝났거나(`code`) 끄기가 대표의 끝 없이 실패했다(`null`). 남긴 자식이 출력을 쥐고 있어도 출력이 닫히기를 시간으로
+     * 기다리지 않는다: 중계를 닫고 트리를 끈 뒤, 트리가 끝나 닫힌 출력을 끝까지 읽는다(#268).
+     */
     const finish = (code: number | null) => {
-      if (finished) return;
+      if (closed) return;
       closed = true;
       clock.clearTimeout(term);
-      clock.clearTimeout(drain);
-      finished = true;
-      // 끝나기 전에 낸 출력을 다 처리한 순간을 알린다. 출력이 닫히지 않은 채 시작했으면 그때까지 읽은 출력까지다. 실제 정리(중계·자식·컨테이너)는 아래가 하고 done이 기다린다.
-      void queue.then(reportExit);
       void (async () => {
         /** 정리 단계 하나. 실패하면 그 자리에서 진단을 남기고 실패로 돌려준다(뒤 단계는 attemptEach가 이어 한다). */
         const reported =
@@ -397,12 +399,6 @@ export function startProcess(options: {
               `the isolated run relay could not be closed (${failureCode(error)})`,
             () => relay?.close()
           ),
-          // 출력이 아직 열려 있으면(남긴 자식이 쥐고 있음) 이쪽 끝을 닫는다. 그 뒤로 온 출력은 읽지 않는다.
-          () => {
-            if (outputClosed) return;
-            tree.stdout.destroy();
-            tree.stderr.destroy();
-          },
           // 대표는 셸·MCP 자식보다 먼저 끝날 수 있다. 새 세션으로 나간 명령까지 트리 전체가 끝난 것을 확인해야 기록을 지운다.
           reported(
             (error) =>
@@ -412,6 +408,44 @@ export function startProcess(options: {
               stopped = true;
             }
           ),
+          // 트리가 끝났으면 출력을 쥔 프로그램이 없어 출력이 닫힌다. 닫힐 때까지 읽는다. 닫히지 않으면(트리를 끄지 못함, 트리 밖의
+          // 누군가가 쥠) 상한 뒤 이쪽 끝을 닫고 실패로 남긴다. 그 뒤로 온 출력은 읽지 않는다.
+          reported(
+            (error) =>
+              `the program's output did not close after its tree was stopped (${failureCode(error)})`,
+            async () => {
+              let limit: unknown;
+              try {
+                await Promise.race([
+                  outputsClosed,
+                  new Promise<never>((_, reject) => {
+                    limit = clock.setTimeout(
+                      () =>
+                        reject(
+                          new Error(
+                            `the output did not close within ${outputCloseLimitMs} ms`
+                          )
+                        ),
+                      outputCloseLimitMs
+                    );
+                  }),
+                ]);
+              } catch (error) {
+                tree.stdout.destroy();
+                tree.stderr.destroy();
+                throw error;
+              } finally {
+                clock.clearTimeout(limit);
+              }
+            }
+          ),
+          // 프로그램은 끝났으므로 지금까지 읽은 마지막 줄(줄바꿈 없이 끝난 줄)도 그 출력이다. 끝나기 전에 낸 출력을 다 처리한 순간을
+          // 알린다. 실제 정리(컨테이너·기록)는 아래가 하고 done이 기다린다.
+          () => {
+            deliverRest();
+            finished = true;
+            void queue.then(reportExit);
+          },
           // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
           reported(
             (error) =>
@@ -446,30 +480,13 @@ export function startProcess(options: {
     finishWithoutLeader = () => finish(null);
     void tree.exited.then(({ code }) => {
       leaderExited = true;
-      clock.clearTimeout(term);
-      // 프로그램이 끝났다. 보통은 곧 출력이 닫히고(아래) 거기서 정리한다. 남긴 자식이 출력을 쥐고 있으면 닫히지 않으므로, 남은 출력을 읽을 시간만 두고 같은 정리를 시작한다. 취소 중이던 종료 타이머도 여기서 멈춘다(남은 트리는 finish가 중계를 먼저 닫고 끈다).
-      if (!finished)
-        drain = clock.setTimeout(() => {
-          // 프로그램은 끝났으므로 지금까지 읽은 마지막 줄(줄바꿈 없이 끝난 줄)도 그 출력이다. 그 뒤로 온 출력은 읽지 않는다.
-          if (!finished) deliverRest();
-          finish(code);
-        }, exitDrainMs);
-    });
-    void Promise.all([
-      tree.exited,
-      outputEnd(tree.stdout),
-      outputEnd(tree.stderr),
-    ]).then(([{ code }]) => {
-      outputClosed = true;
-      if (finished) return;
-      deliverRest();
       finish(code);
     });
   });
   return {
     write,
     end,
-    /** 프로그램이 끝나고 그 전에 낸 출력의 처리도 끝났다. 남긴 자식이 출력을 쥐어 출력이 닫히지 않으면 종료 뒤 exitDrainMs까지 읽은 출력만 처리한다. 정리 완료는 기다리지 않는다(정리 완료는 done). */
+    /** 프로그램이 끝나고 그 출력의 처리도 끝났다. 남긴 자식이 출력을 쥐었으면 트리를 끈 뒤 닫힌 출력까지 처리한다. 컨테이너·기록 정리는 기다리지 않는다(정리 완료는 done). */
     exited,
     /** 입력 쓰기가 실패했다. 이후 보낸 내용은 프로그램에 닿지 않는다. 프로그램 종료는 end()의 순서대로 따로 진행한다. */
     inputFailed,

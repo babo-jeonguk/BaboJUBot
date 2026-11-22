@@ -8,15 +8,14 @@
 //          [--session <sessionID>] [--start-check <seconds>] [--limit <minutes>]
 //
 // Exit codes: 0 finished without an error event; 2 error event (move to the next model);
-// 3 no session started twice (parent takes over); 4 opencode failed without an error event, could not start (on Windows also
-// when the job object launcher is not available: the runner refuses to start a worker it could not stop), the call reached
+// 3 no session started twice (parent takes over); 4 opencode failed without an error event, could not start (also when
+// the supervisor is not available: the runner refuses to start a worker it could not stop), the call reached
 // --limit (a limit on the whole call, retries included; default 110 minutes, inside the parent's 2-hour background limit), or
 // the worker's process tree could not be confirmed stopped (no retry after that); 128+n stopped by signal n; 1 usage.
 import { closeSync, openSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { launchTree, prepareJobObjectLauncher } from "@babojubot/process";
+import { launchTree, prepareSupervisor } from "@babojubot/process";
 import {
   continueAfterFailure,
   hasErrorCode,
@@ -145,9 +144,9 @@ function launch() {
   }
 }
 
-// Windows only: build the job object launcher once into a folder of this user (a no-op elsewhere). If it cannot be prepared,
-// the launch refuses with the reason.
-await prepareJobObjectLauncher(join(tmpdir(), "babojubot-worker"));
+// Every system starts the worker under the supervisor built from this checkout. If it cannot be prepared, the launch refuses with
+// the reason.
+await prepareSupervisor();
 const started = Date.now();
 // The start check, --limit and a signal to the runner all stop through the tree's own stop, and the attempt ends with its
 // result (worker-run.mjs). A worker that ends on its own is stopped too, for what it left running.

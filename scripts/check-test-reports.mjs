@@ -23,7 +23,7 @@ export const intendedExclusions = [
     file: "packages/runtime/src/providers/process-windows.test.ts",
     systems: ["linux", "macos"],
     reason:
-      "Windows 묶음 실행기(Job Object)로 띄운 실행 시도의 시험이라 Windows에서만 돈다",
+      "감독 실행기의 Windows 묶음(Job Object)과 Windows 명령줄(.cmd·경로 검색)의 시험이라 Windows에서만 돈다",
   },
   {
     report: "runtime",
@@ -52,6 +52,13 @@ export const intendedExclusions = [
     systems: ["windows"],
     reason:
       "ps 한 칸 조회(psField)는 Linux·macOS의 프로세스 신원 조회라 Windows에서는 쓰지 않는다",
+  },
+  {
+    report: "process",
+    file: "packages/process/src/group.test.ts",
+    systems: ["windows"],
+    reason:
+      "프로세스 그룹은 Linux·macOS에만 있다(재시작 복구의 그룹 끄기, Windows는 감독 실행기의 묶음이 끈다)",
   },
   {
     report: "runtime",
@@ -85,7 +92,7 @@ export const intendedExclusions = [
     file: "packages/runtime/src/providers/process-stop.test.ts",
     systems: ["windows"],
     reason:
-      "프로세스 그룹과 표식으로 끄는 길의 실패라 Linux·macOS에서만 돈다(Windows는 묶음 실행기가 끈다)",
+      "프로세스 그룹과 표식으로 끄는 길의 실패라 Linux·macOS에서만 돈다(Windows는 감독 실행기의 묶음이 끈다)",
   },
 ];
 

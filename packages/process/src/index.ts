@@ -2,8 +2,8 @@
 // runTree가, 공용 실행 위에 놓을 수 없는 짧은 명령은 runCommand가 시한에 끝을 보장한다. 의존은 contracts와 cross-spawn뿐이다.
 export {
   launchTree,
-  prepareJobObjectLauncher,
-  requireJobObject,
+  prepareSupervisor,
+  requireSupervisor,
   runTree,
   TreeLaunchRefused,
   type LaunchedTree,
