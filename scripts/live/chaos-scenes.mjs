@@ -36,7 +36,12 @@ export const brief =
 
 // ---------- 판정 ----------
 
-/** 검사 하나. `ok`가 null이면 미실행이며 이유가 있어야 한다. `source`: 실제 OpenCode(`live`)·가짜 연결(`fake`)·거절 주입(`injected`). */
+/**
+ * 검사 하나. `ok`가 null이면 미실행이며 이유가 있어야 한다. `source`: 실제 OpenCode(`live`)·가짜 연결(`fake`)·거절 주입(`injected`).
+ * @param {string} name
+ * @param {boolean | null} ok
+ * @param {{ reason?: string | null, source?: string }} [details]
+ */
 export function check(name, ok, { reason = null, source = "live" } = {}) {
   if (ok === null && !reason)
     throw new Error(`check ${name}: not run needs a reason`);
@@ -1021,7 +1026,18 @@ async function sessionScene(ctx) {
   };
 }
 
-/** 끼워 넣기 강제 종료 판정. 노린 순간(수락 직후·결과가 정해지기 전)에 끝냈을 때만 통과·실패를 정하고, 아니면 미실행이다. */
+/**
+ * 끼워 넣기 강제 종료 판정. 노린 순간(수락 직후·결과가 정해지기 전)에 끝냈을 때만 통과·실패를 정하고, 아니면 미실행이다.
+ * 끼워 넣는 중의 사실(`inFlight…`)은 그 단계를 돌렸을 때만 있다.
+ * @param {{
+ *   acceptedBeforeKill: boolean,
+ *   acceptedRecovered: boolean,
+ *   inFlightSaved?: boolean,
+ *   inFlightSettledBeforeKill?: boolean | null,
+ *   inFlightRecovered?: boolean,
+ *   source: string,
+ * }} facts
+ */
 export function steerKillChecks({
   acceptedBeforeKill,
   acceptedRecovered,
@@ -1118,7 +1134,7 @@ async function steerKillScene(ctx) {
         }),
       (error) =>
         console.error(
-          `[chaos] the steer sent across the forced kill got no answer (${failureCode(error.cause ?? error)})`
+          `[chaos] the steer sent across the forced kill got no answer (${failureCode(error instanceof Error ? (error.cause ?? error) : error)})`
         )
     );
     await sleep(30, ctx.signal);

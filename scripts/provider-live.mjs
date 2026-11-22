@@ -39,6 +39,7 @@ const defaultCommand = {
   antigravity: "agy",
 };
 if (
+  provider === undefined ||
   !(provider in factories) ||
   consent !== "--allow-live" ||
   !process.env.BABOJUBOT_HOME
@@ -155,7 +156,6 @@ async function scenes({ database, server }) {
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null };
   };
-  const startedAt = Date.now();
   const created = await api("POST", "/api/organizations", {
     name: "Live provider test",
     goal: "Connectivity test only.",
@@ -249,7 +249,6 @@ async function scenes({ database, server }) {
       ok:
         run.status === "completed" &&
         (await replies()).some((reply) => reply.trim() === "OK"),
-      seconds: (Date.now() - startedAt) / 1000,
       ...(await finished(run.id)),
       activities: activityTypes(full).map((a) => a.tool ?? a.type),
     };
@@ -273,6 +272,7 @@ async function scenes({ database, server }) {
     return {
       ok:
         result.status === "completed" &&
+        result.seconds !== null &&
         result.seconds >= 45 &&
         progress.includes("백그라운드 작업이 끝나기를 기다립니다.") &&
         (await replies()).some((reply) => reply.trim() === "BG DONE"),

@@ -6,6 +6,12 @@ import path from "node:path";
 import { orIfUnreadable } from "@babojubot/contracts";
 
 const [directory, output] = process.argv.slice(2);
+if (!directory || !output) {
+  console.error(
+    "Usage: node scripts/live/make-opencode-fixture.mjs <recording folder> <output file>"
+  );
+  process.exit(2);
+}
 const keptStrings = new Set([
   "type",
   "status",

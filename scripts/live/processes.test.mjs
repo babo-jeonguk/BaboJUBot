@@ -45,7 +45,10 @@ test("a lookup that fails is an error with its cause, not an empty list", () => 
   });
   assert.throws(
     () => pidsFromPgrep(finished({ error: missing, status: null }), pattern),
-    (error) => error.cause === missing && /did not finish/.test(error.message)
+    (error) =>
+      error instanceof Error &&
+      error.cause === missing &&
+      /did not finish/.test(error.message)
   );
 });
 
@@ -66,7 +69,8 @@ test(
       );
       const exited = once(child, "exit");
       defer(async () => {
-        killUnlessGone(child.pid);
+        // 띄우지 못했으면(번호 없음) 끌 프로세스가 없다.
+        if (child.pid !== undefined) killUnlessGone(child.pid);
         await exited;
       });
       await once(child, "spawn");
@@ -96,13 +100,16 @@ test("a stopped process is no longer running, and one left alive is named", asyn
       );
       const exited = once(child, "exit");
       defer(async () => {
-        killUnlessGone(child.pid);
+        // 띄우지 못했으면(번호 없음) 끌 프로세스가 없다.
+        if (child.pid !== undefined) killUnlessGone(child.pid);
         await exited;
       });
       return once(child, "spawn").then(() => child);
     };
     const stopped = await spawnIdle();
     const alive = await spawnIdle();
+    if (stopped.pid === undefined)
+      throw new Error("the stopped child has no pid");
     killUnlessGone(stopped.pid);
     // 끝난 것은 상한 안에서 빠지고, 끄지 않은 것은 상한(0.5초)이 지나도 남은 것으로 나온다.
     assert.deepEqual(await stillRunning([stopped.pid, alive.pid], 500), [

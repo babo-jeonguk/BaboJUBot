@@ -14,6 +14,12 @@ const versions = {
   "codex-exec": "codex-cli 0.166.0",
   antigravity: "1.4.12",
 };
+if (!provider || !(provider in versions) || !output) {
+  console.error(
+    "Usage: node scripts/live/make-stdio-fixture.mjs <claude|claude-background|codex-app-server|codex-exec|antigravity> <output file> <recording folder...>"
+  );
+  process.exit(2);
+}
 const keptStrings = new Set([
   "type",
   "subtype",
