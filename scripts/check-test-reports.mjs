@@ -54,6 +54,13 @@ export const intendedExclusions = [
       "ps 한 칸 조회(psField)는 Linux·macOS의 프로세스 신원 조회라 Windows에서는 쓰지 않는다",
   },
   {
+    report: "process",
+    file: "packages/process/src/group.test.ts",
+    systems: ["windows"],
+    reason:
+      "프로세스 그룹은 Linux·macOS에만 있다(재시작 복구의 그룹 끄기, Windows는 감독 실행기의 묶음이 끈다)",
+  },
+  {
     report: "runtime",
     file: "packages/runtime/src/providers/process-leftovers.test.ts",
     systems: ["windows"],
