@@ -387,26 +387,19 @@ test("takes property names of unnamed object types and JSX attributes as definit
   );
 });
 
-test("reads identifier-shaped notations in the test column as test titles", async () => {
+test("passes an identifier-shaped notation in the test column as a test title or a name the line's files define", async () => {
   assert.deepEqual(
     await problemsOf({
       "apps/server/test/notifications.test.ts":
-        'describe("Inbox", () => {});\nfunction InboxHelper() {}\n',
-      [area]: table(
-        [
-          "Inbox",
-          "",
-          "[알림 API](../../../apps/server/test/notifications.test.ts) `Inbox`",
-        ],
-        [
-          "Inbox",
-          "",
-          "[알림 API](../../../apps/server/test/notifications.test.ts) `InboxHelper`",
-        ]
-      ),
+        'describe("Inbox", () => {});\nexport function respondWithTools() {}\n',
+      [area]: table([
+        "Inbox",
+        "",
+        "[알림 API](../../../apps/server/test/notifications.test.ts) `Inbox`·`respondWithTools`·`InboxGone`",
+      ]),
     }),
     [
-      `${area}:6: 없는 시험 이름 \`InboxHelper\` — 이 줄이 가리키는 시험 파일: apps/server/test/notifications.test.ts`,
+      `${area}:5: 없는 시험 이름·이름 \`InboxGone\` — 이 줄이 가리키는 파일: apps/server/test/notifications.test.ts`,
     ]
   );
 });
