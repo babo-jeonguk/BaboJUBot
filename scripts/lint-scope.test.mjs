@@ -150,6 +150,26 @@ test("every test file format belongs to a TypeScript project", () => {
   assert.deepEqual(gaps, []);
 });
 
+test("every runner config belongs to a TypeScript project", () => {
+  // 시험 러너 설정은 시험 코드라 타입 정보로 검사한다. 저장소에 있는 설정을 모두 본다.
+  const configs = ts.sys
+    .readDirectory(
+      repository,
+      [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"],
+      ["**/node_modules"],
+      ["**/*.config.*"]
+    )
+    .map((file) => path.relative(repository, file))
+    .filter((file) =>
+      /(^|\/)(vitest|playwright)(\.[\w-]+)?\.config\./.test(file)
+    );
+  assert.ok(configs.length > 0, "no runner config found");
+  assert.deepEqual(
+    configs.filter((file) => !inProject(file)),
+    []
+  );
+});
+
 test("the project check sees a file it should (a check that cannot fail proves nothing)", () => {
   assert.equal(inProject("packages/core/src/sample.test.ts"), true);
   // 프로젝트 밖(빌드 산출물 폴더)은 들지 않는다.
