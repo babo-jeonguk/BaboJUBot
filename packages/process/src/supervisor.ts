@@ -121,7 +121,9 @@ async function trial(file: string): Promise<Supervisor> {
       env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
       stdio: ["ignore", "ignore", "ignore"],
     },
-    randomUUID()
+    randomUUID(),
+    // 시험 프로그램에는 이 프로세스가 물려받은 바깥 표식을 넘기지 않는다. 표식의 모양은 실제 실행이 확인한다.
+    { inherited: {} }
   );
   const run = async (): Promise<Supervisor> => {
     const start = await tree.started;
@@ -147,14 +149,22 @@ async function trial(file: string): Promise<Supervisor> {
         ok: false as const,
         reason: `the supervisor's trial did not end as it should: ${error instanceof Error ? error.message : String(error)}`,
       })),
-      new Promise<Supervisor>((resolve) => {
-        timer = setTimeout(() => {
-          abandon();
-          resolve({
-            ok: false,
-            reason: `the supervisor's trial did not finish within ${trialLimitMs} ms`,
-          });
-        }, trialLimitMs);
+      // 시한을 넘기면 끄기와 같은 길로 실행기를 끝내고 그 끝을 확인한다. 시한 초과와 끝 확인 실패를 둘 다 남긴다.
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, trialLimitMs);
+      }).then(async (): Promise<Supervisor> => {
+        const unconfirmed = await abandon().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        return {
+          ok: false,
+          reason: `the supervisor's trial did not finish within ${trialLimitMs} ms; ${
+            unconfirmed === undefined
+              ? "the supervisor was ended"
+              : `and the supervisor's end could not be confirmed: ${unconfirmed instanceof Error ? unconfirmed.message : String(unconfirmed)}`
+          }`,
+        };
       }),
     ]);
   } finally {

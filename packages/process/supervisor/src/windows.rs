@@ -139,8 +139,8 @@ impl Channel for Control {
         Read::Bytes(buffer)
     }
 
-    fn write_line(&mut self, line: &str) {
-        let bytes = format!("{line}\n").into_bytes();
+    fn write_message(&mut self, message: &str) {
+        let bytes = protocol::frame(message);
         let mut written = 0;
         while written < bytes.len() {
             let mut count = 0;
@@ -552,16 +552,21 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    control.write_line(&protocol::hello());
-    let Some(start_request) = protocol::read_start(&mut control, &NoTermination) else {
-        return 1;
+    control.write_message(&protocol::hello());
+    let start_request = match protocol::read_start(&mut control, &NoTermination) {
+        protocol::StartRequest::Start(start) => start,
+        protocol::StartRequest::Ended => return 1,
+        protocol::StartRequest::Refused(why) => {
+            control.write_message(&format!("failed: {why}"));
+            return 1;
+        }
     };
     // The program inherits this environment. Windows has no marker cleanup, so the supervisor may carry the entries itself.
     for (name, value) in &start_request.env {
         let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
         // SAFETY: NUL-terminated strings.
         if unsafe { SetEnvironmentVariableW(wide(name).as_ptr(), wide(value).as_ptr()) } == 0 {
-            control.write_line(&format!(
+            control.write_message(&format!(
                 "failed: the program's environment could not be set (error {})",
                 last_error()
             ));
@@ -571,15 +576,15 @@ pub fn run() -> i32 {
     let mut job = match start() {
         Ok(job) => job,
         Err(StartFailure::Failed(why)) => {
-            control.write_line(&format!("failed: {why}"));
+            control.write_message(&format!("failed: {why}"));
             return 1;
         }
         Err(StartFailure::NotStarted(code, why)) => {
-            control.write_line(&format!("not-started {code}: {why}"));
+            control.write_message(&format!("not-started {code}: {why}"));
             return 1;
         }
     };
-    control.write_line(&format!("ok {}", job.pid));
+    control.write_message(&format!("ok {}", job.pid));
     release_standard_handles();
-    protocol::supervise(&mut control, &mut job, &NoTermination, &start_request.rest)
+    protocol::supervise(&mut control, &mut job, &NoTermination, start_request)
 }

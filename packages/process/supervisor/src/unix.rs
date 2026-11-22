@@ -106,8 +106,8 @@ impl Channel for Control {
         }
     }
 
-    fn write_line(&mut self, line: &str) {
-        let bytes = format!("{line}\n").into_bytes();
+    fn write_message(&mut self, message: &str) {
+        let bytes = protocol::frame(message);
         let mut written = 0;
         while written < bytes.len() {
             // SAFETY: the range is inside the buffer.
@@ -605,29 +605,34 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    control.write_line(&protocol::hello());
+    control.write_message(&protocol::hello());
     if let Err(error) = catch_termination() {
-        control.write_line(&format!(
+        control.write_message(&format!(
             "failed: the supervisor could not catch termination signals: {error}"
         ));
         return 1;
     }
-    let Some(start_request) = protocol::read_start(&mut control, &Signals) else {
-        return 1;
+    let start_request = match protocol::read_start(&mut control, &Signals) {
+        protocol::StartRequest::Start(start) => start,
+        protocol::StartRequest::Ended => return 1,
+        protocol::StartRequest::Refused(why) => {
+            control.write_message(&format!("failed: {why}"));
+            return 1;
+        }
     };
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     let mut leader = match start(&arguments, &start_request.env) {
         Ok(leader) => leader,
         Err(StartFailure::Failed(why)) => {
-            control.write_line(&format!("failed: {why}"));
+            control.write_message(&format!("failed: {why}"));
             return 1;
         }
         Err(StartFailure::NotStarted(code, why)) => {
-            control.write_line(&format!("not-started {code}: {why}"));
+            control.write_message(&format!("not-started {code}: {why}"));
             return 1;
         }
     };
-    control.write_line(&format!("ok {}", leader.pid));
+    control.write_message(&format!("ok {}", leader.pid));
     release_standard_streams();
-    protocol::supervise(&mut control, &mut leader, &Signals, &start_request.rest)
+    protocol::supervise(&mut control, &mut leader, &Signals, start_request)
 }

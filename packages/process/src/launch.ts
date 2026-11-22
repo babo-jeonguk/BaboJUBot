@@ -9,6 +9,7 @@ import {
   type LaunchedTree,
   type TreeLaunch,
 } from "./supervised.ts";
+import { ForeignMarker } from "./lease.ts";
 import { supervisorLaunch, supervisorProblem } from "./supervisor.ts";
 
 export { prepareSupervisor } from "./supervisor.ts";
@@ -101,7 +102,15 @@ export function launchTree(options: TreeLaunch): LaunchedTree {
   });
   if (supervised.kind === "not-found") return missingProgram(options, lease);
   if (supervised.kind === "unavailable") throw refusedFor(supervised.reason);
-  return superviseTree(supervised.launch, options, lease).tree;
+  try {
+    return superviseTree(supervised.launch, options, lease).tree;
+  } catch (error) {
+    if (error instanceof ForeignMarker)
+      throw new TreeLaunchRefused(
+        `실행 시도의 표식이 이 제품이 만든 모양이 아니라 프로그램을 시작하지 않았습니다. 이유: ${error.message}`
+      );
+    throw error;
+  }
 }
 
 /** 끝까지 돌린 트리의 결과. `stopped`는 끝나기 전에 끈 이유다. */

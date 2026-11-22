@@ -67,6 +67,15 @@ export function withLease(
   };
 }
 
+/** 이 제품이 만드는 표식의 모양(`randomUUID`). */
+const markerForm =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** 물려받은 표식이 이 제품이 만든 모양이 아니다(개행 등). 그 값은 넘기지 않는다. */
+export class ForeignMarker extends Error {
+  override name = "ForeignMarker";
+}
+
 /**
  * 새로 띄울 트리의 환경을 표식과 나머지로 나눈다(표식은 `withLease`와 같다). 감독 실행기는 나머지만 받아 표식을 지니지 않고, 표식은
  * 제어 통로로 받아 프로그램에만 준다. 그래서 표식 정리가 트리의 관리자인 실행기에 닿지 않는다(#268).
@@ -82,6 +91,11 @@ export function leaseEnvironment(
       ? [[name, value] as const]
       : []
   );
+  // 표식은 제어 통로의 메시지로 넘긴다. 바깥에서 물려받은 값도 이 제품이 만든 모양이어야 한다(#274 외부 리뷰 2회차 SPEC-3).
+  for (const [name] of leases.filter(([, value]) => !markerForm.test(value)))
+    throw new ForeignMarker(
+      `the inherited run marker ${name} is not in the form this product writes`
+    );
   const rest = Object.fromEntries(
     Object.entries(full).filter(([name]) => !leaseNamePattern.test(name))
   );

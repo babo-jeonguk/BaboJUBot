@@ -1,5 +1,6 @@
 import spawn from "cross-spawn";
 import { spawn as spawnChild } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type { Readable, Writable, Duplex } from "node:stream";
 import { attemptAll, failureCode, settled } from "@babojubot/contracts";
 import {
@@ -16,7 +17,7 @@ import {
  */
 
 /** 이 서버가 쓰는 제어 통로의 약속 판. 실행기가 첫 줄로 알리는 판과 같아야 한다(`protocol.rs`의 `PROTOCOL`). */
-export const supervisorProtocol = 2;
+export const supervisorProtocol = 3;
 
 /** 표준 입력·출력·오류. `"pipe"`는 셋 모두 파이프다. 숫자는 이미 연 파일 기술자다. */
 export type TreeStdio =
@@ -208,19 +209,107 @@ export function startError(options: TreeLaunch, code: string, reason?: string) {
   );
 }
 
-/** 약속의 단계. 실행기의 줄은 이 순서로만 온다. */
-type Phase = "hello" | "starting" | "running" | "stopping" | "done";
+/** 한쪽이 받는 메시지 하나의 상한. 실행기(`protocol.rs`의 `MESSAGE_LIMIT`)와 같다. */
+const messageLimit = 1024 * 1024;
 
 /**
- * 감독 실행기(`command`)로 트리 하나를 띄운다. `abandon`은 준비의 시험 실행이 시한을 넘겼을 때 쓴다: 실행기를 강제로 끝내고 통로와
+ * 제어 통로의 메시지 하나를 netstring(`[길이]":"[바이트]","`, D. J. Bernstein)으로 감싼다. 두 방향의 모든 메시지가 이 틀을 쓰므로,
+ * 메시지 안의 값(표식의 개행, 이유의 CR 등)이 다른 메시지를 나누거나 만들지 못한다(#274 외부 리뷰 2회차 SPEC-3). 실행기와 같은 시험
+ * 벡터(`supervisor/protocol-vectors.txt`)를 지킨다.
+ */
+export function encodeMessage(text: string): Buffer {
+  const body = Buffer.from(text, "utf8");
+  return Buffer.concat([
+    Buffer.from(`${body.length}:`),
+    body,
+    Buffer.from(","),
+  ]);
+}
+
+/** 통로로 온 바이트에서 netstring을 읽는다. 메시지가 나뉘어 오거나 여럿이 한꺼번에 와도 된다. 틀이 어긋나면 던진다. */
+export class MessageReader {
+  private pending = Buffer.alloc(0);
+
+  push(chunk: Buffer): string[] {
+    this.pending = Buffer.concat([this.pending, chunk]);
+    const messages: string[] = [];
+    const limitDigits = String(messageLimit).length;
+    for (;;) {
+      let digits = 0;
+      while (
+        digits < this.pending.length &&
+        this.pending[digits]! >= 0x30 &&
+        this.pending[digits]! <= 0x39
+      )
+        digits++;
+      if (digits > limitDigits)
+        throw new Error(
+          "malformed control message: its length is over the limit"
+        );
+      if (digits === this.pending.length) return messages;
+      if (digits === 0)
+        throw new Error(
+          "malformed control message: it does not start with its length"
+        );
+      if (this.pending[digits] !== 0x3a)
+        throw new Error('malformed control message: no ":" after its length');
+      if (digits > 1 && this.pending[0] === 0x30)
+        throw new Error(
+          "malformed control message: its length has a leading zero"
+        );
+      const length = Number(this.pending.subarray(0, digits).toString());
+      if (length > messageLimit)
+        throw new Error(
+          "malformed control message: its length is over the limit"
+        );
+      const end = digits + 1 + length;
+      if (this.pending.length <= end) return messages;
+      if (this.pending[end] !== 0x2c)
+        throw new Error('malformed control message: no "," after it');
+      const body = this.pending.subarray(digits + 1, end);
+      this.pending = this.pending.subarray(end + 1);
+      messages.push(new TextDecoder("utf-8", { fatal: true }).decode(body));
+    }
+  }
+}
+
+/**
+ * 실행기 → 서버 메시지의 허용 전이(`supervisor/protocol-transitions.txt`, #274 외부 리뷰 2회차 SPEC-4). 해석기는 이 표만 따르고, 표에
+ * 없는 사건은 약속 위반이다. `stop`은 서버가 보낸 끄기다. 실행기의 Rust 시험도 같은 표로 실행기가 내는 순서를 확인한다.
+ */
+const transitions = new Map<string, string>(
+  readFileSync(
+    new URL("../supervisor/protocol-transitions.txt", import.meta.url),
+    "utf8"
+  )
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((row) => row[0] === "transition")
+    .map(([, phase, event, next]) => [`${phase} ${event}`, next!])
+);
+
+/** 그 단계에서 그 사건 뒤의 단계. 표에 없으면 `undefined`(약속 위반)다. */
+export function nextPhase(phase: string, event: string): string | undefined {
+  return transitions.get(`${phase} ${event}`);
+}
+
+/**
+ * 감독 실행기(`command`)로 트리 하나를 띄운다. `abandon`은 준비의 시험 실행이 시한을 넘겼을 때 쓴다: 끄기와 같은 강제 종료 길로
+ * 실행기를 끝내고 통로와 출력을 닫은 뒤 그 끝을 상한 안에서 확인한다(확인하지 못하면 던진다).
  * 출력을 닫는다(트리의 끝은 확인하지 않는다).
  */
 export function superviseTree(
   command: SupervisorCommand,
   options: TreeLaunch,
-  lease: string
-): { tree: LaunchedTree; abandon: () => void } {
-  const { env, leases } = leaseEnvironment(options.env, lease);
+  lease: string,
+  {
+    inherited = process.env,
+  }: {
+    /** 이 프로세스가 물려받아 새 트리에 넘길 표식이 든 환경. 준비의 시험 실행은 바깥 표식이 필요 없어 비운다. */
+    inherited?: NodeJS.ProcessEnv;
+  } = {}
+): { tree: LaunchedTree; abandon: () => Promise<void> } {
+  const { env, leases } = leaseEnvironment(options.env, lease, inherited);
   const stdio =
     options.stdio === "pipe"
       ? (["pipe", "pipe", "pipe"] as const)
@@ -300,11 +389,20 @@ export function superviseTree(
       })
     ),
   ]);
-  const abandon = () => {
+  /**
+   * 실행기를 강제로 끝내고 통로·출력을 닫은 뒤, 그 끝을 상한 안에서 확인한다(#274 외부 리뷰 2회차 STD-3). 확인하지 못하면 던진다.
+   * 끄기의 확인 실패, 시작 응답이 없는 실행기, 준비의 시험 실행 시한 초과가 모두 이 한 길로 끝낸다.
+   */
+  const forceEnd = async () => {
     child.kill("SIGKILL");
     control?.destroy();
     for (const stream of [child.stdin, child.stdout, child.stderr])
       stream?.destroy();
+    await within(
+      supervisorGone,
+      endLimitMs,
+      `process ${pid} (the supervisor) did not end after SIGKILL`
+    );
   };
   /** 약속을 어긴 실행기는 믿지 않는다. 그 원인으로 시작·끝을 실패시키고 실행기를 강제로 끝낸다(그 뒤의 끝은 stop()이 확인한다). */
   const breakProtocol = (reason: string) => {
@@ -315,54 +413,68 @@ export function superviseTree(
     child.kill("SIGKILL");
     control?.destroy();
   };
-  let phase: Phase = "hello";
-  let pending = "";
+  let phase = "hello";
+  const reader = new MessageReader();
+  /** 첫 바이트들. 틀 없이 한 줄로 판을 알리는 예전 실행기(판 1·2)를 알아보려고 첫 줄까지만 모은다. */
+  let opening: Buffer | undefined = Buffer.alloc(0);
+  const unframedHello = /^babojubot-supervisor (\d+)\r?\n/;
   control?.on("data", (chunk: Buffer) => {
-    pending += chunk.toString();
-    for (let newline; (newline = pending.indexOf("\n")) >= 0;) {
-      const line = pending.slice(0, newline).trimEnd();
-      pending = pending.slice(newline + 1);
-      if (phase === "done") return;
-      const message = readSupervisorLine(line);
-      const broke = (expected: string) =>
+    if (opening !== undefined) {
+      opening = Buffer.concat([opening, chunk]);
+      const text = opening.toString("latin1");
+      const old = unframedHello.exec(text);
+      if (old) {
         breakProtocol(
-          `the supervisor broke the protocol: ${JSON.stringify(line)} came where ${expected} belongs`
+          `the supervisor speaks protocol ${old[1]}, this server needs ${supervisorProtocol}; build it again ("pnpm --filter @babojubot/process run build") or install the matching package`
         );
-      if (phase === "hello") {
-        if (message?.kind !== "hello") broke("its protocol version");
-        else if (message.protocol !== supervisorProtocol)
-          breakProtocol(
-            `the supervisor speaks protocol ${message.protocol}, this server needs ${supervisorProtocol}; build it again ("pnpm --filter @babojubot/process run build") or install the matching package`
-          );
-        else phase = "starting";
-      } else if (phase === "starting") {
-        if (message?.kind === "ok") {
-          phase = "running";
-          reportStart({ kind: "running" });
-        } else if (message?.kind === "failed") {
-          phase = "done";
-          reportStart({ kind: "failed", reason: message.reason });
-        } else if (message?.kind === "not-started") {
-          phase = "done";
-          const error = startError(options, message.code, message.reason);
-          reportStart({ kind: "failed", reason: error.message, error });
-        } else broke('"ok", "failed" or "not-started"');
-      } else if (message?.kind === "exit" && !leaderDone)
+        return;
+      }
+      // 아직 그 줄의 앞부분일 수 있으면 더 받는다. 아니면 모은 바이트를 netstring으로 읽는다.
+      if (
+        "babojubot-supervisor ".startsWith(text) ||
+        /^babojubot-supervisor \d*$/.test(text)
+      )
+        return;
+      chunk = opening;
+      opening = undefined;
+    }
+    let messages: string[];
+    try {
+      messages = reader.push(chunk);
+    } catch (error) {
+      breakProtocol(
+        `the supervisor broke the protocol: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+    for (const text of messages) {
+      if (phase === "done") return;
+      const message = readSupervisorLine(text);
+      const next =
+        message === undefined ? undefined : nextPhase(phase, message.kind);
+      if (message === undefined || next === undefined) {
+        breakProtocol(
+          `the supervisor broke the protocol: ${JSON.stringify(text)} is not allowed after phase ${phase}`
+        );
+        return;
+      }
+      phase = next;
+      if (message.kind === "hello" && message.protocol !== supervisorProtocol) {
+        breakProtocol(
+          `the supervisor speaks protocol ${message.protocol}, this server needs ${supervisorProtocol}; build it again ("pnpm --filter @babojubot/process run build") or install the matching package`
+        );
+        return;
+      }
+      if (message.kind === "ok") reportStart({ kind: "running" });
+      else if (message.kind === "failed")
+        reportStart({ kind: "failed", reason: message.reason });
+      else if (message.kind === "not-started") {
+        const error = startError(options, message.code, message.reason);
+        reportStart({ kind: "failed", reason: error.message, error });
+      } else if (message.kind === "exit")
         reportExit({ code: message.code, signal: message.signal });
-      else if (
-        phase === "stopping" &&
-        (message?.kind === "ended" || message?.kind === "left")
-      ) {
-        phase = "done";
-        reportEnd(
-          message.kind === "ended" ? "ended" : `left: ${message.detail}`
-        );
-      } else if (message !== undefined)
-        broke(
-          phase === "running"
-            ? "the program's end (at most once)"
-            : "the program's end or the reply to the stop"
-        );
+      else if (message.kind === "ended") reportEnd("ended");
+      else if (message.kind === "left") reportEnd(`left: ${message.detail}`);
     }
   });
   // 통로의 읽기·쓰기 실패. 끝났는지는 실행기의 답과 통로의 닫힘으로 판단하고, 답 없이 닫혔으면 이 원인을 함께 알린다.
@@ -375,12 +487,13 @@ export function superviseTree(
       kind: "failed",
       reason: protocolFailure ?? "the supervisor ended before it reported",
     });
-    reportExit(supervisorExit ?? { code: null, signal: null });
+    // 실행기의 종료 코드는 프로그램의 끝이 아니다. 프로그램의 끝을 듣지 못했으면 모르는 끝이다.
+    reportExit({ code: null, signal: null });
     reportEnd(undefined);
   });
-  const send = (line: string) => {
+  const send = (message: string) => {
     if (control && !control.destroyed && control.writable)
-      control.write(`${line}\n`);
+      control.write(encodeMessage(message));
   };
   // 프로그램이 받을 표식을 넘기고 시작을 청한다. 실행기는 이것을 받은 뒤에 프로그램을 띄운다.
   for (const [name, value] of leases) send(`env ${name}=${value}`);
@@ -399,22 +512,19 @@ export function superviseTree(
       }),
     ]);
     clearTimeout(timer);
-    if (!gone) {
-      child.kill("SIGKILL");
-      await within(
-        supervisorGone,
-        endLimitMs,
-        `process ${pid} (the supervisor) did not end`
-      );
-    }
+    if (!gone) await forceEnd();
   };
   /**
    * 실행기에 끄기를 보내고 답을 기다린다. 답이 무엇이든(답이 없어도) 실행기가 끝난 것을 확인한 뒤 판단한다: 트리가 끝났다는 답과
    * 실행기의 정상 종료가 있어야 성공이다.
    */
   const stopThroughSupervisor = async (graceMs: number) => {
-    if (phase === "running") phase = "stopping";
-    send(`stop ${graceMs}`);
+    // 끄기도 표의 사건이다. 지금 단계에서 끄기를 보낼 수 없으면(약속을 어겨 끝난 실행기) 보내지 않고, 답 없음으로 판단한다.
+    const next = nextPhase(phase, "stop");
+    if (next !== undefined) {
+      phase = next;
+      send(`stop ${graceMs}`);
+    }
     let answer: string | undefined;
     let unanswered: unknown;
     try {
@@ -474,12 +584,7 @@ export function superviseTree(
         "the supervisor did not report its start"
       );
     } catch (error) {
-      child.kill("SIGKILL");
-      await within(
-        supervisorGone,
-        endLimitMs,
-        `process ${pid} (the supervisor) did not end`
-      );
+      await forceEnd();
       throw new Error(
         `the supervisor did not report its start within ${supervisorStartLimitMs} ms; it was ended, and whether its programs ended is unknown`,
         { cause: error }
@@ -531,18 +636,5 @@ export function superviseTree(
       return stopping;
     },
   };
-  return { tree, abandon };
-}
-
-// #274 외부 리뷰 2회차: 제어 통로의 틀(netstring)과 상태 전이 표의 입구. 이 커밋은 시험이 쓰는 입구만 두고, 구현은 다음 커밋에서 한다.
-export function encodeMessage(_text: string): Buffer {
-  throw new Error("control message framing is not implemented yet");
-}
-export class MessageReader {
-  push(_chunk: Buffer): string[] {
-    throw new Error("control message framing is not implemented yet");
-  }
-}
-export function nextPhase(_phase: string, _event: string): string | undefined {
-  return undefined;
+  return { tree, abandon: forceEnd };
 }

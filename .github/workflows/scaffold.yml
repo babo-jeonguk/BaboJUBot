@@ -88,7 +88,8 @@ jobs:
       - name: Build the supervisor
         if: env.RUN == 'true' && (matrix.script == 'check' || matrix.script == 'test:e2e')
         run: pnpm --filter @babojubot/process run build
-      # 감독 실행기의 Rust 소스: 형식과 clippy(세 OS 대상 모두, 링크 없이 검사).
+      # 감독 실행기의 Rust 소스: 형식과 clippy(세 OS 대상 모두, 링크 없이 검사), 그리고 Rust 시험(제어 통로의 틀과 전이 표를
+      # 서버 시험과 같은 자료 protocol-vectors.txt·protocol-transitions.txt로 확인).
       - name: Check the supervisor's Rust source
         if: env.RUN == 'true' && matrix.script == 'lint'
         working-directory: packages/process/supervisor
@@ -98,6 +99,7 @@ jobs:
           for target in x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-pc-windows-msvc; do
             cargo clippy --locked --release --target "$target" -- -D warnings
           done
+          cargo test --locked
       # Playwright는 브라우저 내려받기를 스스로 5번까지 시도하고 실패한 시도의 파일을 지운다(playwright-core
       # downloadBrowserWithProgressBar). 시스템 의존성은 apt가 받으므로 apt의 받기 재시도만 켠다(아래 단계).
       # 느린 미러에서는 설치가 8분 넘게 걸린 적이 있다(최근 35회 최대 511초). 그래서 설치 단계 시한을 12분으로 둔다.
