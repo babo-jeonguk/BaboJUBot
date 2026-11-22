@@ -2,6 +2,7 @@
 //! Linux and macOS, its job object on Windows) and ends that tree when the server asks or when the server is gone. The server talks
 //! to it over the control channel (`protocol.rs`); what differs between systems is only how the tree is held and ended.
 
+mod attempt;
 mod protocol;
 #[cfg(unix)]
 mod unix;

@@ -9,11 +9,12 @@
 //! inherits only the standard handles (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`), and once it runs the supervisor closes its own copies,
 //! so the program's output closes when the program's tree closes it.
 
+use crate::attempt;
 use crate::protocol::{self, Channel, Exit, Read, StopResult, Termination, Tree};
 use std::ffi::c_void;
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
     GetHandleInformation, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
@@ -405,7 +406,7 @@ impl Job {
         };
         if read == 0 {
             return Err(format!(
-                "unknown (the job object could not be read: error {})",
+                "the job object could not be read: error {}",
                 last_error()
             ));
         }
@@ -426,26 +427,29 @@ impl Job {
         Ok(())
     }
 
-    /// Ends everything in the job and waits, within a limit, until nothing in it runs and the program's end can be read.
+    /// Ends everything in the job and waits, within a limit, until nothing in it runs and the program's end can be read. A failed end
+    /// does not skip the wait: whether the job emptied is still what tells. A failed read is tried again until the limit.
     fn end(&self) -> StopResult {
+        let mut failures = attempt::Failures::default();
         // SAFETY: valid handle.
         if unsafe { TerminateJobObject(self.job, 1) } == 0 {
-            return Err(format!(
-                "unknown (the job object could not be ended: error {})",
+            failures.note(Err(format!(
+                "the job object could not be ended: error {}",
                 last_error()
-            ));
+            )));
         }
-        let deadline = Instant::now() + protocol::END_LIMIT;
-        loop {
-            let active = self.active()?;
-            if active == 0 {
-                return self.wait_for_program();
+        let left = attempt::wait_until_empty(
+            protocol::END_LIMIT,
+            || self.active().map(|active| active as usize),
+            || Ok(()),
+            &mut failures,
+        );
+        match left {
+            attempt::Left::Count(0) => self.wait_for_program(),
+            attempt::Left::Count(left) => {
+                Err(failures.reason(&left.to_string(), "the job object did not empty"))
             }
-            if Instant::now() >= deadline {
-                return Err(format!("{active} (the job object did not empty)"));
-            }
-            // SAFETY: Sleep has no memory effects.
-            unsafe { Sleep(10) };
+            attempt::Left::Unknown(why) => Err(failures.reason("unknown", &why)),
         }
     }
 }

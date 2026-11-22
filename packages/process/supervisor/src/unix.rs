@@ -7,6 +7,7 @@
 //! was given, as Node.js does, and inherits that environment, the working folder and file descriptors 0–2. Once the program runs,
 //! the supervisor points its own 0–2 at /dev/null, so the program's output closes when the program's tree closes it.
 
+use crate::attempt;
 use crate::protocol::{self, Channel, Exit, Read, StopResult, Termination, Tree};
 use std::ffi::OsString;
 use std::io;
@@ -262,7 +263,7 @@ trait Reach {
 impl Reach for Leader {
     fn group_live(&self) -> Result<usize, String> {
         live_group_members(self.pid)
-            .map_err(|error| format!("unknown (the process group could not be listed: {error})"))
+            .map_err(|error| format!("the process group could not be listed: {error}"))
     }
 
     fn orphans(&self) -> Result<Vec<libc::pid_t>, String> {
@@ -279,9 +280,7 @@ impl Reach for Leader {
             Some(libc::ESRCH) => Ok(()),
             // Darwin answers EPERM when the group's only members are zombies (the unreaped program): nothing is left to signal.
             Some(libc::EPERM) if live_group_members(self.pid).is_ok_and(|live| live == 0) => Ok(()),
-            _ => Err(format!(
-                "unknown (the process group could not be signalled: {error})"
-            )),
+            _ => Err(format!("the process group could not be signalled: {error}")),
         }
     }
 
@@ -289,7 +288,7 @@ impl Reach for Leader {
         // SAFETY: kill has no memory effects. The orphan is this supervisor's unreaped child, so its id is still that process's.
         if unsafe { libc::kill(orphan, signal) } != 0 && errno() != libc::ESRCH {
             return Err(format!(
-                "unknown (a program that left the process group could not be signalled: {})",
+                "program {orphan}, which left the process group, could not be signalled: {}",
                 io::Error::last_os_error()
             ));
         }
@@ -297,59 +296,55 @@ impl Reach for Leader {
     }
 }
 
-/// What still runs of the tree.
+/// What still runs of the tree. The count needs both lists, so either failing leaves it unknown.
 fn live_members(reach: &impl Reach) -> Result<usize, String> {
     Ok(reach.group_live()? + reach.orphans()?.len())
 }
 
+/// The group and the orphans are separate targets: each gets the signal whatever the other answers.
 fn signal_tree(reach: &impl Reach, signal: libc::c_int) -> Result<(), String> {
-    reach.signal_group(signal)?;
-    signal_orphans(reach, signal)
+    attempt::all_of([reach.signal_group(signal), signal_orphans(reach, signal)])
 }
 
+/// Every orphan gets the signal whatever the others answer. Without their list there is nothing to signal.
 fn signal_orphans(reach: &impl Reach, signal: libc::c_int) -> Result<(), String> {
-    for orphan in reach.orphans()? {
-        reach.signal_orphan(orphan, signal)?;
-    }
-    Ok(())
+    let orphans = reach.orphans()?;
+    attempt::all_of(
+        orphans
+            .into_iter()
+            .map(|orphan| reach.signal_orphan(orphan, signal)),
+    )
 }
 
-/// Waits until nothing of the tree runs, or until `limit`. Gives how many are left. `repeat` is sent again on every look to the
-/// orphans outside the group, so it also reaches those taken in during the wait (a program's children are taken in when it
-/// ends). The group got its signal already, and what is in it cannot leave a group being killed.
-fn wait_until_empty(
-    reach: &impl Reach,
-    limit: Duration,
-    repeat: Option<libc::c_int>,
-) -> Result<usize, String> {
-    let deadline = Instant::now() + limit;
-    loop {
-        let left = live_members(reach)?;
-        if left == 0 || Instant::now() >= deadline {
-            return Ok(left);
-        }
-        if let Some(signal) = repeat {
-            signal_orphans(reach, signal)?;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// SIGTERM, the grace, SIGKILL, then a bounded wait (`limit`) until nothing of the tree runs.
+/// SIGTERM, the grace, SIGKILL, then a bounded wait (`limit`) until nothing of the tree runs. The steps keep their order, and none is
+/// skipped because a signal or a look before it failed: a failed signal leaves the next one and the end check to tell, and a failed
+/// look tells nothing. During the last wait SIGKILL goes again to the orphans outside the group, so it also reaches those taken in
+/// meanwhile (a program's children are taken in when it ends); a group being killed cannot grow. The tree counts as ended only when
+/// a look finds nothing; otherwise the result names what is left with the failures on the way.
 fn end_tree(reach: &impl Reach, grace: Duration, limit: Duration) -> StopResult {
-    let mut left = live_members(reach)?;
-    if left > 0 {
-        signal_tree(reach, libc::SIGTERM)?;
-        left = wait_until_empty(reach, grace, None)?;
+    let mut failures = attempt::Failures::default();
+    let look = || live_members(reach);
+    let mut left = attempt::wait_until_empty(Duration::ZERO, look, || Ok(()), &mut failures);
+    if !left.is_empty() {
+        failures.note(signal_tree(reach, libc::SIGTERM));
+        left = attempt::wait_until_empty(grace, look, || Ok(()), &mut failures);
     }
-    if left > 0 {
-        signal_tree(reach, libc::SIGKILL)?;
-        left = wait_until_empty(reach, limit, Some(libc::SIGKILL))?;
+    if !left.is_empty() {
+        failures.note(signal_tree(reach, libc::SIGKILL));
+        left = attempt::wait_until_empty(
+            limit,
+            look,
+            || signal_orphans(reach, libc::SIGKILL),
+            &mut failures,
+        );
     }
-    if left > 0 {
-        return Err(format!("{left} (the tree did not end)"));
+    match left {
+        attempt::Left::Count(0) => Ok(()),
+        attempt::Left::Count(left) => {
+            Err(failures.reason(&left.to_string(), "the tree did not end"))
+        }
+        attempt::Left::Unknown(why) => Err(failures.reason("unknown", &why)),
     }
-    Ok(())
 }
 
 /// Reaps the children that ended (on Linux, also the orphans this supervisor took in as their subreaper).
@@ -596,7 +591,7 @@ fn reap_ended_orphans(program: libc::pid_t) {
 #[cfg(target_os = "linux")]
 fn orphans_outside(program: libc::pid_t) -> Result<Vec<libc::pid_t>, String> {
     let children = children().map_err(|error| {
-        format!("unknown (the programs that left the process group could not be listed: {error})")
+        format!("the programs that left the process group could not be listed: {error}")
     })?;
     let mut running = Vec::new();
     for child in children.into_iter().filter(|&child| child != program) {
