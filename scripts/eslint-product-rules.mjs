@@ -101,6 +101,42 @@ const noAssertionOnParsedData = {
   },
 };
 
+/**
+ * `키 in 객체`는 객체가 물려받은 이름(constructor·toString·hasOwnProperty 등)도 있다고 답한다. 계산한 키를 이렇게 확인하면
+ * 허용 목록 검사를 그 이름이 지나가고, 뒤의 `객체[키]`가 물려받은 함수를 꺼낸다(#281 리뷰 REC-1: 실제 프로바이더 스크립트가
+ * `constructor`를 프로바이더로 받아 사용법 오류 대신 `Object`를 불렀다). 키를 코드에 적어 둔 `"code" in error`는 그 모양의 값인지
+ * 가리는 확인이고(TypeScript가 타입을 좁힌다) 물려받은 이름을 적을 일이 없어 보지 않는다. 숫자·`#private` 확인도 그렇다.
+ * 객체가 어디서 왔는지(지역 객체 리터럴, 읽은 JSON, 설정 옵션)는 가리지 않는다. 모두 같은 이름을 물려받기 때문이다.
+ * 알려진 한계: `객체[바깥 키]`로 바로 꺼내는 읽기·쓰기는 키가 바깥 입력인지 코드에 적은 이름인지 모양으로 알 수 없어
+ * 보지 않으며 리뷰가 본다(CODING_STANDARDS.md#제품-코드). `Reflect.has`는 저장소에 쓰는 곳이 없어 보지 않는다.
+ */
+const noComputedIn = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Disallow checking a computed key with `in`, which also finds inherited names",
+    },
+    schema: [],
+    messages: {
+      computed:
+        "`키 in 객체`는 물려받은 이름(constructor·toString 등)도 있다고 답해 허용 목록 검사를 바깥 입력이 지나갑니다. 사전·허용 목록은 Map(has·get)으로 두거나, 그 객체가 가진 키인지 Object.hasOwn(객체, 키)으로 확인하세요.",
+    },
+  },
+  create(context) {
+    const written = (key) =>
+      key.type === "PrivateIdentifier" ||
+      key.type === "Literal" ||
+      (key.type === "TemplateLiteral" && key.expressions.length === 0);
+    return {
+      "BinaryExpression[operator='in']"(node) {
+        if (!written(node.left))
+          context.report({ node, messageId: "computed" });
+      },
+    };
+  },
+};
+
 const childProcess = new Set(["child_process", "node:child_process"]);
 
 /** 상한이 없다는 뜻인 값: Node는 `timeout`이 0이거나 없으면 기다림에 끝을 두지 않는다. */
@@ -1575,6 +1611,7 @@ const noCheckThenReopen = {
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
+    "no-computed-in": noComputedIn,
     "sync-command-timeout": syncCommandTimeout,
     "no-ignored-error": noIgnoredError,
     "no-io-in-unreadable": noIoInUnreadable,

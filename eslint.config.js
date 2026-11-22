@@ -494,6 +494,13 @@ export default defineConfig([
     rules: { "product/package-entry-only": "error" },
   },
   {
+    // 계산한 키를 `in`으로 확인하지 않는다(#281 리뷰 REC-1). 물려받은 이름(constructor·toString)도 있다고 답해 허용 목록을
+    // 지나가므로, 사전·허용 목록은 Map이나 Object.hasOwn으로 본다. 제품 코드·개발 스크립트·시험·가짜 프로그램·설정 모두.
+    files: [`**/*.${codeFormats}`],
+    plugins: { product: productRules },
+    rules: { "product/no-computed-in": "error" },
+  },
+  {
     // 제품 코드는 runtime·프로세스 패키지·db에서 목록에 없는 입구를 가져오지 않는다(#266, docs/architecture.md 패키지 구성).
     // 시험 도움·개발 도구 입구도 가져오지 않는다. 입구는 대상 파일로 판정해 그 패키지 자신의 제품 코드가 자기 이름이나 상대
     // 경로로 입구 파일을 가져와도 같다(#266 리뷰 SPEC-6). db는 아래 설정이 따로 본다.
