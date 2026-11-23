@@ -32,8 +32,9 @@ vi.mock("node:child_process", async (original) => {
   return { ...cp, spawnSync };
 });
 
-// 준비 줄 없이 끝난 프로그램을 시한(10초)까지 기다리지 않는다. 출력을 물려받은 자손이 남아 출력이 닫히지 않아도 종료로 판단한다(PR #220 외부 리뷰 STD-1).
-// 자손은 시험이 끌 때까지 끝나지 않으므로 출력은 닫히지 않는다. 종료로 판단하지 않았다면 시한 문구("no ready line within")로 실패한다.
+// 준비 줄 없이 끝난 프로그램을 전체 시한(10초)까지 기다리지 않는다(PR #220 외부 리뷰 STD-1). 출력을 물려받은 자손이 남아 출력이
+// 끝나지 않으면, 프로그램이 끝난 뒤 출력의 끝을 기다리는 상한(여기서는 500ms)에서 끝을 확인하지 못했다고 실패한다(#286: 준비 전에
+// 끝났다고 단정하지 않는다). 자손은 시험이 끌 때까지 끝나지 않는다.
 it.skipIf(process.platform === "win32")(
   "fails soon after the program exits without its ready line, even while a descendant holds its output",
   async () => {
@@ -57,7 +58,7 @@ it.skipIf(process.platform === "win32")(
       if (pid > 1) await killAndWait([pid]);
     });
     await expect(readyLine(child, "ready", 10_000, 500)).rejects.toThrow(
-      "exited before printing ready"
+      "exited without printing ready, and its output did not end within 500 ms"
     );
   }
 );
