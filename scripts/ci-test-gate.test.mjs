@@ -552,13 +552,11 @@ test("gives the Linux Chromium and system dependency install room for a slow pac
 const root = fileURLToPath(new URL("..", import.meta.url));
 const packageJson = (folder) =>
   JSON.parse(readFileSync(path.join(root, folder, "package.json"), "utf8"));
-/** Vitest 설정 파일이 남기는 보고서 이름(vitest.reports.ts의 testReport). */
-function reportOf(config) {
-  const name = /testReport\("([\w-]+)"\)/.exec(
-    readFileSync(path.join(root, config), "utf8")
-  )?.[1];
-  assert.ok(name, `${config} must add testReport(<suite>) to its reporters`);
-  return name;
+const readRepositoryText = (file) =>
+  readFileSync(path.join(root, file), "utf8");
+/** Vitest 설정 파일이 남기는 보고서 이름(vitest.reports.ts의 testReport). 찾지 못하면 undefined. */
+function reportOf(config, readText = readRepositoryText) {
+  return /testReport\("([\w-]+)"\)/.exec(readText(config))?.[1];
 }
 const folders = {
   contracts: "packages/contracts",
@@ -571,18 +569,18 @@ const folders = {
   web: "apps/web",
 };
 /** 명령 한 줄이 돌리는 시험 묶음. `vitest run`은 그 설정의 보고서, run-node-tests.mjs는 받은 이름이다. */
-function suitesOf(command, folder = ".") {
+function suitesOf(command, folder = ".", readText = readRepositoryText) {
   return command.split("&&").flatMap((part) => {
     const words = part.trim().split(/\s+/);
     if (words[0] === "node" && words[1] === "scripts/run-node-tests.mjs")
       return [words[2]];
     if (words[0] === "vitest") {
       const at = words.indexOf("--config");
-      return [
-        reportOf(
-          path.join(folder, at === -1 ? "vitest.config.ts" : words[at + 1])
-        ),
-      ];
+      const config = path.join(
+        folder,
+        at === -1 ? "vitest.config.ts" : words[at + 1]
+      );
+      return [reportOf(config, readText) ?? `(no report in ${config})`];
     }
     if (words[0] === "pnpm") {
       const filters = words.flatMap((word, i) =>
@@ -593,15 +591,17 @@ function suitesOf(command, folder = ".") {
         return filters.flatMap((name) =>
           suitesOf(
             words.slice(words.indexOf("exec") + 1).join(" "),
-            folders[name]
+            folders[name],
+            readText
           )
         );
       if (filters.length === 0)
-        return suitesOf(packageJson(".").scripts[script] ?? "", ".");
+        return suitesOf(packageJson(".").scripts[script] ?? "", ".", readText);
       return filters.flatMap((name) =>
         suitesOf(
           packageJson(folders[name]).scripts[script] ?? "",
-          folders[name]
+          folders[name],
+          readText
         )
       );
     }
@@ -609,11 +609,17 @@ function suitesOf(command, folder = ".") {
   });
 }
 
-test("each job that runs test suites checks every suite's run and pass counts as its last test step", () => {
+/**
+ * 시험 묶음을 돌리는 job마다 보고 폴더와 실행·통과 수 판정 단계가 있고 그 목록이 돌린 묶음과 같은지. 문제마다 한 줄을 돌려준다.
+ * `readText`는 저장소 파일을 읽는다(시험이 설정 파일 내용을 바꿔 넣는다).
+ */
+function wiringProblems(flow, readText = readRepositoryText) {
+  const problems = [];
   // 워크플로 전체에 두면 판정하지 않는 job에도 보고 폴더가 생긴다(run 44670627223의 files 세 job이 결과표를 잃음).
-  assert.equal(workflow.env?.BABOJUBOT_TEST_REPORTS, undefined);
+  if (flow.env?.BABOJUBOT_TEST_REPORTS !== undefined)
+    problems.push("the workflow env gives every job a report folder");
   const counted = [];
-  for (const [id, job] of Object.entries(workflow.jobs)) {
+  for (const [id, job] of Object.entries(flow.jobs)) {
     const steps = job.steps ?? [];
     const check = steps.find((each) =>
       /check-test-reports\.mjs/.test(each.run ?? "")
@@ -627,44 +633,65 @@ test("each job that runs test suites checks every suite's run and pass counts as
         )
       )
         return [];
-      return suitesOf(run).map((suite) => ({ suite, if: each.if ?? "" }));
+      return suitesOf(run, ".", readText).map((suite) => ({
+        suite,
+        if: each.if ?? "",
+      }));
     });
     if (ran.length === 0) {
-      assert.equal(check, undefined, `${id} checks counts but runs no suite`);
+      if (check !== undefined)
+        problems.push(`${id} checks counts but runs no suite`);
       // 보고 폴더는 판정하는 job에만 둔다. 다른 job(파일 경계 검증)이 자기 결과표용으로 넘긴 Vitest 보고를 설정의 보고기가 가로챈다.
-      assert.equal(job.env?.BABOJUBOT_TEST_REPORTS, undefined, id);
+      if (job.env?.BABOJUBOT_TEST_REPORTS !== undefined)
+        problems.push(`${id} gives a report folder but runs no suite`);
       continue;
     }
-    assert.ok(
-      check,
-      `${id} runs ${ran.map((r) => r.suite).join(", ")} without checking their counts`
-    );
+    if (!check) {
+      problems.push(
+        `${id} runs ${ran.map((r) => r.suite).join(", ")} without checking their counts`
+      );
+      continue;
+    }
     counted.push(id);
-    assert.equal(
-      job.env?.BABOJUBOT_TEST_REPORTS,
-      "${{ github.workspace }}/test-reports",
-      `${id} must give its suites a report folder`
-    );
-    assert.match(
-      check.if,
-      /!cancelled\(\)/,
-      `${id}: count even after a failed test`
-    );
+    if (
+      job.env?.BABOJUBOT_TEST_REPORTS !== "${{ github.workspace }}/test-reports"
+    )
+      problems.push(`${id} must give its suites a report folder`);
+    if (!/!cancelled\(\)/.test(check.if ?? ""))
+      problems.push(`${id}: count even after a failed test`);
     const [, listed, conditional] =
       /--expect ([\w,-]+)(?:\$\{\{ needs\.changes\.outputs\.files != 'true' && ',([\w-]+)' \|\| '' \}\})?$/.exec(
         check.run
       ) ?? [];
-    assert.ok(listed, `${id}: ${check.run}`);
+    if (!listed) {
+      problems.push(`${id}: ${check.run}`);
+      continue;
+    }
     const always = ran
       .filter((r) => !/outputs\.files != 'true'/.test(r.if))
       .map((r) => r.suite);
     const onlyWithoutFiles = ran
       .filter((r) => /outputs\.files != 'true'/.test(r.if))
       .map((r) => r.suite);
-    assert.deepEqual(listed.split(",").sort(), [...new Set(always)].sort(), id);
-    assert.deepEqual(conditional ? [conditional] : [], onlyWithoutFiles, id);
+    if (
+      listed.split(",").sort().join(",") !==
+      [...new Set(always)].sort().join(",")
+    )
+      problems.push(
+        `${id}: expects ${listed} but runs ${[...new Set(always)].sort().join(",")}`
+      );
+    if ((conditional ?? "") !== onlyWithoutFiles.join(","))
+      problems.push(
+        `${id}: expects ${conditional ?? "nothing"} without the file-system jobs but runs ${onlyWithoutFiles.join(",") || "nothing"}`
+      );
   }
-  assert.deepEqual(counted.sort(), [
+  return { problems, counted: counted.sort() };
+}
+
+test("each job that runs test suites checks every suite's run and pass counts as its last test step", () => {
+  const { problems, counted } = wiringProblems(workflow);
+  assert.deepEqual(problems, []);
+  assert.deepEqual(counted, [
     "check",
     "test-db",
     "test-e2e-windows-1",
@@ -697,7 +724,11 @@ test("runs every node:test suite through the counting runner and gives every Vit
     }
   );
   assert.ok(configs.length >= 8, configs.join(", "));
-  for (const config of configs) reportOf(config);
+  for (const config of configs)
+    assert.ok(
+      reportOf(config),
+      `${config} must add testReport(<suite>) to its reporters`
+    );
   // 시험 파일이 있는 패키지는 모두 자기 설정으로 보고서를 남긴다(설정이 없으면 Vitest 기본값으로 돌아 보고서가 없다).
   for (const [name, folder] of Object.entries(folders))
     assert.ok(
