@@ -230,3 +230,56 @@ test("a refused launch ends the call with exit code 4 and its reason", async () 
     4,
   ]);
 });
+
+// 지침을 보내지 못한 시도(worker가 읽기 전에 끝나 EPIPE 등)는 모델의 오류 이벤트가 아니라 실행 실패다. 오류 이벤트(종료 코드 2)는
+// 상위 호출자에게 다음 모델로 넘어가라는 뜻이라 그 신호를 내지 않고, 이유와 함께 종료 코드 4로 끝난다(#284 리뷰).
+test("an attempt whose brief could not be sent ends the call with exit code 4 and the reason, not as an error event", async () => {
+  const run = createWorkerRun({
+    launch: () => {
+      const tree = fakeWorker(100, treeGone);
+      tree.delivered = Promise.resolve("EPIPE");
+      // 지침을 읽지 않고 곧바로 끝난다.
+      queueMicrotask(() => tree.end(0));
+      return tree;
+    },
+    hasSession: () => false,
+    startCheckMs: 60_000,
+    limitMs: 60_000,
+  });
+  const ended = await finish(run, { limitMs: 60_000, session: "", errors: [] });
+  assert.equal(ended.attempts, 2);
+  assert.equal(ended.result.sendFailure, "EPIPE");
+  assert.deepEqual(ended.outcome, ["could not send the brief: EPIPE", 4]);
+});
+
+// 보내기 실패는 그 시도에 묶인다. 첫 시도가 지침을 보내지 못하고 세션 없이 끝나 다시 띄운 둘째 시도가 지침을 보내고 마치면, 결과에
+// 첫 시도의 실패가 남지 않는다. 시도는 자기 보내기가 끝난 뒤에 끝나므로 앞 시도의 늦은 실패가 뒤 시도에 닿을 수도 없다.
+test("a brief failure belongs to its attempt: a second attempt that sends the brief finishes without it", async () => {
+  let session = false;
+  const deliveries = ["EPIPE", undefined];
+  const { launch, launched } = launcher(treeGone);
+  const run = createWorkerRun({
+    launch: () => {
+      const tree = launch();
+      tree.delivered = Promise.resolve(deliveries[launched.length - 1]);
+      const second = launched.length === 2;
+      queueMicrotask(() => {
+        // 첫 시도는 세션 없이, 둘째 시도는 세션을 만든 뒤 스스로 끝난다.
+        if (second) session = true;
+        tree.end(0);
+      });
+      return tree;
+    },
+    hasSession: () => session,
+    startCheckMs: 60_000,
+    limitMs: 60_000,
+  });
+  const ended = await finish(run, {
+    limitMs: 60_000,
+    session: "ses-1",
+    errors: [],
+  });
+  assert.equal(ended.attempts, 2);
+  assert.equal(ended.result.sendFailure, undefined);
+  assert.deepEqual(ended.outcome, ["finished", 0]);
+});

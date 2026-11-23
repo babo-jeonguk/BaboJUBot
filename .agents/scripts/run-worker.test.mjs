@@ -29,9 +29,13 @@ const windows = process.platform === "win32";
 // - FAKE_MOVED: 새 세션(detached)으로 그룹을 빠져나가는 명령을 띄운다(Claude Code·Codex의 셸 명령처럼, #219).
 // 각 명령은 받은 코드로 시험의 연결을 쥐고(그 코드를 실행한 뒤에야 무시를 설치한 것이다), 자기 번호를 파일에 남긴다(실패한 시험의
 // 정리용. 연결이 열려 있을 때만 그 번호로 끈다).
+// - FAKE_SKIP_INPUT: 쉼표로 적은 몇 번째 띄움(1부터)에서는 표준 입력을 읽지 않고 곧바로 끝난다(지침을 읽기 전에 끝난 worker).
+// - FAKE_SESSION: 표준 입력을 끝까지 읽은 뒤 세션을 알리고 끝난다(일을 마친 worker).
 const fakeOpencode = `import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
+const launch = readFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "utf8").split("\\n").filter(Boolean).length;
+if ((process.env.FAKE_SKIP_INPUT ?? "").split(",").includes(String(launch))) process.exit(0);
 // opencode run처럼 인수에 지침이 없으면 표준 입력 전체를 지침으로 읽는다. 받은 인수와 표준 입력을 한 줄(JSON)로 남긴다.
 let input = "";
 process.stdin.setEncoding("utf8");
@@ -40,6 +44,10 @@ process.stdin.on("end", () => {
   appendFileSync(process.env.FAKE_OPENCODE_CALLS, JSON.stringify({ args: process.argv.slice(2), input }) + "\\n");
   // 남긴 뒤 시험의 연결을 쥐어 남겼음을 알린다(FAKE_RECORDED는 그 연결을 쥐는 문장이다).
   if (process.env.FAKE_RECORDED) (0, eval)(process.env.FAKE_RECORDED);
+  if (process.env.FAKE_SESSION) {
+    console.log(JSON.stringify({ type: "step_start", sessionID: "ses_fake" }));
+    process.exit(0);
+  }
 });
 const command = (code, pidFile) =>
   \`process.on("SIGTERM", () => {}); \${code} require("node:fs").writeFileSync(\${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);\`;
@@ -56,7 +64,13 @@ setInterval(() => {}, 1000);
  */
 async function fixture(
   defer,
-  { stubborn = false, moved = false, recorded = false } = {}
+  {
+    stubborn = false,
+    moved = false,
+    recorded = false,
+    skipInput = "",
+    session = false,
+  } = {}
 ) {
   const dir = mkdtempSync(path.join(tmpdir(), "babojubot-run-worker-"));
   defer(() => removeFolder(dir));
@@ -87,6 +101,8 @@ async function fixture(
     FAKE_OPENCODE_LAUNCHES: launches,
     FAKE_OPENCODE_CALLS: calls,
     ...(recorded ? { FAKE_RECORDED: lifelines.hold("recorded") } : {}),
+    ...(skipInput ? { FAKE_SKIP_INPUT: skipInput } : {}),
+    ...(session ? { FAKE_SESSION: "1" } : {}),
   };
   for (const [name, wanted] of Object.entries(commands)) {
     if (!wanted) continue;
@@ -263,6 +279,44 @@ test("a runner sends a multi-line brief on the worker's standard input, not as a
         `${kind}: ${run.output()}`
       );
     }
+  });
+});
+
+// 파이프 버퍼보다 훨씬 큰 지침(8MB)을 읽지 않고 곧바로 끝나는 worker에 보내면 쓰기는 상대가 닫혀 반드시 실패한다(EPIPE 등). 지침을
+// 못 보낸 것은 모델의 오류 이벤트(종료 코드 2, 다음 모델로)가 아니라 실행 실패라 이유와 함께 종료 코드 4로 끝난다(#284 리뷰).
+const bigBrief = "지침 한 줄입니다.\n".repeat(400_000);
+
+test("a runner whose brief cannot be sent ends with exit code 4 and the reason, not as an error event", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer, { skipInput: "1,2" });
+    const brief = path.join(f.dir, "brief.md");
+    writeFileSync(brief, bigBrief);
+    const run = runner(defer, f, 10, ["--brief", brief]);
+    assert.equal(await run.exited, 4, run.output());
+    assert.match(run.output(), /^status: could not send the brief: \S+$/m);
+    assert.match(run.output(), /^attempts: 2$/m);
+    assert.match(run.output(), /^errors: -$/m);
+  });
+});
+
+// 보내기 실패는 그 시도에 묶인다. 첫 시도가 지침을 읽지 않고 끝나 다시 띄운 둘째 시도가 지침을 끝까지 읽고 세션을 알리고 마치면,
+// 호출은 첫 시도의 실패 없이 마친다.
+test("a runner whose first attempt could not take the brief finishes when the second attempt takes it", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer, { skipInput: "1", session: true });
+    const brief = path.join(f.dir, "brief.md");
+    writeFileSync(brief, bigBrief);
+    const run = runner(defer, f, 10, ["--brief", brief]);
+    assert.equal(await run.exited, 0, run.output());
+    assert.match(run.output(), /^status: finished$/m);
+    assert.match(run.output(), /^attempts: 2$/m);
+    assert.match(run.output(), /^errors: -$/m);
+    const calls = readFileSync(f.calls, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input, bigBrief);
   });
 });
 
