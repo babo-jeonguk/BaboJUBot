@@ -69,7 +69,7 @@ const checkGroups = [
 /**
  * @param {string[]} files 바뀐 파일(저장소 기준 경로)
  * @param {Record<string, { dir: string, deps: string[] }>} graph workspace 패키지와 그 의존성
- * @param {{ exists?: (file: string) => boolean, tests?: boolean }} [options]
+ * @param {{ exists?: (file: string) => boolean, tests?: boolean, configInputs?: Set<string> }} [options]
  */
 export function plan(
   files,

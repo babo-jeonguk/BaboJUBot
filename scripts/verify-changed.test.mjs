@@ -377,6 +377,21 @@ test("type-checks the JS files when a code file or a tsconfig changed, also when
   );
 });
 
+// JS 검사기(scripts/typecheck-js.mjs)는 이름에 `tsconfig`가 든 JSON을 모두 설정으로 읽고, 설정이 `extends`로 읽는 JSON도 그 결과를
+// 바꾼다. 변경 검증이 다른 이름 규칙을 쓰면, 검사기가 읽는 설정만 바뀐 변경에서 JS 검사 없이 끝난다(#286 항목 30).
+test("type-checks the JS files when a config the JS check reads changed, whatever its name", () => {
+  assert.deepEqual(plan(["alternate-tsconfig.json"], graph), [
+    ...outsidePackages,
+    docs,
+  ]);
+  assert.deepEqual(
+    plan(["config/strict.json"], graph, {
+      configInputs: new Set(["tsconfig.json", "config/strict.json"]),
+    }),
+    [...outsidePackages, docs]
+  );
+});
+
 test("does not lint files ESLint does not read", () => {
   assert.deepEqual(plan(["packages/core/src/data.json"], graph), [
     typecheck("@babojubot/core"),

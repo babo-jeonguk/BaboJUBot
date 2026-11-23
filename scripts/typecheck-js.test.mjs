@@ -230,3 +230,52 @@ test("the JS check finds JS checking configs, reports the mistakes of their JS f
     [["caller.mjs", 2554]]
   );
 });
+
+/** JS 검사 설정을 둔 표본 저장소. `configs`는 { 설정 경로: include }, `files`는 표본 JS 경로다. */
+function sampleRepository(context, configs, files) {
+  const folder = mkdtempSync(path.join(tmpdir(), "typecheck-js-owners-"));
+  context.after(() => removeFolder(folder));
+  git(folder, "init", "-q");
+  for (const [config, include] of Object.entries(configs)) {
+    mkdirSync(path.join(folder, path.dirname(config)), { recursive: true });
+    writeFileSync(
+      path.join(folder, config),
+      JSON.stringify({
+        compilerOptions: { allowJs: true, checkJs: true, noEmit: true },
+        include,
+      })
+    );
+  }
+  for (const file of files) {
+    mkdirSync(path.join(folder, path.dirname(file)), { recursive: true });
+    writeFileSync(path.join(folder, file), "export const a = 1;\n");
+  }
+  return folder;
+}
+
+// 파일마다 소속 설정 수를 센다. 두 설정에 든 파일을 한 집합으로 합치면 "들었음"으로 통과하지만, 같은 오류를 두 번 알리고 두 설정 중
+// 어느 쪽 옵션으로 검사되는지 정해지지 않는다(#286 항목 28).
+test("reports a JS file that two JS checking configs both include", (context) => {
+  const folder = sampleRepository(
+    context,
+    { "tsconfig.json": ["**/*"], "tools/tsconfig.json": ["**/*"] },
+    ["tools/shared.mjs", "alone.mjs"]
+  );
+  assert.deepEqual(ownershipProblems(folder), [
+    "tools/shared.mjs: 2 JS checking tsconfigs include it (tools/tsconfig.json, tsconfig.json)",
+  ]);
+});
+
+// TypeScript는 한 폴더에서 확장자만 다른 같은 이름의 JS 중 하나만 프로그램에 넣는다. 빠진 쪽은 어느 설정에도 들지 않은 파일로 잡는다.
+test("reports the JS file TypeScript leaves out beside a same-named JS file of another format", (context) => {
+  const folder = sampleRepository(context, { "tsconfig.json": ["**/*"] }, [
+    "ui/sample.js",
+    "ui/sample.jsx",
+  ]);
+  const problems = ownershipProblems(folder);
+  assert.equal(problems.length, 1, problems.join("\n"));
+  assert.match(
+    problems[0] ?? "",
+    /^ui\/sample\.jsx?: no JS checking tsconfig includes it \(TypeScript keeps one of ui\/sample\.js, ui\/sample\.jsx\)$/
+  );
+});
