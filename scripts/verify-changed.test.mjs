@@ -37,6 +37,8 @@ const typecheck = (name, kind = "") =>
   `pnpm --filter ${name} run typecheck${kind ? `:${kind}` : ""}`;
 /** 문서 검사는 늘 돈다. 나머지 묶음은 그 묶음의 시험이 보는 파일이 바뀌었을 때만 돈다. */
 const docs = "pnpm check:docs";
+/** JS 타입 검사. 코드 파일이나 tsconfig가 바뀌면(지운 것 포함) 돈다. */
+const javaScript = "pnpm typecheck:js";
 const rules = "pnpm check:rules";
 const agents = "pnpm check:agents";
 const scripts = "pnpm check:scripts";
@@ -53,6 +55,7 @@ test("type-checks only the test side when only tests changed", () => {
   assert.deepEqual(plan(["apps/server/test/a.test.ts"], graph), [
     lint("apps/server/test/a.test.ts"),
     typecheck("@babojubot/server", "test"),
+    javaScript,
     docs,
   ]);
 });
@@ -62,6 +65,7 @@ test("type-checks the changed package and every package that uses it when produc
     lint("packages/core/src/policy.ts"),
     typecheck("@babojubot/core"),
     typecheck("@babojubot/server"),
+    javaScript,
     docs,
   ]);
 });
@@ -74,6 +78,7 @@ test("follows users of users", () => {
     typecheck("@babojubot/runtime"),
     typecheck("@babojubot/server"),
     typecheck("@babojubot/web"),
+    javaScript,
     docs,
     rules,
     agents,
@@ -87,6 +92,7 @@ test("type-checks the test side of users when a shared test helper changed", () 
     typecheck("@babojubot/runtime", "test"),
     typecheck("@babojubot/server", "test"),
     typecheck("@babojubot/web", "test"),
+    javaScript,
     docs,
     rules,
     agents,
@@ -102,6 +108,7 @@ test("a full type check wins over a test-side one for the same package", () => {
       typecheck("@babojubot/runtime"),
       typecheck("@babojubot/server"),
       typecheck("@babojubot/web"),
+      javaScript,
       docs,
       rules,
       agents,
@@ -118,6 +125,7 @@ test("treats package settings outside src as product changes", () => {
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
       typecheck("@babojubot/web"),
+      javaScript,
       docs,
     ]
   );
@@ -148,6 +156,7 @@ test("lints scripts outside packages without type-checking a package", () => {
     plan(["scripts/ci-changes.mjs", ".agents/scripts/run-worker.mjs"], graph),
     [
       lint(".agents/scripts/run-worker.mjs", "scripts/ci-changes.mjs"),
+      javaScript,
       docs,
       agents,
       scripts,
@@ -171,7 +180,11 @@ test("runs the lint rule tests when a lint rule or its test changed", () => {
     "scripts/lint-rules.test.mjs",
     "scripts/product-lint-rules.test.mjs",
   ])
-    assert.deepEqual(plan([file], graph), [lint(file), docs, rules], file);
+    assert.deepEqual(
+      plan([file], graph),
+      [lint(file), javaScript, docs, rules],
+      file
+    );
 });
 
 test("runs the worker tests when the agent tools changed", () => {
@@ -192,6 +205,7 @@ test("runs the script tests when a script or the CI workflow changed", () => {
   ]);
   assert.deepEqual(plan(["scripts/live/check-server.mjs"], graph), [
     lint("scripts/live/check-server.mjs"),
+    javaScript,
     docs,
     scripts,
   ]);
@@ -204,6 +218,7 @@ test("runs the rule, worker and script tests when a package the root uses change
     typecheck("@babojubot/runtime"),
     typecheck("@babojubot/server"),
     typecheck("@babojubot/web"),
+    javaScript,
     docs,
     rules,
     agents,
@@ -240,6 +255,7 @@ test("with tests, runs the tests of the changed packages and the packages that u
       lint("packages/core/src/policy.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
+      javaScript,
       docs,
       "pnpm --filter @babojubot/core --filter @babojubot/server run test",
     ]
@@ -252,6 +268,7 @@ test("with tests, runs the tests of the changed packages and the packages that u
       typecheck("@babojubot/runtime", "test"),
       typecheck("@babojubot/server", "test"),
       typecheck("@babojubot/web", "test"),
+      javaScript,
       docs,
       rules,
       agents,
@@ -271,7 +288,7 @@ test("with tests, runs the root tests when a root test or its script changed", (
   ])
     assert.deepEqual(
       plan([file], graph, { tests: true }),
-      [lint(file), docs, scripts, "pnpm test:root"],
+      [lint(file), javaScript, docs, scripts, "pnpm test:root"],
       file
     );
 });
@@ -308,6 +325,7 @@ test("does not lint deleted files but still type-checks their package", () => {
       lint("packages/core/src/new.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
+      javaScript,
       docs,
     ]
   );
@@ -327,8 +345,32 @@ test("lints each file once, in path order", () => {
       lint("packages/core/src/a.ts", "packages/core/src/b.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
+      javaScript,
       docs,
     ]
+  );
+});
+
+test("type-checks the JS files when a code file or a tsconfig changed, also when the file was deleted", () => {
+  // JS는 패키지의 TypeScript 타입을 가져오므로 TypeScript만 바뀌어도 JS 검사 결과가 달라진다.
+  assert.deepEqual(
+    plan(["packages/core/src/gone.ts"], graph, { exists: () => false }),
+    [
+      typecheck("@babojubot/core"),
+      typecheck("@babojubot/server"),
+      javaScript,
+      docs,
+    ]
+  );
+  assert.deepEqual(plan(["packages/core/tsconfig.js.json"], graph), [
+    typecheck("@babojubot/core"),
+    typecheck("@babojubot/server"),
+    javaScript,
+    docs,
+  ]);
+  assert.deepEqual(
+    plan(["scripts/fixtures/test-exit-code/tsconfig.json"], graph),
+    [javaScript, docs, scripts]
   );
 });
 
@@ -456,6 +498,7 @@ test("prints the plan for uncommitted, untracked and deleted files against the b
     "pnpm exec eslint --no-warn-ignored packages/a/src/a.ts packages/a/src/new.ts",
     "pnpm --filter @x/a run typecheck",
     "pnpm --filter @x/b run typecheck",
+    "pnpm typecheck:js",
     "pnpm check:docs",
   ]);
 });
@@ -471,6 +514,7 @@ test("adds the tests of the changed packages with --tests", (t) => {
     "pnpm exec eslint --no-warn-ignored packages/a/src/a.ts",
     "pnpm --filter @x/a run typecheck",
     "pnpm --filter @x/b run typecheck",
+    "pnpm typecheck:js",
     "pnpm check:docs",
     "pnpm --filter @x/a --filter @x/b run test",
   ]);
