@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import pg from "pg";
@@ -223,10 +224,13 @@ describe("embedded Postgres lifetime", () => {
     child.stdout!.on("data", (chunk) => {
       output += chunk;
     });
+    // `exit` 때 출력은 아직 열려 있을 수 있다. 출력의 끝은 따로 기다린 뒤 읽는다(#286).
+    const outputEnded = awaitedLater(finished(child.stdout!));
     // 시작에 실패한 뒤 프로세스를 붙잡는 것이 없어 스스로(신호 없이 0으로) 끝난다. 붙잡혔다면 이 기다림이 실패한다.
     // 이 시험을 만들 때 가르던 것(embedded-postgres가 등록한 exit-hook이 멈춘 종료 hook을 5초 뒤에야 강제로 끝냄)은 그
     // 등록을 지운 pnpm 패치(patches/embedded-postgres@18.6.0-beta.19.patch)로 없어졌다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
     expect(await exited.within(30_000)).toEqual({ code: 0, signal: null });
+    await within(outputEnded, 10_000, "the child's output did not end");
 
     // 왜 끝났는지 알 수 있어야 한다. 시스템마다 이유가 달라 Postgres가 남긴 말을 그대로 보인다.
     expect(output).toMatch(
@@ -397,7 +401,10 @@ describe("embedded Postgres lifetime", () => {
     const exited = watchExit(child);
     let output = "";
     child.stdout!.on("data", (chunk) => (output += chunk));
+    // `exit` 때 출력은 아직 열려 있을 수 있다. 출력의 끝은 따로 기다린 뒤 읽는다(#286).
+    const outputEnded = awaitedLater(finished(child.stdout!));
     await exited.within(30_000);
+    await within(outputEnded, 10_000, "the child's output did not end");
     const none = {
       SIGINT: 0,
       SIGTERM: 0,
