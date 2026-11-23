@@ -2014,6 +2014,19 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nconst outer = () => inner();\n`,
       /기다리지 않습니다/,
     ],
+    // 함수를 읽기만 하는 것(인자로 넘기기·다른 이름에 담기)은 부르는 것이 아니다. 넘겨받은 쪽이 부르는지는 모른다(#291 외부 리뷰 1회차 STD-2).
+    "an await in a function that is only logged": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst never = async () => {\n  await later;\n};\nconsole.log(never);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await in a function that is only given another name": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nasync function never() {\n  await later;\n}\nconst alias = never;\nuse(alias);\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await in a named function handed to another function as a callback": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wait = async () => {\n  await later;\n};\nsetTimeout(wait, 0);\n`,
+      /기다리지 않습니다/,
+    ],
     "an await after an early return": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nexport async function run() {\n  return 1;\n  await later;\n}\n`,
       /기다리지 않습니다/,
