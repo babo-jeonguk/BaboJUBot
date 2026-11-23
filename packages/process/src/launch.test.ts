@@ -434,7 +434,7 @@ describe("launchTree without a supervisor", () => {
     async () => {
       const file = await fakeSupervisor(
         "mimic-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\n${say("exit 7")}\nwhile read line <&3; do case "$line" in *stop*) ${say("ended")}; exit 0;; esac; done\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\n${say("exit 7")}\nwhile read line <&3; do case "$line" in *stop*) ${say("ended")}; exit 0;; esac; done\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -455,7 +455,7 @@ describe("launchTree without a supervisor", () => {
       }, "the child that holds the control channel");
       const file = await fakeSupervisor(
         "leaky-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -478,7 +478,7 @@ describe("launchTree without a supervisor", () => {
       }, "the stuck supervisor and its child");
       const file = await fakeSupervisor(
         "stuck-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\nsleep 600 &\necho $! >> ${JSON.stringify(pidFile)}\necho $$ >> ${JSON.stringify(pidFile)}\nexec sleep 600\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! >> ${JSON.stringify(pidFile)}\necho $$ >> ${JSON.stringify(pidFile)}\nexec sleep 600\n`
       );
       vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(() => true);
       onTestFinished(async () => {
@@ -529,6 +529,33 @@ describe("launchTree without a supervisor", () => {
         reason: expect.stringContaining("speaks protocol 99"),
       });
       expect(launched).toMatch(/speaks protocol 99/);
+    }
+  );
+
+  // #283 외부 리뷰 4회차 SPEC-4: 같은 판 4라도 첫 메시지에 시작 시각 칸이 없는 실행기(그 칸을 더하기 전에 빌드한 것)는 쓰지 않는다.
+  // 기록이 시작 시각 없이 남지 않게, 준비에서 다시 빌드하라는 이유로 거절한다.
+  it.skipIf(windows)(
+    "refuses a protocol 4 supervisor whose first message has no start",
+    async () => {
+      const old = path.join(dataDir, "old-supervisor");
+      const hello = `babojubot-supervisor ${supervisorProtocol}`;
+      await writeFile(
+        old,
+        `#!/bin/sh\nprintf '%s' ${JSON.stringify(`${Buffer.byteLength(hello)}:${hello},`)} >&3\nexec cat <&3 >/dev/null\n`
+      );
+      await chmod(old, 0o755);
+      const [prepared, launched] = separately(
+        `import { launchTree, prepareSupervisor } from ${launchModule};
+         console.log(JSON.stringify(await prepareSupervisor({ file: ${JSON.stringify(old)} })));
+         ${tryLaunch}`
+      );
+      expect(JSON.parse(prepared!)).toEqual({
+        ok: false,
+        reason: expect.stringMatching(
+          /does not report its start.*build it again/
+        ),
+      });
+      expect(launched).toMatch(/does not report its start/);
     }
   );
 });

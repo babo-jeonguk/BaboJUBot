@@ -440,6 +440,17 @@ mod tests {
                     let error = Messages::default().push(&bytes(row[1])).unwrap_err();
                     assert!(error.contains("malformed control message"), "{error}");
                 }
+                // The first message (#283 review 4, SPEC-4): the same rows as the server's reader.
+                "hello" => {
+                    let start = (row[1] != "-").then(|| row[1].parse::<u64>().unwrap());
+                    let line = String::from_utf8(bytes(row[2])).unwrap();
+                    assert_eq!(hello(start), line);
+                }
+                "old-hello" => {
+                    let line = String::from_utf8(bytes(row[1])).unwrap();
+                    assert_ne!(hello(None), line);
+                    assert_ne!(hello(Some(1)), line);
+                }
                 other => panic!("unknown vector kind {other}"),
             }
         }

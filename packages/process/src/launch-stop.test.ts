@@ -102,7 +102,7 @@ const stubbornSupervisor = (
   const frame = (text) => framed ? Buffer.byteLength(text) + ":" + text + "," : text + "\\n";
   process.on("SIGTERM", () => { if (termLog) fs.appendFileSync(termLog, "TERM\\n"); });
   const control = new net.Socket({ fd: 3 });
-  control.write(frame("babojubot-supervisor " + protocol));
+  control.write(frame("babojubot-supervisor " + protocol + (framed ? " -" : "")));
   const env = { ...process.env };
   let started = false;
   const start = () => {
