@@ -1,11 +1,14 @@
 // worker 호출의 시도·멈춤·결과 판정(#255 리뷰 SPEC-1·SPEC-4). opencode를 띄우는 일은 그 끄기와 한 쌍(공용 실행의 트리)인 대역으로
 // 넣는다. 실제 프로세스로는 끄기 확인 실패(SIGKILL 뒤에도 끝나지 않는 트리)를 만들 수 없어 여기서 본다. 실제 프로세스 시험은
 // run-worker.test.ts.
+// 호출(`finish`)은 시계를 옮기기 전에 시작하고 끝에 기다린다. 그 사이의 대기가 실패해도 호출의 늦은 실패가 처리되지 않은 거절로
+// 남지 않게 `awaitedLater`로 둔다(#287 리뷰 STD-2).
 // 세션 확인·한도는 시험이 옮기는 시계(`manualClock`)로 잰다. 시험은 띄움·끄기 시작 같은 상태를 본 뒤에만 시계를 옮겨, 시한과
 // 대역의 순서가 실제 시간이 아니라 시험이 정한 차례로 온다(#286 항목 33).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { TreeExit, TreeStart } from "@babojubot/process";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
 import { manualClock, within } from "@babojubot/process/test-support";
 import { createWorkerRun, outcome, type WorkerTree } from "./worker-run.ts";
 
@@ -101,12 +104,14 @@ test("a stop that cannot confirm the tree gone at --limit ends the call with exi
     limitMs: 60_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 60_000,
-    session: "",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 60_000,
+      session: "",
+      errors: [],
+    })
+  );
   await launchedCount(1);
   clock.advance(60_000);
   const ended = await running;
@@ -129,12 +134,14 @@ test("a failed stop at the start check is not followed by a second worker", asyn
     limitMs: 600_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 600_000,
-    session: "",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 600_000,
+      session: "",
+      errors: [],
+    })
+  );
   await launchedCount(1);
   clock.advance(60_000);
   const ended = await running;
@@ -158,12 +165,14 @@ test("a stopped attempt ends with its stop even when its leader never exits", as
     limitMs: 600_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 600_000,
-    session: "",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 600_000,
+      session: "",
+      errors: [],
+    })
+  );
   await launchedCount(1);
   clock.advance(60_000);
   await launchedCount(2);
@@ -184,12 +193,14 @@ test("an attempt stopped at --limit is not launched again and ends with exit cod
     limitMs: 0.5 * 60_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 0.5 * 60_000,
-    session: "",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 0.5 * 60_000,
+      session: "",
+      errors: [],
+    })
+  );
   await launchedCount(1);
   clock.advance(0.5 * 60_000);
   const ended = await running;
@@ -211,12 +222,14 @@ test("a signal to the runner stops the attempt, starts no other and ends with 12
     limitMs: 60_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 60_000,
-    session: "",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 60_000,
+      session: "",
+      errors: [],
+    })
+  );
   run.requestStop("SIGTERM");
   const ended = await running;
   assert.equal(launched.length, 1);
@@ -234,12 +247,14 @@ test("a signal whose stop fails keeps the stop failure as the result", async () 
     limitMs: 60_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 60_000,
-    session: "",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 60_000,
+      session: "",
+      errors: [],
+    })
+  );
   run.requestStop("SIGINT");
   const ended = await running;
   assert.deepEqual(ended.outcome, [
@@ -431,12 +446,14 @@ test("a stop that fails while the brief is still being written ends the call wit
     limitMs: 60_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 60_000,
-    session: "",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 60_000,
+      session: "",
+      errors: [],
+    })
+  );
   await launchedCount(1);
   clock.advance(60_000);
   const ended = await running;
@@ -522,12 +539,14 @@ test("an attempt whose tree was confirmed stopped waits for the brief's write in
     limitMs: 60_000,
     clock,
   });
-  const running = finish(run, {
-    clock,
-    limitMs: 60_000,
-    session: "ses-1",
-    errors: [],
-  });
+  const running = awaitedLater(
+    finish(run, {
+      clock,
+      limitMs: 60_000,
+      session: "ses-1",
+      errors: [],
+    })
+  );
   await launchedCount(1);
   clock.advance(60_000);
   await within(stopping.promise, 10_000, "the limit did not stop the tree");

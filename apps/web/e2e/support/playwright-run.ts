@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { attemptEach, combinedFailure } from "@babojubot/contracts";
 import { within } from "@babojubot/process/test-support";
 
 // 시험 하나 안에서 Playwright 실행을 따로 띄운다. 안쪽 실행이 끝난 뒤에야 보이는 것(fixture·globalSetup 정리 뒤의 상태, 종료 코드,
@@ -59,8 +60,10 @@ export async function runPlaywright(options: {
   let output = "";
   child.stdout!.on("data", (chunk) => (output += chunk));
   child.stderr!.on("data", (chunk) => (output += chunk));
-  const exit = once(child, "exit") as Promise<[number | null]>;
-  const outputEnded = Promise.all([
+  // 종료와 출력의 끝을 한 대기로 본다. `exit` 때는 출력이 아직 열려 있을 수 있어(Node 문서 child_process `'exit'`) 부른 쪽이 단언할
+  // 출력은 그 끝까지 읽은 것이고, 어느 길에서도 이 대기를 버리지 않는다(#287 리뷰 STD-2).
+  const ended = Promise.all([
+    once(child, "exit") as Promise<[number | null]>,
     once(child.stdout!, "end"),
     once(child.stderr!, "end"),
   ]);
@@ -68,22 +71,30 @@ export async function runPlaywright(options: {
   const timedOut = new Promise<undefined>((resolve) => {
     timer = setTimeout(() => resolve(undefined), timeoutMs);
   });
-  const finished = await Promise.race([exit, timedOut]).finally(() =>
+  const finished = await Promise.race([ended, timedOut]).finally(() =>
     clearTimeout(timer)
   );
   if (!finished) {
     child.kill("SIGKILL");
-    await exit;
-    throw new Error(
-      `안쪽 Playwright 실행이 ${timeoutMs}ms 안에 끝나지 않았다: ${output}`
+    // 끈 실행도 끝까지 본다. 끝나지 않으면 그 실패를 시한 실패와 함께 알린다.
+    const failures = await attemptEach([
+      () =>
+        within(
+          ended,
+          10_000,
+          "the stopped inner Playwright run did not exit and end its output"
+        ),
+    ]);
+    throw combinedFailure(
+      [
+        new Error(
+          `안쪽 Playwright 실행이 ${timeoutMs}ms 안에 끝나지 않았다: ${output}`
+        ),
+        ...failures,
+      ],
+      "안쪽 Playwright 실행이 시한 안에 끝나지 않았다"
     );
   }
-  const [code] = finished;
-  // `exit` 때는 출력이 아직 열려 있을 수 있다(Node 문서 child_process `'exit'`). 부른 쪽이 출력을 단언하므로 출력의 끝까지 읽는다.
-  await within(
-    outputEnded,
-    10_000,
-    "the output of the inner Playwright run did not end after it exited"
-  );
+  const [[code]] = finished;
   return { code, output };
 }

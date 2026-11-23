@@ -48,14 +48,20 @@ export async function openLifelines() {
     };
     socket.on("data", read);
   });
-  await within(
-    new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
-    }),
-    10_000,
-    "the lifeline server did not start listening"
-  );
+  try {
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolve());
+      }),
+      10_000,
+      "the lifeline server did not start listening"
+    );
+  } catch (error) {
+    // 부른 쪽은 서버를 받지 못해 닫을 수 없다. 듣기 시작한 서버를 남기지 않고 그 실패를 알린다(#287 리뷰 STD-1).
+    if (server.listening) server.close();
+    throw error;
+  }
   const address = server.address();
   if (address === null || typeof address === "string")
     throw new Error("the lifeline server has no port");
