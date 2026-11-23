@@ -31,6 +31,7 @@ const windows = process.platform === "win32";
 // 정리용. 연결이 열려 있을 때만 그 번호로 끈다).
 // - FAKE_SKIP_INPUT: 쉼표로 적은 몇 번째 띄움(1부터)에서는 표준 입력을 읽지 않고 곧바로 끝난다(지침을 읽기 전에 끝난 worker).
 // - FAKE_SESSION: 표준 입력을 끝까지 읽은 뒤 세션을 알리고 끝난다(일을 마친 worker).
+// - FAKE_IGNORE_INPUT: 표준 입력을 읽지 않은 채 멈춰 있다(지침을 받지 않고 살아 있는 worker).
 const fakeOpencode = `import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
@@ -39,7 +40,7 @@ if ((process.env.FAKE_SKIP_INPUT ?? "").split(",").includes(String(launch))) pro
 // opencode run처럼 인수에 지침이 없으면 표준 입력 전체를 지침으로 읽는다. 받은 인수와 표준 입력을 한 줄(JSON)로 남긴다.
 let input = "";
 process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => (input += chunk));
+if (!process.env.FAKE_IGNORE_INPUT) process.stdin.on("data", (chunk) => (input += chunk));
 process.stdin.on("end", () => {
   appendFileSync(process.env.FAKE_OPENCODE_CALLS, JSON.stringify({ args: process.argv.slice(2), input }) + "\\n");
   // 남긴 뒤 시험의 연결을 쥐어 남겼음을 알린다(FAKE_RECORDED는 그 연결을 쥐는 문장이다).
@@ -70,6 +71,7 @@ async function fixture(
     recorded = false,
     skipInput = "",
     session = false,
+    ignoreInput = false,
   } = {}
 ) {
   const dir = mkdtempSync(path.join(tmpdir(), "babojubot-run-worker-"));
@@ -103,6 +105,7 @@ async function fixture(
     ...(recorded ? { FAKE_RECORDED: lifelines.hold("recorded") } : {}),
     ...(skipInput ? { FAKE_SKIP_INPUT: skipInput } : {}),
     ...(session ? { FAKE_SESSION: "1" } : {}),
+    ...(ignoreInput ? { FAKE_IGNORE_INPUT: "1" } : {}),
   };
   for (const [name, wanted] of Object.entries(commands)) {
     if (!wanted) continue;
@@ -317,6 +320,23 @@ test("a runner whose first attempt could not take the brief finishes when the se
       .map((line) => JSON.parse(line));
     assert.equal(calls.length, 1);
     assert.equal(calls[0].input, bigBrief);
+  });
+});
+
+// 읽지 않고 살아 있는 worker에 큰 지침을 보내면 쓰기가 보류된 채 한도에 닿는다. 끄기가 트리의 끝을 확인하면 읽을 쪽이 남지 않아
+// 보류된 쓰기는 반드시 실패로 끝나고, 호출은 그 이유와 종료 코드 4로 끝난다(#284 리뷰 2회차 SPEC-1). 끄기 확인이 실패하는 쪽은 실제
+// 프로세스로 만들 수 없어(SIGKILL 뒤에도 끝나지 않는 트리) worker-run.test.mjs의 대역으로 본다.
+test("a runner whose brief is still being written to a live worker at --limit ends with exit code 4 and the reason", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer, { ignoreInput: true });
+    const brief = path.join(f.dir, "brief.md");
+    writeFileSync(brief, bigBrief);
+    // 한도 1.2초.
+    const run = runner(defer, f, 0.02, ["--brief", brief]);
+    assert.equal(await run.exited, 4, run.output());
+    assert.match(run.output(), /^status: could not send the brief: \S+$/m);
+    assert.match(run.output(), /^attempts: 1$/m);
+    assert.equal(readFileSync(f.launches, "utf8"), "launch\n");
   });
 });
 
