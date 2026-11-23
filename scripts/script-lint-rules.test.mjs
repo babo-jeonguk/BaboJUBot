@@ -351,6 +351,14 @@ const numberSignals = {
   "kill by spawnSync": `import { spawnSync } from "node:child_process";\nspawnSync("kill", ["-9", "42"], { timeout: 1000, killSignal: "SIGKILL" });\n`,
   "pkill by runCommand": `import { runCommand } from "@babojubot/process";\nawait runCommand("pkill", ["-f", "x"], { limitMs: 1000, maxOutputBytes: 10 });\n`,
   "kill in a command line": `import { execSync } from "node:child_process";\nexecSync("kill -9 42", { timeout: 1000, killSignal: "SIGKILL" });\n`,
+  // #283 외부 리뷰 1회차 STD-1: 실행 입구는 이름 목록이 아니라 출처로, 명령은 경로를 뗀 이름으로 본다.
+  "kill through runTree": `import { runTree } from "@babojubot/process";\nawait runTree({ command: ["kill", "-9", "42"], args: [], cwd: ".", env: {}, limitMs: 1000, maxOutputBytes: 10, overflow: "stop" });\n`,
+  "taskkill through launchTree": `import { launchTree } from "@babojubot/process";\nconst tree = launchTree({ command: ["taskkill", "/F", "/PID", "42"], args: [], cwd: ".", env: {}, stdio: "pipe" });\nawait tree.stop();\n`,
+  "kill by an absolute path": `import { execFileSync } from "node:child_process";\nexecFileSync("/bin/kill", ["-9", "42"], { timeout: 1000, killSignal: "SIGKILL" });\n`,
+  "taskkill.exe by a Windows path": `import { execFileSync } from "node:child_process";\nexecFileSync("C:\\\\Windows\\\\System32\\\\taskkill.exe", ["/F", "/PID", "42"], { timeout: 1000, killSignal: "SIGKILL" });\n`,
+  "an absolute kill in a command line": `import { execSync } from "node:child_process";\nexecSync("/usr/bin/pkill -f x", { timeout: 1000, killSignal: "SIGKILL" });\n`,
+  "pkill through a renamed runCommand": `import { runCommand as run } from "@babojubot/process";\nawait run("pkill", ["-f", "x"], { limitMs: 1000, maxOutputBytes: 10 });\n`,
+  "process.kill through an alias": `const proc = process;\nexport function stop(pid) {\n  proc.kill(pid, "SIGTERM");\n}\n`,
 };
 // 막지 않는 모양: 신호 0(생존 확인), 자식 핸들의 kill, 띄운 트리의 끄기, 실행기에 청하는 정리, 번호로 끄지 않는 명령.
 const keptNumberCalls = [
@@ -359,7 +367,29 @@ const keptNumberCalls = [
   `export async function stop(tree) {\n  await tree.stop();\n}\n`,
   `import { cleanThroughSupervisor } from "@babojubot/process/recovery";\nawait cleanThroughSupervisor({ lease: "x" });\n`,
   `import { execFileSync } from "node:child_process";\nexecFileSync("ps", ["-o", "lstart=", "-p", "42"], { timeout: 1000, killSignal: "SIGKILL" });\n`,
+  `import { runTree } from "@babojubot/process";\nawait runTree({ command: ["/usr/bin/ps", "-A"], args: [], cwd: ".", env: {}, limitMs: 1000, maxOutputBytes: 10, overflow: "stop" });\n`,
+  `import { launchTree } from "@babojubot/process";\nconst tree = launchTree({ command: [process.execPath, "-e", "1"], args: [], cwd: ".", env: {}, stdio: "pipe" });\nawait tree.stop();\n`,
+  // 이름이 kill이어도 실행 입구가 아니면 아니다.
+  `export function run(spawn) {\n  spawn("kill", ["-9", "42"]);\n}\n`,
 ];
+
+// 실행 입구 표가 프로세스 패키지가 내보내는 함수를 모두 가른다: 새 실행 입구가 생기면 분류하기 전까지 이 시험이 실패한다.
+test("every function the process package exports is classified as a launcher or not", async () => {
+  const { processLaunchers, processNonLaunchers } =
+    await import("./eslint-product-rules.mjs");
+  const index = await import("node:fs").then(({ readFileSync }) =>
+    readFileSync(path.join(repository, "packages/process/src/index.ts"), "utf8")
+  );
+  const exported = [...index.matchAll(/export\s*\{([^}]*)\}/g)]
+    .flatMap((match) => match[1].split(","))
+    .map((name) => name.trim())
+    .filter((name) => name && !name.startsWith("type "));
+  for (const name of exported)
+    assert.ok(
+      name in processLaunchers || processNonLaunchers.includes(name),
+      `${name} is exported by @babojubot/process but not classified for product/no-number-signal`
+    );
+});
 
 test("signalling a process by its number is left to the supervisor", async () => {
   for (const place of [

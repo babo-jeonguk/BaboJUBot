@@ -588,7 +588,7 @@ fn environment(buffer: &[u8]) -> impl Iterator<Item = &[u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{environment, is_marker_entry};
+    use super::{Confirmed, Reading, confirm, environment, is_marker_entry, procargs_reading};
 
     #[test]
     fn a_marker_entry_has_a_marker_name_and_exactly_the_value() {
@@ -618,6 +618,64 @@ mod tests {
             marker
         ));
         assert!(!is_marker_entry(b"BABOJUBOT_PROCESS_LEASE", marker));
+    }
+
+    /// A `KERN_PROCARGS2` buffer: the argument count, the executable path with padding, the arguments, then the environment.
+    fn procargs(arguments: &[&str], environment: &[&str]) -> Vec<u8> {
+        let mut buffer = (arguments.len() as i32).to_ne_bytes().to_vec();
+        buffer.extend_from_slice(b"/bin/tool\0\0\0");
+        for entry in arguments.iter().chain(environment) {
+            buffer.extend_from_slice(entry.as_bytes());
+            buffer.push(0);
+        }
+        buffer
+    }
+
+    /// #283 review 1, SPEC-1: macOS can answer `KERN_PROCARGS2` for a restricted executable without its environment. A missing
+    /// environment is not a read that found no marker: it could not be read.
+    #[test]
+    fn a_macos_process_without_an_environment_could_not_be_read() {
+        let marker = "6f1c2a3e-1111-4222-8333-944455556666";
+        let entry = format!("BABOJUBOT_PROCESS_LEASE={marker}");
+        assert_eq!(
+            procargs_reading(&procargs(&["tool"], &[&entry]), marker),
+            Reading::Carries
+        );
+        assert_eq!(
+            procargs_reading(&procargs(&["tool"], &["A=1"]), marker),
+            Reading::Clear
+        );
+        assert_eq!(
+            procargs_reading(&procargs(&["tool"], &[]), marker),
+            Reading::Unreadable
+        );
+        assert_eq!(
+            procargs_reading(&procargs(&["tool", &entry], &[]), marker),
+            Reading::Unreadable
+        );
+        assert_eq!(procargs_reading(b"\x01", marker), Reading::Unreadable);
+    }
+
+    /// #283 review 1, SPEC-2: the read made after the handle is open decides. One that cannot be read is not a read that found no
+    /// marker; another failure is a failed look, not a pass.
+    #[test]
+    fn the_read_after_the_handle_decides_and_a_failure_is_not_a_pass() {
+        let marker = "6f1c2a3e-1111-4222-8333-944455556666";
+        let error = |code| Err(std::io::Error::from_raw_os_error(code));
+        let marked = format!("A=1\0BABOJUBOT_PROCESS_LEASE={marker}\0").into_bytes();
+        assert_eq!(confirm(Ok(marked), marker), Ok(Confirmed::Hold));
+        assert_eq!(confirm(Ok(b"A=1\0".to_vec()), marker), Ok(Confirmed::Pass));
+        assert_eq!(confirm(error(libc::ENOENT), marker), Ok(Confirmed::Pass));
+        assert_eq!(confirm(error(libc::ESRCH), marker), Ok(Confirmed::Pass));
+        assert_eq!(
+            confirm(error(libc::EACCES), marker),
+            Ok(Confirmed::Unverified)
+        );
+        assert_eq!(
+            confirm(error(libc::EPERM), marker),
+            Ok(Confirmed::Unverified)
+        );
+        assert!(confirm(error(libc::EIO), marker).is_err());
     }
 
     #[test]
