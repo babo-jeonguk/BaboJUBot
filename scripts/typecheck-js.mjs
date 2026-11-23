@@ -2,8 +2,8 @@
 // tsconfig이고 저장소의 tsconfig에서 찾는다: 목록을 손으로 두지 않아 새 tsconfig도 빠지지 않는다. 모든 JS가 그중 하나에 드는지는
 // scripts/typecheck-js.test.mjs가 본다. 패키지·앱은 tsconfig.js.json 하나가 폴더를 고르지 않고 전체를 덮어, 새 폴더의 JS도 빠지지 않는다.
 // JS를 .ts로 옮기면 그 영역은 패키지 typecheck의 엄격 설정을 받는다.
-// 아직 pnpm typecheck·CI·verify:changed에 연결하지 않았다: #274·#280이 고치는 파일에 오류가 남아(#270 PR 3a-1) 그 PR들이 병합된 뒤
-// PR 3a-2가 남은 오류를 고치고 연결한다. 그 전까지는 이 검사가 아무것도 막지 않는다.
+// pnpm typecheck가 패키지 typecheck 뒤에 부르므로 CI(ci / typecheck)와 완료 검사가 돌리고, verify:changed는 코드 파일이나 tsconfig가
+// 바뀌면 돌린다(#270 PR 3a-2).
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
