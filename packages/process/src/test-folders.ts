@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach } from "vitest";
 import { removeFolder } from "./remove-folder.ts";
+import { within } from "./test-support.ts";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 type Hook = (cleanup: () => Promise<void>) => void;
@@ -29,7 +30,7 @@ export function testFolders(
         .map(
           ({ stop, what }) =>
             () =>
-              within(stop(), what, stopTimeoutMs)
+              within(stop(), stopTimeoutMs, `${what} did not stop`)
         )
     );
     // 끝나지 않은 것이 있으면 폴더는 지우지 않고 남긴다.
@@ -81,26 +82,4 @@ export function testFolders(
       return child;
     },
   };
-}
-
-async function within(
-  stopping: Promise<unknown>,
-  what: string,
-  stopTimeoutMs: number
-) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      stopping,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(new Error(`${what} did not stop within ${stopTimeoutMs}ms`)),
-          stopTimeoutMs
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
 }

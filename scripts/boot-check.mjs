@@ -133,10 +133,9 @@ async function serveAndKill(label) {
           await delay(50);
         }
 
-        let overview;
         // 마지막 시도가 왜 답을 받지 못했는지. 시한에 닿아 멈출 때 원인으로 함께 알린다.
         let lastAttempt = "no attempt yet";
-        while (overview === undefined) {
+        for (;;) {
           // 멈춤 문구는 다른 단계와 같은 "단계: 이유"로 시작하고, 마지막 시도가 답을 받지 못한 원인을 뒤에 붙인다.
           if (stop.reason)
             throw new Error(
@@ -151,7 +150,7 @@ async function serveAndKill(label) {
               `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
             );
           // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
-          overview = await continueAfterFailure(
+          const overview = await continueAfterFailure(
             async () => {
               const response = await fetch(`${readyUrl}/api/overview`, {
                 signal: AbortSignal.timeout(fetchTimeoutMs),
@@ -160,14 +159,27 @@ async function serveAndKill(label) {
               return response.ok ? await response.json() : undefined;
             },
             (error) => {
-              lastAttempt = failureCode(error.cause ?? error);
+              lastAttempt = failureCode(
+                error instanceof Error && error.cause !== undefined
+                  ? error.cause
+                  : error
+              );
             }
           );
-          if (overview === undefined) await delay(250);
+          if (overview === undefined) {
+            await delay(250);
+            continue;
+          }
+          // 답은 화면이 읽는 개요 객체다. 다른 JSON 값(null, 숫자, 문자열)이면 서버가 준비된 것이 아니다.
+          if (typeof overview !== "object" || overview === null)
+            throw new Error(
+              `${label}: /api/overview answered ${JSON.stringify(overview)}, not an object`
+            );
+          console.log(
+            `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
+          );
+          break;
         }
-        console.log(
-          `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
-        );
       },
       () => crashServer(server),
     ],

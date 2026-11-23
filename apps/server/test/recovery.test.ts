@@ -872,8 +872,8 @@ async function listen(base: string): Promise<Stream> {
           socket.once("pong", () => resolve());
           socket.ping();
         }),
-        "the Event stream's pong",
-        eventuallyMs
+        eventuallyMs,
+        "the Event stream's pong did not finish"
       ),
     close: () => socket.close(),
   };

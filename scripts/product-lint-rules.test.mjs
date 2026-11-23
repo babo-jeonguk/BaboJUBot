@@ -852,6 +852,7 @@ const importRule = ["product/no-undeclared-import"];
 test("product code imports only the packages its package.json declares, as runtime dependencies", async () => {
   // packages/runtime: zod는 dependencies, vitest는 devDependencies, left-pad는 선언되지 않았다.
   const place = "packages/runtime/src/providers/claude.ts";
+  /** @type {Record<string, [code: string, kind: RegExp]>} 모양 → 코드와 알림 문구 */
   const reported = {
     "a dev-only package": [
       `import { expect } from "vitest";\nexport const check = () => expect(1).toBe(1);\n`,

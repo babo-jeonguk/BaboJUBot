@@ -78,7 +78,7 @@ it("keeps the folder and fails by name when a provider run does not end after th
   const provider = test.ownProvider(heldProvider(order, root, stuck));
   const run = provider.adapter.execute(request(), runOptions());
   await expect(test.cleanup()).rejects.toThrow(
-    "provider run did not stop within 50ms"
+    "provider run did not stop within 50 ms"
   );
   expect(existsSync(root)).toBe(true);
   // 남긴 폴더 안에서 실행이 늦게 끝난다.
@@ -116,7 +116,7 @@ it("owns a provider once even when it is handed to cleanup twice", async () => {
   const failure = await test.cleanup().catch((error: unknown) => error);
   expect(failure).not.toBeInstanceOf(AggregateError);
   expect(failure).toMatchObject({
-    message: "provider run did not stop within 50ms",
+    message: "provider run did not stop within 50 ms",
   });
   letGo();
   await expect(run).resolves.toMatchObject({ stopReason: "cancelled" });

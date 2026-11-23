@@ -121,7 +121,11 @@ async function abandon(
     () => "answered",
     () => "aborted"
   );
-  await within(hold.entered.promise, `the handler of ${path}`);
+  await within(
+    hold.entered.promise,
+    10_000,
+    `the handler of ${path} did not finish`
+  );
   client.abort();
   expect(await request).toBe("aborted");
 }
@@ -142,7 +146,11 @@ async function stopWhileHeld(
   const handled = hold.done.promise.then(() => order.push("handled"));
   const stopping = t.stopServer().then(() => order.push("stopped"));
   try {
-    await within(stream.closed, "the HTTP step of stopping");
+    await within(
+      stream.closed,
+      10_000,
+      "the HTTP step of stopping did not finish"
+    );
     // 정리 시한이 지나면 이 값이 무엇을 기다리다 멈췄는지 알린다.
     await vi.waitFor(
       () =>
@@ -152,8 +160,8 @@ async function stopWhileHeld(
   } finally {
     held.releaseAll();
   }
-  await within(stopping, "stopping the server");
-  await within(handled, "the held save");
+  await within(stopping, 10_000, "stopping the server did not finish");
+  await within(handled, 10_000, "the held save did not finish");
   expect(order).toEqual(["handled", "stopped"]);
   expect(errors.mock.calls.filter(([tag]) => tag === "[server]")).toEqual([]);
 }
@@ -194,7 +202,11 @@ describe("stopping the server", () => {
     });
     expect(created.status).toBe(201);
     // 생성으로 깨어난 Lead가 맥락을 읽는 도구 요청. 끄기가 실행 시도를 멈추면 요청을 보낸 쪽이 먼저 떠난다.
-    await within(read.entered.promise, "the Lead's context read");
+    await within(
+      read.entered.promise,
+      10_000,
+      "the Lead's context read did not finish"
+    );
     await stopWhileHeld(t, read, "GET /api/tools/run-context");
   });
 
@@ -220,25 +232,34 @@ describe("stopping the server", () => {
     try {
       const inbox = held.arm("inbox");
       const first = getOver(agent, t.baseUrl + "/api/inbox");
-      await within(inbox.entered.promise, "the Inbox handler");
+      await within(
+        inbox.entered.promise,
+        10_000,
+        "the Inbox handler did not finish"
+      );
       // 다른 처리기 하나를 더 멈춰 두어 끄기가 처리기를 기다리는 동안 이 연결로 다음 요청을 보낸다.
       const list = held.arm("organizations");
       await abandon(t.baseUrl, "/api/organizations", list);
       const stream = await openEventStream(t.baseUrl);
       const stopping = t.stopServer();
       try {
-        await within(stream.closed, "the HTTP step of stopping");
+        await within(
+          stream.closed,
+          10_000,
+          "the HTTP step of stopping did not finish"
+        );
         inbox.release.resolve();
-        await within(first, "the Inbox answer");
+        await within(first, 10_000, "the Inbox answer did not finish");
         const second = await within(
           getOver(agent, t.baseUrl + "/api/health"),
-          "the answer while stopping"
+          10_000,
+          "the answer while stopping did not finish"
         );
         expect(second).toEqual({ connection: "close", reused: true });
       } finally {
         held.releaseAll();
       }
-      await within(stopping, "stopping the server");
+      await within(stopping, 10_000, "stopping the server did not finish");
     } finally {
       agent.destroy();
     }

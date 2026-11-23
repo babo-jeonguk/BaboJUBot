@@ -98,6 +98,7 @@ const getBuiltinModule = "getBuiltinModule";
  * child_process·cross-spawn과 node:module을 가져오는 자리는 product/launch-boundary가 공용 가져오기 판정(scripts/eslint-imports.mjs)으로
  * 본다(정적 import·re-export·문자열 dynamic import·require·TS import-equals). 이 검사를 피하는 문법(계산한 경로·template literal의
  * import, process.getBuiltinModule, process의 계산한 이름)도 막는다. `message`는 그 패키지에서 띄우는 길이다.
+ * @returns {import("eslint").Linter.Config}
  */
 function launchBoundary(files, owners, launchMessage) {
   return {

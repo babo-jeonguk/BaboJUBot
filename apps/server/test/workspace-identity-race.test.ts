@@ -75,12 +75,20 @@ it("does not mistake a mark just written by another preparation for a missing on
     return preparation;
   };
   const held = prepare();
-  await within(arrived, "the first preparation reaching the record check");
-  await within(prepare(), "the second preparation while the first is held");
+  await within(
+    arrived,
+    10_000,
+    "the first preparation reaching the record check did not finish"
+  );
+  await within(
+    prepare(),
+    10_000,
+    "the second preparation while the first is held did not finish"
+  );
   hold.release();
 
   await expect(
-    within(held, "the held first preparation")
+    within(held, 10_000, "the held first preparation did not finish")
   ).resolves.toBeDefined();
   const marker = path.join(
     root,

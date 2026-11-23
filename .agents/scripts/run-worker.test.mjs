@@ -4,9 +4,15 @@
 // 연결로 본다(번호는 재사용된다, #259).
 // 실제 모델은 부르지 않고, PATH 맨 앞의 가짜 opencode가 세션 없이 멈춰 있다.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -14,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./run-worker.mjs", import.meta.url));
 const windows = process.platform === "win32";
@@ -23,9 +30,27 @@ const windows = process.platform === "win32";
 // - FAKE_MOVED: 새 세션(detached)으로 그룹을 빠져나가는 명령을 띄운다(Claude Code·Codex의 셸 명령처럼, #219).
 // 각 명령은 받은 코드로 시험의 연결을 쥐고(그 코드를 실행한 뒤에야 무시를 설치한 것이다), 자기 번호를 파일에 남긴다(실패한 시험의
 // 정리용. 연결이 열려 있을 때만 그 번호로 끈다).
+// - FAKE_SKIP_INPUT: 쉼표로 적은 몇 번째 띄움(1부터)에서는 표준 입력을 읽지 않고 곧바로 끝난다(지침을 읽기 전에 끝난 worker).
+// - FAKE_SESSION: 표준 입력을 끝까지 읽은 뒤 세션을 알리고 끝난다(일을 마친 worker).
+// - FAKE_IGNORE_INPUT: 표준 입력을 읽지 않은 채 멈춰 있다(지침을 받지 않고 살아 있는 worker).
 const fakeOpencode = `import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
+const launch = readFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "utf8").split("\\n").filter(Boolean).length;
+if ((process.env.FAKE_SKIP_INPUT ?? "").split(",").includes(String(launch))) process.exit(0);
+// opencode run처럼 인수에 지침이 없으면 표준 입력 전체를 지침으로 읽는다. 받은 인수와 표준 입력을 한 줄(JSON)로 남긴다.
+let input = "";
+process.stdin.setEncoding("utf8");
+if (!process.env.FAKE_IGNORE_INPUT) process.stdin.on("data", (chunk) => (input += chunk));
+process.stdin.on("end", () => {
+  appendFileSync(process.env.FAKE_OPENCODE_CALLS, JSON.stringify({ args: process.argv.slice(2), input }) + "\\n");
+  // 남긴 뒤 시험의 연결을 쥐어 남겼음을 알린다(FAKE_RECORDED는 그 연결을 쥐는 문장이다).
+  if (process.env.FAKE_RECORDED) (0, eval)(process.env.FAKE_RECORDED);
+  if (process.env.FAKE_SESSION) {
+    console.log(JSON.stringify({ type: "step_start", sessionID: "ses_fake" }));
+    process.exit(0);
+  }
+});
 const command = (code, pidFile) =>
   \`process.on("SIGTERM", () => {}); \${code} require("node:fs").writeFileSync(\${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);\`;
 if (process.env.FAKE_STUBBORN)
@@ -39,7 +64,17 @@ setInterval(() => {}, 1000);
  * 가짜 opencode를 둔 폴더와 run-worker 인수·환경. POSIX는 PATH의 shebang 스크립트, Windows는 그 스크립트를 부르는 .cmd다.
  * 시험이 끝나면 남은 하위 명령을 끄고 폴더를 지운다.
  */
-async function fixture(defer, { stubborn = false, moved = false } = {}) {
+async function fixture(
+  defer,
+  {
+    stubborn = false,
+    moved = false,
+    recorded = false,
+    skipInput = "",
+    session = false,
+    ignoreInput = false,
+  } = {}
+) {
   const dir = mkdtempSync(path.join(tmpdir(), "babojubot-run-worker-"));
   defer(() => removeFolder(dir));
   const lifelines = await openLifelines();
@@ -59,11 +94,19 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
   }
   const launches = path.join(dir, "launches");
   writeFileSync(launches, "");
+  // 띄워질 때마다 받은 인수와 표준 입력(지침)을 한 줄(JSON)로 남긴다.
+  const calls = path.join(dir, "calls");
+  writeFileSync(calls, "");
   const commands = { stubborn, moved };
   const env = {
     ...process.env,
     PATH: `${dir}${path.delimiter}${process.env.PATH}`,
     FAKE_OPENCODE_LAUNCHES: launches,
+    FAKE_OPENCODE_CALLS: calls,
+    ...(recorded ? { FAKE_RECORDED: lifelines.hold("recorded") } : {}),
+    ...(skipInput ? { FAKE_SKIP_INPUT: skipInput } : {}),
+    ...(session ? { FAKE_SESSION: "1" } : {}),
+    ...(ignoreInput ? { FAKE_IGNORE_INPUT: "1" } : {}),
   };
   for (const [name, wanted] of Object.entries(commands)) {
     if (!wanted) continue;
@@ -78,9 +121,12 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
     });
   }
   return {
+    dir,
     launches,
+    calls,
     lifelines,
-    args: (limitMinutes) => [
+    /** 지침 인수. 주지 않으면 `--message hi`다. */
+    args: (limitMinutes, brief = ["--message", "hi"]) => [
       script,
       "--model",
       "fake/model",
@@ -88,8 +134,7 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
       "limit test",
       "--out",
       path.join(dir, "out.jsonl"),
-      "--message",
-      "hi",
+      ...brief,
       "--limit",
       String(limitMinutes),
       // 세션 확인(60초)보다 한도·신호가 먼저 온다.
@@ -100,9 +145,12 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
   };
 }
 
-/** run-worker를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다. */
-function runner(defer, f, limitMinutes) {
-  const child = spawn(process.execPath, f.args(limitMinutes), {
+/**
+ * run-worker를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다.
+ * @param {string[]} [brief] 지침 인수(`--brief <파일>`이나 `--message <글>`). 주지 않으면 `--message hi`다.
+ */
+function runner(defer, f, limitMinutes, brief) {
+  const child = spawn(process.execPath, f.args(limitMinutes, brief), {
     env: f.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -110,23 +158,204 @@ function runner(defer, f, limitMinutes) {
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.on("data", (chunk) => (output += chunk));
   const exited = once(child, "exit");
+  // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
-    killUnlessGone(child.pid);
-    await exited;
+    if (child.pid !== undefined) killUnlessGone(child.pid);
+    await within(exited, 10_000, "a killed runner did not exit");
   });
   return {
     child,
     output: () => output,
-    exited: exited.then(([code]) => code),
+    /**
+     * runner의 종료 코드. 한도·신호·끄기 확인(감독 실행기의 끄기 상한 30초 안팎)이 모두 그 안에 들도록 상한을 넉넉히 둔다. 넘기면
+     * 그렇게 알리고 실패한다.
+     */
+    exited: () =>
+      within(
+        exited.then(([code]) => code),
+        90_000,
+        "the runner did not exit"
+      ),
   };
 }
+
+// 인수를 확인하지 못하면 아무것도 띄우지 않고 사용법과 함께 종료 코드 1로 끝난다. 인수는 Map에 받고(#284), 정한 이름만 받는다:
+// 모든 객체가 물려받는 이름(--constructor)도 모르는 인수다(#281 리뷰 REC-1과 같은 모양). 같은 인수를 두 번 주면 어느 값을 쓸지
+// 정하지 않고 거절한다. PATH를 비워 확인을 지나가더라도 opencode를 띄울 수 없게 한다.
+test("a runner refuses missing, repeated, conflicting and unknown arguments before it starts anything", (context) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "babojubot-run-worker-args-"));
+  context.after(() => removeFolder(dir));
+  const out = path.join(dir, "out.jsonl");
+  const brief = path.join(dir, "brief.md");
+  writeFileSync(brief, "brief\n");
+  const base = ["--model", "fake/model", "--title", "t", "--out", out];
+  /** @type {[string, string[], RegExp][]} 경우, 인수, 알리는 문구 */
+  const cases = [
+    [
+      "no --out",
+      ["--model", "m", "--title", "t", "--message", "hi"],
+      /^--model, --title and --out are required$/m,
+    ],
+    [
+      "a name without a value",
+      [...base, "--message"],
+      /^bad argument: --message$/m,
+    ],
+    [
+      "both --brief and --message",
+      [...base, "--brief", brief, "--message", "hi"],
+      /^give exactly one of --brief and --message$/m,
+    ],
+    [
+      "neither --brief nor --message",
+      base,
+      /^give exactly one of --brief and --message$/m,
+    ],
+    [
+      "a missing brief file",
+      [...base, "--brief", path.join(dir, "missing.md")],
+      /^brief not found: .*missing\.md$/m,
+    ],
+    [
+      "a repeated argument",
+      [...base, "--message", "a", "--message", "b"],
+      /^--message given twice$/m,
+    ],
+    [
+      "an unknown argument",
+      [...base, "--message", "hi", "--nope", "x"],
+      /^bad argument: --nope$/m,
+    ],
+    ...["constructor", "toString", "__proto__", "hasOwnProperty"].map(
+      /** @returns {[string, string[], RegExp]} */
+      (name) => [
+        `the inherited name ${name}`,
+        [...base, "--message", "hi", `--${name}`, "x"],
+        new RegExp(`^bad argument: --${name}$`, "m"),
+      ]
+    ),
+  ];
+  for (const [shape, args, message] of cases) {
+    const result = spawnSync(process.execPath, [script, ...args], {
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+      env: { ...process.env, PATH: "" },
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.status, 1, `${shape}: ${result.stderr}`);
+    assert.match(result.stderr, message, shape);
+    assert.match(result.stderr, /^usage: run-worker\.mjs /m, shape);
+    assert.equal(existsSync(out), false, `${shape}: started a worker`);
+  }
+});
+
+// 지침은 명령 인수가 아니라 표준 입력으로 간다(#284). Windows의 .cmd(npm으로 설치한 opencode, 이 시험의 가짜)는 cmd.exe가 띄우고
+// cmd.exe는 인수를 첫 줄바꿈에서 끊어, 여러 줄 지침이 첫 줄만 닿았다. 그래서 여러 줄 지침이 세 OS 모두 그대로 닿는지와 인수에
+// 지침이 없는지를 `--brief`(한 번 읽은 파일 내용)와 `--message` 둘 다 본다.
+test("a runner sends a multi-line brief on the worker's standard input, not as an argument", async () => {
+  const text = '첫 줄\n둘째 줄\n\n  들여 쓴 줄 "따옴표" & | %PATH%\n';
+  await withCleanup(async (defer) => {
+    for (const kind of ["--brief", "--message"]) {
+      const f = await fixture(defer, { recorded: true });
+      const brief = path.join(f.dir, "brief.md");
+      writeFileSync(brief, text);
+      const args = kind === "--brief" ? [kind, brief] : [kind, text];
+      // 한도 6초. 가짜는 표준 입력의 끝까지 읽어 남긴 뒤 연결로 알린다.
+      const run = runner(defer, f, 0.1, args);
+      await f.lifelines.connected("recorded", 30_000);
+      assert.equal(await run.exited(), 4, run.output());
+      const calls = readFileSync(f.calls, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(
+        calls,
+        [
+          {
+            args: [
+              "run",
+              "--agent",
+              "dev-worker",
+              "--standalone",
+              "--auto",
+              "--format",
+              "json",
+              "-m",
+              "fake/model",
+              "--title",
+              "limit test",
+            ],
+            input: text,
+          },
+        ],
+        `${kind}: ${run.output()}`
+      );
+    }
+  });
+});
+
+// 파이프 버퍼보다 훨씬 큰 지침(8MB)을 읽지 않고 곧바로 끝나는 worker에 보내면 쓰기는 상대가 닫혀 반드시 실패한다(EPIPE 등). 지침을
+// 못 보낸 것은 모델의 오류 이벤트(종료 코드 2, 다음 모델로)가 아니라 실행 실패라 이유와 함께 종료 코드 4로 끝난다(#284 리뷰).
+const bigBrief = "지침 한 줄입니다.\n".repeat(400_000);
+
+test("a runner whose brief cannot be sent ends with exit code 4 and the reason, not as an error event", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer, { skipInput: "1,2" });
+    const brief = path.join(f.dir, "brief.md");
+    writeFileSync(brief, bigBrief);
+    const run = runner(defer, f, 10, ["--brief", brief]);
+    assert.equal(await run.exited(), 4, run.output());
+    assert.match(run.output(), /^status: could not send the brief: \S+$/m);
+    assert.match(run.output(), /^attempts: 2$/m);
+    assert.match(run.output(), /^errors: -$/m);
+  });
+});
+
+// 보내기 실패는 그 시도에 묶인다. 첫 시도가 지침을 읽지 않고 끝나 다시 띄운 둘째 시도가 지침을 끝까지 읽고 세션을 알리고 마치면,
+// 호출은 첫 시도의 실패 없이 마친다.
+test("a runner whose first attempt could not take the brief finishes when the second attempt takes it", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer, { skipInput: "1", session: true });
+    const brief = path.join(f.dir, "brief.md");
+    writeFileSync(brief, bigBrief);
+    const run = runner(defer, f, 10, ["--brief", brief]);
+    assert.equal(await run.exited(), 0, run.output());
+    assert.match(run.output(), /^status: finished$/m);
+    assert.match(run.output(), /^attempts: 2$/m);
+    assert.match(run.output(), /^errors: -$/m);
+    const calls = readFileSync(f.calls, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input, bigBrief);
+  });
+});
+
+// 읽지 않고 살아 있는 worker에 큰 지침을 보내면 쓰기가 보류된 채 한도에 닿는다. 끄기가 트리의 끝을 확인하면 읽을 쪽이 남지 않아
+// 보류된 쓰기는 반드시 실패로 끝나고, 호출은 그 이유와 종료 코드 4로 끝난다(#284 리뷰 2회차 SPEC-1). 끄기 확인이 실패하는 쪽은 실제
+// 프로세스로 만들 수 없어(SIGKILL 뒤에도 끝나지 않는 트리) worker-run.test.mjs의 대역으로 본다.
+test("a runner whose brief is still being written to a live worker at --limit ends with exit code 4 and the reason", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer, { ignoreInput: true });
+    const brief = path.join(f.dir, "brief.md");
+    writeFileSync(brief, bigBrief);
+    // 한도 1.2초.
+    const run = runner(defer, f, 0.02, ["--brief", brief]);
+    assert.equal(await run.exited(), 4, run.output());
+    assert.match(run.output(), /^status: could not send the brief: \S+$/m);
+    assert.match(run.output(), /^attempts: 1$/m);
+    assert.equal(readFileSync(f.launches, "utf8"), "launch\n");
+  });
+});
 
 test("a worker that reaches --limit is not launched again and ends with exit code 4", async () => {
   await withCleanup(async (defer) => {
     const f = await fixture(defer);
     // 한도 1.2초.
     const run = runner(defer, f, 0.02);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     assert.match(
       run.output(),
       /^status: stopped after the 0\.02-minute limit$/m
@@ -142,7 +371,7 @@ test("a worker stopped at --limit leaves no command that ignores SIGTERM", async
     // 한도 6초. 명령이 그 전에 연결을 쥐었는지(무시를 설치했는지) 본다. 아니면 이 시험은 아무것도 보지 못한다.
     const run = runner(defer, f, 0.1);
     await f.lifelines.connected("stubborn", 6_000);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     await f.lifelines.closed("stubborn", 2_000);
   });
 });
@@ -152,7 +381,7 @@ test("a worker stopped at --limit leaves no command that moved to a new session"
     const f = await fixture(defer, { moved: true });
     const run = runner(defer, f, 0.1);
     await f.lifelines.connected("moved", 6_000);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     await f.lifelines.closed("moved", 2_000);
   });
 });
@@ -168,7 +397,7 @@ test(
       const run = runner(defer, f, 10);
       await f.lifelines.connected("stubborn", 30_000);
       run.child.kill("SIGTERM");
-      assert.equal(await run.exited, 128 + 15, run.output());
+      assert.equal(await run.exited(), 128 + 15, run.output());
       await f.lifelines.closed("stubborn", 2_000);
     });
   }
@@ -182,7 +411,7 @@ test("a runner that is killed leaves no worker", async () => {
     const run = runner(defer, f, 10);
     await f.lifelines.connected("stubborn", 30_000);
     run.child.kill("SIGKILL");
-    await run.exited;
+    await run.exited();
     await f.lifelines.closed("stubborn", 15_000);
   });
 });
