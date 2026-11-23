@@ -4,7 +4,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Linter } from "eslint";
 import tseslint from "typescript-eslint";
-import { importSites, originOf } from "./eslint-imports.mjs";
+import {
+  importSites,
+  originOf,
+  packageEntry,
+  workspacePackage,
+} from "./eslint-imports.mjs";
 
 /** `code`의 가져오는 자리를 `{ kind, source, loader, typeOnly, names }`로 모은다. 이름은 `imported>local` 문자열. */
 function sitesOf(code) {
@@ -358,5 +363,35 @@ test("does not take a local function named like require, createRequire or getBui
         .map((site) => site.source)
     ),
     []
+  );
+});
+
+// 다른 패키지의 입구는 Node가 푸는 대로 판정한다(scripts/package-exports.ts). exports 키만 보면 null로 막은 입구도 가져올 수 있는 것으로,
+// 조건 객체·`*` 무늬 입구는 대상 파일이 없는 것으로 읽어, 막힌 입구를 쓰는 가져오기를 놓치고 무늬 입구를 쓰는 가져오기를 막는다
+// (#286 항목 24와 같은 모양).
+test("resolves a workspace package entry as Node does: blocked, conditional and wildcard entries", () => {
+  const pkg = workspacePackage("packages/sample", {
+    name: "@babojubot/sample",
+    exports: {
+      ".": { types: "./src/index.d.ts", import: "./src/index.ts" },
+      "./testing": null,
+      "./fixtures/*": "./src/fixtures/*.ts",
+      "./browser": { browser: "./src/browser.ts" },
+    },
+  });
+  assert.deepEqual(
+    [".", "./testing", "./fixtures/lifeline", "./browser", "./gone"].map(
+      (entry) => [entry, packageEntry(pkg, entry)]
+    ),
+    [
+      [".", { exported: true, file: "packages/sample/src/index" }],
+      ["./testing", { exported: false, file: undefined }],
+      [
+        "./fixtures/lifeline",
+        { exported: true, file: "packages/sample/src/fixtures/lifeline" },
+      ],
+      ["./browser", { exported: false, file: undefined }],
+      ["./gone", { exported: false, file: undefined }],
+    ]
   );
 });
