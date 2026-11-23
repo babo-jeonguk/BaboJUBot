@@ -19,6 +19,7 @@ import {
   diagnosticsOf,
   isJavaScript,
   javaScriptConfigs,
+  ownershipProblems,
   readConfig,
 } from "./typecheck-js.mjs";
 import { codeFormatNames } from "./test-files.mjs";
@@ -121,17 +122,7 @@ test("every JS file in the repository is type-checked", () => {
     .split("\0")
     .filter((file) => file && isJavaScript(file));
   assert.ok(javaScript.length > 0, "no JS file found");
-  const checked = new Set(
-    javaScriptConfigs().flatMap(({ parsed }) =>
-      parsed.fileNames.map((file) =>
-        path.relative(root, file).replaceAll("\\", "/")
-      )
-    )
-  );
-  assert.deepEqual(
-    javaScript.filter((file) => !checked.has(file)),
-    []
-  );
+  assert.deepEqual(ownershipProblems(), []);
 });
 
 // 패키지·앱 안 어디에 새 JS를 두어도 검사 설정 하나가 맡는다. 손 목록이나 폴더별 설정에 기대면 새 폴더의 JS가 빠진다: #274가 더한

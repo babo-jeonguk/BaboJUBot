@@ -73,6 +73,20 @@ export function javaScriptConfigs(root = repository) {
 /** TypeScript가 JS로 읽는 형식인가. 새 JS 금지(scripts/javascript-files.ts)와 같은 판정이다. */
 export { isJavaScript };
 
+/** 저장소의 JS 파일 중 JS 검사를 켠 설정에 들지 않은 파일마다 문제 한 줄. */
+export function ownershipProblems(root = repository) {
+  const checked = new Set(
+    javaScriptConfigs(root).flatMap(({ parsed }) =>
+      parsed.fileNames.map((file) =>
+        path.relative(root, file).replaceAll("\\", "/")
+      )
+    )
+  );
+  return repositoryFiles(root)
+    .filter((file) => isJavaScript(file) && !checked.has(file))
+    .map((file) => `${file}: no JS checking tsconfig includes it`);
+}
+
 /**
  * 설정마다 그 설정에 든 JS 파일의 타입 검사 진단. 같은 프로그램의 TypeScript 파일은 패키지 typecheck가 엄격 설정으로 검사하므로 여기서는
  * 보지 않는다(암시적 any를 끄면 TypeScript의 빈 배열 추론이 달라져, 엄격 설정에서 맞는 코드도 다르게 읽힌다).
