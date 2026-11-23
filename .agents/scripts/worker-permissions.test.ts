@@ -102,7 +102,15 @@ test("the code worker may edit a product file named like a test helper or placed
       `${src}${tail}`,
     ]);
   });
-  const product = [...new Set(twins)].filter((file) => !isTestFile(file));
+  // A folder whose name starts with a helper's name (`runtime-contract.schema/index.ts`) holds product code. OpenCode's
+  // `*` crosses `/`, so a helper rule such as `runtime-contract.*` also reaches into that folder (#286 item 27).
+  const helperFolders = testFiles.flatMap(samples).map((file) => {
+    const stem = path.posix.basename(file).split(".")[0] ?? "";
+    return `${path.posix.dirname(file)}/${stem}.schema/index.ts`;
+  });
+  const product = [...new Set([...twins, ...helperFolders])].filter(
+    (file) => !isTestFile(file)
+  );
   // Reopening sub folders must not reopen what the later rules deny there.
   for (const file of [
     "packages/process/src/sample/.env",
