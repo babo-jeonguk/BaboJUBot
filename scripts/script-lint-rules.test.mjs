@@ -1,9 +1,11 @@
 // 저장소 lint 설정(eslint.config.js)이 개발 스크립트에 제품 규칙을 걸고, 제품 코드·스크립트의 실패 경로에 정리 연쇄 규칙을 거는지 본다.
 // 범위에 오타가 나면 아무것도 잡지 않은 채 lint가 통과하므로, 잡아야 할 모양과 잡지 말아야 할 모양을 짧은 코드로 넣어 확인한다.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { accessShapes } from "./lint-access-shapes.mjs";
 import { ruleLinter } from "./lint-rule-testing.mjs";
 
@@ -373,21 +375,78 @@ const keptNumberCalls = [
   `export function run(spawn) {\n  spawn("kill", ["-9", "42"]);\n}\n`,
 ];
 
-// 실행 입구 표가 프로세스 패키지가 내보내는 함수를 모두 가른다: 새 실행 입구가 생기면 분류하기 전까지 이 시험이 실패한다.
+/**
+ * 프로세스 패키지(@babojubot/process)의 모든 입구(package.json `exports`)가 실제로 내보내는 함수·클래스 이름. lint의 `launcherKind`는
+ * 패키지의 어느 입구에서 가져온 이름이든 실행 입구 후보로 보므로 모든 입구를 본다. 글자를 정규식으로 읽지 않고 TypeScript 검사기가
+ * 푼 내보내기(`export function`·`export { … } from`·`export *`·이름 바꾸기 모두)를 쓴다. 모듈을 실제로 불러오지 않는 까닭: 시험 준비
+ * 입구(`./launcher-setup`)는 불러오는 순간 vitest 훅을 걸고 `./testing`은 vitest 안에서만 쓰는 도움이라 node:test에서는 불러올 수 없다.
+ */
+function processPackageFunctions() {
+  const packageFolder = path.join(repository, "packages/process");
+  const { exports } = JSON.parse(
+    readFileSync(path.join(packageFolder, "package.json"), "utf8")
+  );
+  const entries = Object.entries(exports).map(([entry, file]) => ({
+    entry,
+    file: path.join(packageFolder, file),
+  }));
+  const config = ts.getParsedCommandLineOfConfigFile(
+    path.join(packageFolder, "tsconfig.json"),
+    {},
+    { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} }
+  );
+  assert.ok(config, "packages/process/tsconfig.json could not be read");
+  const program = ts.createProgram(
+    entries.map(({ file }) => file),
+    config.options
+  );
+  const checker = program.getTypeChecker();
+  /** @type {Map<string, string>} 이름 → 그것을 내보내는 입구 */
+  const functions = new Map();
+  for (const { entry, file } of entries) {
+    const source = program.getSourceFile(file);
+    assert.ok(source, `the entry ${entry} (${file}) was not found`);
+    const module = checker.getSymbolAtLocation(source);
+    for (const symbol of module ? checker.getExportsOfModule(module) : []) {
+      const target =
+        symbol.flags & ts.SymbolFlags.Alias
+          ? checker.getAliasedSymbol(symbol)
+          : symbol;
+      if (!(target.flags & ts.SymbolFlags.Value)) continue;
+      const type = checker.getTypeOfSymbol(target);
+      if (
+        type.getCallSignatures().length + type.getConstructSignatures().length
+      )
+        functions.set(symbol.name, entry);
+    }
+  }
+  return functions;
+}
+
+// 실행 입구 표가 프로세스 패키지의 모든 입구가 내보내는 함수를 빠짐없이 가르고, 표에는 실제로 내보내는 함수만 있다: 새 실행 입구가
+// 생기면 분류하기 전까지, 내보내기가 사라지면 표를 고치기 전까지 이 시험이 실패한다.
 test("every function the process package exports is classified as a launcher or not", async () => {
   const { processLaunchers, processNonLaunchers } =
     await import("./eslint-product-rules.mjs");
-  const index = await import("node:fs").then(({ readFileSync }) =>
-    readFileSync(path.join(repository, "packages/process/src/index.ts"), "utf8")
+  const functions = processPackageFunctions();
+  assert.ok(
+    functions.size > 0,
+    "no function exported by @babojubot/process was found; the look itself is broken"
   );
-  const exported = [...index.matchAll(/export\s*\{([^}]*)\}/g)]
-    .flatMap((match) => (match[1] ?? "").split(","))
-    .map((name) => name.trim())
-    .filter((name) => name && !name.startsWith("type "));
-  for (const name of exported)
+  for (const [name, entry] of functions)
     assert.ok(
       processLaunchers.has(name) || processNonLaunchers.includes(name),
-      `${name} is exported by @babojubot/process but not classified for product/no-number-signal`
+      `${name} is exported by @babojubot/process (${entry}) but not classified for product/no-number-signal`
+    );
+  for (const name of [...processLaunchers.keys(), ...processNonLaunchers])
+    assert.ok(
+      functions.has(name),
+      `${name} is classified for product/no-number-signal but no entry of @babojubot/process exports it as a function`
+    );
+  for (const name of processNonLaunchers)
+    assert.ok(
+      !processLaunchers.has(name),
+      `${name} is classified both as a launcher and not`
     );
 });
 
