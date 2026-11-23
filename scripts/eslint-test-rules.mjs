@@ -2220,7 +2220,50 @@ function branchesOf(node) {
  * `classify(nodes)`: 여러 읽기 자리를 모아 "always"(분기 없이 기다리거나, if·조건식의 두 쪽 또는 default가 있는 switch의 모든 case에서
  * 기다림, 중첩 포함), "branch"(한 분기에서만), "never"로 나눈다.
  */
-function waiting(sourceCode) {
+function waiting(sourceCode, unreachable = new WeakSet()) {
+  /** 이름 있는 함수(선언, 변수로 받은 함수 식)의 변수. 이름이 없으면 undefined. */
+  const namedFunctionVariable = (fn) => {
+    if (fn.type === "FunctionDeclaration" && fn.id)
+      return sourceCode
+        .getDeclaredVariables(fn)
+        .find((variable) => variable.name === fn.id.name);
+    if (
+      fn.parent?.type === "VariableDeclarator" &&
+      fn.parent.init === fn &&
+      fn.parent.id.type === "Identifier"
+    )
+      return sourceCode.getDeclaredVariables(fn.parent)[0];
+    return undefined;
+  };
+  const enclosingFunction = (node) => {
+    for (let at = node.parent; at; at = at.parent)
+      if (functionTypes.has(at.type) || at.type === "FunctionDeclaration")
+        return at;
+    return undefined;
+  };
+  /**
+   * 함수가 실행될 수 있는가. 이름 있는 함수는 내보냈거나, 자기 밖에서 읽는 자리가 있고 그 자리가 실행될 수 있어야 한다. 이름 없는
+   * 함수(콜백·메서드)는 그것을 담은 함수가 실행될 수 있으면 된다. 파일의 맨 위는 실행된다.
+   */
+  const runs = (fn, seen = new Set()) => {
+    if (!fn) return true;
+    if (seen.has(fn)) return false;
+    const next = new Set([...seen, fn]);
+    const variable = namedFunctionVariable(fn);
+    if (!variable) return runs(enclosingFunction(fn), next);
+    const declaration =
+      fn.type === "FunctionDeclaration" ? fn : fn.parent.parent;
+    if (declaration.parent?.type === "ExportNamedDeclaration") return true;
+    return variable.references.some((reference) => {
+      if (!reference.isRead()) return false;
+      if (reference.identifier.parent?.type === "ExportSpecifier") return true;
+      const owner = enclosingFunction(reference.identifier);
+      // 자기 안에서만 부르는 재귀는 실행되지 않는다.
+      for (let at = owner; at; at = enclosingFunction(at))
+        if (at === fn) return false;
+      return runs(owner, next);
+    });
+  };
   /** 같은 파일에 정의한 함수(함수 선언, const로 받은 함수 식). */
   const functionOf = (variable) => {
     const def = variable.defs[0];
@@ -2297,8 +2340,16 @@ function waiting(sourceCode) {
         parent.type === "AwaitExpression" ||
         parent.type === "ReturnStatement" ||
         (parent.type === "ArrowFunctionExpression" && parent.body === child)
-      )
-        return inArray ? undefined : { edges: branchesOf(node), conditional };
+      ) {
+        if (inArray) return undefined;
+        // 실행되지 않는 기다림은 기다림이 아니다: 도달할 수 없는 코드(조기 return 뒤 등), 아무도 부르지 않는 함수 안.
+        const runner =
+          parent.type === "ArrowFunctionExpression"
+            ? parent
+            : enclosingFunction(parent);
+        if (unreachable.has(parent) || !runs(runner)) return undefined;
+        return { edges: branchesOf(node), conditional };
+      }
       if (parent.type === "ArrayExpression") {
         inArray = true;
         child = parent;
@@ -2408,7 +2459,9 @@ function waiting(sourceCode) {
  *   경로로 따라갈 수 없는 자리(계산된 이름, 호출 결과의 속성)와 같은 객체를 다른 이름으로 읽는 것은 기다리지 않은 것으로 본다.
  * - 부르지 않고 함수 값으로 넘기거나 다시 내보내는 것(`items.map(awaitedLater)`, `export { awaitedLater } from …`). 결과를 따라갈 수 없다.
  * 속성을 다른 파일에서 읽어 기다리는 것은 따라가지 않아 짚는다. 루트는 이름으로 맞추므로 같은 이름으로 넘겨받은 객체(다른 함수의
- * 매개변수 `child`)는 같은 경로다. 기다리는 자리가 실제로 실행되는지(그 앞의 `return`, 기다림을 담은 함수를 부르는지)는 따라가지 않는다.
+ * 매개변수 `child`)는 같은 경로다. 실행되지 않는 기다림은 세지 않는다(#286 항목 21): 도달할 수 없는 코드(조기 `return`·`throw` 뒤)와,
+ * 아무도 부르지 않거나 그런 함수만 부르는 이름 있는 함수 안(내보낸 함수, 콜백으로 넘긴 이름 없는 함수, 메서드는 실행된다고 본다).
+ * 다른 값이 먼저 이행할 수 있는 `Promise.race`·`any`도 기다림으로 센다(승자에 따른 분기까지 따라가지 않는다).
  */
 const noUnawaitedLater = {
   meta: {
@@ -2432,7 +2485,18 @@ const noUnawaitedLater = {
   },
   create(context) {
     const { sourceCode } = context;
-    const { classify } = waiting(sourceCode);
+    /** 도달할 수 없는 코드의 기다림 자리(await·return). ESLint 코드 경로 분석으로 모은다. 화살표 함수의 식 몸은 그 함수가 실행되는지로 본다. */
+    const unreachable = new WeakSet();
+    /** 지금 지나는 코드 경로들의 현재 조각(no-unreachable과 같은 방식). */
+    const segmentStack = [];
+    const reachableNow = () =>
+      [...(segmentStack.at(-1) ?? [])].some((segment) => segment.reachable);
+    const markIfUnreachable = (node) => {
+      if (segmentStack.length > 0 && !reachableNow()) unreachable.add(node);
+    };
+    const { classify } = waiting(sourceCode, unreachable);
+    /** 파일을 다 지난 뒤(뒤쪽 기다림과 도달성까지 모은 뒤) 판정할 일. */
+    const pending = [];
     /** 모듈 경로 `source`가 test-cleanup.ts를 가리키는가(패키지 입구·상대 경로·확장자 없는 철자 모두). */
     const fromCleanup = (source) =>
       targetOf(context.filename, source)?.file === cleanupFile;
@@ -2501,8 +2565,10 @@ const noUnawaitedLater = {
     /** awaitedLater를 가리키는 자리 하나. 부르는 자리면 결과를 보고, const로 다시 받는 자리는 넘기고, 그 밖은 값으로 넘긴 것이다. */
     const visit = (reference) => {
       const parent = reference.parent;
-      if (parent.type === "CallExpression" && parent.callee === reference)
-        return checkCall(parent);
+      if (parent.type === "CallExpression" && parent.callee === reference) {
+        pending.push(parent);
+        return undefined;
+      }
       if (
         parent.type === "VariableDeclarator" &&
         parent.init === reference &&
@@ -2512,6 +2578,29 @@ const noUnawaitedLater = {
       context.report({ node: reference, messageId: "notCalled" });
     };
     return {
+      onCodePathStart() {
+        segmentStack.push(new Set());
+      },
+      onCodePathEnd() {
+        segmentStack.pop();
+      },
+      onCodePathSegmentStart(segment) {
+        segmentStack.at(-1)?.add(segment);
+      },
+      onCodePathSegmentEnd(segment) {
+        segmentStack.at(-1)?.delete(segment);
+      },
+      onUnreachableCodePathSegmentStart(segment) {
+        segmentStack.at(-1)?.add(segment);
+      },
+      onUnreachableCodePathSegmentEnd(segment) {
+        segmentStack.at(-1)?.delete(segment);
+      },
+      AwaitExpression: markIfUnreachable,
+      ReturnStatement: markIfUnreachable,
+      "Program:exit"() {
+        for (const call of pending) checkCall(call);
+      },
       Identifier(node) {
         const parent = node.parent;
         // 선언·가져오기·속성 이름 자리는 값을 쓰는 곳이 아니다.
