@@ -669,8 +669,10 @@ mod macos {
         let pids =
             pids_of(uid).map_err(|error| format!("the processes could not be listed: {error}"))?;
         for pid in pids.into_iter().filter(|&pid| pid > 0 && pid != me) {
-            // This user's process (its real user), so one whose information is refused (a set-id program this user started) may be
-            // ours: it stays unverified, with no start to compare.
+            // macOS refuses a process's information to another credential (a set-id program, a protected one). Its start cannot be read
+            // either (the pinned libc has no `kinfo_proc` for `sysctl(KERN_PROC_PID)`), so it cannot be told from one that ran before
+            // this run: taking it as unverified failed every stop on macOS CI (a login-time process of this user). It is passed over;
+            // the gap is written in the PR (#283 review 2, STD-2).
             let read = |pid| match info(pid) {
                 Ok(Some(now)) => Ok(Some(Some(now))),
                 Ok(None) => Ok(None),
@@ -678,11 +680,7 @@ mod macos {
                 Err(error) => Err(format!("process {pid} could not be read: {error}")),
             };
             let before = match read(pid)? {
-                None => continue,
-                Some(None) => {
-                    found.unverified.push(pid);
-                    continue;
-                }
+                None | Some(None) => continue,
                 Some(Some(before)) => before,
             };
             if before.pbi_ruid != uid || before.pbi_status == libc::SZOMB {

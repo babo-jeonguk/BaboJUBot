@@ -163,7 +163,13 @@ it("leaves a process whose start differs from the recorded one", async () => {
 
   await writeFile(
     path.join(directory, `${child.pid}.json`),
-    JSON.stringify({ pid: child.pid, lease: "lease", start: "1" })
+    // 다른 시작 시각은 아직 오지 않은 값으로 둔다. 실행 시작 시각(`since`)으로도 쓰여, 그 뒤에 생긴 이 컴퓨터의 숨은 프로그램을
+    // "확인하지 못함"으로 세지 않게 한다.
+    JSON.stringify({
+      pid: child.pid,
+      lease: "lease",
+      start: "9007199254740991",
+    })
   );
   await recoverProviderProcesses(root, { platform: withoutProc });
   expect(gone(child.pid!)).toBe(false);
