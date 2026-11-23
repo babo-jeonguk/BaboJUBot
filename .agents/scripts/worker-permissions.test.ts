@@ -221,3 +221,15 @@ test("the permissions deny every file the definition protects, and deny more onl
     ["packages/core/src/vitest.a/b/vitest.c/d.config.ts"]
   );
 });
+
+// 검사 설정이 가져오는 저장소 안 모듈도 검사 설정이다: vitest.reports.ts의 suiteTest가 모든 Vitest 설정의 파일 고르기와 보고기를 정한다.
+// 보호 범위를 설정 파일 이름으로만 정하면 그 모듈은 권한도 사후 확인도 통과한다(#291 외부 리뷰 1회차 SPEC-2).
+test("protects the repository modules the check settings import, in the permissions and the after-check", () => {
+  for (const file of ["vitest.reports.ts", "scripts/test-suites.ts"]) {
+    assert.ok(
+      isProtected(rules, file),
+      `${file} is editable in the permissions`
+    );
+    assert.ok(protectedReason(file), `${file} has no protection reason`);
+  }
+});
