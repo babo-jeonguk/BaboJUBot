@@ -110,8 +110,9 @@ function runner(defer, f, limitMinutes) {
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.on("data", (chunk) => (output += chunk));
   const exited = once(child, "exit");
+  // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
-    killUnlessGone(child.pid);
+    if (child.pid !== undefined) killUnlessGone(child.pid);
     await exited;
   });
   return {

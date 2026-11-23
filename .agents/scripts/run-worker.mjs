@@ -39,39 +39,49 @@ function parseArgs(argv) {
     "start-check",
     "limit",
   ]);
-  const opts = {};
+  /** @type {Map<string, string>} 인수 이름 → 값 */
+  const values = new Map();
   for (let i = 0; i < argv.length; i += 2) {
     const name = argv[i]?.replace(/^--/, "");
-    if (!known.has(name) || argv[i + 1] === undefined)
+    const value = argv[i + 1];
+    if (name === undefined || !known.has(name) || value === undefined)
       fail(`bad argument: ${argv[i]}`);
-    opts[name] = argv[i + 1];
+    values.set(name, value);
   }
-  if (!opts.model || !opts.title || !opts.out)
-    fail("--model, --title and --out are required");
-  if (!opts.brief === !opts.message)
-    fail("give exactly one of --brief and --message");
-  // Read the brief once here, so the file checked is the file sent.
-  const brief =
-    opts.brief &&
-    orIfMissing(
-      () => readFileSync(opts.brief, "utf8"),
+  const model = values.get("model");
+  const title = values.get("title");
+  const out = values.get("out");
+  if (!model || !title || !out) fail("--model, --title and --out are required");
+  const briefFile = values.get("brief");
+  const message = values.get("message");
+  let text;
+  if (briefFile && !message) {
+    // Read the brief once here, so the file checked is the file sent.
+    text = orIfMissing(
+      () => readFileSync(briefFile, "utf8"),
       hasErrorCode("ENOENT"),
       undefined
     );
-  if (opts.brief && brief === undefined) fail(`brief not found: ${opts.brief}`);
-  const startCheck = Number(opts["start-check"] ?? 180);
+    if (text === undefined) fail(`brief not found: ${briefFile}`);
+  } else if (message && !briefFile) text = message;
+  else fail("give exactly one of --brief and --message");
+  const startCheck = Number(values.get("start-check") ?? 180);
   if (!(startCheck > 0))
     fail("--start-check must be a positive number of seconds");
-  const limit = Number(opts.limit ?? 110);
+  const limit = Number(values.get("limit") ?? 110);
   if (!(limit > 0)) fail("--limit must be a positive number of minutes");
   return {
-    ...opts,
-    text: opts.brief ? brief : opts.message,
+    model,
+    title,
+    out,
+    session: values.get("session"),
+    text,
     startCheckMs: startCheck * 1000,
     limitMs: limit * 60_000,
   };
 }
 
+/** @returns {never} */
 function fail(message) {
   console.error(`${message}\n${USAGE}`);
   process.exit(1);
