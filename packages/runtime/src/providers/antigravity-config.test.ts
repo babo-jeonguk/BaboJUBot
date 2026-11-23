@@ -310,3 +310,69 @@ it("keeps a configuration place that is not a regular file and says so", async (
     { reason: "not_regular", name: "mcp_config.json" },
   ]);
 });
+
+// 열기 결과를 주입한다: `plan.miss`에 맞는 이름(정규식)을 처음 열 때 한 번 "없음"(ENOENT)으로 실패한다. 그 자리는 그대로 있으므로
+// 바로 뒤 lstat은 일반 파일을 본다 — 확인하는 사이 자리가 바뀐 장면이다(실제 시간 지연 없이).
+const missOnce = `{
+  const fs = process.getBuiltinModule("node:fs");
+  const plan = JSON.parse(process.env.PLAN);
+  const pattern = new RegExp(plan.miss);
+  let missed = false;
+  const real = fs.promises.open;
+  fs.promises.open = (...args) => {
+    if (!missed && pattern.test(String(args[0]))) {
+      missed = true;
+      return Promise.reject(Object.assign(new Error("no such file"), { code: "ENOENT" }));
+    }
+    return real(...args);
+  };
+  process.getBuiltinModule("node:module").syncBuiltinESMExports();
+}
+`;
+
+// 우리 임시 파일 이름인데 확인하는 사이 바뀌었거나 일반 파일이 아니면 우리 것인지 확인하지 못한 것이다. 건너뛰어 정리 성공(0)으로
+// 접지 않고, 지우지 않은 채 그 까닭(3)을 남긴다(#286 리뷰 2회차 SPEC-3). 설정 파일 쪽과 같은 기준이다.
+it("keeps a temporary file that changed while it was checked and says so", async () => {
+  const { cwd, agents } = await workspace();
+  const temporary = path.join(agents, ".babojubot-left.tmp");
+  await writeFile(temporary, ownedLeftover);
+  const ended = await script(
+    cwd,
+    { miss: "\\.babojubot-left\\.tmp$" },
+    missOnce
+  );
+  expect(ended.status).toBe(3);
+  expect(reasons(ended.stderr)).toEqual([
+    { reason: "changed", name: ".babojubot-left.tmp" },
+  ]);
+  expect(await readFile(temporary, "utf8")).toBe(ownedLeftover);
+});
+
+it("keeps a temporary file place that is not a regular file and says so", async () => {
+  const { cwd, agents } = await workspace();
+  await mkdir(path.join(agents, ".babojubot-dir.tmp"));
+  const ended = await script(cwd);
+  expect(ended.status).toBe(3);
+  expect(reasons(ended.stderr)).toEqual([
+    { reason: "not_regular", name: ".babojubot-dir.tmp" },
+  ]);
+  expect(await readdir(agents)).toEqual([".babojubot-dir.tmp"]);
+});
+
+// 옮긴 설정을 다시 확인하는 사이 바뀌었으면 "우리 것 아님"이 아니라 확인하지 못한 것이다. 되돌리고 그 까닭(changed)을 남긴다.
+// "restored"(사용자 설정을 되돌림)로 적지 않는다(#286 리뷰 2회차 SPEC-3 같은 모양).
+it("puts the configuration back and says it changed when the moved file changes while it is confirmed", async () => {
+  const { cwd, agents, config } = await workspace();
+  await writeFile(config, ownedLeftover);
+  const ended = await script(
+    cwd,
+    { miss: "\\.mcp_config\\.json\\.[0-9a-f-]+\\.removing$" },
+    missOnce
+  );
+  expect(ended.status).toBe(3);
+  expect(reasons(ended.stderr)).toEqual([
+    { reason: "changed", name: "mcp_config.json" },
+  ]);
+  expect(await readFile(config, "utf8")).toBe(ownedLeftover);
+  expect(await readdir(agents)).toEqual(["mcp_config.json"]);
+});

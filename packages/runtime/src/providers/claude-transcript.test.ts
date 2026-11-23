@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, openSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { hasErrorCode } from "@babojubot/contracts";
 import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
@@ -57,7 +57,13 @@ describe.each(readers)(
           transcript
         );
         await symlink(elsewhere, path.join(home, "config"));
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
         expect(await readTranscript(home, session)).toBeUndefined();
+        // 확인하지 못한 폴더는 "기록 없음"과 같지 않다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
+        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+          "[provider] a Claude session transcript folder could not be checked (link)",
+        ]);
       }
     );
 
