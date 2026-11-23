@@ -41,11 +41,17 @@ async function run(cwd: string) {
     throw new Error(
       `the configuration script ended by ${result.signal ?? "an unknown cause"}`
     );
-  return result.code;
+  return {
+    status: result.code,
+    stderr: result.stderr.toString("utf8").slice(-1000).trim(),
+  };
 }
 
 /** 우리 표시가 있는 설정과 임시 파일을 지운다. 표시 없는 파일이나 링크가 있으면 오류다. */
 export async function clearOwnedConfig(cwd: string) {
-  const status = await run(cwd);
-  if (status) throw new Error(`configuration not cleared (${status})`);
+  const { status, stderr } = await run(cwd);
+  if (status)
+    throw new Error(
+      `configuration not cleared (${status})${stderr ? `: ${stderr}` : ""}`
+    );
 }

@@ -47,8 +47,10 @@ import {
 import {
   createCredentialRelay,
   residueInFolder,
+  residueRefusalFor,
   type RelayGrant,
   type RelayProfile,
+  type ResidueCheck,
   residueRefusal,
 } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
@@ -274,11 +276,13 @@ async function writeAll(file: FileHandle, buffer: Buffer): Promise<void> {
  * 앞부분이 그대로면 WAL이 재시작(새 salt의 머리로 처음부터 다시 씀)되지 않았다. 끝에 새 프레임이 붙는 것은 앞부분을 바꾸지
  * 않으므로 같은 조직의 OpenCode가 쓰는 중이어도 통과하며, 사본을 열면 SQLite는 salt·checksum이 맞는 마지막 commit 프레임까지만
  * 쓴다(https://www.sqlite.org/walformat.html §3 Recovery). 둘 중 하나라도 다르면 사본이 원본의 어느 한 때와도 같다고 할 수
- * 없으므로 확인하지 못한 것으로 보고 남은 로그인으로 센다(fail closed). 체크포인트는 DB를 바꾸고
+ * 없으므로 확인하지 못한 것으로 보고 그 이유를 돌려준다(fail closed). 체크포인트는 DB를 바꾸고
  * (https://www.sqlite.org/fileformat2.html §4.3 Checkpoint Algorithm), WAL 재시작은 머리의 salt를 바꾼다(같은 문서
  * §4.4 WAL Reset).
  */
-async function openCodeLoginResidue(organization: string): Promise<boolean> {
+async function openCodeLoginResidue(
+  organization: string
+): Promise<ResidueCheck> {
   return orIfProbeFailed(
     async () => {
       return await residueInFolder(
@@ -295,7 +299,7 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
               false
             )
           )
-            return true;
+            return { state: "left" };
           const copyFolder = await mkdtemp(
             path.join(os.tmpdir(), "babojubot-opencode-residue-")
           );
@@ -305,17 +309,19 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
           try {
             const copy = path.join(copyFolder, "opencode.db");
             const openedMain = await openRegularFile(folder.at("opencode.db"));
-            if (openedMain === "missing") return false;
-            if (typeof openedMain === "string") return true;
+            if (openedMain === "missing") return { state: "none" };
+            if (typeof openedMain === "string")
+              return { state: "unverified", reason: "not_regular" };
             main = openedMain;
             const mainCopy = await copyOpened(main, copy, residueCopyMaxBytes);
-            if (mainCopy === "unsafe") return true;
+            if (mainCopy === "unsafe")
+              return { state: "unverified", reason: "too_large" };
             // DB 복사를 끝낸 뒤에 WAL을 연다. 시험은 이 열기 직전에 원본의 체크포인트를 일으켜, DB 다시 읽기가 그것을 잡는지 본다.
             const openedWal = await openRegularFile(
               folder.at("opencode.db-wal")
             );
             if (openedWal === "not-regular" || openedWal === "changed")
-              return true;
+              return { state: "unverified", reason: "not_regular" };
             let walCopy: { copied: number; digest: string } | undefined;
             if (openedWal !== "missing") {
               wal = openedWal;
@@ -324,7 +330,8 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
                 `${copy}-wal`,
                 residueCopyMaxBytes - mainCopy.copied
               );
-              if (copiedWal === "unsafe") return true;
+              if (copiedWal === "unsafe")
+                return { state: "unverified", reason: "too_large" };
               walCopy = copiedWal;
             }
             const mainAgain = await digestOf(main, mainCopy.copied + 1);
@@ -340,9 +347,9 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
             }
             if (!same) {
               console.warn(
-                "[provider] the OpenCode login store changed while it was copied; it counts as a remaining login"
+                "[provider] the OpenCode login store changed while it was copied; the remaining login could not be checked"
               );
-              return true;
+              return { state: "unverified", reason: "changed_while_copied" };
             }
             db = new DatabaseSync(copy);
             for (const table of ["credential", "account", "control_account"]) {
@@ -350,13 +357,14 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
                 const row = db
                   .prepare(`select count(*) as n from "${table}"`)
                   .get() as { n?: unknown } | undefined;
-                if (typeof row?.n === "number" && row.n > 0) return true;
+                if (typeof row?.n === "number" && row.n > 0)
+                  return { state: "left" };
               } catch (error) {
                 // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
                 if (!/no such table/i.test(String(error))) throw error;
               }
             }
-            return false;
+            return { state: "none" };
           } finally {
             const closedMain = main;
             const closedWal = wal;
@@ -398,10 +406,10 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
         }
       );
     },
-    true,
+    { state: "unverified", reason: "unreadable" },
     (error) =>
       console.warn(
-        `[provider] the OpenCode login store could not be read; it counts as a remaining login (${failureCode(error)})`
+        `[provider] the OpenCode login store could not be read; the remaining login could not be checked (${failureCode(error)})`
       )
   );
 }
@@ -820,8 +828,12 @@ export function createOpenCodeProvider(options: {
           await Promise.all(copies);
         }
         // 격리 실행은 조직 폴더에 남은 로그인을 컨테이너가 읽을 수 있으므로, 서버를 띄우기 전에 확인하고 시작하지 않는다.
-        if (placement.container && (await openCodeLoginResidue(organization)))
-          return { ...failure(), error: residueRefusal };
+        if (placement.container) {
+          const refusal = residueRefusalFor(
+            await openCodeLoginResidue(organization)
+          );
+          if (refusal !== undefined) return { ...failure(), error: refusal };
+        }
         let container: ContainerLaunch | undefined;
         try {
           container = placement.container?.({

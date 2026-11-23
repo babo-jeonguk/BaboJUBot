@@ -161,7 +161,7 @@ export async function cleanupAntigravityWorkspaces(dataDir: string) {
       () => clearOwnedConfig(shared),
       (error) =>
         console.warn(
-          `[provider] the Antigravity configuration of organization ${org.name} could not be cleared; unowned files are kept (${failureCode(error)})`
+          `[provider] the Antigravity configuration of organization ${org.name} could not be cleared; unowned files are kept (${error instanceof Error ? error.message : failureCode(error)})`
         )
     );
   }

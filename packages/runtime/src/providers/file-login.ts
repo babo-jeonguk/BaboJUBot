@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { credentialResidue, residueRefusal } from "./credential-relay.ts";
+import { credentialResidue, residueRefusalFor } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink, readLogin } from "./login-link.ts";
 import { oneAtATime } from "./one-at-a-time.ts";
@@ -128,11 +128,14 @@ export function fileLogin(
     await prepareConnection();
     const loginAt = loginFileIn(organization);
     if (isolated) {
-      if (
-        (await credentialResidue(organization, [shape.loginFile], original)) &&
-        !(await standIn(organization))
-      )
-        return { refusal: residueRefusal };
+      const residue = await credentialResidue(
+        organization,
+        [shape.loginFile],
+        original
+      );
+      const refusal = residueRefusalFor(residue);
+      if (refusal !== undefined && !(await standIn(organization)))
+        return { refusal };
       await mkdir(organization, { recursive: true, mode: 0o700 });
       return {
         home: organization,

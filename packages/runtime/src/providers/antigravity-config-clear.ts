@@ -53,8 +53,12 @@ const agents = await orIfMissing(
   undefined
 );
 if (agents === undefined) process.exit(0);
-if (!agents.isDirectory() || !(await enterFolder(".agents", agents)))
+if (!agents.isDirectory() || !(await enterFolder(".agents", agents))) {
+  process.stderr.write(
+    "[config] .agents is not a folder this script could check; nothing is removed\n"
+  );
   process.exit(unsafe);
+}
 let kept = false;
 for (const name of await readdir("."))
   if (temporary(name) && (await owned(name)) === true) {
@@ -71,7 +75,12 @@ for (const name of await readdir("."))
     }
   }
 const config = await owned(file);
-if (config === false) process.exit(unsafe);
+if (config === false) {
+  process.stderr.write(
+    "[config] mcp_config.json has no BaboJUBot mark; it is kept\n"
+  );
+  process.exit(unsafe);
+}
 if (config === true) {
   const removal = await removeConfirmed(
     file,

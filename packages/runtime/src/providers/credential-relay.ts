@@ -544,52 +544,97 @@ export function createCredentialRelay(options: {
 export const residueRefusal =
   "조직 제품 폴더에 로그인 기록이 남아 있어 격리 실행을 시작하지 않았습니다.";
 
+/** 남은 로그인을 확인하지 못한 이유. */
+export type ResidueUnverified =
+  | "path_unverifiable"
+  | "not_regular"
+  | "unreadable"
+  | "too_large"
+  | "changed_while_copied";
+/** 조직 제품 폴더의 남은 로그인 확인 결과: 남음, 없음, 확인하지 못함(이유). */
+export type ResidueCheck =
+  | { state: "left" }
+  | { state: "none" }
+  | { state: "unverified"; reason: ResidueUnverified };
+/** 남은 로그인을 확인하지 못해 격리 실행을 시작하지 않은 실행 시도의 실패 문장. */
+export const residueUnverifiedRefusal: Record<ResidueUnverified, string> = {
+  path_unverifiable:
+    "조직 제품 폴더의 로그인 자리로 가는 길에 링크나 폴더가 아닌 것이 있어 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 그 자리를 확인하세요.",
+  not_regular:
+    "조직 제품 폴더의 로그인 자리에 일반 파일이 아닌 것(링크·특수 파일)이 있어 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 그 자리를 확인하세요.",
+  unreadable:
+    "조직 제품 폴더의 로그인 기록을 읽지 못해 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 서버 기록에서 원인을 확인하세요.",
+  too_large:
+    "로그인 저장소가 확인할 수 있는 크기보다 커서 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다.",
+  changed_while_copied:
+    "로그인 저장소가 확인 중에 바뀌어 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 다시 실행하세요.",
+};
+
+/** 확인 결과의 실패 문장. 없으면 `undefined`. 빠짐없는 switch로 쓴다. */
+export function residueRefusalFor(check: ResidueCheck): string | undefined {
+  switch (check.state) {
+    case "left":
+      return residueRefusal;
+    case "none":
+      return undefined;
+    case "unverified":
+      return residueUnverifiedRefusal[check.reason];
+  }
+}
+
+/** 확인하지 못한 결과의 기본 이유. 결과를 모르면 격리 실행을 시작하지 않는다(fail closed). */
+const unreadableResidue: ResidueCheck = {
+  state: "unverified",
+  reason: "unreadable",
+};
+
 /**
- * 격리 실행에 넣으면 안 되는 로그인 흔적이 조직 제품 폴더에 남아 있는가.
+ * 격리 실행에 넣으면 안 되는 로그인 흔적이 조직 제품 폴더에 남아 있는가. 남음·없음·확인하지 못함(이유)을 나눠 돌려준다.
  * 연결의 로그인 원본을 가리키는 알려진 링크(이 컴퓨터의 실행이 남긴 것)만 컨테이너 안에서 비어 있어 괜찮다.
- * 보통 파일·폴더, 다른 곳을 가리키는 링크, 확인할 수 없는 경로는 남은 로그인으로 본다. 비밀값은 읽지 않는다.
+ * 보통 파일·폴더, 다른 곳을 가리키는 링크는 남은 로그인이다. 확인할 수 없는 경로는 남은 로그인으로 접지 않고 확인하지
+ * 못한 것으로 돌려준다(#286). 비밀값은 읽지 않는다.
  */
 export async function credentialResidue(
   home: string,
   paths: readonly string[],
   known?: string
-): Promise<boolean> {
+): Promise<ResidueCheck> {
   for (const relative of paths) {
     const residue = await orIfProbeFailed(
       () => residueAt(home, relative, known),
-      true,
+      unreadableResidue,
       (error) =>
         console.warn(
-          `[provider] a login path in the organization folder could not be checked; it counts as a remaining login (${failureCode(error)})`
+          `[provider] a login path in the organization folder could not be checked (${failureCode(error)})`
         )
     );
-    if (residue) return true;
+    if (residue.state !== "none") return residue;
   }
-  return false;
+  return { state: "none" };
 }
 
 /**
  * 조직 폴더 안 `parts`로 내려가 `use`로 남은 로그인을 본다. 남은 로그인이 없다고 할 수 있는 것은 가는 길의 칸이 실제로 없을 때뿐이다.
- * 링크·폴더가 아닌 것·바뀐 칸은 그 안을 확인할 수 없으므로 남은 로그인으로 본다(fail closed, #280 리뷰 1회차 STD-1).
+ * 링크·폴더가 아닌 것·바뀐 칸은 그 안을 확인할 수 없으므로 확인하지 못한 것으로 돌려준다(fail closed, #280 리뷰 1회차 STD-1, #286).
  */
 export async function residueInFolder(
   root: string,
   parts: readonly string[],
-  use: (folder: Folder) => Promise<boolean>
-): Promise<boolean> {
+  use: (folder: Folder) => Promise<ResidueCheck>
+): Promise<ResidueCheck> {
   const result = await inFolder(root, parts, use);
   switch (result.state) {
     case "reached":
       return result.value;
     case "absent":
-      return false;
+      return { state: "none" };
     case "unverifiable":
-      return true;
+      return { state: "unverified", reason: "path_unverifiable" };
   }
 }
 
 /**
- * 경로 하나가 남은 로그인인가. 가는 길의 칸이 실제로 없으면 아니고, 알려진 원본을 가리키는 링크만 아니다. 확인하지 못하면 던진다.
+ * 경로 하나가 남은 로그인인가. 가는 길의 칸이 실제로 없으면 없음이고, 알려진 원본을 가리키는 링크만 없음이다. 확인하지 못하면 던진다.
  * 경로의 폴더 칸은 확인한 폴더의 handle을 거쳐 내려가므로, 중간 칸이 링크로 바뀌어도 그 너머를 보지 않는다. 링크 너머는 확인할 수
  * 없으므로 남은 로그인으로 본다.
  */
@@ -597,10 +642,10 @@ async function residueAt(
   home: string,
   relative: string,
   known: string | undefined
-) {
+): Promise<ResidueCheck> {
   const names = relative.split(path.sep === "/" ? "/" : /[/\\]/);
   const name = names.pop();
-  if (name === undefined) return false;
+  if (name === undefined) return { state: "none" };
   return residueInFolder(home, names, async (folder) => {
     const at = folder.at(name);
     const found = await orIfMissing(
@@ -608,8 +653,11 @@ async function residueAt(
       hasErrorCode("ENOENT", "ENOTDIR"),
       undefined
     );
-    if (!found) return false;
-    if (!found.isSymbolicLink() || known === undefined) return true;
-    return (await readlink(at)) !== known;
+    if (!found) return { state: "none" };
+    if (!found.isSymbolicLink() || known === undefined)
+      return { state: "left" };
+    return (await readlink(at)) !== known
+      ? { state: "left" }
+      : { state: "none" };
   });
 }

@@ -632,6 +632,7 @@ const attempt = (host, port) =>
       finish(false);
     });
   });
+const firstLine = (text) => text.split("\\r\\n")[0].slice(0, 80).replace(/[^\\x20-\\x7e]/g, "?");
 const statusOf = (text) => {
   const match = /^HTTP\\/1\\.[01] (\\d{3})/.exec(text.split("\\r\\n")[0] ?? "");
   return match ? Number(match[1]) : undefined;
@@ -658,8 +659,11 @@ const proxied = (host, port) =>
     };
     const answer = () => {
       const status = statusOf(text);
-      // 머리 첫 줄을 아직 읽지 못했으면 더 기다린다. 다 읽기 전에 닫히면 close가 확인 불가로 남긴다.
-      if (status === undefined) return;
+      // 머리를 다 받았는데 상태 줄을 읽지 못하면 HTTP가 아닌 답이다. 더 기다리지 않고 받은 첫 줄을 원인으로 남긴다.
+      if (status === undefined) {
+        failures.push({ probe: "proxied", unexpected: firstLine(text) });
+        return finish(false);
+      }
       // 200(연결됨)과 502(정책은 열었지만 목적지 연결 실패)는 중계 정책이 그 목적지를 연 것이다.
       if (status === 200 || status === 502) return finish(true);
       const refusal = refusalOf(text);
@@ -717,7 +721,11 @@ const tools = () =>
       text += chunk;
       const at = text.indexOf("\\r\\n");
       if (at < 0) return;
-      finish(/^HTTP\\/1\\.[01] \\d{3}/.test(text.slice(0, at)));
+      if (!/^HTTP\\/1\\.[01] \\d{3}/.test(text.slice(0, at))) {
+        failures.push({ probe: "tools", unexpected: firstLine(text) });
+        return finish(false);
+      }
+      finish(true);
     });
     socket.once("close", () => {
       if (settled) return;
@@ -758,12 +766,13 @@ const isTarget = (value: unknown): value is { host: string; port: number } =>
 
 /**
  * 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다), 답이 없었으면 기다린 시간,
- * 중계가 답한 상태(주소 거부가 아닌 이유), 머리를 다 받기 전에 닫혔는지.
+ * 중계가 답한 상태(주소 거부가 아닌 이유), HTTP가 아닌 답의 첫 줄, 머리를 다 받기 전에 닫혔는지.
  */
 type ProbeFailure =
   | { probe: string; code?: unknown; name: string }
   | { probe: string; timeoutMs: number }
   | { probe: string; status: number; refusal?: string }
+  | { probe: string; unexpected: string }
   | { probe: string; closed: true };
 const isProbeFailure = (value: unknown): value is ProbeFailure => {
   if (typeof value !== "object" || value === null) return false;
@@ -773,6 +782,7 @@ const isProbeFailure = (value: unknown): value is ProbeFailure => {
     timeoutMs?: unknown;
     status?: unknown;
     refusal?: unknown;
+    unexpected?: unknown;
     closed?: unknown;
   };
   if (typeof failure.probe !== "string") return false;
@@ -780,6 +790,7 @@ const isProbeFailure = (value: unknown): value is ProbeFailure => {
   if (typeof failure.timeoutMs === "number") return true;
   if (typeof failure.status === "number" && Number.isInteger(failure.status))
     return failure.refusal === undefined || typeof failure.refusal === "string";
+  if (typeof failure.unexpected === "string") return true;
   return failure.closed === true;
 };
 
@@ -788,6 +799,7 @@ function probeFailureText(failure: ProbeFailure): string {
   if ("timeoutMs" in failure) return `no answer within ${failure.timeoutMs} ms`;
   if ("status" in failure)
     return `answered ${failure.status}${failure.refusal ? ` ${failure.refusal}` : ""}`;
+  if ("unexpected" in failure) return `answered "${failure.unexpected}"`;
   if ("closed" in failure) return "closed before answering";
   return failureCode(
     Object.assign(new Error(), { name: failure.name, code: failure.code })
