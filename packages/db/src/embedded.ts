@@ -593,11 +593,14 @@ const held = new Map<string, { handle: string; server: net.Server }>();
 const swept = new Set<string>();
 
 /**
- * 주인 소켓을 둘 이 사용자 전용 폴더. 후보(Linux의 `XDG_RUNTIME_DIR`, 임시 폴더, `/tmp`) 아래 `babojubot-<uid>` 가운데 소켓 경로가
- * 바이트 한도 안에 드는 첫 자리를 쓴다. 그 폴더가 이 사용자 소유의 0700 폴더(링크 아님)가 아니면 다음 후보로 가고, 모두 안 되면
- * 그 이유들과 함께 던진다.
+ * 이 사용자 전용 폴더에서 주인 연결을 듣는다. 후보(Linux의 `XDG_RUNTIME_DIR`, 임시 폴더, `/tmp`) 아래 `babojubot-<uid>` 가운데
+ * 소켓 경로가 바이트 한도 안에 들고 실제로 들을 수 있는 첫 자리를 쓴다. 후보마다 사전 검사를 모두 한 뒤 그 자리에서 실제로 듣기까지가 그 후보의 시도다. 듣기가
+ * 실패하면 그 원인을 남기고 다음 후보로 가며, 모두 실패하면 후보별 원인과 함께 던진다.
  */
-async function privateSocketFolder() {
+async function listenInPrivateFolder(): Promise<{
+  handle: string;
+  server: net.Server;
+}> {
   const limit = socketPathLimit[process.platform] ?? 103;
   const uid = process.getuid!();
   const sample = `${handlePrefix}${"0".repeat(16)}.sock`;
@@ -608,11 +611,12 @@ async function privateSocketFolder() {
     os.tmpdir(),
     "/tmp",
   ];
-  let chosen: string | undefined;
+  let chosen: { handle: string; server: net.Server } | undefined;
   // 후보마다 따로 본다: 한 후보를 쓸 수 없으면(경로가 길다, 그 자리에 파일이 있다, 이 사용자 전용이 아니다, 이 사용자도 쓸 수
-  // 없다) 그 이유를 남기고 다음 후보로 간다. 모두 안 되면 후보별 이유를 함께 담아 거절한다.
+  // 없다) 그 이유를 남기고 다음 후보로 간다. 사전 검사를 통과해도 그 자리에서 듣기가 실패할 수 있어, 듣기까지가 그 후보의 시도다.
+  // 모두 안 되면 후보별 이유를 함께 담아 거절한다.
   const failures = await attemptEach(
-    [...new Set(bases)].map((base) => () => {
+    [...new Set(bases)].map((base) => async () => {
       if (chosen !== undefined) return;
       const folder = path.join(base, `babojubot-${uid}`);
       if (Buffer.byteLength(path.join(folder, sample)) >= limit)
@@ -627,7 +631,13 @@ async function privateSocketFolder() {
         );
       // 소켓을 만들려면 이 사용자가 그 폴더에 쓰고 들어갈 수 있어야 한다(0500 같은 폴더는 남은 막혀도 이 사용자도 못 쓴다).
       fs.accessSync(folder, fs.constants.W_OK | fs.constants.X_OK);
-      chosen = folder;
+      sweepStaleSockets(folder);
+      const handle = path.join(
+        folder,
+        `${handlePrefix}${randomUUID().replaceAll("-", "").slice(0, 16)}.sock`
+      );
+      const server = await listenAt(handle);
+      chosen = { handle, server };
     })
   );
   if (chosen !== undefined) return chosen;
@@ -636,13 +646,16 @@ async function privateSocketFolder() {
   });
 }
 
-/** 새 주인 연결의 자리. */
-async function newHandle() {
-  const id = randomUUID().replaceAll("-", "");
-  if (process.platform === "win32") return `\\\\.\\pipe\\${handlePrefix}${id}`;
-  const folder = await privateSocketFolder();
-  sweepStaleSockets(folder);
-  return path.join(folder, `${handlePrefix}${id.slice(0, 16)}.sock`);
+/** 그 자리에서 주인 연결을 듣는 서버를 연다. 듣지 못하면 그 listen 오류를 그대로 던진다(자리가 이름에 담긴다). */
+function listenAt(handle: string): Promise<net.Server> {
+  return new Promise<net.Server>((resolve, reject) => {
+    const server = net.createServer((socket) => socket.destroy());
+    server.once("error", reject);
+    server.listen(handle, () => {
+      server.off("error", reject);
+      resolve(server);
+    });
+  });
 }
 
 /**
@@ -691,15 +704,15 @@ function sweepStaleSockets(folder: string) {
 
 /** 이 주인 기록 폴더의 주인으로 연결 하나를 듣는다. 이 프로세스가 끝날 때까지 붙잡지 않는다(unref). 들은 자리를 돌려준다. */
 async function holdConnection(dir: string) {
-  const handle = await newHandle();
-  const server = net.createServer((socket) => socket.destroy());
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(handle, () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
+  let handle: string;
+  let server: net.Server;
+  if (process.platform === "win32") {
+    const id = randomUUID().replaceAll("-", "");
+    handle = `\\\\.\\pipe\\${handlePrefix}${id}`;
+    server = await listenAt(handle);
+  } else {
+    ({ handle, server } = await listenInPrivateFolder());
+  }
   server.unref();
   held.set(dir, { handle, server });
   return handle;
