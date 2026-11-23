@@ -50,6 +50,7 @@ function createFixture(defer) {
     "scripts/ignored-dot-folders.mjs",
     "scripts/markdown.mjs",
     ".agents/scripts/run-worker.ts",
+    ".agents/scripts/worker-permissions.ts",
     ".opencode/agents/dev-worker.md",
   ])
     copyFromRepository(relative, path.join(fixture, relative));

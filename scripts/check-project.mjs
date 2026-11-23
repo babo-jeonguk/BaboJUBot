@@ -12,6 +12,10 @@ import {
   loadIgnoredDotFolders,
 } from "./ignored-dot-folders.mjs";
 import { linkTargets, parseMarkdown } from "./markdown.mjs";
+import {
+  editRules,
+  isProtected,
+} from "../.agents/scripts/worker-permissions.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const required = [".gitignore", "AGENTS.md", "GLOSSARY.md", "docs/features.md"];
@@ -89,19 +93,22 @@ for (const action of ["subagent", "webfetch", "external_directory"])
     ).test(devWorker),
     `dev-worker.md must deny ${action}`
   );
-// worker가 통과시킬 시험과 검사 설정을 스스로 고치지 못하게 한다.
-for (const resource of [
-  "*.test.*",
-  "*.spec.*",
-  "*eslint.config.*",
-  "*package.json",
-  "scripts/*",
+// worker가 통과시킬 시험과 검사 설정을 스스로 고치지 못하게 한다. 규칙 글자가 아니라 OpenCode와 같은 판정(worker-permissions.ts)으로
+// 대표 파일이 막히는지 본다. 범위 전체는 .agents/scripts/worker-permissions.test.ts가 본다.
+const workerRules = editRules(devWorker);
+assert(workerRules, "dev-worker.md has no permissions frontmatter");
+for (const file of [
+  "packages/core/src/run.test.ts",
+  "apps/web/e2e/home.spec.ts",
+  "eslint.config.js",
+  "packages/core/vitest.config.ts",
+  "package.json",
+  "packages/core/package.json",
+  "scripts/check-project.mjs",
 ])
   assert(
-    devWorker.includes(
-      `action: edit\n    resource: "${resource}"\n    effect: deny`
-    ),
-    `dev-worker.md must deny editing ${resource}`
+    isProtected(workerRules, file),
+    `dev-worker.md must deny editing ${file}`
   );
 console.log(
   `Checked local links in ${markdownFiles} Markdown files. No product functionality was tested.`
