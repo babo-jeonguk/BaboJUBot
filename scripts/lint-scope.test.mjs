@@ -345,16 +345,35 @@ function filesOf(root, config) {
 /**
  * 제품 타입 검사(tsconfig.src.json)와 시험 타입 검사(tsconfig.test.json)가 lint 프로젝트(tsconfig.json)의 파일을 시험 범위
  * (scripts/test-files.mjs)대로 나누는가. 시험 코드는 시험 쪽에만, 그 밖은 제품 쪽에 든다(시험 쪽은 가져오는 제품 파일을 어차피 함께
- * 검사하므로 제품 파일이 들어도 된다). 어긋난 파일을 모두 돌려준다.
+ * 검사하므로 제품 파일이 들어도 된다). 패키지마다 세 설정이 있어야 하고, `files`(저장소의 파일 목록) 중 그 패키지의 시험 파일은 설정과
+ * 따로 열거해 lint 프로젝트와 시험 쪽에 모두 들어야 한다. 어긋난 파일을 모두 돌려준다.
+ * @param {string} root
+ * @param {string[]} packages
+ * @param {string[]} files
  */
-function splitGaps(root, packages, _files = []) {
+function splitGaps(root, packages, files) {
   const gaps = [];
+  const configs = ["tsconfig.json", "tsconfig.src.json", "tsconfig.test.json"];
   for (const folder of packages) {
+    const missing = configs.filter(
+      (config) => !existsSync(path.join(root, folder, config))
+    );
+    if (missing.length > 0) {
+      gaps.push(`${folder}: no ${missing.join(", ")}`);
+      continue;
+    }
     const project = filesOf(root, `${folder}/tsconfig.json`);
     const product = filesOf(root, `${folder}/tsconfig.src.json`);
     const tests = filesOf(root, `${folder}/tsconfig.test.json`);
-    for (const file of project) {
+    const candidates = new Set([
+      ...project,
+      ...files.filter(
+        (file) => file.startsWith(`${folder}/`) && isTestFile(file)
+      ),
+    ]);
+    for (const file of candidates) {
       const test = isTestFile(file);
+      if (test && !project.has(file)) gaps.push(`${file} not in tsconfig.json`);
       if (test && !tests.has(file))
         gaps.push(`${file} not in tsconfig.test.json`);
       if (test === product.has(file))
@@ -364,9 +383,12 @@ function splitGaps(root, packages, _files = []) {
   return gaps;
 }
 
-/** 제품·시험 타입 검사로 나눌 패키지 폴더. */
+/**
+ * 제품·시험 타입 검사로 나눌 패키지 폴더: workspace 패키지(package.json이 있는 `apps/*`·`packages/*`). 설정 파일과 따로 찾아, 설정이
+ * 빠진 새 패키지도 splitGaps가 짚는다.
+ */
 function packagesToSplit(root) {
-  return globSync("{apps,packages}/*/tsconfig.test.json", {
+  return globSync("{apps,packages}/*/package.json", {
     cwd: root,
   }).map((file) => path.dirname(file).replaceAll("\\", "/"));
 }
@@ -374,8 +396,15 @@ function packagesToSplit(root) {
 test("the product and test type checks split files the way the test scope does", async (context) => {
   // tsconfig는 JSON이라 시험 범위(codeFormats)를 가져올 수 없다. 저장소 파일과 형식마다 만든 표본으로 같은 범위인지 본다.
   const packages = packagesToSplit(repository);
-  assert.ok(packages.length > 0, "no tsconfig.test.json found");
-  assert.deepEqual(splitGaps(repository, packages), []);
+  assert.ok(packages.length > 0, "no workspace package found");
+  const tracked = execFileSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { cwd: repository, encoding: "utf8" }
+  )
+    .split("\0")
+    .filter(Boolean);
+  assert.deepEqual(splitGaps(repository, packages, tracked), []);
   // 패키지마다 제품·시험·러너 설정 자리를 두어(새 패키지도 표본을 받는다) 위의 자리 목록과 함께 쓴다.
   const samples = [
     ...packages.flatMap((folder) => [
@@ -394,7 +423,10 @@ test("the product and test type checks split files the way the test scope does",
         (format) => `${place.replace("sample", `sample-${format}`)}.${format}`
       )
     );
-  assert.deepEqual(splitGaps(mirrorOf(context, samples), packages), []);
+  assert.deepEqual(
+    splitGaps(mirrorOf(context, samples), packages, samples),
+    []
+  );
 });
 
 /** 표본 저장소: { 저장소 기준 경로: 내용 }. JSON 내용은 객체로 받는다. */
