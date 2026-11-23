@@ -1,7 +1,9 @@
 import { spawn, type SpawnSyncReturns } from "node:child_process";
 import { once } from "node:events";
+import { createServer, type AddressInfo, type Socket } from "node:net";
 import { finished } from "node:stream/promises";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { awaitedLater } from "./test-cleanup.ts";
 import {
   exited,
   killAndWait,
@@ -67,6 +69,58 @@ it("still reads a ready line written just before the program exits", async () =>
     { stdio: ["ignore", "pipe", "ignore"] }
   );
   await expect(readyLine(child)).resolves.toBeUndefined();
+});
+
+// #286: 프로그램이 끝난(`exit`) 뒤에도 출력이 끝나기 전까지는 준비 줄이 닿을 수 있다. 출력의 끝을 시간(exit 뒤 잠깐)으로 판정하면
+// 늦게 닿은 줄을 놓친다. 출력을 물려받은 자손이 프로그램이 끝난 뒤, 시험이 연결로 시킬 때 준비 줄을 쓰게 해 그 순서를 상태로 만든다
+// (자식의 입력은 자식이 끝날 때 Node가 닫으므로 신호 통로로 쓰지 않는다). 시계는 가짜라 exit 뒤 시간이 얼마나 지나도(아래 5초) 출력이
+// 열려 있는 동안은 기다린다.
+it("keeps reading after the program exits until its output ends", async () => {
+  const server = createServer();
+  const connected = awaitedLater(
+    new Promise<Socket>((resolve) => server.once("connection", resolve))
+  );
+  await new Promise<void>((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve())
+  );
+  onTestFinished(async () => {
+    server.close();
+    // 시험이 어디서 끝나든 연결을 닫으면 자손도 끝난다.
+    (await connected).destroy();
+  });
+  const { port } = server.address() as AddressInfo;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const descendant = `const s = require("node:net").connect(${port}, "127.0.0.1"); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("close", () => s.destroy());`;
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: ["ignore", "inherit", "ignore"] }).unref();`,
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] }
+  );
+  const exit = once(child, "exit");
+  const ready = awaitedLater(readyLine(child));
+  const control = await connected;
+  await exit;
+  vi.advanceTimersByTime(5_000);
+  control.write("go");
+  await expect(ready).resolves.toBeUndefined();
+});
+
+// 프로그램이 끝나고 출력도 끝났는데 준비 줄이 없으면, 그때 바로 준비 전에 끝난 것으로 실패한다.
+it("fails when the program's output ends without its ready line", async () => {
+  const child = spawn(
+    process.execPath,
+    ["-e", `process.stdout.write("noise\\n");`],
+    { stdio: ["ignore", "pipe", "ignore"] }
+  );
+  await expect(readyLine(child)).rejects.toThrow(
+    "exited before printing ready"
+  );
 });
 
 /** 시험이 끝날 때까지 도는 프로그램. 시험이 끝나면 끄고 끝날 때까지 기다린다. */
