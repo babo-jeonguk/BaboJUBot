@@ -33,6 +33,75 @@ pub fn is_marker_entry(entry: &[u8], marker: &str) -> bool {
     named && value == marker.as_bytes()
 }
 
+/// What one read of a process's environment told about the marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    /// It carries the marker.
+    Carries,
+    /// Its environment was read and the marker is not in it.
+    Clear,
+    /// It ended, or the number names no process.
+    Gone,
+    /// It could not be read; it may carry the marker.
+    Unreadable,
+}
+
+/// What one read of `/proc/<id>/environ` tells (Linux). An error other than an ended or unreadable process is passed on.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn environ_reading(read: std::io::Result<Vec<u8>>, marker: &str) -> std::io::Result<Reading> {
+    match read {
+        Ok(environment) => Ok(
+            if environment
+                .split(|&byte| byte == 0)
+                .any(|entry| is_marker_entry(entry, marker))
+            {
+                Reading::Carries
+            } else {
+                Reading::Clear
+            },
+        ),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            Ok(Reading::Gone)
+        }
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) => {
+            Ok(Reading::Unreadable)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// What a `KERN_PROCARGS2` buffer tells (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn procargs_reading(buffer: &[u8], marker: &str) -> Reading {
+    if environment(buffer).any(|entry| is_marker_entry(entry, marker)) {
+        Reading::Carries
+    } else {
+        Reading::Clear
+    }
+}
+
+/// What the read made after the handle is open says about a candidate (Linux).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmed {
+    /// Hold it: it carries the marker.
+    Hold,
+    /// Pass it over.
+    Pass,
+    /// It may be ours but could not be read: no signal, and the stop is not clean while it stays.
+    #[allow(dead_code)]
+    // `confirm` does not give it yet; the next commit does (#283 review 1, SPEC-2).
+    Unverified,
+}
+
+/// Decides on a candidate from the read made after its handle was opened.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn confirm(second: std::io::Result<Vec<u8>>, marker: &str) -> Result<Confirmed, String> {
+    Ok(match environ_reading(second, marker) {
+        Ok(Reading::Carries) => Confirmed::Hold,
+        Ok(Reading::Clear | Reading::Gone | Reading::Unreadable) | Err(_) => Confirmed::Pass,
+    })
+}
+
 /// What to look for: this run's marker, and when the run began, in the system's own measure of a start time (Linux: clock ticks
 /// after boot; macOS: microseconds since the epoch). Without a beginning nothing is taken as unverified.
 pub struct Search {
@@ -64,7 +133,7 @@ pub use linux::{Held, find, hold, signal, start_of_self};
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{Found, Search, is_marker_entry, stat_fields};
+    use super::{Confirmed, Found, Reading, Search, confirm, environ_reading, stat_fields};
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -121,17 +190,8 @@ mod linux {
         matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM))
     }
 
-    /// Whether this environment carries the marker. `None` when the process ended; `Err` when it cannot be read.
-    fn carries(pid: libc::pid_t, marker: &str) -> io::Result<Option<bool>> {
-        match std::fs::read(format!("/proc/{pid}/environ")) {
-            Ok(environment) => Ok(Some(
-                environment
-                    .split(|&byte| byte == 0)
-                    .any(|entry| is_marker_entry(entry, marker)),
-            )),
-            Err(error) if gone(&error) => Ok(None),
-            Err(error) => Err(error),
-        }
+    fn environ(pid: libc::pid_t) -> io::Result<Vec<u8>> {
+        std::fs::read(format!("/proc/{pid}/environ"))
     }
 
     /// When this supervisor started (clock ticks after boot).
@@ -164,10 +224,10 @@ mod linux {
                 continue;
             }
             // A first read only picks the candidates; the read that decides comes after the handle is open.
-            match carries(pid, &search.marker) {
-                Ok(None | Some(false)) => continue,
-                Ok(Some(true)) => {}
-                Err(error) if unreadable(&error) => {
+            match environ_reading(environ(pid), &search.marker) {
+                Ok(Reading::Clear | Reading::Gone) => continue,
+                Ok(Reading::Carries) => {}
+                Ok(Reading::Unreadable) => {
                     let Some(since) = search.since else { continue };
                     let own = match &cgroup {
                         Some(own) => own.clone(),
@@ -200,8 +260,12 @@ mod linux {
                     ));
                 }
             };
-            if matches!(carries(pid, &search.marker), Ok(Some(true))) && still_running(&handle) {
-                found.holders.push(Held { pid, handle });
+            match confirm(environ(pid), &search.marker)? {
+                Confirmed::Hold if still_running(&handle) => {
+                    found.holders.push(Held { pid, handle })
+                }
+                Confirmed::Unverified if still_running(&handle) => found.unverified.push(pid),
+                Confirmed::Hold | Confirmed::Unverified | Confirmed::Pass => {}
             }
         }
         Ok(found)
@@ -306,7 +370,7 @@ pub use macos::{Held, find, hold, signal, start_of_self};
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{Found, Search, is_marker_entry};
+    use super::{Found, Reading, Search, procargs_reading};
     use std::io;
 
     /// A program whose marker was read, with the start time read along with it.
@@ -438,18 +502,16 @@ mod macos {
                 continue;
             }
             let start = start_of(&before);
-            let carries = arguments(pid).map(|arguments| {
-                super::environment(&arguments).any(|entry| is_marker_entry(entry, &search.marker))
-            });
+            let reading = arguments(pid)
+                .map(|arguments| procargs_reading(&arguments, &search.marker))
+                .unwrap_or(Reading::Unreadable);
             // The start time read again says the arguments read in between were this process's.
             let same = read(pid)?.is_some_and(|after| start_of(&after) == start);
-            match carries {
-                Ok(true) if same => found.holders.push(Held { pid, start }),
-                Ok(_) => {}
-                Err(_) if same && search.since.is_some_and(|since| start >= since) => {
-                    found.unverified.push(pid);
-                }
-                Err(_) => {}
+            let may_be_ours = same && search.since.is_some_and(|since| start >= since);
+            match reading {
+                Reading::Carries if same => found.holders.push(Held { pid, start }),
+                Reading::Unreadable if may_be_ours => found.unverified.push(pid),
+                Reading::Carries | Reading::Unreadable | Reading::Clear | Reading::Gone => {}
             }
         }
         Ok(found)
