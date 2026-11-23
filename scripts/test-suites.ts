@@ -146,6 +146,7 @@ export const testSuites: TestSuite[] = [
       "scripts/check-code-map.test.mjs",
       "scripts/markdown.test.ts",
       "scripts/boot-check-overview.test.ts",
+      "scripts/exit-after-output.test.ts",
       "scripts/gh-post.test.mjs",
       "scripts/ci-test-gate.test.mjs",
       "scripts/check-test-reports.test.mjs",
