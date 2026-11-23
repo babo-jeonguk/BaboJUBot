@@ -1167,4 +1167,62 @@ mod stop_tests {
         assert_eq!(stop(&tree), Ok(()));
         assert!(tree.sent.borrow().iter().all(|&(target, _)| target != 41));
     }
+
+    /// #283 review 3, STD-3: a held program whose state cannot be told keeps being held, unverified and without a signal, until
+    /// what holds it says it ended. Forgetting it would let a later look that neither finds it again nor reads it answer that
+    /// nothing is left; in a clean request for a record kept without a start (no beginning), the search itself does not count an
+    /// unreadable program as unverified.
+    #[test]
+    fn a_held_program_whose_state_cannot_be_told_stays_held_until_it_has_ended() {
+        use super::Marked;
+        use crate::marked::{Running, Search};
+        let marked: Marked<FakeHeld> = Marked::new(Some(Search {
+            marker: "6f1c2a3e-1111-4222-8333-944455556666".to_owned(),
+            since: None,
+        }));
+        let nothing = || Found {
+            holders: Vec::new(),
+            unverified: Vec::new(),
+        };
+        let state = Cell::new(Running::Yes);
+        let runs = |_: &FakeHeld| state.get();
+        let pids = |found: &Found<std::rc::Rc<FakeHeld>>| {
+            (
+                found
+                    .holders
+                    .iter()
+                    .map(|held| held.pid())
+                    .collect::<Vec<_>>(),
+                found.unverified.clone(),
+            )
+        };
+        let found = marked.keep(
+            Found {
+                holders: vec![FakeHeld(7)],
+                unverified: Vec::new(),
+            },
+            runs,
+        );
+        assert_eq!(pids(&found), (vec![7], vec![]));
+        state.set(Running::Unknown);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![7]));
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![7]));
+        // Unverified once, also when the search counts it too.
+        assert_eq!(
+            pids(&marked.keep(
+                Found {
+                    holders: Vec::new(),
+                    unverified: vec![7],
+                },
+                runs
+            )),
+            (vec![], vec![7])
+        );
+        state.set(Running::Yes);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![7], vec![]));
+        state.set(Running::Ended);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![]));
+        state.set(Running::Yes);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![]));
+    }
 }
