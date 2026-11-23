@@ -6,8 +6,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup } from "@babojubot/process/test-cleanup";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   ephemeralCluster,
   startEmbeddedCluster,
@@ -27,6 +28,8 @@ const inject = vi.hoisted(() => ({
   listenFails: undefined as ((handle: string) => Error | undefined) | undefined,
   /** 제품이 경로에서 듣기를 시도한 자리와 그 결과. 주입한 실패도 여기 남는다. */
   listens: [] as { handle: string; failure?: Error }[],
+  /** 제품이 경로에서 실제로 듣기 시작한 자리(듣기가 성공해 알린 뒤에 남긴다). 그 자리가 닫혔는지는 이 목록으로 본다. */
+  listened: [] as string[],
 }));
 vi.mock("node:net", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:net")>();
@@ -48,7 +51,10 @@ vi.mock("node:net", async (importOriginal) => {
         process.nextTick(() => server.emit("error", failure));
         return server;
       }
-      return listen(handle, callback as () => void);
+      return listen(handle, () => {
+        inject.listened.push(handle);
+        (callback as () => void)();
+      });
     };
     server.listen = listenAt as typeof server.listen;
     return server;
@@ -75,7 +81,11 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const posix = process.platform !== "win32";
-const ownerSocket = /^babojubot-owner-[0-9a-f]{16}\.sock$/;
+
+beforeEach(() => {
+  inject.listens = [];
+  inject.listened = [];
+});
 
 /**
  * 이 시험만 쓰는 임시 폴더를 이 프로세스의 임시 폴더로 둔다(제품은 그 아래 `babojubot-<uid>`에 주인 연결을 둔다). 사용자 실행
@@ -108,41 +118,36 @@ async function startOwned(
   return { cluster, stop };
 }
 
-/** `folder` 안에서 지금 연결을 받는 주인 소켓들. */
-async function listening(folder: string) {
-  const names = fs.existsSync(folder) ? fs.readdirSync(folder) : [];
-  const open: string[] = [];
-  for (const name of names.filter((each) => ownerSocket.test(each))) {
-    const socket = path.join(folder, name);
-    const answered = await new Promise<boolean>((resolve) => {
-      const client = net.connect(socket);
-      const timer = setTimeout(() => {
+/**
+ * 제품이 들었던 자리마다 지금 연결을 받는지(#286 항목 12). 연결되면 "open", 그 자리가 없거나(ENOENT) 듣는 쪽이 없으면(ECONNREFUSED)
+ * "closed"다. 그 밖의 오류나 상한 초과는 닫힘이 아니라 확인하지 못한 것이라 시험을 실패시킨다. 어느 후보 폴더에서 들었든 그 자리를
+ * 본다(폴더를 훑지 않는다).
+ */
+const listenedStates = () =>
+  Promise.all(
+    inject.listened.map(async (handle) => {
+      const client = net.connect(handle);
+      try {
+        return await within(
+          new Promise<"open" | "closed">((resolve, reject) => {
+            client.once("connect", () => resolve("open"));
+            client.once("error", (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT" || error.code === "ECONNREFUSED")
+                resolve("closed");
+              else reject(error);
+            });
+          }),
+          10_000,
+          `the owner connection ${handle} did not answer`
+        );
+      } finally {
         client.destroy();
-        resolve(false);
-      }, 2_000);
-      client.once("connect", () => {
-        clearTimeout(timer);
-        client.destroy();
-        resolve(true);
-      });
-      client.once("error", () => {
-        clearTimeout(timer);
-        resolve(false);
-      });
-    });
-    if (answered) open.push(name);
-  }
-  return open;
-}
+      }
+    })
+  );
 
 const privateFolder = (base: string) =>
   path.join(base, `babojubot-${process.getuid!()}`);
-/** 이 시험의 임시 폴더 안 어디서든(그 폴더 바로 아래와 이 사용자 전용 폴더) 연결을 받는 주인 소켓. */
-const listeningUnder = async (base: string) => [
-  ...(await listening(base)),
-  ...(await listening(privateFolder(base))),
-];
-
 describe.runIf(posix)(
   "the owner connection of an embedded Postgres folder",
   () => {
@@ -162,7 +167,7 @@ describe.runIf(posix)(
         startEmbeddedCluster({ dataDir, persistent: true })
       ).rejects.toBe(failure);
       inject.recordFails = undefined;
-      expect(await listeningUnder(base)).toEqual([]);
+      expect(await listenedStates()).toEqual(["closed"]);
     });
 
     // 권고: 한 프로세스가 같은 폴더를 동시에 두 번 열어도 주인 연결은 하나만 남는다. 앞 연결을 덮어 잃으면 내려놓을 때 닫지 못한다.
@@ -188,15 +193,15 @@ describe.runIf(posix)(
           message: expect.stringContaining("in use by a running process"),
         }),
       ]);
-      expect(await listeningUnder(base)).toHaveLength(1);
+      expect(await listenedStates()).toEqual(["open"]);
       await stops[0]!();
-      expect(await listeningUnder(base)).toEqual([]);
+      expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
     // STD-3: 임시 cluster는 Postgres를 멈춘 뒤 폴더 지우기가 실패해도 주인 연결을 닫는다. 폴더 지우기와 연결 닫기는 서로 독립이라,
     // 앞이 실패해도 뒤를 하고 실패는 모아 알린다. 남은 폴더는 주인이 없으니 다음 시작의 남은 cluster 정리가 가져가 지운다.
     it("releases its owner connection when removing its temporary folder fails after Postgres stopped", async () => {
-      const { base, cleanup } = await ownTemporaryFolder();
+      const { cleanup } = await ownTemporaryFolder();
       const options = await ephemeralCluster();
       const failure = Object.assign(
         new Error("injected: the temporary folder could not be removed"),
@@ -206,6 +211,8 @@ describe.runIf(posix)(
       // 시험의 멈춤이 기대한 대로 실패하면, 정리는 남은 폴더만 지운다(Postgres는 이미 멈췄다).
       let stopping: Promise<void> | undefined;
       cleanup.own(() => (stopping ??= cluster.stop()));
+      // 실패를 주입하기 전에 주인 연결이 실제로 열려 있음을 본다.
+      expect(await listenedStates()).toEqual(["open"]);
       inject.removeFails = failure;
       onTestFinished(() => {
         inject.removeFails = undefined;
@@ -214,7 +221,7 @@ describe.runIf(posix)(
       await expect(stopping).rejects.toThrow(failure.message);
       stopping = Promise.resolve();
       inject.removeFails = undefined;
-      expect(await listeningUnder(base)).toEqual([]);
+      expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
     // #286 항목 10: 후보 폴더의 검사를 통과해도 실제로 듣기가 실패할 수 있다(소켓을 지원하지 않는 볼륨 등). 듣기까지가 그 후보의
@@ -223,7 +230,6 @@ describe.runIf(posix)(
       const { base, cleanup } = await ownTemporaryFolder();
       const first = privateFolder(base);
       const next = privateFolder("/tmp");
-      inject.listens = [];
       inject.listenFails = (handle) =>
         path.dirname(handle) === first
           ? Object.assign(new Error(`injected: cannot listen at ${handle}`), {
@@ -250,7 +256,6 @@ describe.runIf(posix)(
     // 모든 후보에서 듣기가 실패하면 후보마다 그 원인을 함께 남기고 실패한다.
     it("names the failure of every folder when listening fails in all of them", async () => {
       const { base } = await ownTemporaryFolder();
-      inject.listens = [];
       inject.listenFails = (handle) =>
         Object.assign(new Error(`injected: cannot listen at ${handle}`), {
           code: "EOPNOTSUPP",
@@ -322,11 +327,25 @@ describe.runIf(posix)(
         ],
         { stdio: ["ignore", "pipe", "inherit"] }
       );
-      await new Promise<void>((resolve, reject) => {
-        holder.stdout!.once("data", () => resolve());
-        holder.once("exit", () => reject(new Error("the socket holder ended")));
+      // 띄운 직후 정리에 맡긴다: 준비 전에 멈추거나 시작하지 못해도 남지 않고, 준비 대기는 시작 실패(`error`)와 끝도 실패로 받는다.
+      const ended = awaitedLater(
+        new Promise<void>((resolve) => holder.once("exit", () => resolve()))
+      );
+      cleanup.own(async () => {
+        holder.kill("SIGKILL");
+        await within(ended, 10_000, "the socket holder did not end");
       });
-      const ended = new Promise((resolve) => holder.once("exit", resolve));
+      await within(
+        new Promise<void>((resolve, reject) => {
+          holder.stdout!.once("data", () => resolve());
+          holder.once("error", reject);
+          holder.once("exit", () =>
+            reject(new Error("the socket holder ended before it was ready"))
+          );
+        }),
+        30_000,
+        "the socket holder did not get ready"
+      );
       holder.kill("SIGKILL");
       await ended;
       expect(fs.lstatSync(stale).isSocket()).toBe(true);
