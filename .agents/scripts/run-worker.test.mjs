@@ -4,9 +4,15 @@
 // 연결로 본다(번호는 재사용된다, #259).
 // 실제 모델은 부르지 않고, PATH 맨 앞의 가짜 opencode가 세션 없이 멈춰 있다.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -26,6 +32,7 @@ const windows = process.platform === "win32";
 const fakeOpencode = `import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
+appendFileSync(process.env.FAKE_OPENCODE_ARGS, JSON.stringify(process.argv.slice(2)) + "\\n");
 const command = (code, pidFile) =>
   \`process.on("SIGTERM", () => {}); \${code} require("node:fs").writeFileSync(\${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);\`;
 if (process.env.FAKE_STUBBORN)
@@ -59,11 +66,15 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
   }
   const launches = path.join(dir, "launches");
   writeFileSync(launches, "");
+  // 띄워질 때마다 받은 인수를 한 줄(JSON)로 남긴다. 마지막 인수가 worker에 보낸 지침이다.
+  const launchArgs = path.join(dir, "launch-args");
+  writeFileSync(launchArgs, "");
   const commands = { stubborn, moved };
   const env = {
     ...process.env,
     PATH: `${dir}${path.delimiter}${process.env.PATH}`,
     FAKE_OPENCODE_LAUNCHES: launches,
+    FAKE_OPENCODE_ARGS: launchArgs,
   };
   for (const [name, wanted] of Object.entries(commands)) {
     if (!wanted) continue;
@@ -78,9 +89,12 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
     });
   }
   return {
+    dir,
     launches,
+    launchArgs,
     lifelines,
-    args: (limitMinutes) => [
+    /** `brief`를 주면 `--message` 대신 그 파일을 `--brief`로 넘긴다. */
+    args: (limitMinutes, brief) => [
       script,
       "--model",
       "fake/model",
@@ -88,8 +102,7 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
       "limit test",
       "--out",
       path.join(dir, "out.jsonl"),
-      "--message",
-      "hi",
+      ...(brief === undefined ? ["--message", "hi"] : ["--brief", brief]),
       "--limit",
       String(limitMinutes),
       // 세션 확인(60초)보다 한도·신호가 먼저 온다.
@@ -101,8 +114,8 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
 }
 
 /** run-worker를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다. */
-function runner(defer, f, limitMinutes) {
-  const child = spawn(process.execPath, f.args(limitMinutes), {
+function runner(defer, f, limitMinutes, brief) {
+  const child = spawn(process.execPath, f.args(limitMinutes, brief), {
     env: f.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -121,6 +134,93 @@ function runner(defer, f, limitMinutes) {
     exited: exited.then(([code]) => code),
   };
 }
+
+// 인수를 확인하지 못하면 아무것도 띄우지 않고 사용법과 함께 종료 코드 1로 끝난다. 인수는 Map에 받고(#284), 정한 이름만 받는다:
+// 모든 객체가 물려받는 이름(--constructor)도 모르는 인수다(#281 리뷰 REC-1과 같은 모양). 같은 인수를 두 번 주면 어느 값을 쓸지
+// 정하지 않고 거절한다. PATH를 비워 확인을 지나가더라도 opencode를 띄울 수 없게 한다.
+test("a runner refuses missing, repeated, conflicting and unknown arguments before it starts anything", (context) => {
+  const dir = mkdtempSync(path.join(tmpdir(), "babojubot-run-worker-args-"));
+  context.after(() => removeFolder(dir));
+  const out = path.join(dir, "out.jsonl");
+  const brief = path.join(dir, "brief.md");
+  writeFileSync(brief, "brief\n");
+  const base = ["--model", "fake/model", "--title", "t", "--out", out];
+  /** @type {[string, string[], RegExp][]} 경우, 인수, 알리는 문구 */
+  const cases = [
+    [
+      "no --out",
+      ["--model", "m", "--title", "t", "--message", "hi"],
+      /^--model, --title and --out are required$/m,
+    ],
+    [
+      "a name without a value",
+      [...base, "--message"],
+      /^bad argument: --message$/m,
+    ],
+    [
+      "both --brief and --message",
+      [...base, "--brief", brief, "--message", "hi"],
+      /^give exactly one of --brief and --message$/m,
+    ],
+    [
+      "neither --brief nor --message",
+      base,
+      /^give exactly one of --brief and --message$/m,
+    ],
+    [
+      "a missing brief file",
+      [...base, "--brief", path.join(dir, "missing.md")],
+      /^brief not found: .*missing\.md$/m,
+    ],
+    [
+      "a repeated argument",
+      [...base, "--message", "a", "--message", "b"],
+      /^--message given twice$/m,
+    ],
+    [
+      "an unknown argument",
+      [...base, "--message", "hi", "--nope", "x"],
+      /^bad argument: --nope$/m,
+    ],
+    ...["constructor", "toString", "__proto__", "hasOwnProperty"].map(
+      /** @returns {[string, string[], RegExp]} */
+      (name) => [
+        `the inherited name ${name}`,
+        [...base, "--message", "hi", `--${name}`, "x"],
+        new RegExp(`^bad argument: --${name}$`, "m"),
+      ]
+    ),
+  ];
+  for (const [shape, args, message] of cases) {
+    const result = spawnSync(process.execPath, [script, ...args], {
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+      env: { ...process.env, PATH: "" },
+    });
+    if (result.error) throw result.error;
+    assert.equal(result.status, 1, `${shape}: ${result.stderr}`);
+    assert.match(result.stderr, message, shape);
+    assert.match(result.stderr, /^usage: run-worker\.mjs /m, shape);
+    assert.equal(existsSync(out), false, `${shape}: started a worker`);
+  }
+});
+
+test("a runner sends the brief file's text as the worker's message", async () => {
+  await withCleanup(async (defer) => {
+    const f = await fixture(defer);
+    const brief = path.join(f.dir, "brief.md");
+    writeFileSync(brief, "첫 줄\n둘째 줄\n");
+    const run = runner(defer, f, 0.02, brief);
+    assert.equal(await run.exited, 4, run.output());
+    const launched = readFileSync(f.launchArgs, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.equal(launched.length, 1, run.output());
+    assert.equal(launched[0].at(-1), "첫 줄\n둘째 줄\n");
+  });
+});
 
 test("a worker that reaches --limit is not launched again and ends with exit code 4", async () => {
   await withCleanup(async (defer) => {
