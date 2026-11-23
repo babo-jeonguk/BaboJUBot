@@ -163,10 +163,25 @@ export function fileLogin(
           if (await shape.isStandIn(at)) {
             // 자리 표시인지 확인한 뒤 같은 이름에 그 조직의 컨테이너가 둔 파일은 확인한 것이 아니므로 지우지 않는다(#286 항목 8).
             const removal = await removeConfirmed(at, shape.isStandIn);
-            if (typeof removal === "object")
+            if (typeof removal === "object") {
               console.warn(
                 `[provider] a file put in place of the ${shape.label} login stand-in was kept as ${removal.keptAs}`
               );
+            } else
+              switch (removal) {
+                case "removed":
+                case "missing":
+                  break;
+                case "restored":
+                  console.warn(
+                    `[provider] a file put in place of the ${shape.label} login stand-in after it was checked was put back; it is not removed`
+                  );
+                  break;
+                default: {
+                  const unhandled: never = removal;
+                  throw new Error(`unhandled removal ${String(unhandled)}`);
+                }
+              }
           }
           return share(at);
         },

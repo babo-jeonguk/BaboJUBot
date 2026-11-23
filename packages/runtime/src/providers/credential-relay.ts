@@ -544,13 +544,13 @@ export function createCredentialRelay(options: {
 export const residueRefusal =
   "조직 제품 폴더에 로그인 기록이 남아 있어 격리 실행을 시작하지 않았습니다.";
 
-/** 남은 로그인을 확인하지 못한 이유. */
+/** 남은 로그인을 확인하지 못한 이유. `changed_while_checked`는 여는 사이 자리가 바뀌었거나 복사하는 사이 내용이 바뀐 경우다. */
 export type ResidueUnverified =
   | "path_unverifiable"
   | "not_regular"
   | "unreadable"
   | "too_large"
-  | "changed_while_copied";
+  | "changed_while_checked";
 /** 조직 제품 폴더의 남은 로그인 확인 결과: 남음, 없음, 확인하지 못함(이유). */
 export type ResidueCheck =
   | { state: "left" }
@@ -566,7 +566,7 @@ export const residueUnverifiedRefusal: Record<ResidueUnverified, string> = {
     "조직 제품 폴더의 로그인 기록을 읽지 못해 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 서버 기록에서 원인을 확인하세요.",
   too_large:
     "로그인 저장소가 확인할 수 있는 크기보다 커서 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다.",
-  changed_while_copied:
+  changed_while_checked:
     "로그인 저장소가 확인 중에 바뀌어 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 다시 실행하세요.",
 };
 

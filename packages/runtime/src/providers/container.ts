@@ -540,7 +540,14 @@ export async function runDocker(
     };
   const stdout = run.stdout.toString(),
     stderr = run.stderr.toString();
-  if (run.stopped) return { code: null, stdout, stderr, stopped: run.stopped };
+  if (run.stopped)
+    return {
+      code: null,
+      stdout,
+      stderr,
+      stopped: run.stopped,
+      ...(run.signal ? { signal: run.signal } : {}),
+    };
   return {
     code: run.code,
     stdout,
@@ -557,10 +564,11 @@ function dockerEnding(
   >
 ) {
   const reported = result.stderr.trim().slice(-300);
-  // 띄우지 못했거나 끝났음을 확인하지 못한 것은 이유가 stderr에 있다. "끝남 코드 없음"으로 접지 않는다.
+  // 끈 이유가 원인이고 신호는 덧붙이는 정보다. 띄우지 못했거나 끝났음을 확인하지 못한 것은 이유가 stderr에 있다. "끝남 코드 없음"으로 접지 않는다.
   let ending: string;
   if (result.code !== null) ending = `exit ${result.code}`;
-  else if (result.stopped) ending = `stopped: ${result.stopped}`;
+  else if (result.stopped)
+    ending = `stopped: ${result.stopped}${result.signal ? `, signal ${result.signal}` : ""}`;
   else if (result.signal) ending = `signal ${result.signal}`;
   else if (result.failure === "not-started") ending = "not started";
   else if (result.failure === "not-confirmed-stopped")

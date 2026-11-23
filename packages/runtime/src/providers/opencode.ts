@@ -310,7 +310,13 @@ async function openCodeLoginResidue(
             const copy = path.join(copyFolder, "opencode.db");
             const openedMain = await openRegularFile(folder.at("opencode.db"));
             if (openedMain === "missing") return { state: "none" };
-            if (typeof openedMain === "string")
+            if (openedMain === "changed") {
+              console.warn(
+                "[provider] the OpenCode login store changed place while it was opened; the remaining login could not be checked"
+              );
+              return { state: "unverified", reason: "changed_while_checked" };
+            }
+            if (openedMain === "not-regular")
               return { state: "unverified", reason: "not_regular" };
             main = openedMain;
             const mainCopy = await copyOpened(main, copy, residueCopyMaxBytes);
@@ -320,7 +326,13 @@ async function openCodeLoginResidue(
             const openedWal = await openRegularFile(
               folder.at("opencode.db-wal")
             );
-            if (openedWal === "not-regular" || openedWal === "changed")
+            if (openedWal === "changed") {
+              console.warn(
+                "[provider] the OpenCode login store changed place while it was opened; the remaining login could not be checked"
+              );
+              return { state: "unverified", reason: "changed_while_checked" };
+            }
+            if (openedWal === "not-regular")
               return { state: "unverified", reason: "not_regular" };
             let walCopy: { copied: number; digest: string } | undefined;
             if (openedWal !== "missing") {
@@ -349,7 +361,7 @@ async function openCodeLoginResidue(
               console.warn(
                 "[provider] the OpenCode login store changed while it was copied; the remaining login could not be checked"
               );
-              return { state: "unverified", reason: "changed_while_copied" };
+              return { state: "unverified", reason: "changed_while_checked" };
             }
             db = new DatabaseSync(copy);
             for (const table of ["credential", "account", "control_account"]) {

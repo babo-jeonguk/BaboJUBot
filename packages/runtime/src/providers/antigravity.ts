@@ -29,7 +29,11 @@ import {
   runProbe,
   saysLoginProblem,
 } from "./process.ts";
-import { clearOwnedConfig } from "./antigravity-config.ts";
+import {
+  clearOwnedConfig,
+  ConfigNotCleared,
+  describeCleanup,
+} from "./antigravity-config.ts";
 import { readRegularFile } from "./regular-file.ts";
 import type { ContainerSettings } from "./container.ts";
 import {
@@ -161,7 +165,7 @@ export async function cleanupAntigravityWorkspaces(dataDir: string) {
       () => clearOwnedConfig(shared),
       (error) =>
         console.warn(
-          `[provider] the Antigravity configuration of organization ${org.name} could not be cleared; unowned files are kept (${error instanceof Error ? error.message : failureCode(error)})`
+          `[provider] the Antigravity configuration of organization ${org.name} could not be cleared; unowned files are kept (${error instanceof ConfigNotCleared ? describeCleanup(error.reasons) : failureCode(error)})`
         )
     );
   }
