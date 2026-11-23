@@ -16,7 +16,8 @@
 // the supervisor is not available: the runner refuses to start a worker it could not stop), the brief could not be sent to the
 // worker (a run failure, not a model's error event), the call reached
 // --limit (a limit on the whole call, retries included; default 110 minutes, inside the parent's 2-hour background limit), or
-// the worker's process tree could not be confirmed stopped (no retry after that); 128+n stopped by signal n; 1 usage.
+// the worker's process tree could not be confirmed stopped (no retry after that), or the summary could not be written to
+// standard output; 128+n stopped by signal n; 1 usage.
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -399,8 +400,13 @@ export async function runWorker(argv: string[], clock: Clock): Promise<never> {
     "--- final report ---",
     report || "(none)",
   ];
-  console.log(lines.join("\n"));
-  process.exit(exitCode);
+  // The summary is the parent's only report of the call. Writes to a pipe are asynchronous on POSIX and process.exit() drops
+  // what is not written yet (Node docs, process "A note on process I/O"), so the runner exits once the write is done; a summary
+  // that could not be written ends the call as a run failure.
+  const reported = await new Promise<boolean>((resolve) =>
+    process.stdout.write(`${lines.join("\n")}\n`, (error) => resolve(!error))
+  );
+  process.exit(reported ? exitCode : 4);
 }
 
 if (import.meta.main) await runWorker(process.argv.slice(2), realClock);
