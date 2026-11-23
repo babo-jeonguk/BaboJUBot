@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { isTestFile, testFiles } from "../../scripts/test-files.mjs";
 import { editRules, isProtected } from "./worker-permissions.ts";
+import { openCodeSettingBlock, protectedReason } from "./protected-files.ts";
 
 const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -171,5 +172,52 @@ test("the code worker may edit product code in folders whose names hold a check 
   assert.deepEqual(
     settings.filter((file) => !isProtected(rules, file)),
     []
+  );
+});
+
+// OpenCode의 설정 거부 묶음은 보호할 파일의 정의(protected-files.ts)에서 만든다. 손으로 고쳐 둘이 어긋나면 실패한다.
+test("the check settings block of the permissions is the one generated from the definition", () => {
+  const definition = readFileSync(
+    path.join(root, ".opencode/agents/dev-worker.md"),
+    "utf8"
+  );
+  const block =
+    /# BEGIN generated check settings\n([\s\S]*?) {2}# END generated check settings\n/.exec(
+      definition
+    )?.[1];
+  assert.equal(
+    block,
+    openCodeSettingBlock(),
+    "regenerate it with node .agents/scripts/protected-files.ts"
+  );
+});
+
+// 사후 확인(정의를 경로 조각으로 판정)이 보호하는 파일은 OpenCode 권한도 막아야 한다. OpenCode의 `*`는 `/`를 넘어 두 판정은 다를 수
+// 있지만, 다른 쪽은 OpenCode가 더 막는 경우뿐이어야 한다(아래 나열).
+test("the permissions deny every file the definition protects, and deny more only below doubly reopened folders", () => {
+  const crafted = [
+    "packages/core/src/vitest.d/eslint.config.js",
+    "packages/core/src/eslint.config.d/rules.ts",
+    "packages/core/src/tsconfig-tools/tsconfig.json",
+    "packages/core/src/tsconfig-tools/data.json",
+    "packages/core/src/playwright.parts/vitest.alone.config.ts",
+    "packages/core/src/vitest.helpers/package.json",
+    "packages/core/src/vitest.helpers/run.ts",
+    "packages/core/src/.prettierrc.d/rules.ts",
+    "packages/core/src/scripts-like/run.ts",
+    "packages/core/src/.env.example",
+    "packages/core/src/vitest.a/b/vitest.c/d.config.ts",
+  ];
+  const all = [
+    ...new Set([...tracked, ...testFiles.flatMap(samples), ...crafted]),
+  ];
+  assert.deepEqual(
+    all.filter((file) => protectedReason(file) && !isProtected(rules, file)),
+    []
+  );
+  // OpenCode가 정의보다 더 막는 경우: 두 겹으로 다시 연 폴더 안(정의로는 제품 코드).
+  assert.deepEqual(
+    all.filter((file) => !protectedReason(file) && isProtected(rules, file)),
+    ["packages/core/src/vitest.a/b/vitest.c/d.config.ts"]
   );
 });

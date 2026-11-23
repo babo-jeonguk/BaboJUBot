@@ -562,8 +562,14 @@ test("format lists and format globs are built from codeFormats", () => {
     else if (/\.ya?ml$/.test(file))
       literals = valueStrings(parseDocument(text).toJS());
     else if (file.startsWith(".opencode/") && file.endsWith(".md"))
+      // 생성 구간은 codeFormats에서 만든 규칙이다(.agents/scripts/protected-files.ts, 같은지는 worker-permissions.test.ts가 본다).
       literals = valueStrings(
-        parseDocument(/^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "").toJS()
+        parseDocument(
+          (/^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "").replace(
+            / {2}# BEGIN generated check settings\n[\s\S]*? {2}# END generated check settings\n/,
+            ""
+          )
+        ).toJS()
       );
     else continue;
     for (const literal of literals)

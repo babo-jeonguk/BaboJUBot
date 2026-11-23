@@ -63,40 +63,110 @@ permissions:
   - action: edit
     resource: "*packages/db/src/*/*"
     effect: allow
-  # Check settings, judged by the file name (the path's last piece). OpenCode's `*` crosses `/`, so each name is denied at
-  # the root and below any folder (`*/name`), and where a `*` inside a name could reach into a folder (`eslint.config.d/x.ts`,
-  # `vitest.helpers/run.ts`) an allow right after reopens what lies below such a folder. Names without a `*` and whole
-  # settings folders come after the reopening allows, and secrets and test files are denied after this block, so they still
-  # win below such folders.
+  # Check settings by the names their tools read, and whole settings folders. Generated from the definition in
+  # .agents/scripts/protected-files.ts (`node .agents/scripts/protected-files.ts`); worker-permissions.test.ts keeps it
+  # equal. OpenCode's `*` crosses `/`, so names are exact where the tools read exact names, and where a name holds a `*`
+  # the folders it could reach into are reopened and the real settings below them denied again. Secrets and test files
+  # are denied after this block and still win below a reopened folder.
+  # BEGIN generated check settings
   - action: edit
-    resource: "eslint.config.*"
+    resource: "vitest.*.config.ts"
     effect: deny
   - action: edit
-    resource: "*/eslint.config.*"
+    resource: "*/vitest.*.config.ts"
     effect: deny
   - action: edit
-    resource: "eslint.config.*/*"
-    effect: allow
-  - action: edit
-    resource: "*/eslint.config.*/*"
-    effect: allow
-  - action: edit
-    resource: "vitest.config.*"
+    resource: "vitest.*.config.tsx"
     effect: deny
   - action: edit
-    resource: "*/vitest.config.*"
+    resource: "*/vitest.*.config.tsx"
     effect: deny
   - action: edit
-    resource: "vitest.*.config.*"
+    resource: "vitest.*.config.mts"
     effect: deny
   - action: edit
-    resource: "*/vitest.*.config.*"
+    resource: "*/vitest.*.config.mts"
     effect: deny
   - action: edit
-    resource: "vitest.workspace.*"
+    resource: "vitest.*.config.cts"
     effect: deny
   - action: edit
-    resource: "*/vitest.workspace.*"
+    resource: "*/vitest.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "vitest.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "vitest.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*.json"
     effect: deny
   - action: edit
     resource: "vitest.*/*"
@@ -105,70 +175,445 @@ permissions:
     resource: "*/vitest.*/*"
     effect: allow
   - action: edit
-    resource: "vite.config.*"
-    effect: deny
-  - action: edit
-    resource: "*/vite.config.*"
-    effect: deny
-  - action: edit
-    resource: "vite.config.*/*"
-    effect: allow
-  - action: edit
-    resource: "*/vite.config.*/*"
-    effect: allow
-  - action: edit
-    resource: "playwright.config.*"
-    effect: deny
-  - action: edit
-    resource: "*/playwright.config.*"
-    effect: deny
-  - action: edit
-    resource: "playwright.*.config.*"
-    effect: deny
-  - action: edit
-    resource: "*/playwright.*.config.*"
-    effect: deny
-  - action: edit
     resource: "playwright.*/*"
     effect: allow
   - action: edit
     resource: "*/playwright.*/*"
     effect: allow
   - action: edit
-    resource: ".prettierrc*"
-    effect: deny
-  - action: edit
-    resource: "*/.prettierrc*"
-    effect: deny
-  - action: edit
-    resource: ".prettierrc*/*"
-    effect: allow
-  - action: edit
-    resource: "*/.prettierrc*/*"
-    effect: allow
-  - action: edit
-    resource: ".lintstagedrc*"
-    effect: deny
-  - action: edit
-    resource: "*/.lintstagedrc*"
-    effect: deny
-  - action: edit
-    resource: ".lintstagedrc*/*"
-    effect: allow
-  - action: edit
-    resource: "*/.lintstagedrc*/*"
-    effect: allow
-  - action: edit
-    resource: "*tsconfig*.json"
-    effect: deny
-  - action: edit
     resource: "*tsconfig*/*"
     effect: allow
+  - action: edit
+    resource: "eslint.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/eslint.config.ts"
+    effect: deny
+  - action: edit
+    resource: "eslint.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/eslint.config.mts"
+    effect: deny
+  - action: edit
+    resource: "eslint.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/eslint.config.cts"
+    effect: deny
+  - action: edit
+    resource: "eslint.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/eslint.config.js"
+    effect: deny
+  - action: edit
+    resource: "eslint.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/eslint.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "eslint.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/eslint.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.ts"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.mts"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.cts"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.js"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.ts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.ts"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.tsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.tsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.mts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.mts"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.cts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.cts"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.js"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.js"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.jsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.mjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.cjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.json"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.json"
+    effect: deny
+  - action: edit
+    resource: "vite.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/vite.config.ts"
+    effect: deny
+  - action: edit
+    resource: "vite.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/vite.config.mts"
+    effect: deny
+  - action: edit
+    resource: "vite.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/vite.config.cts"
+    effect: deny
+  - action: edit
+    resource: "vite.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/vite.config.js"
+    effect: deny
+  - action: edit
+    resource: "vite.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/vite.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "vite.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/vite.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.ts"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.mts"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.cts"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.js"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.cjs"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.json"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.json"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.yml"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.yml"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.yaml"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.yaml"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.json5"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.json5"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.toml"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.toml"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.ts"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.ts"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.mts"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.mts"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.cts"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.cts"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.js"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.js"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.mjs"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc.cjs"
+    effect: deny
+  - action: edit
+    resource: "prettier.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/prettier.config.ts"
+    effect: deny
+  - action: edit
+    resource: "prettier.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/prettier.config.mts"
+    effect: deny
+  - action: edit
+    resource: "prettier.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/prettier.config.cts"
+    effect: deny
+  - action: edit
+    resource: "prettier.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/prettier.config.js"
+    effect: deny
+  - action: edit
+    resource: "prettier.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/prettier.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "prettier.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/prettier.config.cjs"
+    effect: deny
   - action: edit
     resource: ".prettierignore"
     effect: deny
   - action: edit
     resource: "*/.prettierignore"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.json"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.json"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.yaml"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.yaml"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.yml"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.yml"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.ts"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.ts"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.mts"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.mts"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.cts"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.cts"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.js"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.js"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.mjs"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc.cjs"
+    effect: deny
+  - action: edit
+    resource: "lint-staged.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/lint-staged.config.ts"
+    effect: deny
+  - action: edit
+    resource: "lint-staged.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/lint-staged.config.mts"
+    effect: deny
+  - action: edit
+    resource: "lint-staged.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/lint-staged.config.cts"
+    effect: deny
+  - action: edit
+    resource: "lint-staged.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/lint-staged.config.js"
+    effect: deny
+  - action: edit
+    resource: "lint-staged.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/lint-staged.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "lint-staged.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/lint-staged.config.cjs"
     effect: deny
   - action: edit
     resource: ".editorconfig"
@@ -181,18 +626,6 @@ permissions:
     effect: deny
   - action: edit
     resource: "*/.npmrc"
-    effect: deny
-  - action: edit
-    resource: ".gitignore"
-    effect: deny
-  - action: edit
-    resource: "*/.gitignore"
-    effect: deny
-  - action: edit
-    resource: ".gitattributes"
-    effect: deny
-  - action: edit
-    resource: "*/.gitattributes"
     effect: deny
   - action: edit
     resource: "package.json"
@@ -213,22 +646,277 @@ permissions:
     resource: "*/pnpm-workspace.yaml"
     effect: deny
   - action: edit
+    resource: ".gitignore"
+    effect: deny
+  - action: edit
+    resource: "*/.gitignore"
+    effect: deny
+  - action: edit
+    resource: ".gitattributes"
+    effect: deny
+  - action: edit
+    resource: "*/.gitattributes"
+    effect: deny
+  - action: edit
     resource: "paseo.json"
     effect: deny
   - action: edit
     resource: "*/paseo.json"
     effect: deny
   - action: edit
-    resource: ".claude/*"
+    resource: "vitest.*/*vitest.*.config.ts"
     effect: deny
   - action: edit
-    resource: "*/.claude/*"
+    resource: "*/vitest.*/*vitest.*.config.ts"
     effect: deny
   - action: edit
-    resource: "patches/*"
+    resource: "vitest.*/*vitest.*.config.tsx"
     effect: deny
   - action: edit
-    resource: "*/patches/*"
+    resource: "*/vitest.*/*vitest.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*vitest.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*vitest.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*vitest.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*vitest.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*vitest.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*vitest.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*vitest.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*vitest.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*vitest.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*vitest.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*vitest.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*vitest.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*playwright.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/*playwright.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/**tsconfig*.json"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*/**tsconfig*.json"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*vitest.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*vitest.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*playwright.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/*playwright.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/**tsconfig*.json"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*/**tsconfig*.json"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*vitest.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.ts"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.tsx"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.mts"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.cts"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.js"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.jsx"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.mjs"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*playwright.*.config.cjs"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/**tsconfig*.json"
     effect: deny
   - action: edit
     resource: ".github/*"
@@ -255,11 +943,24 @@ permissions:
     resource: "*/.opencode/*"
     effect: deny
   - action: edit
+    resource: ".claude/*"
+    effect: deny
+  - action: edit
+    resource: "*/.claude/*"
+    effect: deny
+  - action: edit
+    resource: "patches/*"
+    effect: deny
+  - action: edit
+    resource: "*/patches/*"
+    effect: deny
+  - action: edit
     resource: "scripts/*"
     effect: deny
   - action: edit
     resource: "*/scripts/*"
     effect: deny
+  # END generated check settings
   - action: edit
     resource: ".env*"
     effect: deny

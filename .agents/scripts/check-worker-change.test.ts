@@ -157,7 +157,8 @@ test("reports a deleted test", (t) => {
   assertProblem(result, /protected file changed: src\/a\.test\.ts/);
 });
 
-test("judges protected files by the base commit's permissions", (t) => {
+// The after-check does not read the permissions, so a change that loosens them cannot loosen the check either.
+test("does not let a change to the worker's permissions loosen what it may change", (t) => {
   const repo = repository(t);
   write(
     repo.cwd,
