@@ -61,13 +61,6 @@ export const intendedExclusions = [
       "표식 정리는 Linux·macOS의 감독 실행기가 한다(Windows는 묶음이 트리를 끄고 표식 정리가 없다)",
   },
   {
-    report: "process",
-    file: "packages/process/src/group.test.ts",
-    systems: ["windows"],
-    reason:
-      "프로세스 그룹은 Linux·macOS에만 있다(재시작 복구의 그룹 끄기, Windows는 감독 실행기의 묶음이 끈다)",
-  },
-  {
     report: "runtime",
     file: "packages/runtime/src/providers/process-leftovers.test.ts",
     systems: ["windows"],

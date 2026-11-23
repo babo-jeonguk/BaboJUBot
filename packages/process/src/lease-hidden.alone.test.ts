@@ -54,12 +54,13 @@ describe.runIf(process.platform === "linux")(
       const lease = randomUUID();
       const since = processStartTicks(process.pid)!;
       const pid = await hidden(lease);
-      await expect(cleanThroughSupervisor(lease, { since })).rejects.toThrow(
+      await expect(cleanThroughSupervisor({ lease, since })).rejects.toThrow(
         new RegExp(`could not be checked.*\\b${pid}\\b`)
       );
       expect(exited(pid)).toBe(false);
       // 실행 시도보다 먼저 있던 프로그램은 그 자손일 수 없다.
-      await cleanThroughSupervisor(lease, {
+      await cleanThroughSupervisor({
+        lease,
         since: processStartTicks(pid)! + 1,
       });
       expect(exited(pid)).toBe(false);
@@ -77,7 +78,7 @@ describe.runIf(process.platform === "linux")(
           "--scope",
           "--quiet",
         ]);
-        await cleanThroughSupervisor(lease, { since });
+        await cleanThroughSupervisor({ lease, since });
         expect(exited(pid)).toBe(false);
       }
     );
@@ -106,7 +107,7 @@ describe.runIf(process.platform === "linux")(
         },
         { timeout: 5000, interval: 25 }
       );
-      await cleanThroughSupervisor(randomUUID(), { since });
+      await cleanThroughSupervisor({ lease: randomUUID(), since });
     });
   }
 );

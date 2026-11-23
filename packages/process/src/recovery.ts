@@ -1,6 +1,6 @@
-// 서버 재시작 복구(@babojubot/runtime의 providers/recovery.ts)만 쓰는 좁은 입구: 그룹 끄기, 감독 실행기를 통한 표식 정리, 기록한
-// 프로세스의 신원 확인.
+// 서버 재시작 복구(@babojubot/runtime의 providers/recovery.ts)만 쓰는 좁은 입구: 감독 실행기를 통한 표식 정리, 기록한 프로세스와
+// 그 그룹의 신원·생존 확인(신호는 보내지 않는다).
 // 다른 곳은 띄울 때 launchTree가 돌려준 stop()으로 끈다. 이 입구를 가져오는 곳은 lint(product/package-import-scope)가 묶는다.
-export { groupAlive, identity, members, stopProcessGroup } from "./group.ts";
+export { groupAlive, identity, members } from "./group.ts";
 export { holdsLease, leaseVariable, processStartTicks } from "./lease.ts";
 export { cleanThroughSupervisor } from "./supervisor.ts";

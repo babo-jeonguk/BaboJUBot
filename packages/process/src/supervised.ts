@@ -305,10 +305,11 @@ export function superviseTree(
     /** 이 프로세스가 물려받아 새 트리에 넘길 표식이 든 환경. 준비의 시험 실행은 바깥 표식이 필요 없어 비운다. */
     inherited?: NodeJS.ProcessEnv;
     /**
-     * 재시작 복구의 정리(`cleanThroughSupervisor`): 프로그램을 띄우지 않고 `lease` 표식을 가진 프로그램만 끄게 한다. `since`는 그
-     * 실행 시도가 시작한 때(Linux: 부팅 뒤 clock tick, macOS: epoch 뒤 마이크로초)다.
+     * 재시작 복구의 정리(`cleanThroughSupervisor`): 프로그램을 띄우지 않고 `lease` 표식(빈 값이면 없음)을 가진 프로그램과 기록한
+     * 프로세스(`recorded`, 아직 그 시작 시각의 프로세스일 때)만 끄게 한다. `since`와 `recorded.start`의 단위는 Linux는 부팅 뒤 clock
+     * tick, macOS는 epoch 뒤 마이크로초다.
      */
-    clean?: { since?: number };
+    clean?: { since?: number; recorded?: { pid: number; start: number } };
   } = {}
 ): {
   tree: LaunchedTree;
@@ -507,8 +508,10 @@ export function superviseTree(
   // 프로그램이 받을 표식과 이 실행 시도의 표식을 넘기고 시작을 청한다. 실행기는 이것을 받은 뒤에 프로그램을 띄우고, 끌 때 이 실행
   // 시도의 표식을 가진 프로그램도 찾아 끈다(트리 밖으로 나간 것, 서버가 죽은 경우 포함). 정리만 청할 때는 프로그램이 없다.
   if (!clean) for (const [name, value] of leases) send(`env ${name}=${value}`);
-  send(`marker ${lease}`);
+  if (lease) send(`marker ${lease}`);
   if (clean?.since !== undefined) send(`since ${clean.since}`);
+  if (clean?.recorded)
+    send(`recorded ${clean.recorded.pid} ${clean.recorded.start}`);
   send(clean ? "clean" : "start");
 
   /**

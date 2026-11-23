@@ -32,12 +32,11 @@ vi.mock("@babojubot/process/recovery", async (original) => {
   return {
     ...real,
     cleanThroughSupervisor: async (
-      value: string,
-      options?: Parameters<typeof real.cleanThroughSupervisor>[1]
+      request: Parameters<typeof real.cleanThroughSupervisor>[0]
     ) => {
-      lease.stopped.push(value);
+      if (request.lease !== undefined) lease.stopped.push(request.lease);
       if (lease.fails) throw new Error("the supervisor's cleanup failed");
-      return real.cleanThroughSupervisor(value, options);
+      return real.cleanThroughSupervisor(request);
     },
   };
 });
@@ -153,26 +152,32 @@ const longRunning = () =>
   });
 const gone = (pid: number) => !processAlive(pid);
 
-it("stops a leftover process on systems without /proc", async () => {
-  const { root, directory } = await records();
-  const child = folders.ownChild(longRunning());
-  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
-  await once(child, "spawn");
+// 기록한 프로세스는 서버가 번호로 끄지 않고 감독 실행기에 정리를 청해, 실행기가 시작 시각을 다시 확인한 그 프로세스에만 신호한다
+// (#268 PR 2). 실행기는 자기 시스템의 시작 시각만 읽으므로, /proc가 없는 시스템(macOS)의 이 길은 그 시스템에서만 본다.
+it.runIf(process.platform === "darwin")(
+  "stops a leftover process on systems without /proc",
+  async () => {
+    const { root, directory } = await records();
+    const child = folders.ownChild(longRunning());
+    // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+    await once(child, "spawn");
 
-  await writeFile(
-    path.join(directory, `${child.pid}.json`),
-    JSON.stringify({
-      pid: child.pid,
-      lease: "lease",
-      started: processStartedAt(child.pid!, withoutProc),
-    })
-  );
-  const closed = new Promise((resolve) => child.on("close", resolve));
-  await recoverProviderProcesses(root, { platform: withoutProc });
-  await closed;
-  expect(gone(child.pid!)).toBe(true);
-  expect(await readdir(directory)).toEqual([]);
-}, 30_000);
+    await writeFile(
+      path.join(directory, `${child.pid}.json`),
+      JSON.stringify({
+        pid: child.pid,
+        lease: "lease",
+        started: processStartedAt(child.pid!, withoutProc),
+      })
+    );
+    const closed = new Promise((resolve) => child.on("close", resolve));
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    await closed;
+    expect(gone(child.pid!)).toBe(true);
+    expect(await readdir(directory)).toEqual([]);
+  },
+  30_000
+);
 
 // 시작 시각을 묻지 못하면 우리 것으로 보지 않고(끄지 않음) 그 원인을 남긴다. 실패하는 명령은 PATH 앞에 둔 가짜 ps가 맡는다.
 // 그사이 끝난 프로세스는 물을 것이 없으므로(답이다) 원인을 남기지 않는다.
@@ -363,7 +368,9 @@ it("keeps the record of a live process whose start cannot be read", async () => 
     defer(() => vi.unstubAllEnvs());
     await writeFile(
       path.join(directory, file),
-      JSON.stringify({ pid: child.pid, lease: "lease", started: 1 })
+      // 시작 시각은 이 시험의 뜻과 상관없다. 지금 시각으로 두어, 정리를 청받은 실행기가 그 뒤에 생긴 이 컴퓨터의 다른 프로그램을
+      // "확인하지 못함"으로 세지 않게 한다(1970년이면 거의 모든 프로그램이 그 뒤에 생겼다).
+      JSON.stringify({ pid: child.pid, lease: "lease", started: Date.now() })
     );
     vi.stubEnv("PATH", "");
     await recoverProviderProcesses(root, { platform: withoutProc });
@@ -525,7 +532,8 @@ it.each([
 it.skipIf(process.platform === "win32")(
   "still recovers the record shapes it has written before",
   async () => {
-    for (const fields of [{}, { started: 1 }]) {
+    // 시작 시각은 지금 시각으로 둔다(위 시험과 같은 까닭).
+    for (const fields of [{}, { started: Date.now() }]) {
       const { root, directory } = await records();
       const finished = spawnSync(process.execPath, ["-e", ""]).pid;
       const value = crypto.randomUUID();

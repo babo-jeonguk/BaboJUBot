@@ -51,7 +51,7 @@ it.skipIf(process.platform === "win32")(
       await program({ env: { OTHER: `x ${entry}` } }),
       await program(),
     ];
-    await cleanThroughSupervisor(lease);
+    await cleanThroughSupervisor({ lease });
     expect(exited(holder)).toBe(true);
     expect(exited(nested)).toBe(true);
     for (const pid of spared) expect(exited(pid)).toBe(false);

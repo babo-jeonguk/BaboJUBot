@@ -336,9 +336,10 @@ impl Reach for Leader {
 }
 
 /// The restart recovery's request when the run's server and supervisor both died: no program and no group, only what carries the
-/// run's marker (`clean`).
+/// run's marker and the process the run's record kept, when it is still that process (`clean`).
 struct Stray {
-    search: marked::Search,
+    search: Option<marked::Search>,
+    recorded: Option<(libc::pid_t, u64)>,
 }
 
 impl Reach for Stray {
@@ -353,7 +354,14 @@ impl Reach for Stray {
     }
 
     fn marked(&self) -> Result<marked::Found<marked::Held>, String> {
-        marked_outside(Some(&self.search), None)
+        let mut found = marked_outside(self.search.as_ref(), None)?;
+        if let Some((pid, start)) = self.recorded
+            && !found.holders.iter().any(|held| held.pid() == pid)
+            && let Some(held) = marked::hold(pid, start)?
+        {
+            found.holders.push(held);
+        }
+        Ok(found)
     }
 
     fn signal_group(&self, _signal: libc::c_int) -> Result<(), String> {
@@ -848,10 +856,11 @@ pub fn run() -> i32 {
         protocol::StartRequest::Start(start) => start,
         protocol::StartRequest::Clean(clean) => {
             let stray = Stray {
-                search: marked::Search {
-                    marker: clean.marker,
+                search: clean.marker.map(|marker| marked::Search {
+                    marker,
                     since: clean.since,
-                },
+                }),
+                recorded: clean.recorded,
             };
             let result = end_tree(&stray, protocol::DEFAULT_GRACE, protocol::END_LIMIT);
             control.write_message(&protocol::end_message(&result));

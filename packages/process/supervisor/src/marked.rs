@@ -60,7 +60,7 @@ fn stat_fields(stat: &str) -> Vec<&str> {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{Held, find, signal, start_of_self};
+pub use linux::{Held, find, hold, signal, start_of_self};
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -207,6 +207,33 @@ mod linux {
         Ok(found)
     }
 
+    /// The recorded process, held by a handle, when it is still the one that started at `start` (clock ticks after boot) and runs.
+    pub fn hold(pid: libc::pid_t, start: u64) -> Result<Option<Held>, String> {
+        let handle = match open_handle(pid) {
+            Ok(handle) => handle,
+            Err(error) if gone(&error) => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "a handle on process {pid} could not be opened: {error}"
+                ));
+            }
+        };
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if gone(&error) => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "the state of process {pid} could not be read: {error}"
+                ));
+            }
+        };
+        let fields = stat_fields(&stat);
+        let state = fields.first().copied().unwrap_or("");
+        let started = fields.get(19).and_then(|field| field.parse::<u64>().ok());
+        let same = started == Some(start) && state != "Z" && state != "X";
+        Ok((same && still_running(&handle)).then_some(Held { pid, handle }))
+    }
+
     /// Whether the handle still reaches a running process (for the tests).
     #[cfg(test)]
     pub fn reaches(held: &Held) -> bool {
@@ -275,7 +302,7 @@ mod linux {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{Held, find, signal, start_of_self};
+pub use macos::{Held, find, hold, signal, start_of_self};
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -292,6 +319,11 @@ mod macos {
         fn pid(&self) -> libc::pid_t {
             self.pid
         }
+    }
+
+    /// Another user's or a protected process (EPERM): not this user's program.
+    fn unreadable(error: &io::Error) -> bool {
+        matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES))
     }
 
     /// The process's BSD information, or `None` when it ended.
@@ -394,8 +426,11 @@ mod macos {
         };
         let pids = pids().map_err(|error| format!("the processes could not be listed: {error}"))?;
         for pid in pids.into_iter().filter(|&pid| pid > 0 && pid != me) {
-            let read = |pid| {
-                info(pid).map_err(|error| format!("process {pid} could not be read: {error}"))
+            // A process this user cannot read is not this user's (another user's, or protected): it is passed over.
+            let read = |pid| match info(pid) {
+                Ok(found) => Ok(found),
+                Err(error) if unreadable(&error) => Ok(None),
+                Err(error) => Err(format!("process {pid} could not be read: {error}")),
             };
             let Some(before) = read(pid)? else { continue };
             // Another user's program is not ours, and its environment is not this user's to read.
@@ -418,6 +453,25 @@ mod macos {
             }
         }
         Ok(found)
+    }
+
+    /// The recorded process when it is still the one that started at `start` (microseconds since the epoch). Records keep the start
+    /// to the second (`ps -o lstart`), so it is compared to the second.
+    pub fn hold(pid: libc::pid_t, start: u64) -> Result<Option<Held>, String> {
+        let now = match info(pid) {
+            Ok(now) => now,
+            // Not this user's process: not the recorded one.
+            Err(error) if unreadable(&error) => None,
+            Err(error) => return Err(format!("process {pid} could not be read: {error}")),
+        };
+        Ok(now
+            .filter(|now| {
+                now.pbi_status != libc::SZOMB && start_of(now) / 1_000_000 == start / 1_000_000
+            })
+            .map(|now| Held {
+                pid,
+                start: start_of(&now),
+            }))
     }
 
     pub fn signal(held: &Held, signal: libc::c_int) -> Result<(), String> {
@@ -521,7 +575,7 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::linux::reaches;
-    use super::{Holder, Search, find, signal};
+    use super::{Holder, Search, find, hold, signal, stat_fields};
     use std::process::{Command, Stdio};
 
     #[test]
@@ -559,5 +613,24 @@ mod linux_tests {
         );
         other.kill().expect("sleep can be killed");
         other.wait().expect("sleep is reaped");
+    }
+
+    #[test]
+    fn the_recorded_process_is_held_only_while_it_is_the_one_that_started_then() {
+        let mut child = Command::new("sleep").arg("30").spawn().expect("sleep runs");
+        let pid = child.id() as libc::pid_t;
+        let stat =
+            std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("its state can be read");
+        let start: u64 = stat_fields(&stat)[19]
+            .parse()
+            .expect("its start is a number");
+        assert!(hold(pid, start + 1).expect("it can be looked at").is_none());
+        let held = hold(pid, start)
+            .expect("it can be looked at")
+            .expect("it is that process");
+        assert_eq!(held.pid(), pid);
+        assert_eq!(signal(&held, libc::SIGKILL), Ok(()));
+        child.wait().expect("sleep is reaped");
+        assert!(hold(pid, start).expect("it can be looked at").is_none());
     }
 }

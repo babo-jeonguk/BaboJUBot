@@ -25,6 +25,9 @@
 //! both died. No program runs; the supervisor ends the programs that carry `marker`, answers `ended` or `left: <what>` and exits.
 //! `since <N>` before it says when that run began (Linux: clock ticks after boot; macOS: microseconds since the epoch), so a program
 //! of this user that started after it and whose environment cannot be read is reported as unverified instead of passed over.
+//! `recorded <PID> <START>` names the process the run's record kept (its supervisor, or before the supervisor its program), with its
+//! start time in the same measure: it is ended too when it is still that process (macOS compares to the second, as its records keep
+//! the start). A clean needs a marker, a recorded process, or both.
 //!
 //! Then the server writes `stop <grace ms>` (end the tree, report, exit), `kill-leader` (end the program only, as a crash would)
 //! and `interrupt` (SIGINT to the program's process group; nothing on Windows). The end of the channel means the server is gone and
@@ -168,11 +171,13 @@ pub struct Start {
     pub waiting: Vec<String>,
 }
 
-/// The restart recovery's request: end what carries `marker`; `since` is when that run began. Windows refuses it.
+/// The restart recovery's request: end what carries `marker` and the `recorded` process (its id and start time); `since` is when that
+/// run began. Windows refuses it.
 #[cfg_attr(windows, allow(dead_code))]
 pub struct Clean {
-    pub marker: String,
+    pub marker: Option<String>,
     pub since: Option<u64>,
+    pub recorded: Option<(i32, u64)>,
 }
 
 /// How reading the start request ended.
@@ -210,6 +215,7 @@ pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) ->
     let mut env = Vec::new();
     let mut marker = None;
     let mut since = None;
+    let mut recorded = None;
     loop {
         if termination.requested() {
             return StartRequest::Ended;
@@ -234,10 +240,16 @@ pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) ->
                 });
             }
             if message == "clean" {
-                let Some(marker) = marker else {
-                    return StartRequest::Refused("clean came without the run's marker".to_owned());
-                };
-                return StartRequest::Clean(Clean { marker, since });
+                if marker.is_none() && recorded.is_none() {
+                    return StartRequest::Refused(
+                        "clean came without the run's marker or a recorded process".to_owned(),
+                    );
+                }
+                return StartRequest::Clean(Clean {
+                    marker,
+                    since,
+                    recorded,
+                });
             }
             if let Some(entry) = message.strip_prefix("env ") {
                 match environment_entry(entry) {
@@ -248,6 +260,21 @@ pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) ->
                 match marker_value(value) {
                     Ok(value) => marker = Some(value),
                     Err(why) => return StartRequest::Refused(why),
+                }
+            } else if let Some(value) = message.strip_prefix("recorded ") {
+                let parsed = value
+                    .split_once(' ')
+                    .and_then(|(pid, start)| {
+                        Some((pid.parse::<i32>().ok()?, start.parse::<u64>().ok()?))
+                    })
+                    .filter(|&(pid, _)| pid > 1);
+                match parsed {
+                    Some(pair) => recorded = Some(pair),
+                    None => {
+                        return StartRequest::Refused(format!(
+                            "\"recorded {value}\" is not a process id above 1 and a start time"
+                        ));
+                    }
                 }
             } else if let Some(value) = message.strip_prefix("since ") {
                 match value.parse::<u64>() {
@@ -612,8 +639,16 @@ mod tests {
         };
         match read(&["marker abc", "since 12", "clean"]) {
             StartRequest::Clean(clean) => {
-                assert_eq!(clean.marker, "abc");
+                assert_eq!(clean.marker.as_deref(), Some("abc"));
                 assert_eq!(clean.since, Some(12));
+                assert_eq!(clean.recorded, None);
+            }
+            _ => panic!("the clean request was not read"),
+        }
+        match read(&["recorded 4242 77", "clean"]) {
+            StartRequest::Clean(clean) => {
+                assert_eq!(clean.marker, None);
+                assert_eq!(clean.recorded, Some((4242, 77)));
             }
             _ => panic!("the clean request was not read"),
         }
@@ -625,6 +660,8 @@ mod tests {
             &["clean"][..],
             &["marker ", "clean"],
             &["since soon", "marker abc", "clean"],
+            &["recorded 1 5", "clean"],
+            &["recorded 42", "clean"],
         ] {
             assert!(
                 matches!(read(refused), StartRequest::Refused(_)),

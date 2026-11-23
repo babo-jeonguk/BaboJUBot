@@ -23,7 +23,6 @@ import {
   identity,
   members,
   cleanThroughSupervisor,
-  stopProcessGroup,
 } from "@babojubot/process/recovery";
 const boot = () =>
   readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
@@ -183,63 +182,78 @@ function processAlive(pid: number) {
     return (e as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
-/** 우리 것인지 확인하지 못하고 남긴 것. 표식 정리 뒤에도 남았으면 기록을 남긴다. */
-type Unidentified = { remains: () => boolean; reason: string };
-/** /proc가 없는 시스템의 그룹 복구. 기록한 시작 시각과 같은 프로세스만 우리 것으로 보고 끝낸다. */
-async function recoverWithoutProc(
+/**
+ * 기록한 프로세스(실행기, 감독 실행기 전의 기록은 프로그램 대표)를 보는 법. 서버는 번호에 신호를 보내지 않는다(#268 PR 2): 기록과
+ * 시작 시각이 같은 프로세스는 `ours`로 실행기의 정리 요청에 넣어 실행기가 그 프로세스에만 신호하고(Linux·macOS는 표식을 가진
+ * 프로그램도), 정리 뒤 `settle`이 그것(과 그 그룹)이 끝났는지 상한 안에서 본다. Windows는 그 프로세스가 쥔 묶음이 닫히며 트리가 끝난다.
+ */
+type Recorded = {
+  ours?: { pid: number; start: number };
+  settle: () => Promise<void>;
+};
+const nothingLeft: Recorded = { settle: async () => {} };
+/** 기록한 프로세스가 끝나기를 기다리는 상한. 살아 있는 실행기의 끄기(유예 2초, 마지막 확인 10초, 확인하지 못한 것 2초)보다 길다. */
+const recordedEndLimitMs = 20_000;
+/** `running`이 거짓이 될 때까지 상한 안에서 기다린다. 그래도 돌면 사람이 정리해야 한다고 던진다. */
+const untilEnded = (
+  running: () => boolean,
+  what: string,
+  ours?: Recorded["ours"]
+): Recorded => ({
+  ours,
+  settle: async () => {
+    const deadline = Date.now() + recordedEndLimitMs;
+    while (running()) {
+      if (Date.now() >= deadline)
+        throw new Error(`${what}; manual cleanup required`);
+      await delay(250);
+    }
+  },
+});
+/** 남은 것이 우리 것인지 확인하지 못했다. 표식 정리 뒤에도 남았으면 기록을 남긴다. */
+const unidentified = (remains: () => boolean, reason: string): Recorded => ({
+  settle: async () => {
+    if (remains()) throw new Error(`${reason}; manual cleanup required`);
+  },
+});
+/** /proc가 없는 시스템의 기록. 기록한 시작 시각과 같은 프로세스만 우리 것으로 보고 끝나기를 기다린다. */
+function recordedWithoutProc(
   saved: { pid: number; started?: number },
   platform: NodeJS.Platform
-): Promise<Unidentified | undefined> {
-  if (!processAlive(saved.pid)) {
+): Recorded {
+  if (!processAlive(saved.pid))
     // 대표는 끝났는데 자식이 남았으면 번호만으로 우리 것인지 알 수 없다. 표식으로 확인되는 것만 끈다.
     return platform !== "win32" && groupAlive(saved.pid)
-      ? {
-          remains: () => groupAlive(saved.pid),
-          reason: "Cannot identify the remaining process group",
-        }
-      : undefined;
-  }
+      ? unidentified(
+          () => groupAlive(saved.pid),
+          "Cannot identify the remaining process group"
+        )
+      : nothingLeft;
   // 살아 있는데 시작 시각을 모르거나 기록에 없으면 번호만으로 우리 것인지 알 수 없다. 끝난 것으로 치지 않고 표식으로 확인되는 것만 끈다.
   const started = processStartedAt(saved.pid, platform);
   if (started === undefined || saved.started === undefined)
-    return {
-      remains: () => processAlive(saved.pid),
-      reason: "Cannot identify a remaining process",
-    };
-  if (started !== saved.started) return;
-  if (platform === "win32") {
-    // 기록한 프로세스(번호와 시작 시각이 같은 것)의 트리를 끄고, 그 프로세스가 끝난 것을 상한 안에서 확인한다. 이미 끝나
-    // taskkill이 실패할 수 있으므로 실패는 남기고 아래 확인으로 판단한다. 부모가 먼저 끝난 자손은 Windows가 번호로 찾을 수 없다.
-    continueAfterFailure(
-      () =>
-        execFileSync("taskkill", ["/F", "/T", "/PID", String(saved.pid)], {
-          windowsHide: true,
-          stdio: "ignore",
-          timeout: helperCommandTimeoutMs,
-          killSignal: "SIGKILL",
-        }),
-      (error) =>
-        console.warn(
-          `[provider] taskkill of a recorded process did not succeed; checking whether it ended (${failureCode(error)})`
-        )
+    return unidentified(
+      () => processAlive(saved.pid),
+      "Cannot identify a remaining process"
     );
-    const deadline = Date.now() + helperCommandTimeoutMs;
-    // 산 프로세스의 번호는 그 프로세스가 끝나기 전에는 바뀌지 않는다. 번호가 남아 있으면 시작 시각으로 같은 프로세스인지 보고,
-    // 시작 시각을 읽지 못하면 끝났다고 치지 않는다.
-    const sameProcess = () => {
-      if (!processAlive(saved.pid)) return false;
-      const now = processStartedAt(saved.pid, platform);
-      return now === undefined || now === saved.started;
-    };
-    while (sameProcess()) {
-      if (Date.now() >= deadline)
-        throw new Error("Recorded process did not stop");
-      await delay(250);
+  if (started !== saved.started) return nothingLeft;
+  // 산 프로세스의 번호는 그 프로세스가 끝나기 전에는 바뀌지 않는다. 번호가 남아 있으면 시작 시각으로 같은 프로세스인지 보고,
+  // 시작 시각을 읽지 못하면 끝났다고 치지 않는다. macOS는 그 그룹도 끝나야 한다(감독 실행기 전의 기록은 프로그램 대표의 그룹이다).
+  const sameProcess = () => {
+    if (!processAlive(saved.pid)) return false;
+    const now = processStartedAt(saved.pid, platform);
+    return now === undefined || now === saved.started;
+  };
+  // 실행기는 기록의 시작 시각을 자기 시스템의 단위로 받는다. Windows는 밀리초 그대로, macOS 기록은 `ps`의 초 단위를 밀리초로 둔
+  // 것이라 마이크로초로 바꾸고 실행기가 초까지 견준다.
+  return untilEnded(
+    () => sameProcess() || (platform !== "win32" && groupAlive(saved.pid)),
+    "Recorded process did not stop",
+    {
+      pid: saved.pid,
+      start: platform === "win32" ? saved.started : saved.started * 1000,
     }
-    return;
-  }
-  // 기록을 남긴 프로세스는 그룹 대표로 띄웠다. 끝났는지 확인하고 돌아온다.
-  await stopProcessGroup(saved.pid);
+  );
 }
 export async function recoverProviderProcesses(
   dataDir: string,
@@ -314,19 +328,23 @@ function readRecord(file: string) {
 async function recoverRecord(saved: ProcessRecord, platform: NodeJS.Platform) {
   // 다른 부팅의 기록이 가리키는 프로세스는 이미 없다.
   if (platform === "linux" && saved.boot !== boot()) return;
-  const unidentified =
+  // 우리 것인지는 정리 전에 본다(표식 정리가 표식을 가진 구성원을 끈 뒤에는 그것으로 확인할 수 없다).
+  const recorded =
     platform === "linux"
-      ? await recoverLinuxGroup(saved)
-      : await recoverWithoutProc(saved, platform);
-  // 그룹 밖(새 세션)으로 나간 자손도 이 실행 시도의 표식을 가진다. 감독 실행기에 정리만 청해 표식으로 찾아 끈다(#219, #268 PR 2):
-  // 신호는 표식을 확인한 바로 그 프로세스에만 간다. Windows는 묶음이 끈다.
-  if (saved.lease && platform !== "win32")
+      ? await recordedLinuxGroup(saved)
+      : recordedWithoutProc(saved, platform);
+  // 그룹 밖(새 세션)으로 나간 자손도 이 실행 시도의 표식을 가진다. 감독 실행기에 정리만 청해 표식으로 찾아 끄고, 기록과 시작 시각이
+  // 같은 기록한 프로세스도 함께 끈다(#219, #268 PR 2): 신호는 확인한 바로 그 프로세스에만 간다. Windows는 표식 정리가 없다(묶음이
+  // 트리를 끈다).
+  const lease = platform === "win32" ? undefined : saved.lease;
+  if (lease || recorded.ours)
     // 기록한 실행기의 시작 시각 뒤에 생긴, 환경을 읽을 수 없는 이 사용자의 프로그램은 우리 것일 수 있어 확인하지 못한 것으로 남는다.
-    await cleanThroughSupervisor(saved.lease, {
+    await cleanThroughSupervisor({
+      lease,
       since: runStart(saved, platform),
+      recorded: recorded.ours,
     });
-  if (unidentified?.remains())
-    throw new Error(`${unidentified.reason}; manual cleanup required`);
+  await recorded.settle();
 }
 /**
  * 기록한 실행기의 시작 시각을 실행기가 견주는 단위로. Linux는 부팅 뒤 clock tick(기록의 `start`), macOS는 epoch 뒤 마이크로초(기록의
@@ -341,9 +359,8 @@ function runStart(saved: ProcessRecord, platform: NodeJS.Platform) {
         : saved.started * 1000;
   return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
-async function recoverLinuxGroup(
-  saved: ProcessRecord
-): Promise<Unidentified | undefined> {
+/** Linux의 기록: 기록한 프로세스의 그룹. 시작 시각이 같거나 구성원이 이 표식을 가지면 우리 것이고, 그 그룹이 끝나기를 기다린다. */
+async function recordedLinuxGroup(saved: ProcessRecord): Promise<Recorded> {
   let leader: ReturnType<typeof identity> | undefined;
   try {
     leader = identity(saved.pid);
@@ -357,14 +374,20 @@ async function recoverLinuxGroup(
       memberHoldsLease = true;
       break;
     }
-  if (
-    (leader && leader.start === saved.start && leader.group === saved.pid) ||
-    memberHoldsLease
-  )
-    await stopProcessGroup(saved.pid);
-  else if (!leader && remaining.length)
-    return {
-      remains: () => members(saved.pid).length > 0,
-      reason: "Cannot authenticate an orphaned provider process group",
-    };
+  const ours =
+    leader !== undefined &&
+    leader.start === saved.start &&
+    leader.group === saved.pid;
+  if (ours || memberHoldsLease)
+    return untilEnded(
+      () => members(saved.pid).length > 0,
+      "Recorded process group did not stop",
+      ours ? { pid: saved.pid, start: Number(saved.start) } : undefined
+    );
+  if (!leader && remaining.length)
+    return unidentified(
+      () => members(saved.pid).length > 0,
+      "Cannot authenticate an orphaned provider process group"
+    );
+  return nothingLeft;
 }
