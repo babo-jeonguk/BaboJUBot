@@ -52,6 +52,7 @@ export type EmbeddedFailureCode =
   | "EMBEDDED_OWNER_NO_ANSWER"
   | "EMBEDDED_OWNER_UNCHECKED"
   | "EMBEDDED_IN_USE"
+  | "EMBEDDED_OWNER_CLOSE_FAILED"
   | "EMBEDDED_OWNERSHIP_CONTESTED";
 export class EmbeddedPostgresFailure extends Error {
   override readonly name = "EmbeddedPostgresFailure";
@@ -146,7 +147,7 @@ export async function startEmbeddedCluster(
     // 손대지 않고, 다음 시작이 같은 판단을 다시 할 수 있게 치운 죽은 주인을 되돌린다. 정리가 실패해도 원래 오류를 덮지 않는다.
     try {
       if (!persistent && !readPidFile(dataDir)) await removeTemporary(dataDir);
-      else releaseOwner(dataDir, lease, lease.previous);
+      else await releaseOwner(dataDir, lease, lease.previous);
     } catch (cleanupError) {
       console.error(
         `[db] cleaning up after a failed start failed (${failureCode(cleanupError)})`
@@ -177,7 +178,7 @@ export async function startEmbeddedCluster(
       (mode) => (stopPhase = `stopping Postgres (${mode})`)
     );
     process.off("exit", stopOnExit);
-    if (persistent) releaseOwner(dataDir, lease);
+    if (persistent) await releaseOwner(dataDir, lease);
     else {
       stopPhase = "removing its temporary folder";
       await removeTemporary(dataDir);
@@ -756,12 +757,27 @@ async function holdConnection(dir: string) {
   return handle;
 }
 
-/** 이 주인 기록 폴더의 주인 연결을 닫는다(소켓 파일도 함께 지워진다). 쥐지 않았으면 아무것도 하지 않는다. */
-function dropConnection(dir: string) {
+/**
+ * 이 주인 기록 폴더의 주인 연결을 닫고, 닫힌 것을 확인한다(소켓 파일도 함께 지워진다). 쥐지 않았으면 아무것도 하지 않는다. 닫기가
+ * 실패하면 그 원인과 함께 `EMBEDDED_OWNER_CLOSE_FAILED`로 던진다(#286). 이 서버는 받은 연결을 바로 끊으므로 닫기는 곧 끝난다.
+ */
+async function dropConnection(dir: string) {
   const connection = held.get(dir);
   if (!connection) return;
   held.delete(dir);
-  connection.server.close();
+  await new Promise<void>((resolve, reject) =>
+    connection.server.close((error) =>
+      error
+        ? reject(
+            new EmbeddedPostgresFailure(
+              "EMBEDDED_OWNER_CLOSE_FAILED",
+              `the owner connection ${connection.handle} could not be closed`,
+              { cause: error }
+            )
+          )
+        : resolve()
+    )
+  );
 }
 
 /** 주인 연결에 닿는지 보는 상한. 같은 컴퓨터의 연결이라 곧 답한다. */
@@ -900,20 +916,34 @@ async function takeOwnership(
       "EMBEDDED_OWNERSHIP_CONTESTED",
       `could not take ownership of ${dataDir}`
     );
-  } finally {
-    if (opened) dropConnection(dir);
+  } catch (error) {
+    // 이번에 연 연결만 닫는다. 닫기가 실패해도 주인이 되지 못한 원래 실패를 덮지 않고, 닫기 실패는 원인 코드로 남긴다.
+    if (opened)
+      await dropConnection(dir).catch((closeError: unknown) =>
+        console.error(
+          `[db] the owner connection opened for ${dataDir} could not be closed after taking ownership failed (${failureCode(closeError)})`
+        )
+      );
+    throw error;
   }
 }
 
-/** 주인을 내려놓는다. 다음 번호에 내려놓음을 남기거나, 시작하지 못했을 때는 치운 죽은 주인을 되돌려 남긴다. 주인 연결도 닫는다. */
-function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
+/**
+ * 주인을 내려놓는다. 다음 번호에 내려놓음을 남기거나, 시작하지 못했을 때는 치운 죽은 주인을 되돌려 남긴다. 주인 연결도 닫고 닫힌 것을
+ * 확인한다. 기록 남기기와 연결 닫기는 서로 독립이라 앞이 실패해도 뒤를 하고, 실패는 모아 던진다.
+ */
+async function releaseOwner(dataDir: string, lease: Lease, restore?: Owner) {
   const dir = ownerDir(dataDir);
-  try {
-    if (claim(dir, lease.generation + 1, restore ?? { released: true }))
-      removeQuietly(path.join(dir, String(lease.generation)));
-  } finally {
-    dropConnection(dir);
-  }
+  await attemptAll(
+    [
+      () => {
+        if (claim(dir, lease.generation + 1, restore ?? { released: true }))
+          removeQuietly(path.join(dir, String(lease.generation)));
+      },
+      () => dropConnection(dir),
+    ],
+    `the owner of ${dataDir} could not be released`
+  );
 }
 
 function readOwnerFile(file: string): Owner | undefined {
@@ -1027,6 +1057,15 @@ async function removeTemporaryLeftovers() {
         )
     );
     if (!lease) continue;
+    // 남은 것 치우기는 덤이다. 내려놓기가 실패해도 원인 코드를 남기고 다음 항목으로 간다.
+    const release = () =>
+      continueAfterFailure(
+        () => releaseOwner(dataDir, lease, lease.previous),
+        (error) =>
+          console.error(
+            `[db] the leftover temporary cluster ${dataDir} could not be released; it is left (${failureCode(error)})`
+          )
+      );
     try {
       const { pg_ctl: pgCtl } = await getBinaries();
       const running = readPidFile(dataDir);
@@ -1035,7 +1074,7 @@ async function removeTemporaryLeftovers() {
           console.warn(
             `[db] left temporary Postgres in ${dataDir}: could not confirm it serves that folder`
           );
-          releaseOwner(dataDir, lease, lease.previous);
+          await release();
           continue;
         }
         await stopCluster(pgCtl, dataDir, leftoverStopSeconds, true);
@@ -1045,7 +1084,7 @@ async function removeTemporaryLeftovers() {
       console.warn(
         `[db] could not remove temporary Postgres left in ${dataDir} (${failureCode(error)})`
       );
-      releaseOwner(dataDir, lease, lease.previous);
+      await release();
     }
   }
 }
