@@ -30,6 +30,8 @@ const inject = vi.hoisted(() => ({
   listens: [] as { handle: string; failure?: Error }[],
   /** 제품이 경로에서 실제로 듣기 시작한 자리(듣기가 성공해 알린 뒤에 남긴다). 그 자리가 닫혔는지는 이 목록으로 본다. */
   listened: [] as string[],
+  /** 경로에서 들은 서버의 닫기가 실제로 닫힌 뒤 이 오류로 끝난다(#286). */
+  closeFails: undefined as Error | undefined,
 }));
 vi.mock("node:net", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:net")>();
@@ -51,6 +53,12 @@ vi.mock("node:net", async (importOriginal) => {
         process.nextTick(() => server.emit("error", failure));
         return server;
       }
+      // 이 서버의 닫기는 실제로 닫은 뒤, 실패를 주입했으면 그 오류로 답한다.
+      const close = server.close.bind(server);
+      server.close = ((done?: (error?: Error) => void) =>
+        close((error) =>
+          done?.(inject.closeFails ?? error)
+        )) as typeof server.close;
       return listen(handle, () => {
         inject.listened.push(handle);
         (callback as () => void)();
@@ -83,6 +91,7 @@ vi.mock("node:fs", async (importOriginal) => {
 const posix = process.platform !== "win32";
 
 beforeEach(() => {
+  inject.closeFails = undefined;
   inject.listens = [];
   inject.listened = [];
 });
@@ -223,6 +232,78 @@ describe.runIf(posix)(
       inject.removeFails = undefined;
       expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
+
+    // #286: 주인 연결의 닫기는 끝날 때까지 기다리고 그 실패를 받는다. 닫기를 기다리지 않으면 닫기 실패가 사라지고, 내려놓음이 끝난
+    // 뒤에도 연결이 아직 열려 있을 수 있다. 영구 cluster의 멈춤은 그 실패로 끝난다(Postgres는 이미 멈췄다).
+    it("fails a persistent stop with the owner connection's close failure", async () => {
+      const { base, cleanup } = await ownTemporaryFolder();
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      const cluster = await startEmbeddedCluster({ dataDir, persistent: true });
+      let stopped = false;
+      cleanup.own(() => (stopped ? undefined : cluster.stop()));
+      const failure = Object.assign(
+        new Error("injected: the owner connection could not be closed"),
+        { code: "EIO" }
+      );
+      inject.closeFails = failure;
+      const stopping = cluster.stop();
+      stopped = true;
+      await expect(stopping).rejects.toMatchObject({
+        code: "EMBEDDED_OWNER_CLOSE_FAILED",
+        cause: failure,
+      });
+      inject.closeFails = undefined;
+      expect(await listenedStates()).toEqual(["closed"]);
+    }, 60_000);
+
+    it("fails a temporary stop with the owner connection's close failure", async () => {
+      const { cleanup } = await ownTemporaryFolder();
+      const options = await ephemeralCluster();
+      const cluster = await startEmbeddedCluster(options);
+      let stopped = false;
+      cleanup.own(() => (stopped ? undefined : cluster.stop()));
+      const failure = Object.assign(
+        new Error("injected: the owner connection could not be closed"),
+        { code: "EIO" }
+      );
+      inject.closeFails = failure;
+      const stopping = cluster.stop();
+      stopped = true;
+      await expect(stopping).rejects.toMatchObject({
+        code: "EMBEDDED_OWNER_CLOSE_FAILED",
+        cause: failure,
+      });
+      inject.closeFails = undefined;
+      expect(await listenedStates()).toEqual(["closed"]);
+    }, 60_000);
+
+    // 주인 기록을 쓰지 못해 이번에 연 연결을 닫을 때 그 닫기도 실패하면, 원래 실패를 그대로 던지고 닫기 실패는 원인 코드로 남긴다.
+    it("keeps the record failure and logs the close failure of the connection it opened", async () => {
+      const { base } = await ownTemporaryFolder();
+      const failure = Object.assign(
+        new Error("injected: the owner record could not be written"),
+        { code: "EIO" }
+      );
+      inject.recordFails = failure;
+      inject.closeFails = Object.assign(
+        new Error("injected: the owner connection could not be closed"),
+        { code: "EIO" }
+      );
+      onTestFinished(() => {
+        inject.recordFails = undefined;
+      });
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      onTestFinished(() => logged.mockRestore());
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      await expect(
+        startEmbeddedCluster({ dataDir, persistent: true })
+      ).rejects.toBe(failure);
+      expect(logged.mock.calls).toEqual([
+        [expect.stringContaining("(EMBEDDED_OWNER_CLOSE_FAILED)")],
+      ]);
+      inject.closeFails = undefined;
+      expect(await listenedStates()).toEqual(["closed"]);
+    });
 
     // #286 항목 10: 후보 폴더의 검사를 통과해도 실제로 듣기가 실패할 수 있다(소켓을 지원하지 않는 볼륨 등). 듣기까지가 그 후보의
     // 시도라서, 실패하면 다음 후보(`/tmp`)에서 듣는다.
