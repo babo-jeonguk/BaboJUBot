@@ -10,7 +10,13 @@ import {
   orIfUnreadable,
 } from "@babojubot/contracts";
 
-const [directory, ...command] = process.argv.slice(2);
+const [directory, program, ...programArgs] = process.argv.slice(2);
+if (directory === undefined || program === undefined) {
+  console.error(
+    "Usage: node scripts/live/record-cli.mjs <recording folder> <program> [arguments...]"
+  );
+  process.exit(2);
+}
 const startedAt = Date.now();
 const log = createWriteStream(
   path.join(directory, `${startedAt}-${process.pid}.jsonl`),
@@ -20,14 +26,14 @@ const record = (kind, value) =>
   log.write(
     JSON.stringify({ ms: Date.now() - startedAt, kind, ...value }) + "\n"
   );
-record("start", { argv: command.slice(1), cwd: process.cwd() });
+record("start", { argv: programArgs, cwd: process.cwd() });
 
 // 감독 실행기 없이는 띄우지 않는다. 준비하지 못하면 launchTree가 그 이유로 거절한다.
 await prepareSupervisor();
 // 실제 프로그램은 공용 실행으로 띄운다. 자기 그룹(Windows는 묶음)에 들어가므로 이 중계가 받은 신호를 넘기고, 끝나면 그 트리를 끈다.
 // 이 중계를 띄운 제품의 표식도 물려받으므로, 이 중계가 먼저 강제로 끝나도 제품의 끄기가 그 트리에 닿는다.
 const child = launchTree({
-  command: [command[0], ...command.slice(1)],
+  command: [program, ...programArgs],
   args: [],
   cwd: process.cwd(),
   env: process.env,
@@ -57,7 +63,7 @@ process.stdin.on("end", () => {
 });
 // 프로그램이 끝나 입력이 끊긴 것(EPIPE)은 답이다. 그 밖의 쓰기 실패는 기록에 남긴다.
 child.stdin.on("error", (error) => {
-  if (!isDisconnect(error)) record("stdin-error", { code: error.code });
+  if (!isDisconnect(error)) record("stdin-error", { code: failureCode(error) });
 });
 child.stderr.on("data", (chunk) => {
   record("stderr", { text: chunk.toString() });
@@ -66,8 +72,14 @@ child.stderr.on("data", (chunk) => {
 
 /** `serve --stdio`가 알린 주소 앞에 기록용 프록시를 둔다(OpenCode). */
 function proxy(target) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
+      // 서버가 받은 요청에는 늘 주소가 있다. 없으면 넘길 곳을 모르므로 거절한다.
+      const { url } = req;
+      if (url === undefined) {
+        res.writeHead(400).end();
+        return;
+      }
       const body = [];
       req.on("data", (chunk) => body.push(chunk));
       req.on("end", () => {
@@ -76,19 +88,25 @@ function proxy(target) {
         record("http-request", {
           id,
           method: req.method,
-          url: req.url,
+          url,
           body: sent.toString(),
         });
         const upstream = http.request(
-          new URL(req.url, target),
+          new URL(url, target),
           // 기록이 읽히도록 압축하지 않은 응답을 받는다.
           {
             method: req.method,
             headers: { ...req.headers, "accept-encoding": "identity" },
           },
           (answer) => {
-            record("http-response", { id, status: answer.statusCode });
-            res.writeHead(answer.statusCode, answer.headers);
+            const status = answer.statusCode;
+            record("http-response", { id, status });
+            // 받은 응답에는 늘 상태가 있다. 없으면 넘길 수 없으므로 끊는다.
+            if (status === undefined) {
+              res.destroy();
+              return;
+            }
+            res.writeHead(status, answer.headers);
             answer.on("data", (chunk) => {
               record("http-chunk", { id, text: chunk.toString() });
               res.write(chunk);
@@ -98,13 +116,13 @@ function proxy(target) {
               res.end();
             });
             answer.on("error", (error) => {
-              record("http-error", { id, code: error.code });
+              record("http-error", { id, code: failureCode(error) });
               res.destroy();
             });
           }
         );
         upstream.on("error", (error) => {
-          record("http-error", { id, code: error.code });
+          record("http-error", { id, code: failureCode(error) });
           res.destroy();
         });
         res.on("close", () => upstream.destroy());
@@ -112,9 +130,15 @@ function proxy(target) {
       });
     });
     server.unref();
-    server.listen(0, "127.0.0.1", () =>
-      resolve(`http://127.0.0.1:${server.address().port}`)
-    );
+    server.listen(0, "127.0.0.1", () => {
+      // TCP로 들었으므로 주소는 포트가 있는 객체다(문자열은 파이프·소켓 경로).
+      const address = server.address();
+      if (address === null || typeof address === "string")
+        reject(
+          new Error(`record-cli: the proxy is not on a TCP port (${address})`)
+        );
+      else resolve(`http://127.0.0.1:${address.port}`);
+    });
   });
 }
 
@@ -162,8 +186,9 @@ void (async () => {
       return false;
     }
   );
-  if (stopped && (await child.started).kind === "failed") {
-    record("spawn-error", { code: failureCode((await child.started).error) });
+  const started = await child.started;
+  if (stopped && started.kind === "failed") {
+    record("spawn-error", { code: failureCode(started.error) });
     exitAfterLog(127);
     return;
   }

@@ -1,6 +1,33 @@
 import { spawnSync } from "node:child_process";
 
 /**
+ * `promise`를 `ms` 안에 기다린다. 넘기면 무엇을 기다리다 실패했는지(`what`, 예: "the server did not start")와 상한을 밝혀
+ * 던진다. 시험의 대기마다 상한과 실패 원인을 두는 공용 도움이다(CODING_STANDARDS 「시간」). vi를 불러오지 않아 vitest·node:test·
+ * Playwright 모두에서 쓴다. 상한이 지나도 `promise`가 쥔 자원은 그대로이므로 정리는 부른 쪽이 맡는다(`withCleanup` 등).
+ * 제품 코드는 시험 도움을 부르지 않아 같은 모양을 따로 둔다(supervised.ts `within`).
+ */
+export async function within<T>(
+  promise: Promise<T>,
+  ms: number,
+  what: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${what} within ${ms} ms`)),
+          ms
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * A clock that moves only when the test says (#215). Limits on it measure only the step under test (starting a program takes
  * no time on it however slow the machine is), and the order of timers and program events is set by state, not by real time.
  */

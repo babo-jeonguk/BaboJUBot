@@ -79,6 +79,7 @@ function readsOutsideData(node, sourceCode) {
  */
 const noAssertionOnParsedData = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -112,6 +113,7 @@ const noAssertionOnParsedData = {
  */
 const noComputedIn = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -178,6 +180,7 @@ const killsAtTimeout = (node) => {
  */
 const syncCommandTimeout = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -293,6 +296,7 @@ function calledMethod(callee) {
  */
 const noIgnoredError = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -320,9 +324,9 @@ const noIgnoredError = {
         const name =
           method ??
           (node.callee.type === "Identifier" ? node.callee.name : undefined);
+        const position = handlerPositions.get(method);
         let handler;
-        if (handlerPositions.has(method))
-          handler = node.arguments[handlerPositions.get(method)];
+        if (position !== undefined) handler = node.arguments[position];
         else if (
           listenerMethods.has(method) &&
           node.arguments[0]?.type === "Literal" &&
@@ -383,6 +387,7 @@ function returnsEmpty(statement) {
  */
 const noSilentExitStatus = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -488,6 +493,7 @@ function failureTool(context, node, name) {
  */
 const noIoInUnreadable = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -555,6 +561,7 @@ const chainAlternatives =
  */
 const noCleanupChain = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -595,6 +602,7 @@ const groupSignalers = new Set(["kill", "killUnlessGone", "processAlive"]);
  */
 const noProcessGroupSignal = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -716,6 +724,7 @@ function launcherKind(context, callee) {
  */
 const noNumberSignal = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -777,6 +786,7 @@ function propertyName(member) {
  */
 const noDirectLaunch = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -899,6 +909,7 @@ const boundaryLoadersSeen = new Set([
  */
 const launchBoundary = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -945,6 +956,7 @@ const launchBoundary = {
  */
 const boundedCommand = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -990,6 +1002,7 @@ const importScopeAlternatives =
   "프로세스 띄우기·끄기와 짧은 명령은 @babojubot/process(launchTree·runTree·runCommand), 시험의 정리 도움은 @babojubot/process/test-cleanup·/remove-folder·/lifelines·/testing에 있습니다. 그룹 끄기·표식 정리 입구(@babojubot/process/recovery)는 runtime의 재시작 복구만 씁니다. 다른 곳은 띄울 때 launchTree가 돌려준 stop()으로 끕니다(docs/architecture.md 패키지 구성).";
 const packageImportScope = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1066,6 +1079,7 @@ const entryNames = (pkg) =>
  */
 const packageEntryOnly = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1249,6 +1263,7 @@ function rethrownAfter(node, handler) {
  */
 const noFailureCollecting = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1471,6 +1486,7 @@ function manifestFor(file) {
  */
 const noUndeclaredImport = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1625,6 +1641,7 @@ const enclosingFunction = (node) => {
  */
 const noCheckThenReopen = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:
@@ -1696,6 +1713,7 @@ const keyName = (key, computed) =>
  */
 const noOwnUntrustedOpen = {
   meta: {
+    /** @type {"problem"} */
     type: "problem",
     docs: {
       description:

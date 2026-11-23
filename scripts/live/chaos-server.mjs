@@ -42,6 +42,9 @@ export function scrubEnvironment(env) {
  * 실행 기록·예산 파일은 장면을 건너 전체 한도를 세도록 부르는 쪽이 정한다(기본은 `harnessDir` 안).
  * - `connection`: `opencode`(실제) 또는 `fake-live`(자동 검사용 가짜. 실제처럼 예산·토큰 관문을 지난다)
  * - `database`: `ephemeral`(임시 DB) 또는 `persistent`(홈 아래 일회용 영속 내장 DB, 재시작 장면)
+ * - `brief`: 실제 실행에 AGENTS.md로 넘길 지침(없으면 null)
+ * @param {{ home: string, harnessDir: string, connection: string, database: string, brief?: string | null,
+ *   ledgerFile?: string, budgetFile?: string }} options
  */
 export function chaosServer({
   home,
@@ -96,8 +99,12 @@ export function chaosServer({
     const keep = (chunk) => {
       tail = (tail + chunk).slice(-3000);
     };
-    child.stdout.on("data", keep);
-    child.stderr.on("data", keep);
+    // 출력을 pipe로 띄웠으므로 둘 다 있다. 없으면 시작이 설정과 다르게 된 것이다(트리는 trees에 있어 정리가 끈다).
+    const { stdout, stderr } = child;
+    if (!stdout || !stderr)
+      throw new Error("chaos server: the server started without piped output");
+    stdout.on("data", keep);
+    stderr.on("data", keep);
     exited = child.exited;
     let gone = false;
     void exited.then(() => {
@@ -299,6 +306,7 @@ const fakeReadinessMs = 500;
 /**
  * 자동 검사용 가짜 실제 연결. 모델을 부르지 않는다. 받은 메시지에 `busy.mjs <초>`가 있으면 그 시간 동안(취소되면 그때까지) 일하며
  * 그동안 끼워 넣기를 받는다. 받은 세션이 있으면 같은 세션을 이어 간다.
+ * @returns {import("@babojubot/contracts").RuntimeAdapter}
  */
 function fakeLiveAdapter(defaultFakeCapabilities) {
   const steerable = new Set();

@@ -381,7 +381,7 @@ test("every function the process package exports is classified as a launcher or 
     readFileSync(path.join(repository, "packages/process/src/index.ts"), "utf8")
   );
   const exported = [...index.matchAll(/export\s*\{([^}]*)\}/g)]
-    .flatMap((match) => match[1].split(","))
+    .flatMap((match) => (match[1] ?? "").split(","))
     .map((name) => name.trim())
     .filter((name) => name && !name.startsWith("type "));
   for (const name of exported)

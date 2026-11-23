@@ -7,6 +7,7 @@ import {
   globSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +30,18 @@ const git = (cwd, ...args) =>
     timeout: 60_000,
     killSignal: "SIGKILL",
   });
+
+// 검사는 pnpm typecheck에 들어 있어야 CI(ci / typecheck)와 완료 검사가 돌린다. 따로 두면 아무것도 막지 않는다(#270 PR 3a-1이 그랬다).
+test("pnpm typecheck runs the JS check after the package type checks", () => {
+  const { scripts } = JSON.parse(
+    readFileSync(path.join(root, "package.json"), "utf8")
+  );
+  assert.deepEqual(scripts.typecheck.split(" && "), [
+    "pnpm -r --if-present run typecheck",
+    "pnpm run typecheck:js",
+  ]);
+  assert.equal(scripts["typecheck:js"], "node scripts/typecheck-js.mjs");
+});
 
 test("every JS file in the repository is type-checked", () => {
   const javaScript = git(

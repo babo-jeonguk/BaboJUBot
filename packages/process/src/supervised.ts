@@ -182,7 +182,10 @@ export const endLimitMs = 10_000;
 
 const windows = () => process.platform === "win32";
 
-/** `promise`를 `ms` 안에 기다린다. 넘기면 `what`과 함께 던진다. */
+/**
+ * `promise`를 `ms` 안에 기다린다. 넘기면 `what`과 함께 던진다. 시험의 공용 도움(`@babojubot/process/test-support`의 `within`)과
+ * 같은 모양이지만, 제품 코드는 시험 도움을 부르지 않으므로 따로 둔다.
+ */
 export async function within<T>(promise: Promise<T>, ms: number, what: string) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

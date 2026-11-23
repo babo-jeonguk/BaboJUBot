@@ -1,20 +1,7 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
 import { firstApprovalId, goalInput, leadRun } from "./support/organization.ts";
 import { isReadyFrame, pageLoad } from "./support/live-events.ts";
-
-/** `promise`가 `ms` 안에 끝나기를 기다린다. 넘기면 무엇을 기다렸는지 밝혀 실패한다. */
-async function within<T>(promise: Promise<T>, ms: number, what: string) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`${what} did not happen in ${ms}ms`)),
-        ms
-      );
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
+import { within } from "@babojubot/process/test-support";
 
 /**
  * 탭이 `under`로 시작하는 주소에 보내는 GET을 지켜본다. 주소별 최대 동시 진행 수와 경로별 요청 수를 센다.
@@ -66,7 +53,12 @@ async function watchGets(page: Page, under: string) {
       holding = { path, held, released };
       return {
         /** 그 GET을 붙잡을 때까지(상한 `leadRun`). */
-        held: () => within(reached, leadRun.timeout, `holding a GET ${path}`),
+        held: () =>
+          within(
+            reached,
+            leadRun.timeout,
+            `holding a GET ${path} did not happen`
+          ),
         release,
       };
     },
@@ -96,7 +88,8 @@ async function pausableEvents(page: Page) {
   });
   return {
     /** 첫 구독 준비(상한 `pageLoad`). */
-    ready: () => within(ready, pageLoad.timeout, "the first ready frame"),
+    ready: () =>
+      within(ready, pageLoad.timeout, "the first ready frame did not happen"),
     pause: () => {
       paused = true;
     },

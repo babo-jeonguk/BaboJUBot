@@ -7,9 +7,14 @@
 //          --out <file.jsonl> (--brief <file> | --message <text>)
 //          [--session <sessionID>] [--start-check <seconds>] [--limit <minutes>]
 //
+// The brief (the --brief file's text as read once, or --message) goes to opencode on its standard input, never as a command
+// argument: opencode run reads a message from standard input when none is given as an argument, and on Windows an
+// npm-installed opencode is a .cmd that cmd.exe starts, which cuts an argument at its first line break (#284).
+//
 // Exit codes: 0 finished without an error event; 2 error event (move to the next model);
 // 3 no session started twice (parent takes over); 4 opencode failed without an error event, could not start (also when
-// the supervisor is not available: the runner refuses to start a worker it could not stop), the call reached
+// the supervisor is not available: the runner refuses to start a worker it could not stop), the brief could not be sent to the
+// worker (a run failure, not a model's error event), the call reached
 // --limit (a limit on the whole call, retries included; default 110 minutes, inside the parent's 2-hour background limit), or
 // the worker's process tree could not be confirmed stopped (no retry after that); 128+n stopped by signal n; 1 usage.
 import { closeSync, openSync, readFileSync } from "node:fs";
@@ -18,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { launchTree, prepareSupervisor } from "@babojubot/process";
 import {
   continueAfterFailure,
+  failureCode,
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
@@ -39,39 +45,51 @@ function parseArgs(argv) {
     "start-check",
     "limit",
   ]);
-  const opts = {};
+  /** @type {Map<string, string>} 인수 이름 → 값 */
+  const values = new Map();
   for (let i = 0; i < argv.length; i += 2) {
     const name = argv[i]?.replace(/^--/, "");
-    if (!known.has(name) || argv[i + 1] === undefined)
+    const value = argv[i + 1];
+    if (name === undefined || !known.has(name) || value === undefined)
       fail(`bad argument: ${argv[i]}`);
-    opts[name] = argv[i + 1];
+    // 두 번 주면 어느 값을 쓸지 정하지 않는다(전에는 뒤 값이 조용히 이겼다).
+    if (values.has(name)) fail(`--${name} given twice`);
+    values.set(name, value);
   }
-  if (!opts.model || !opts.title || !opts.out)
-    fail("--model, --title and --out are required");
-  if (!opts.brief === !opts.message)
-    fail("give exactly one of --brief and --message");
-  // Read the brief once here, so the file checked is the file sent.
-  const brief =
-    opts.brief &&
-    orIfMissing(
-      () => readFileSync(opts.brief, "utf8"),
+  const model = values.get("model");
+  const title = values.get("title");
+  const out = values.get("out");
+  if (!model || !title || !out) fail("--model, --title and --out are required");
+  const briefFile = values.get("brief");
+  const message = values.get("message");
+  let text;
+  if (briefFile && !message) {
+    // Read the brief once here, so the file checked is the file sent.
+    text = orIfMissing(
+      () => readFileSync(briefFile, "utf8"),
       hasErrorCode("ENOENT"),
       undefined
     );
-  if (opts.brief && brief === undefined) fail(`brief not found: ${opts.brief}`);
-  const startCheck = Number(opts["start-check"] ?? 180);
+    if (text === undefined) fail(`brief not found: ${briefFile}`);
+  } else if (message && !briefFile) text = message;
+  else fail("give exactly one of --brief and --message");
+  const startCheck = Number(values.get("start-check") ?? 180);
   if (!(startCheck > 0))
     fail("--start-check must be a positive number of seconds");
-  const limit = Number(opts.limit ?? 110);
+  const limit = Number(values.get("limit") ?? 110);
   if (!(limit > 0)) fail("--limit must be a positive number of minutes");
   return {
-    ...opts,
-    text: opts.brief ? brief : opts.message,
+    model,
+    title,
+    out,
+    session: values.get("session"),
+    text,
     startCheckMs: startCheck * 1000,
     limitMs: limit * 60_000,
   };
 }
 
+/** @returns {never} */
 function fail(message) {
   console.error(`${message}\n${USAGE}`);
   process.exit(1);
@@ -98,7 +116,48 @@ const args = [
   opts.title,
 ];
 if (opts.session) args.push("-s", opts.session);
-args.push(message);
+
+/** The send result of a brief the runner stopped writing before it was all written (`abandonBrief`). */
+const unfinished = "not all written when the attempt ended";
+
+/**
+ * Writes the brief to one worker's standard input and closes it, so opencode reads the whole brief and knows it ended. The
+ * result belongs to that worker's attempt (worker-run.mjs `delivered`, `abandonBrief`): `delivered` settles with why it could
+ * not be sent (an error code, e.g. EPIPE when the worker ended without reading), or undefined once sent. `abandonBrief` ends a
+ * write still going by closing the runner's end of the input (a live worker that never reads holds it otherwise), and returns
+ * how the send stands.
+ */
+function sendBrief(stdin) {
+  if (!stdin)
+    return {
+      delivered: Promise.resolve("no standard input"),
+      abandonBrief: () => "no standard input",
+    };
+  /** @type {PromiseWithResolvers<string | undefined>} */
+  const send = Promise.withResolvers();
+  let sending = true;
+  /** @type {string | undefined} */
+  let failure;
+  const settle = (/** @type {string | undefined} */ result) => {
+    if (!sending) return;
+    sending = false;
+    failure = result;
+    send.resolve(result);
+  };
+  // The end callback also gets the write's error; the listener keeps a later error from being unhandled.
+  stdin.on("error", (error) => settle(failureCode(error)));
+  stdin.end(message, (error) => settle(error ? failureCode(error) : undefined));
+  return {
+    delivered: send.promise,
+    abandonBrief: () => {
+      if (sending) {
+        settle(unfinished);
+        stdin.destroy();
+      }
+      return failure;
+    },
+  };
+}
 
 // Events written so far. No output file yet means no events; a line that is not JSON (a partly written last line) is skipped.
 function readEvents() {
@@ -124,13 +183,19 @@ function launch() {
   const out = openSync(opts.out, "w");
   const err = openSync(errFile, "w");
   try {
-    return launchTree({
+    const tree = launchTree({
       command: ["opencode"],
       args,
       cwd: process.cwd(),
       env: { ...process.env, OPENCODE_CONFIG: config },
-      stdio: ["ignore", out, err],
+      stdio: ["pipe", out, err],
     });
+    return {
+      started: tree.started,
+      exited: tree.exited,
+      stop: () => tree.stop(),
+      ...sendBrief(tree.stdin),
+    };
   } finally {
     // opencode holds its own copies. A file that cannot be closed only stays open until the runner ends.
     continueAfterFailure(

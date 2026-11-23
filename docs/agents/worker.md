@@ -40,7 +40,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
   --out <출력>.jsonl (--brief <지침 파일> | --message "<메시지>") [--session <sessionID>] [--limit <분>]
 ```
 
-출력 JSONL·stderr(`.err`)·brief는 Git 제외 로컬 폴더에 두고, 제품 런타임 데이터와 섞지 않습니다.
+출력 JSONL·stderr(`.err`)·brief는 Git 제외 로컬 폴더에 두고, 제품 런타임 데이터와 섞지 않습니다. 스크립트는 지침(`--brief` 파일 내용이나 `--message`)을 opencode의 명령 인수가 아니라 표준 입력으로 넘깁니다. Windows에서 `.cmd`로 깔린 opencode는 `cmd.exe`가 띄워 인수가 첫 줄바꿈에서 끊기므로, 여러 줄 지침도 그대로 닿게 합니다.
 
 **Paseo:** parent가 `worker-deepseek` profile 값을 옮겨 `create_agent`로 subagent를 띄웁니다. 옮기는 방법은 [개발 오케스트레이션 §3](dev-orchestration.md#3-agent-띄우기)을 봅니다.
 
@@ -51,7 +51,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
 | 0 | `error` 이벤트 없이 끝남 | 마지막 보고와 diff 검토(§6) |
 | 2 | `error` 이벤트(rate limit·quota·429 등) | 그 회차에서 그 모델을 다시 쓰지 않고 다음 모델로. session이 있으면 `--session <id> --message "Continue the brief from where you stopped."`, 없으면 같은 brief |
 | 3 | 3분(`--start-check`) 안에 session이 생기지 않아 한 번 다시 띄웠는데도 실패 | worker를 더 띄우지 않고 parent가 직접 수정 |
-| 4 | `error` 이벤트 없이 OpenCode 실패, 띄우지 못함(감독 실행기를 쓸 수 없으면 worker를 띄우지 않음), 시간 한도(`--limit`, 기본 110분)에 닿아 멈춤, 또는 worker의 프로세스 트리가 끝난 것을 확인하지 못함. 한도는 다시 띄우기를 포함한 호출 전체 상한이다. worker는 제품의 공용 실행(`@babojubot/process` `launchTree`)으로 띄우고, 모든 시도는 그 트리의 끄기 결과로 끝난다(세션 확인·한도·runner가 받은 신호로 멈출 때도, worker가 스스로 끝나 남긴 명령을 끌 때도). 끄기를 확인하지 못하면 다시 띄우지 않고 이유를 상태에 남긴다. runner가 신호로 멈췄으면 128+신호 번호로 끝난다 | `.err`·diff를 보고 판단. 트리를 확인하지 못했으면 남은 프로세스를 먼저 정리 |
+| 4 | `error` 이벤트 없이 OpenCode 실패, 띄우지 못함(감독 실행기를 쓸 수 없으면 worker를 띄우지 않음), 지침을 worker에 보내지 못함(상태 줄 `could not send the brief: <코드>`, worker가 읽기 전에 끝났거나 읽지 않은 채 멈춤. 모델 문제가 아니므로 다음 모델로 넘어가지 않음), 시간 한도(`--limit`, 기본 110분)에 닿아 멈춤, 또는 worker의 프로세스 트리가 끝난 것을 확인하지 못함. 한도는 다시 띄우기를 포함한 호출 전체 상한이다. worker는 제품의 공용 실행(`@babojubot/process` `launchTree`)으로 띄우고, 모든 시도는 그 트리의 끄기 결과로 끝난다(세션 확인·한도·runner가 받은 신호로 멈출 때도, worker가 스스로 끝나 남긴 명령을 끌 때도). 끄기를 확인하지 못하면 다시 띄우지 않고 이유를 상태에 남긴다(아직 보내던 지침은 기다리지 않고 접는다. 읽을 쪽이 남았을 수 있어 쓰기가 끝나지 않을 수 있다). runner가 신호로 멈췄으면 128+신호 번호로 끝난다 | `.err`·diff를 보고 판단. 트리를 확인하지 못했으면 남은 프로세스를 먼저 정리 |
 
 모든 모델이 한도면 parent가 직접 고치고 이유를 보고에 남깁니다.
 
