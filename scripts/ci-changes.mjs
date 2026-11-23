@@ -1,4 +1,4 @@
-// CI `changes` job이 바뀐 파일 목록(한 줄에 하나, 표준 입력)으로 어떤 검사를 돌릴지 정한다. 결과는 GITHUB_OUTPUT 형식이다.
+// CI `changes` job이 바뀐 파일 목록(`git diff -z --name-only`, NUL 구분, 표준 입력)으로 어떤 검사를 돌릴지 정한다. 결과는 GITHUB_OUTPUT 형식이다.
 // - code: Markdown이 아닌 파일이 바뀌었다. 테스트 job 전체를 돈다.
 // - files: 조직 경계의 파일 읽기·그 계약·시험·환경 준비·의존성·CI 설정이 바뀌었다. 파일 시스템별 전체 검증(`files / …`)을 돈다.
 // `--full`은 비교할 기준이 없을 때(첫 push, 수동 실행)다. 영향을 모르므로 모두 돈다.
@@ -45,10 +45,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const full = process.argv.includes("--full");
   let input = "";
   if (!full) for await (const chunk of process.stdin) input += chunk;
-  const files = input
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  // `git diff -z --name-only`의 NUL 구분 목록이다. 줄 단위 목록은 줄바꿈·따옴표가 든 이름을 따옴표로 감싸 다른 경로로 만든다.
+  const files = input.split("\0").filter(Boolean);
   const result = classify(files, { full });
   process.stdout.write(`code=${result.code}\nfiles=${result.files}\n`);
 }

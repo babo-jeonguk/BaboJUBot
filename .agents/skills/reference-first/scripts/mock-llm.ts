@@ -13,8 +13,9 @@
 //   { "match": "^empty", "reply": "" }                              empty content
 //   { "match": "^hang", "hang": true }                              never answers (client timeout / cancel)
 //   { "match": "^tool", "message": { "role": "assistant", "content": null, "tool_calls": [...] } }  raw message
-// Without a matching rule the reply is "mock reply". A wrong argument ends with exit code 2. A rule whose fields are not these
-// types answers 500 naming the rule; a request that is not a JSON object with a message list answers 400, as the API does.
+// Without a matching rule the reply is "mock reply". "status" is 200 (with a reply or message) or an error status (400-599).
+// A wrong argument ends with exit code 2. A rule whose fields are not these types, or that does not answer, answers 500 naming
+// the rule; a request that is not a JSON object with a list of messages with roles answers 400, as the API does.
 import { appendFileSync, readFileSync } from "node:fs";
 import {
   createServer,
@@ -103,28 +104,49 @@ function readRule(rule: unknown, index: number): Rule {
     delay: optional("delay", "a number", isNumber),
     hang: optional("hang", "true or false", isFlag),
   };
+  const { status } = read;
+  if (
+    status !== undefined &&
+    status !== 200 &&
+    !(Number.isInteger(status) && status >= 400 && status <= 599)
+  )
+    throw broken("has a status that is not 200 or an error status (400-599)");
   const message = optional("message", "an object", isObject);
   if (message) {
     const calls = field(message, "tool_calls");
-    if (calls !== undefined && !(Array.isArray(calls) && calls.every(isObject)))
-      throw broken("has tool_calls that are not a list of objects");
     const content = field(message, "content");
-    if (calls === undefined && typeof content !== "string")
-      throw broken(
-        "has a message without tool_calls whose content is not text"
-      );
+    if (calls === undefined) {
+      if (typeof content !== "string")
+        throw broken(
+          "has a message without tool_calls whose content is not text"
+        );
+    } else {
+      if (!Array.isArray(calls) || calls.length === 0 || !calls.every(isObject))
+        throw broken("has tool_calls that are not a list of tool call objects");
+      // Beside tool calls the content is text or null, as the API sends it.
+      if (
+        content !== undefined &&
+        content !== null &&
+        typeof content !== "string"
+      )
+        throw broken(
+          "has a message whose content beside tool_calls is not text or null"
+        );
+    }
     read.message = {
       value: message,
       toolCalls: Array.isArray(calls) ? calls.filter(isObject) : undefined,
     };
   }
+  // An error status answers by itself (an error body). A success answers with a reply or a message; or the rule hangs.
+  const errorStatus = status !== undefined && status >= 400;
   if (
+    !errorStatus &&
     read.reply === undefined &&
     read.message === undefined &&
-    read.status === undefined &&
     !read.hang
   )
-    throw broken("does not answer (reply, message, status or hang)");
+    throw broken("does not answer (reply, message, an error status or hang)");
   return read;
 }
 
@@ -143,21 +165,36 @@ const CORS = {
 };
 
 /**
- * The text of the last user message, or undefined when a user message's content is neither text nor a list of parts. Parts
- * without text (an image) carry no words to match.
+ * The text of the last user message, or why the message list is malformed (the API answers such a request 400). Every message
+ * is an object with a role. The last user message's content is text or a list of part objects whose text, when a part has
+ * one, is text; a part without text (an image) carries no words to match. Other fields and other messages' content are not
+ * read, so they are not checked.
  */
-function lastUserText(messages: unknown[]) {
+function lastUserText(
+  messages: unknown[]
+): { text: string } | { malformed: string } {
+  for (const [index, message] of messages.entries())
+    if (!isObject(message) || typeof field(message, "role") !== "string")
+      return { malformed: `message ${index} is not an object with a role` };
   const user = [...messages].reverse().find((m) => field(m, "role") === "user");
-  if (!user) return "";
+  if (!user) return { text: "" };
   const content = field(user, "content");
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-  return content
-    .flatMap((part) => {
-      const text = field(part, "text");
-      return typeof text === "string" ? [text] : [];
-    })
-    .join("\n");
+  if (typeof content === "string") return { text: content };
+  if (!Array.isArray(content))
+    return {
+      malformed: "a user message's content is not text or a list of parts",
+    };
+  const texts: string[] = [];
+  for (const part of content) {
+    if (!isObject(part))
+      return { malformed: "a part of a user message is not an object" };
+    const text = field(part, "text");
+    if (text === undefined) continue;
+    if (typeof text !== "string")
+      return { malformed: "a part's text is not text" };
+    texts.push(text);
+  }
+  return { text: texts.join("\n") };
 }
 
 function json(res: ServerResponse, status: number, value: unknown) {
@@ -257,12 +294,9 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const stream_ = field(body, "stream");
   if (stream_ !== undefined && typeof stream_ !== "boolean")
     return invalid(res, "stream is not true or false");
-  const text = lastUserText(messages);
-  if (text === undefined)
-    return invalid(
-      res,
-      "a user message's content is not text or a list of parts"
-    );
+  const read = lastUserText(messages);
+  if ("malformed" in read) return invalid(res, read.malformed);
+  const { text } = read;
   // Read the rules once, so the rule that matched is the rule that answers even if the file changes meanwhile.
   const current = rules();
   const index = current.findIndex((r) => new RegExp(r.match, "i").test(text));

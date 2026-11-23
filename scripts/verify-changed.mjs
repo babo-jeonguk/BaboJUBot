@@ -292,12 +292,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       timeout: 60_000,
       killSignal: "SIGKILL",
     });
-  const lines = (output) =>
-    output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
   let comparison;
   try {
     comparison = git("merge-base", "HEAD", base).trim();
@@ -307,7 +301,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     );
   }
 
-  const untracked = lines(git("ls-files", "--others", "--exclude-standard"));
+  // 경로 목록은 NUL 구분(-z)으로 읽는다. 줄 단위 출력은 줄바꿈·따옴표·탭이 든 이름을 따옴표로 감싸 이스케이프한다.
+  const paths = (output) => output.split("\0").filter(Boolean);
+  const untracked = paths(
+    git("ls-files", "-z", "--others", "--exclude-standard")
+  );
   // 새 JS 파일은 받지 않는다(scripts/javascript-files.ts). CI의 changes job과 같은 기준(merge-base, 이름 바꾸기 포함)에 아직 git이
   // 추적하지 않는 파일을 더한다. 검사를 돌리기 전에 알리고 끝난다.
   const added = [
@@ -323,7 +321,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
 
   const files = [
     ...new Set([
-      ...lines(git("diff", "--name-only", "--no-renames", comparison)),
+      ...paths(git("diff", "-z", "--name-only", "--no-renames", comparison)),
       ...untracked,
     ]),
   ];
