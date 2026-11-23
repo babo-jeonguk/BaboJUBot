@@ -140,19 +140,28 @@ function recordCli(defer, args, env = {}) {
   };
 }
 
+/** 듣고 있는 서버를 닫는다. 듣지 않는 서버(듣기에 실패했거나 이미 닫음)는 닫을 것이 없다. */
+async function closeServer(server) {
+  if (!server.listening) return;
+  await within(
+    new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve(undefined)))
+    ),
+    eventMs,
+    "the test server did not close"
+  );
+}
+
 /** 시험이 끝나면 닫는 서버를 127.0.0.1의 빈 포트에서 듣게 하고 그 포트를 돌려준다. */
 async function listen(defer, server) {
   server.listen(0, "127.0.0.1");
+  // 듣기를 기다리기 전에 정리를 등록한다. 기다림이 실패해도 듣기 시작한 서버를 남기지 않는다(#287 리뷰 STD-1).
+  defer(() => closeServer(server));
   await within(
     once(server, "listening"),
     eventMs,
     "the test server did not start listening"
   );
-  defer(async () => {
-    const closed = once(server, "close");
-    server.close();
-    await within(closed, eventMs, "the test server did not close");
-  });
   const address = server.address();
   assert.ok(address !== null && typeof address === "object");
   return address.port;
@@ -170,32 +179,44 @@ async function proxyUrl(run, announced) {
 }
 
 /**
- * 시험이 연 프록시 연결. 시험 쪽은 끝까지 닫지 않으므로(정리만 끊는다) `closed`는 프록시가 끊었다는 뜻이다. 프록시가 끊어 생긴
- * 끊김(재설정 등)도 닫힘이고, 그 밖의 오류로 끝나면 그 오류로 거절한다. `reply()`는 그때까지 받은 답이다.
+ * 시험이 연 프록시 연결. 연결이 실패하면 그 실패로 거절한다. 시험 쪽은 끝까지 닫지 않으므로(정리만 끊는다) `closed()`의 이행은
+ * 프록시가 끊었다는 뜻이다. `reply()`는 그때까지 받은 답이다.
  */
 async function openToProxy(defer, proxy) {
   const socket = net.connect(Number(proxy.port), "127.0.0.1");
   defer(() => socket.destroy());
   let reply = "";
   socket.on("data", (chunk) => (reply += chunk));
-  const closed = new Promise((resolve, reject) => {
-    socket.once("close", () => resolve(undefined));
-    socket.on("error", (error) => {
-      if (!isDisconnect(error)) reject(error);
-    });
+  // 연결의 끝은 처음부터 기록한다(연결 직후의 닫힘도 놓치지 않는다). 기록은 거절하지 않고 끝난 까닭(오류)을 값으로 담는다. 판정은
+  // 닫힘을 기다리는 쪽(`closed`)이 그때 한다. 그래서 연결이 실패하면 그 실패는 연결 대기가 알리고, 아무도 받지 않는 거절이 남지
+  // 않는다(#287 리뷰 STD-2).
+  const ended = new Promise((resolve) => {
+    /** @type {Error | undefined} */
+    let failure;
+    socket.on("error", (error) => (failure = error));
+    socket.once("close", () => resolve(failure));
   });
   await within(
     once(socket, "connect"),
     eventMs,
     "the connection to the proxy did not open"
   );
-  return { socket, closed, reply: () => reply };
+  return {
+    socket,
+    /** 연결이 닫히면 이행한다. 프록시가 끊어 생긴 끊김(재설정 등)도 닫힘이고, 그 밖의 오류로 끝났으면 그 오류로 거절한다. */
+    closed: async () => {
+      const failure = await ended;
+      if (failure !== undefined && !isDisconnect(failure)) throw failure;
+    },
+    reply: () => reply,
+  };
 }
 
 /** 아무것도 듣지 않는 127.0.0.1의 포트. 운영체제가 고른 빈 포트를 잠깐 들은 뒤 닫는다. */
-async function refusingPort() {
+async function refusingPort(defer) {
   const server = net.createServer();
   server.listen(0, "127.0.0.1");
+  defer(() => closeServer(server));
   await within(
     once(server, "listening"),
     eventMs,
@@ -203,13 +224,7 @@ async function refusingPort() {
   );
   const address = server.address();
   assert.ok(address !== null && typeof address === "object");
-  await within(
-    new Promise((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve(undefined)))
-    ),
-    eventMs,
-    "the probe server did not close"
-  );
+  await closeServer(server);
   return address.port;
 }
 
@@ -217,7 +232,7 @@ async function refusingPort() {
 // 거절을 남기지 않는다. 남기면 러너가 시험 밖의 오류로 실패를 알린다.
 test("the test's proxy connection fails with a refused connection and leaves no unhandled rejection", async () => {
   await withCleanup(async (defer) => {
-    const port = await refusingPort();
+    const port = await refusingPort(defer);
     await assert.rejects(
       openToProxy(defer, new URL(`http://127.0.0.1:${port}/`)),
       { code: "ECONNREFUSED" }
@@ -391,7 +406,7 @@ test("record-cli cuts and records a reply that has no valid status line", async 
     const connection = await openToProxy(defer, proxy);
     connection.socket.write("GET /x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
     await within(
-      connection.closed,
+      connection.closed(),
       eventMs,
       "the proxy did not cut the connection after the reply it could not read"
     );
@@ -425,7 +440,7 @@ test("record-cli's proxy never takes a request that has no target", async () => 
     const connection = await openToProxy(defer, proxy);
     connection.socket.write("GET HTTP/1.1\r\n\r\n");
     await within(
-      connection.closed,
+      connection.closed(),
       eventMs,
       "the proxy did not close the connection after its answer"
     );
