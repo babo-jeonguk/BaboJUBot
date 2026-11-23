@@ -32,7 +32,13 @@ const windows = process.platform === "win32";
 const fakeOpencode = `import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
-appendFileSync(process.env.FAKE_OPENCODE_ARGS, JSON.stringify(process.argv.slice(2)) + "\\n");
+// opencode run처럼 인수에 지침이 없으면 표준 입력 전체를 지침으로 읽는다. 받은 인수와 표준 입력을 한 줄(JSON)로 남긴다.
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => (input += chunk));
+process.stdin.on("end", () =>
+  appendFileSync(process.env.FAKE_OPENCODE_CALLS, JSON.stringify({ args: process.argv.slice(2), input }) + "\\n")
+);
 const command = (code, pidFile) =>
   \`process.on("SIGTERM", () => {}); \${code} require("node:fs").writeFileSync(\${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);\`;
 if (process.env.FAKE_STUBBORN)
@@ -66,15 +72,15 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
   }
   const launches = path.join(dir, "launches");
   writeFileSync(launches, "");
-  // 띄워질 때마다 받은 인수를 한 줄(JSON)로 남긴다. 마지막 인수가 worker에 보낸 지침이다.
-  const launchArgs = path.join(dir, "launch-args");
-  writeFileSync(launchArgs, "");
+  // 띄워질 때마다 받은 인수와 표준 입력(지침)을 한 줄(JSON)로 남긴다.
+  const calls = path.join(dir, "calls");
+  writeFileSync(calls, "");
   const commands = { stubborn, moved };
   const env = {
     ...process.env,
     PATH: `${dir}${path.delimiter}${process.env.PATH}`,
     FAKE_OPENCODE_LAUNCHES: launches,
-    FAKE_OPENCODE_ARGS: launchArgs,
+    FAKE_OPENCODE_CALLS: calls,
   };
   for (const [name, wanted] of Object.entries(commands)) {
     if (!wanted) continue;
@@ -91,10 +97,10 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
   return {
     dir,
     launches,
-    launchArgs,
+    calls,
     lifelines,
-    /** `brief`를 주면 `--message` 대신 그 파일을 `--brief`로 넘긴다. */
-    args: (limitMinutes, brief) => [
+    /** 지침 인수. 주지 않으면 `--message hi`다. */
+    args: (limitMinutes, brief = ["--message", "hi"]) => [
       script,
       "--model",
       "fake/model",
@@ -102,7 +108,7 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
       "limit test",
       "--out",
       path.join(dir, "out.jsonl"),
-      ...(brief === undefined ? ["--message", "hi"] : ["--brief", brief]),
+      ...brief,
       "--limit",
       String(limitMinutes),
       // 세션 확인(60초)보다 한도·신호가 먼저 온다.
@@ -114,7 +120,7 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
 }
 
 /** run-worker를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다. */
-function runner(defer, f, limitMinutes, brief) {
+function runner(defer, f, limitMinutes, brief = undefined) {
   const child = spawn(process.execPath, f.args(limitMinutes, brief), {
     env: f.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -206,19 +212,53 @@ test("a runner refuses missing, repeated, conflicting and unknown arguments befo
   }
 });
 
-test("a runner sends the brief file's text as the worker's message", async () => {
+// 지침은 명령 인수가 아니라 표준 입력으로 간다(#284). Windows의 .cmd(npm으로 설치한 opencode, 이 시험의 가짜)는 cmd.exe가 띄우고
+// cmd.exe는 인수를 첫 줄바꿈에서 끊어, 여러 줄 지침이 첫 줄만 닿았다. 그래서 여러 줄 지침이 세 OS 모두 그대로 닿는지와 인수에
+// 지침이 없는지를 `--brief`(한 번 읽은 파일 내용)와 `--message` 둘 다 본다.
+test("a runner sends a multi-line brief on the worker's standard input, not as an argument", async () => {
+  const text = '첫 줄\n둘째 줄\n\n  들여 쓴 줄 "따옴표" & | %PATH%\n';
   await withCleanup(async (defer) => {
     const f = await fixture(defer);
     const brief = path.join(f.dir, "brief.md");
-    writeFileSync(brief, "첫 줄\n둘째 줄\n");
-    const run = runner(defer, f, 0.02, brief);
-    assert.equal(await run.exited, 4, run.output());
-    const launched = readFileSync(f.launchArgs, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-    assert.equal(launched.length, 1, run.output());
-    assert.equal(launched[0].at(-1), "첫 줄\n둘째 줄\n");
+    writeFileSync(brief, text);
+    for (const source of [
+      ["--brief", brief],
+      ["--message", text],
+    ]) {
+      writeFileSync(f.calls, "");
+      // 한도 6초. 그 전에 가짜가 표준 입력의 끝까지 읽고 남긴다.
+      const run = runner(defer, f, 0.1, source);
+      const deadline = Date.now() + 30_000;
+      while (readFileSync(f.calls, "utf8") === "" && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(await run.exited, 4, run.output());
+      const calls = readFileSync(f.calls, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(
+        calls,
+        [
+          {
+            args: [
+              "run",
+              "--agent",
+              "dev-worker",
+              "--standalone",
+              "--auto",
+              "--format",
+              "json",
+              "-m",
+              "fake/model",
+              "--title",
+              "limit test",
+            ],
+            input: text,
+          },
+        ],
+        `${source[0]}: ${run.output()}`
+      );
+    }
   });
 });
 
