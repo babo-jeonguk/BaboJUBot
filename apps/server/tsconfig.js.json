@@ -1,6 +1,9 @@
-// 시험 코드의 JS 파일을 pnpm typecheck:js가 타입 검사한다. 시험 쪽 설정(tsconfig.test.json)에 JS 검사를 켜고, JS를 .ts로 옮기기
-// 전까지 암시적 any만 끈다(#270 PR 3a). 같은 프로그램의 TypeScript 파일은 tsconfig.test.json이 엄격 설정으로 검사한다.
+// 이 앱의 JS 파일을 pnpm typecheck:js가 타입 검사한다. 시험의 JS가 있어 시험 쪽 설정(tsconfig.test.json)의 타입 환경을 쓰고, 폴더를
+// 고르지 않고 앱 전체를 덮어 새 폴더의 JS도 빠지지 않는다. JS를 .ts로 옮기기 전까지 암시적 any만 끈다(#270 PR 3a).
+// 같은 프로그램의 TypeScript 파일은 앱 typecheck가 엄격 설정으로 검사한다.
 {
   "extends": "./tsconfig.test.json",
-  "compilerOptions": { "checkJs": true, "noImplicitAny": false }
+  "compilerOptions": { "checkJs": true, "noImplicitAny": false },
+  "include": ["**/*"],
+  "exclude": ["node_modules"]
 }

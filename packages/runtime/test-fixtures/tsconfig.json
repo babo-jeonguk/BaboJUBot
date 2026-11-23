@@ -1,6 +1,0 @@
-// 외부 프로그램을 흉내 내는 가짜 프로그램을 pnpm typecheck:js가 타입 검사한다. JS를 .ts로 옮기기 전까지 암시적 any만 끈다(#270 PR 3a).
-{
-  "extends": "../../../tsconfig.base.json",
-  "compilerOptions": { "checkJs": true, "noImplicitAny": false },
-  "include": ["**/*"]
-}
