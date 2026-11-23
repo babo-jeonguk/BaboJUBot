@@ -192,6 +192,39 @@ async function openToProxy(defer, proxy) {
   return { socket, closed, reply: () => reply };
 }
 
+/** 아무것도 듣지 않는 127.0.0.1의 포트. 운영체제가 고른 빈 포트를 잠깐 들은 뒤 닫는다. */
+async function refusingPort() {
+  const server = net.createServer();
+  server.listen(0, "127.0.0.1");
+  await within(
+    once(server, "listening"),
+    eventMs,
+    "the probe server did not start listening"
+  );
+  const address = server.address();
+  assert.ok(address !== null && typeof address === "object");
+  await within(
+    new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve(undefined)))
+    ),
+    eventMs,
+    "the probe server did not close"
+  );
+  return address.port;
+}
+
+// 시험의 프록시 연결 도움 자체(#287 리뷰 STD-2): 연결이 거절되면 그 거절로 실패하고, 닫힘을 기다리기 전에 실패해도 처리되지 않은
+// 거절을 남기지 않는다. 남기면 러너가 시험 밖의 오류로 실패를 알린다.
+test("the test's proxy connection fails with a refused connection and leaves no unhandled rejection", async () => {
+  await withCleanup(async (defer) => {
+    const port = await refusingPort();
+    await assert.rejects(
+      openToProxy(defer, new URL(`http://127.0.0.1:${port}/`)),
+      { code: "ECONNREFUSED" }
+    );
+  });
+});
+
 test("record-cli answers a missing folder or program with its usage", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "babojubot-record-cli-usage-"));
   context.after(() => removeFolder(dir));
