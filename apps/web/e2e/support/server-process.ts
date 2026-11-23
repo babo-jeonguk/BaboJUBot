@@ -356,16 +356,20 @@ export async function stopChild(
       `${label} did not end after the stop request`
     );
   } catch (error) {
-    // 시한 안에 끝나지 않았다. 강제로 끝내고 그 끝을 확인한 뒤 실패로 알린다.
-    child.kill("SIGKILL");
-    await within(
-      exited,
-      limits.killWaitMs,
-      `${label} did not end after SIGKILL`
-    );
-    throw new Error(
+    // 시한 안에 끝나지 않았다. 그 실패를 먼저 만들어 두고, 강제로 끝내기와 그 끝 확인을 모두 시도한다. 끝 확인이 실패해도 첫 실패를
+    // 잃지 않고 함께 알린다(CODING_STANDARDS.md#제품-코드, 독립 단계의 실패를 모아 던지기).
+    const unstopped = new Error(
       `${label}가 멈춤 요청 뒤 ${limits.exitWaitMs}ms 안에 끝나지 않아 강제로 끝냈다: ${output()}`,
       { cause: error }
+    );
+    const failures = await attemptEach([
+      () => child.kill("SIGKILL"),
+      () =>
+        within(exited, limits.killWaitMs, `${label} did not end after SIGKILL`),
+    ]);
+    throw combinedFailure(
+      [unstopped, ...failures],
+      `${label} could not be stopped`
     );
   }
   if (stopped instanceof Error) {
