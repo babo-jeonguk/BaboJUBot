@@ -7,7 +7,11 @@
 //! The supervisor writes:
 //!
 //! ```text
-//! babojubot-supervisor <protocol>     first, before anything runs: the protocol this supervisor speaks
+//! babojubot-supervisor <protocol> <start>
+//!                                     first, before anything runs: the protocol this supervisor speaks and its own start in the
+//!                                     system's finest measure (Linux: clock ticks after boot; macOS: microseconds since the epoch;
+//!                                     Windows: the creation time in 100-nanosecond intervals since 1601), or `-` when it cannot be
+//!                                     read. The restart recovery keeps it to tell this supervisor from another process later
 //! ok <pid>                            the program runs; <pid> is its process id
 //! failed: <why>                       the supervisor could not set up, so the program did not run; nothing follows
 //! not-started <code>: <why>           the program could not start (<code> is the errno name, ENOENT and so on); nothing follows
@@ -25,9 +29,9 @@
 //! both died. No program runs; the supervisor ends the programs that carry `marker`, answers `ended` or `left: <what>` and exits.
 //! `since <N>` before it says when that run began (Linux: clock ticks after boot; macOS: microseconds since the epoch), so a program
 //! of this user that started after it and whose environment cannot be read is reported as unverified instead of passed over.
-//! `recorded <PID> <START>` names the process the run's record kept (its supervisor, or before the supervisor its program), with its
-//! start time in the same measure: it is ended too when it is still that process (macOS compares to the second, as its records keep
-//! the start). A clean needs a marker, a recorded process, or both.
+//! `recorded <PID> <START>` names the process the run's record kept (the run's supervisor) with the start it reported in its first
+//! message: it is ended too when it is still that process (the start is compared exactly). A clean needs a marker, a recorded process,
+//! or both.
 //!
 //! Then the server writes `stop <grace ms>` (end the tree, report, exit), `kill-leader` (end the program only, as a crash would)
 //! and `interrupt` (SIGINT to the program's process group; nothing on Windows). The end of the channel means the server is gone and
@@ -46,8 +50,9 @@ pub const POLL: Duration = Duration::from_millis(20);
 /// The longest message either side accepts.
 pub const MESSAGE_LIMIT: usize = 1024 * 1024;
 
-pub fn hello() -> String {
-    format!("babojubot-supervisor {PROTOCOL}")
+pub fn hello(start: Option<u64>) -> String {
+    let start = start.map_or("-".to_owned(), |start| start.to_string());
+    format!("babojubot-supervisor {PROTOCOL} {start}")
 }
 
 /// One message as a netstring.

@@ -52,7 +52,7 @@ describe.runIf(process.platform === "linux")(
   () => {
     it("are unverified only when they started during the run", async () => {
       const lease = randomUUID();
-      const since = processStartTicks(process.pid)!;
+      const since = String(processStartTicks(process.pid)!);
       const pid = await hidden(lease);
       await expect(cleanThroughSupervisor({ lease, since })).rejects.toThrow(
         new RegExp(`could not be checked.*\\b${pid}\\b`)
@@ -61,7 +61,7 @@ describe.runIf(process.platform === "linux")(
       // 실행 시도보다 먼저 있던 프로그램은 그 자손일 수 없다.
       await cleanThroughSupervisor({
         lease,
-        since: processStartTicks(pid)! + 1,
+        since: String(processStartTicks(pid)! + 1),
       });
       expect(exited(pid)).toBe(false);
     });
@@ -71,7 +71,7 @@ describe.runIf(process.platform === "linux")(
       "are not ours when they run in another cgroup",
       async () => {
         const lease = randomUUID();
-        const since = processStartTicks(process.pid)!;
+        const since = String(processStartTicks(process.pid)!);
         const pid = await hidden(lease, [
           "systemd-run",
           "--user",
@@ -85,7 +85,7 @@ describe.runIf(process.platform === "linux")(
 
     // 끝났지만 거두어지지 않은 프로그램(좀비)은 산 것이 아니다. 확인하지 못한 것으로 세지 않는다.
     it("do not count a zombie as unverified", async () => {
-      const since = processStartTicks(process.pid)!;
+      const since = String(processStartTicks(process.pid)!);
       const parent = spawn(
         "python3",
         [

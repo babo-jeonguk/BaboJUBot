@@ -80,8 +80,9 @@ const cleanGraceMs = 2000;
  * 프로세스(`recorded`: 그 실행 시도의 실행기, 감독 실행기 전의 기록은 프로그램 대표)를 실행기로 찾아 끈다. 실행기는 프로그램을 띄우지
  * 않고 정리만 하고 답한다(`clean`). 신호는 표식이나 시작 시각을 확인한 바로 그 프로세스에만 간다(Linux는 프로세스 핸들, macOS는
  * 신호 직전 시작 시각 재확인). `since`(그 실행 시도가 시작한 때)부터 생긴 이 사용자의 프로그램 가운데 환경을 읽을 수 없는 것은 신호
- * 없이 남고 실패로 알린다. 시각의 단위는 Linux는 부팅 뒤 clock tick, macOS는 epoch 뒤 마이크로초(초까지 견준다), Windows는 epoch
- * 뒤 밀리초다. Windows는 묶음이 트리를 끄므로 표식 정리가 없고 기록한 프로세스만 끈다(그 프로세스가 쥔 묶음이 닫혀 트리가 끝난다).
+ * 없이 남고 실패로 알린다. 시각은 그 실행기가 첫 메시지로 알린 자기 시작 시각(`LaunchedTree.supervisorStart`, 시스템이 주는 가장
+ * 정밀한 값)이고 실행기가 정확히 견준다. Windows는 묶음이 트리를 끄므로 표식 정리가 없고 기록한 프로세스만 끈다(그 프로세스가 쥔
+ * 묶음이 닫혀 트리가 끝난다).
  * 남은 것이 있거나 실행기를 준비하지 못했으면 던진다.
  */
 export async function cleanThroughSupervisor({
@@ -90,8 +91,8 @@ export async function cleanThroughSupervisor({
   recorded,
 }: {
   lease?: string;
-  since?: number;
-  recorded?: { pid: number; start: number };
+  since?: string;
+  recorded?: { pid: number; start: string };
 }) {
   if (windows() && lease !== undefined)
     throw new Error(

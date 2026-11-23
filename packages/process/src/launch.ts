@@ -83,6 +83,7 @@ function missingProgram(options: TreeLaunch, lease: string): LaunchedTree {
     stdout: closedOutput(stdio[1]),
     stderr: closedOutput(stdio[2]),
     started: Promise.resolve({ kind: "failed", reason: error.message, error }),
+    supervisorStart: Promise.resolve(undefined),
     exited: Promise.resolve({ code: null, signal: null }),
     interrupt: () => {},
     killLeader: () => {},

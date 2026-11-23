@@ -50,6 +50,12 @@ export type LaunchedTree<In = Writable | null, Out = Readable | null> = {
   stdout: Out;
   stderr: Out;
   started: Promise<TreeStart>;
+  /**
+   * 감독 실행기가 첫 메시지로 알린 자기 시작 시각(시스템이 주는 가장 정밀한 값: Linux 부팅 뒤 clock tick, macOS epoch 뒤 마이크로초,
+   * Windows 1601년 뒤 100나노초 단위). 재시작 복구 기록이 그 실행기를 다른 프로세스와 가르는 데 쓴다. 실행기가 알리지 못했거나 띄우지
+   * 못했으면 `undefined`다. 값은 Windows에서 정수 안전 범위를 넘으므로 숫자 문자열이다.
+   */
+  supervisorStart: Promise<string | undefined>;
   /** 대표가 끝났다. 시작하지 못했어도 이행한다. 자손은 `stop()`까지 남는다. */
   exited: Promise<TreeExit>;
   /** 대표의 그룹에 중단(SIGINT)을 보내게 한다. 끄기가 아니다. Windows에는 없다. */
@@ -132,7 +138,7 @@ export function windowsLaunch(
 
 /** 실행기가 제어 통로에 쓰는 한 줄. 모르는 줄이면 `undefined`다. */
 export type SupervisorMessage =
-  | { kind: "hello"; protocol: number }
+  | { kind: "hello"; protocol: number; start?: string }
   | { kind: "ok"; pid: number }
   | { kind: "failed"; reason: string }
   | { kind: "not-started"; code: string; reason: string }
@@ -145,8 +151,12 @@ export function readSupervisorLine(
 ): SupervisorMessage | undefined {
   const line = text.trimEnd();
   let match: RegExpExecArray | null;
-  if ((match = /^babojubot-supervisor (\d+)$/.exec(line)))
-    return { kind: "hello", protocol: Number(match[1]) };
+  if ((match = /^babojubot-supervisor (\d+)(?: (\d+|-))?$/.exec(line)))
+    return {
+      kind: "hello",
+      protocol: Number(match[1]),
+      ...(match[2] && match[2] !== "-" && { start: match[2] }),
+    };
   if ((match = /^ok (\d+)$/.exec(line)))
     return { kind: "ok", pid: Number(match[1]) };
   if ((match = /^failed: (.*)$/.exec(line)))
@@ -309,7 +319,7 @@ export function superviseTree(
      * 프로세스(`recorded`, 아직 그 시작 시각의 프로세스일 때)만 끄게 한다. `since`와 `recorded.start`의 단위는 Linux는 부팅 뒤 clock
      * tick, macOS는 epoch 뒤 마이크로초다.
      */
-    clean?: { since?: number; recorded?: { pid: number; start: number } };
+    clean?: { since?: string; recorded?: { pid: number; start: string } };
   } = {}
 ): {
   tree: LaunchedTree;
@@ -347,6 +357,10 @@ export function superviseTree(
       done = true;
       resolve(start);
     };
+  });
+  let reportSupervisorStart!: (start: string | undefined) => void;
+  const supervisorStart = new Promise<string | undefined>((resolve) => {
+    reportSupervisorStart = resolve;
   });
   let leaderDone = false;
   let reportExit!: (exit: TreeExit) => void;
@@ -473,6 +487,7 @@ export function superviseTree(
         );
         return;
       }
+      if (message.kind === "hello") reportSupervisorStart(message.start);
       // 정리만 청한 실행기는 판 다음에 정리의 답만 쓴다. 정리 요청도 표의 사건이다(끄기와 같다).
       if (message.kind === "hello" && clean) phase = nextPhase(phase, "clean")!;
       if (message.kind === "ok") reportStart({ kind: "running" });
@@ -492,6 +507,7 @@ export function superviseTree(
     controlFailure = failureCode(error);
   });
   void supervisorGone.then(() => {
+    reportSupervisorStart(undefined);
     // 실행기가 답 없이 끝났다(시작 실패, 강제 종료, 약속 위반).
     reportStart({
       kind: "failed",
@@ -616,6 +632,7 @@ export function superviseTree(
     stdout: child.stdout,
     stderr: child.stderr,
     started,
+    supervisorStart,
     exited,
     interrupt: () => {
       if (!leaderDone) send("interrupt");

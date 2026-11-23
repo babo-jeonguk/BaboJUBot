@@ -744,8 +744,13 @@ fn children() -> io::Result<Vec<libc::pid_t>> {
         else {
             continue;
         };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
+        // A process that ended meanwhile is not a child; one whose state cannot be read leaves the children unknown.
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+                continue;
+            }
+            Err(error) => return Err(error),
         };
         let parent = stat
             .rsplit_once(") ")
@@ -889,7 +894,7 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    control.write_message(&protocol::hello());
+    control.write_message(&protocol::hello(marked::start_of_self()));
     if let Err(error) = catch_termination() {
         control.write_message(&format!(
             "failed: the supervisor could not catch termination signals: {error}"

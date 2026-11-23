@@ -6,7 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { recordProcess } from "./recovery.ts";
 import { testFolders } from "./test-folders.ts";
 
-// Windows에서는 다른 프로그램이 기록을 읽는 동안 덮어쓰기가 EPERM으로 잠깐 실패한다. 그 순간을 그대로 만든다.
+// 기록의 시작 시각은 감독 실행기가 첫 메시지로 알린 값이다(#283 외부 리뷰 2회차 SPEC-3). Windows에서는 다른 프로그램이 기록을 읽는
+// 동안 덮어쓰기가 EPERM으로 잠깐 실패한다. 그 순간을 그대로 만든다.
 const rename = vi.hoisted(() => ({
   blocked: 0,
   tried: 0,
@@ -32,46 +33,25 @@ vi.mock("node:fs", async (original) => {
   };
 });
 
-// 시작 시각 조회(runCommand)를 붙잡으면 시험이 그 응답을 넘기는 때를 정한다. 붙잡지 않으면 실제로 묻는다. `answer()`가 돌려주는
-// 약속은 기록 쪽이 그 응답을 받은 뒤에 이행한다(같은 약속에 나중에 붙인 처리라 기록 쪽 처리가 먼저 돈다).
-const query = vi.hoisted(() => ({
-  hold: false,
-  answer: undefined as (() => Promise<void>) | undefined,
-}));
-vi.mock("@babojubot/process", async (original) => {
-  const actual = await original<typeof import("@babojubot/process")>();
+/** 감독 실행기가 첫 메시지로 시작 시각을 알리는 때를 시험이 정한다. `tell()`이 돌려주는 약속은 기록 쪽이 그 값을 받은 뒤에 이행한다. */
+function startLater() {
+  let report!: (start: string | undefined) => void;
+  const supervisorStart = new Promise<string | undefined>((resolve) => {
+    report = resolve;
+  });
   return {
-    ...actual,
-    runCommand: (...args: Parameters<typeof actual.runCommand>) => {
-      if (!query.hold) return actual.runCommand(...args);
-      let answer!: () => void;
-      const answered = new Promise<
-        Awaited<ReturnType<typeof actual.runCommand>>
-      >((resolve) => {
-        answer = () =>
-          resolve({
-            code: 0,
-            signal: null,
-            killed: false,
-            stdout: new Date().toISOString(),
-            stderr: "",
-          });
-      });
-      query.answer = () => {
-        answer();
-        return answered.then(() => undefined);
-      };
-      return answered;
+    supervisorStart,
+    tell: (start: string | undefined) => {
+      report(start);
+      return supervisorStart.then(() => undefined);
     },
   };
-});
+}
 
 const withoutProc = process.platform === "linux" ? "darwin" : process.platform;
 const folders = testFolders();
 afterEach(async () => {
   vi.useRealTimers();
-  query.hold = false;
-  query.answer = undefined;
   rename.blocked = 0;
   rename.tried = 0;
   rename.removal = undefined;
@@ -99,10 +79,19 @@ async function running() {
 it("saves the start time once the record stops being held", async () => {
   const { home, pid, file, directory } = await running();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  recordProcess(home, pid, "lease", { platform: withoutProc });
+  const start = startLater();
+  recordProcess(
+    home,
+    { pid, lease: "lease", supervisorStart: start.supervisorStart },
+    { platform: withoutProc }
+  );
   rename.blocked = 3;
+  await start.tell("1700000000123456");
   await vi.waitFor(
-    async () => expect(await readFile(file, "utf8")).toMatch(/"started"/),
+    async () =>
+      expect(await readFile(file, "utf8")).toMatch(
+        /"start":"1700000000123456"/
+      ),
     { timeout: 20_000, interval: 50 }
   );
   expect(rename.tried).toBe(3);
@@ -112,12 +101,16 @@ it("saves the start time once the record stops being held", async () => {
 
 it("does not save the start time after forgetting a held record", async () => {
   const { home, pid, directory } = await running();
-  // 조회 응답과 다시 쓰기 타이머를 시험이 돌린다. 둘 다 그 자리에서 끝나므로 돌린 직후에 본다.
-  query.hold = true;
+  // 시작 시각 알림과 다시 쓰기 타이머를 시험이 돌린다. 둘 다 그 자리에서 끝나므로 돌린 직후에 본다.
+  const start = startLater();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const forget = recordProcess(home, pid, "lease", { platform: withoutProc });
+  const forget = recordProcess(
+    home,
+    { pid, lease: "lease", supervisorStart: start.supervisorStart },
+    { platform: withoutProc }
+  );
   rename.blocked = 1;
-  await query.answer!();
+  await start.tell("1700000000123456");
   expect(rename.tried).toBe(1);
   forget();
   vi.runOnlyPendingTimers();
@@ -125,13 +118,17 @@ it("does not save the start time after forgetting a held record", async () => {
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
-it("does not save the start time when its query answers after the record was forgotten", async () => {
+it("does not save the start time when the supervisor reports it after the record was forgotten", async () => {
   const { home, pid, directory } = await running();
-  query.hold = true;
-  const forget = recordProcess(home, pid, "lease", { platform: withoutProc });
+  const start = startLater();
+  const forget = recordProcess(
+    home,
+    { pid, lease: "lease", supervisorStart: start.supervisorStart },
+    { platform: withoutProc }
+  );
   expect(await readdir(directory)).toHaveLength(1);
   forget();
-  await query.answer!();
+  await start.tell("1700000000123456");
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
@@ -139,14 +136,20 @@ it("does not save the start time when its query answers after the record was for
 it("warns and keeps the first record when the file stays held", async () => {
   const { home, pid, file, directory } = await running();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  recordProcess(home, pid, "lease", { platform: withoutProc });
+  const start = startLater();
+  recordProcess(
+    home,
+    { pid, lease: "lease", supervisorStart: start.supervisorStart },
+    { platform: withoutProc }
+  );
   rename.blocked = Number.POSITIVE_INFINITY;
+  await start.tell("1700000000123456");
   await vi.waitFor(() => expect(warn).toHaveBeenCalled(), {
     timeout: 25_000,
     interval: 50,
   });
   expect(rename.tried).toBeGreaterThan(1);
-  expect(await readFile(file, "utf8")).not.toMatch(/"started"/);
+  expect(await readFile(file, "utf8")).not.toMatch(/"start"/);
   expect(await readdir(directory)).toEqual([path.basename(file)]);
 }, 30_000);
 
@@ -157,7 +160,11 @@ it("throws the failure to place the record, not the failure to remove its tempor
   rename.blocked = Number.POSITIVE_INFINITY;
   rename.removal = Object.assign(new Error("io"), { code: "EIO" });
   expect(() =>
-    recordProcess(home, pid, "lease", { platform: withoutProc })
+    recordProcess(
+      home,
+      { pid, lease: "lease", supervisorStart: startLater().supervisorStart },
+      { platform: withoutProc }
+    )
   ).toThrow(expect.objectContaining({ code: "EPERM" }));
   expect(warn).toHaveBeenCalledWith(expect.stringContaining("EIO"));
 }, 30_000);

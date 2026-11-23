@@ -34,12 +34,12 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetExitCodeProcess, GetProcessTimes, GetStartupInfoW, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
-    STARTUPINFOEXW, STARTUPINFOW, Sleep, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, GetStartupInfoW,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, Sleep,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 const STANDARD: [STD_HANDLE; 3] = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
@@ -508,9 +508,27 @@ impl Drop for Recorded {
     }
 }
 
+/// A process's creation time in 100-nanosecond intervals since 1601 (the finest Windows gives), or `None` when it cannot be read.
+fn creation_time(process: HANDLE) -> Option<u64> {
+    // SAFETY: zeroed FILETIMEs are valid; GetProcessTimes fills them.
+    let mut times: [FILETIME; 4] = unsafe { zeroed() };
+    let [creation, exit, kernel, user] = &mut times;
+    // SAFETY: valid handle and pointers.
+    if unsafe { GetProcessTimes(process, creation, exit, kernel, user) } == 0 {
+        return None;
+    }
+    Some((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
+/// This supervisor's own creation time, reported in its first message for the restart recovery's record.
+fn own_start() -> Option<u64> {
+    // SAFETY: GetCurrentProcess returns a pseudo handle that needs no closing.
+    creation_time(unsafe { GetCurrentProcess() })
+}
+
 /// The system calls that end a recorded process, kept apart from their order (`end_recorded`) so that order can be tested.
 trait RecordedReach {
-    /// When the process was created, in milliseconds since the epoch (what the record keeps).
+    /// When the process was created, in 100-nanosecond intervals since 1601 (what the supervisor reported and the record keeps).
     fn created(&self) -> Result<u64, String>;
     /// Whether it has ended, waiting at most `limit`.
     fn ended_within(&self, limit: Duration) -> bool;
@@ -519,19 +537,12 @@ trait RecordedReach {
 
 impl RecordedReach for Recorded {
     fn created(&self) -> Result<u64, String> {
-        // SAFETY: zeroed FILETIMEs are valid; GetProcessTimes fills them.
-        let mut times: [FILETIME; 4] = unsafe { zeroed() };
-        let [creation, exit, kernel, user] = &mut times;
-        // SAFETY: valid handle and pointers.
-        if unsafe { GetProcessTimes(self.process, creation, exit, kernel, user) } == 0 {
-            return Err(format!(
+        creation_time(self.process).ok_or_else(|| {
+            format!(
                 "the recorded process's creation time could not be read: error {}",
                 last_error()
-            ));
-        }
-        // 100-nanosecond intervals since 1601 to milliseconds since 1970.
-        let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
-        Ok((ticks / 10_000).saturating_sub(11_644_473_600_000))
+            )
+        })
     }
 
     fn ended_within(&self, limit: Duration) -> bool {
@@ -683,7 +694,7 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    control.write_message(&protocol::hello());
+    control.write_message(&protocol::hello(own_start()));
     let start_request = match protocol::read_start(&mut control, &NoTermination) {
         protocol::StartRequest::Start(start) => start,
         protocol::StartRequest::Clean(clean) => {

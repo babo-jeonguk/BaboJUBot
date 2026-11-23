@@ -121,9 +121,7 @@ fn confirm(second: std::io::Result<Vec<u8>>, marker: &str) -> Result<Confirmed, 
 pub enum Running {
     Yes,
     Ended,
-    /// It could not be told.
-    #[allow(dead_code)]
-    // No reading gives it yet; the next commit does (#283 review 2, STD-2).
+    /// It could not be told: no signal, and the stop is not clean while it stays (the unverified way).
     Unknown,
 }
 
@@ -134,10 +132,12 @@ pub struct Seen {
     pub zombie: bool,
 }
 
-/// Whether the recorded start and the start read now are the same process's (macOS, to the second as records kept it).
+/// Whether the recorded start and the start read now are the same process's. Both are in the system's finest measure (the supervisor
+/// reports its own start so; macOS: microseconds), so they are compared exactly: two processes with one number can start within the
+/// same second (#283 review 2, SPEC-3).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn same_start(recorded: u64, now: u64) -> bool {
-    recorded / 1_000_000 == now / 1_000_000
+    recorded == now
 }
 
 /// Whether a held program that started at `start` still runs, from what reading its information gave (macOS).
@@ -146,10 +146,8 @@ fn running_from(now: std::io::Result<Option<Seen>>, start: u64) -> Running {
     match now {
         Ok(Some(seen)) if seen.start == start && !seen.zombie => Running::Yes,
         Ok(Some(_) | None) => Running::Ended,
-        Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES)) => {
-            Running::Ended
-        }
-        Err(_) => Running::Yes,
+        // Only a process that is not there (`None`) has ended; a read refused (EPERM, EACCES) or failed tells nothing.
+        Err(_) => Running::Unknown,
     }
 }
 
@@ -157,8 +155,11 @@ fn running_from(now: std::io::Result<Option<Seen>>, start: u64) -> Running {
 /// still runs while another thread does (Node.js ended by a signal).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn running_from_handle(handle: std::io::Result<()>, stat: std::io::Result<String>) -> Running {
-    if handle.is_err() {
-        return Running::Ended;
+    match handle {
+        Ok(()) => {}
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return Running::Ended,
+        // The handle could not tell: it may still run.
+        Err(_) => return Running::Unknown,
     }
     match stat {
         Ok(stat) => {
@@ -265,9 +266,13 @@ mod linux {
         }
     }
 
-    /// The handle still names a running process: what was read through its number after the handle was opened was that process's.
-    fn still_running(handle: &OwnedFd) -> bool {
-        send(handle, 0).is_ok()
+    /// What the handle says: the process runs (or is an unreaped zombie), has ended (ESRCH), or it could not be told.
+    fn handle_state(handle: &OwnedFd) -> Running {
+        match send(handle, 0) {
+            Ok(()) => Running::Yes,
+            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Running::Ended,
+            Err(_) => Running::Unknown,
+        }
     }
 
     fn gone(error: &io::Error) -> bool {
@@ -334,7 +339,9 @@ mod linux {
                             ));
                         }
                     };
-                    if may_be_ours(pid, since, own.as_deref())? && still_running(&handle) {
+                    if may_be_ours(pid, since, own.as_deref())?
+                        && handle_state(&handle) != Running::Ended
+                    {
                         found.unverified.push(pid);
                     }
                     continue;
@@ -354,12 +361,15 @@ mod linux {
                     ));
                 }
             };
-            match confirm(environ(pid), &search.marker)? {
-                Confirmed::Hold if still_running(&handle) => {
-                    found.holders.push(Held { pid, handle })
-                }
-                Confirmed::Unverified if still_running(&handle) => found.unverified.push(pid),
-                Confirmed::Hold | Confirmed::Unverified | Confirmed::Pass => {}
+            // What the handle says decides with the read: an ended process is passed over, one that cannot be told stays unverified.
+            match (
+                confirm(environ(pid), &search.marker)?,
+                handle_state(&handle),
+            ) {
+                (Confirmed::Pass, _) | (_, Running::Ended) => {}
+                (Confirmed::Hold, Running::Yes) => found.holders.push(Held { pid, handle }),
+                (Confirmed::Hold | Confirmed::Unverified, Running::Unknown)
+                | (Confirmed::Unverified, Running::Yes) => found.unverified.push(pid),
             }
         }
         Ok(found)
@@ -387,9 +397,19 @@ mod linux {
         };
         let fields = stat_fields(&stat);
         let state = fields.first().copied().unwrap_or("");
-        let started = fields.get(19).and_then(|field| field.parse::<u64>().ok());
-        let same = started == Some(start) && state != "Z" && state != "X";
-        Ok((same && still_running(&handle)).then_some(Held { pid, handle }))
+        let Some(started) = fields.get(19).and_then(|field| field.parse::<u64>().ok()) else {
+            return Err(format!("the start of process {pid} could not be read"));
+        };
+        if started != start || state == "Z" || state == "X" {
+            return Ok(None);
+        }
+        match handle_state(&handle) {
+            Running::Yes => Ok(Some(Held { pid, handle })),
+            Running::Ended => Ok(None),
+            Running::Unknown => Err(format!(
+                "whether process {pid} still runs could not be told"
+            )),
+        }
     }
 
     /// Whether a held program still runs. Its handle says whether it ended; a process whose main thread is a zombie still runs while
@@ -404,7 +424,7 @@ mod linux {
     /// Whether the handle still reaches a running process (for the tests).
     #[cfg(test)]
     pub fn reaches(held: &Held) -> bool {
-        still_running(&held.handle)
+        handle_state(&held.handle) == Running::Yes
     }
 
     pub fn signal(held: &Held, signal: libc::c_int) -> Result<(), String> {
@@ -459,8 +479,11 @@ mod linux {
             .find_map(|line| line.strip_prefix("Uid:"))
             .and_then(|ids| ids.split_whitespace().next())
             .and_then(|real| real.parse::<libc::uid_t>().ok());
-        if uid != Some(me) {
-            return Ok(false);
+        match uid {
+            Some(uid) if uid != me => return Ok(false),
+            Some(_) => {}
+            // A status without a readable user does not clear it.
+            None => return Ok(true),
         }
         let stat = match read("stat")? {
             Read::Text(stat) => stat,
@@ -571,22 +594,27 @@ mod macos {
         info(me).ok().flatten().map(|info| start_of(&info))
     }
 
-    fn pids() -> io::Result<Vec<libc::pid_t>> {
-        // SAFETY: a null buffer asks for the count.
-        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-        if count < 0 {
+    /// `PROC_RUID_ONLY` from XNU's libproc.h (`proc_listpids` type: processes of one real user).
+    const PROC_RUID_ONLY: u32 = 5;
+
+    /// The processes whose real user is `uid`. A program this user started keeps this real user even when it runs set-id.
+    fn pids_of(uid: libc::uid_t) -> io::Result<Vec<libc::pid_t>> {
+        let size = std::mem::size_of::<libc::pid_t>();
+        // SAFETY: a null buffer asks for the size needed.
+        let needed = unsafe { libc::proc_listpids(PROC_RUID_ONLY, uid, std::ptr::null_mut(), 0) };
+        if needed < 0 {
             return Err(io::Error::last_os_error());
         }
         // Room for processes that start between the two calls.
-        let mut pids = vec![0 as libc::pid_t; count as usize + 64];
-        let bytes = libc::c_int::try_from(pids.len() * std::mem::size_of::<libc::pid_t>())
-            .unwrap_or(libc::c_int::MAX);
+        let mut pids = vec![0 as libc::pid_t; needed as usize / size + 64];
+        let bytes = libc::c_int::try_from(pids.len() * size).unwrap_or(libc::c_int::MAX);
         // SAFETY: the buffer is valid for `bytes`.
-        let filled = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        let filled =
+            unsafe { libc::proc_listpids(PROC_RUID_ONLY, uid, pids.as_mut_ptr().cast(), bytes) };
         if filled < 0 {
             return Err(io::Error::last_os_error());
         }
-        pids.truncate(filled as usize);
+        pids.truncate(filled as usize / size);
         Ok(pids)
     }
 
@@ -638,16 +666,25 @@ mod macos {
             holders: Vec::new(),
             unverified: Vec::new(),
         };
-        let pids = pids().map_err(|error| format!("the processes could not be listed: {error}"))?;
+        let pids =
+            pids_of(uid).map_err(|error| format!("the processes could not be listed: {error}"))?;
         for pid in pids.into_iter().filter(|&pid| pid > 0 && pid != me) {
-            // A process this user cannot read is not this user's (another user's, or protected): it is passed over.
+            // This user's process (its real user), so one whose information is refused (a set-id program this user started) may be
+            // ours: it stays unverified, with no start to compare.
             let read = |pid| match info(pid) {
-                Ok(found) => Ok(found),
-                Err(error) if unreadable(&error) => Ok(None),
+                Ok(Some(now)) => Ok(Some(Some(now))),
+                Ok(None) => Ok(None),
+                Err(error) if unreadable(&error) => Ok(Some(None)),
                 Err(error) => Err(format!("process {pid} could not be read: {error}")),
             };
-            let Some(before) = read(pid)? else { continue };
-            // Another user's program is not ours, and its environment is not this user's to read.
+            let before = match read(pid)? {
+                None => continue,
+                Some(None) => {
+                    found.unverified.push(pid);
+                    continue;
+                }
+                Some(Some(before)) => before,
+            };
             if before.pbi_ruid != uid || before.pbi_status == libc::SZOMB {
                 continue;
             }
@@ -656,7 +693,14 @@ mod macos {
                 .map(|arguments| procargs_reading(&arguments, &search.marker, || restricted(pid)))
                 .unwrap_or(Reading::Unreadable);
             // The start time read again says the arguments read in between were this process's.
-            let same = read(pid)?.is_some_and(|after| start_of(&after) == start);
+            let same = match read(pid)? {
+                None => continue,
+                Some(None) => {
+                    found.unverified.push(pid);
+                    continue;
+                }
+                Some(Some(after)) => start_of(&after) == start,
+            };
             let may_be_ours = same && search.since.is_some_and(|since| start >= since);
             match reading {
                 Reading::Carries if same => found.holders.push(Held { pid, start }),
@@ -667,8 +711,8 @@ mod macos {
         Ok(found)
     }
 
-    /// The recorded process when it is still the one that started at `start` (microseconds since the epoch). Records keep the start
-    /// to the second (`ps -o lstart`), so it is compared to the second.
+    /// The recorded process when it is still the one that started at `start` (microseconds since the epoch, as the run's supervisor
+    /// reported its own start).
     pub fn hold(pid: libc::pid_t, start: u64) -> Result<Option<Held>, String> {
         let now = match info(pid) {
             Ok(now) => now,
