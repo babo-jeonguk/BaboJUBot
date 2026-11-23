@@ -553,20 +553,28 @@ export function importSites(context, onSite) {
   };
 }
 
-/** visitor 여럿을 하나로 합친다. 같은 노드 종류는 차례로 모두 부른다. */
+/**
+ * visitor 여럿을 하나로 합친다. 같은 노드 종류는 차례로 모두 부른다. 처리기 꼴은 ESLint의 visitor(`RuleVisitor`)와 같다.
+ * @typedef {(...args: any[]) => void} VisitorHandler
+ * @returns {Record<string, VisitorHandler>}
+ */
 export function combineVisitors(...visitors) {
-  const combined = {};
+  /** @type {Map<string, VisitorHandler>} 노드 종류 → 합친 처리기 */
+  const combined = new Map();
   for (const visitor of visitors)
     for (const [key, handler] of Object.entries(visitor)) {
-      const before = combined[key];
-      combined[key] = before
-        ? (node) => {
-            before(node);
-            handler(node);
-          }
-        : handler;
+      const before = combined.get(key);
+      combined.set(
+        key,
+        before
+          ? (node) => {
+              before(node);
+              handler(node);
+            }
+          : handler
+      );
     }
-  return combined;
+  return Object.fromEntries(combined);
 }
 
 /** 저장소 뿌리. */
