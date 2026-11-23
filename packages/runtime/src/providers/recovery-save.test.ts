@@ -7,7 +7,12 @@ import { recordProcess } from "./recovery.ts";
 import { testFolders } from "./test-folders.ts";
 
 // Windows에서는 다른 프로그램이 기록을 읽는 동안 덮어쓰기가 EPERM으로 잠깐 실패한다. 그 순간을 그대로 만든다.
-const rename = vi.hoisted(() => ({ blocked: 0, tried: 0 }));
+const rename = vi.hoisted(() => ({
+  blocked: 0,
+  tried: 0,
+  /** 임시 기록 지우기가 이 오류로 실패한다. */
+  removal: undefined as Error | undefined,
+}));
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
   return {
@@ -19,6 +24,10 @@ vi.mock("node:fs", async (original) => {
         throw Object.assign(new Error("in use"), { code: "EPERM" });
       }
       return actual.renameSync(...args);
+    },
+    rmSync: (...args: Parameters<typeof actual.rmSync>) => {
+      if (rename.removal) throw rename.removal;
+      return actual.rmSync(...args);
     },
   };
 });
@@ -65,6 +74,7 @@ afterEach(async () => {
   query.answer = undefined;
   rename.blocked = 0;
   rename.tried = 0;
+  rename.removal = undefined;
   vi.restoreAllMocks();
 });
 async function running() {
@@ -138,4 +148,16 @@ it("warns and keeps the first record when the file stays held", async () => {
   expect(rename.tried).toBeGreaterThan(1);
   expect(await readFile(file, "utf8")).not.toMatch(/"started"/);
   expect(await readdir(directory)).toEqual([path.basename(file)]);
+}, 30_000);
+
+// 기록을 제자리에 두지 못하고 임시 기록도 지우지 못하면, 지우기 실패가 원래 실패를 덮지 않는다(#280 리뷰 2회차 STD-2와 같은 모양).
+it("throws the failure to place the record, not the failure to remove its temporary file", async () => {
+  const { home, pid } = await running();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  rename.blocked = Number.POSITIVE_INFINITY;
+  rename.removal = Object.assign(new Error("io"), { code: "EIO" });
+  expect(() =>
+    recordProcess(home, pid, "lease", { platform: withoutProc })
+  ).toThrow(expect.objectContaining({ code: "EPERM" }));
+  expect(warn).toHaveBeenCalledWith(expect.stringContaining("EIO"));
 }, 30_000);

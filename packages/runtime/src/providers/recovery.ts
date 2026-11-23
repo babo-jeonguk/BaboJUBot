@@ -109,12 +109,19 @@ export function recordProcess(
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, `${pid}.json`);
   const temp = `${file}.tmp`;
+  // recordProcess는 실행 직후에 돌아 동기여야 하므로 publishFile 대신 자기 임시 이름·이름 바꾸기를 둔다.
   const write = (record: object) => {
     try {
       writeFileSync(temp, JSON.stringify(record), { mode: 0o600 });
       renameSync(temp, file);
     } catch (e) {
-      rmSync(temp, { force: true });
+      continueAfterFailure(
+        () => rmSync(temp, { force: true }),
+        (cleanup) =>
+          console.warn(
+            `[provider] a temporary process record could not be removed (${failureCode(cleanup)})`
+          )
+      );
       throw e;
     }
   };

@@ -174,6 +174,22 @@ describe("opening a file in a place others can change, only if it is a regular f
     await expect(openRegularFile(file)).rejects.toBe(denied);
   });
 
+  // 열기가 본 항목(없음·링크·폴더)과 바로 뒤 lstat이 본 일반 파일이 다르면 그 사이 자리가 바뀐 것이다. 다른 실행이 같은 자리에
+  // 새 파일을 둘 때 생긴다(#279 CI macOS 간헐 실패). 열기 오류로 던지지 않고 "바뀜"으로 답해 부르는 쪽이 정한다. 다시 열어 보지 않는다.
+  it.each(["ENOENT", "ELOOP", "EISDIR"])(
+    "calls the place changed when the open met %s but a regular file is there right after",
+    async (code) => {
+      const root = await folders.make("babojubot-files-");
+      const file = path.join(root, "mark.json");
+      await writeFile(file, "content");
+      swap.failing = {
+        path: file,
+        error: Object.assign(new Error("the place changed"), { code }),
+      };
+      expect(await openRegularFile(file)).toBe("changed");
+    }
+  );
+
   // Windows는 열린 파일의 자리에 다른 파일을 옮길 수 없어 이 사이가 생기지 않는다.
   it.skipIf(process.platform === "win32")(
     "keeps the file it opened even when the path is replaced right after",

@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { readlinkSync } from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -386,8 +387,18 @@ function holdAt(
   return { reached, release };
 }
 
+/**
+ * 조직 폴더 안은 확인한 폴더 handle을 거친 경로(`/proc/self/fd/<n>/…`, #278)로 다룬다. 그 경로는 handle이 붙든 폴더의 경로로
+ * 바꿔 어느 폴더 안인지 본다.
+ */
+const spelled = (file: string) => {
+  const handle = /^\/proc\/self\/fd\/(\d+)(\/.*)?$/.exec(file);
+  return handle
+    ? readlinkSync(`/proc/self/fd/${handle[1]}`) + (handle[2] ?? "")
+    : file;
+};
 const inside = (folder: string, file: string) => {
-  const relative = path.relative(folder, file);
+  const relative = path.relative(folder, spelled(file));
   return (
     relative === "" ||
     (!relative.startsWith("..") && !path.isAbsolute(relative))

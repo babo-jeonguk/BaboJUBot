@@ -1,7 +1,5 @@
-import { open, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { constants } from "node:fs";
-import path from "node:path";
 import {
   addUsage,
   continueAfterFailure,
@@ -15,6 +13,11 @@ import {
   type SessionMaintenance,
   type UsageAmount,
 } from "@babojubot/contracts";
+import {
+  inFolder,
+  openRegularFile,
+  type OpenedRegularFile,
+} from "@babojubot/files";
 import { record } from "./record.ts";
 
 const unreadable = Symbol("unreadable");
@@ -37,41 +40,61 @@ async function sessionTranscripts<T>(
   read: (file: FileHandle, size: number) => Promise<T | undefined>
 ): Promise<T | undefined> {
   if (!/^[a-zA-Z0-9-]+$/.test(id)) return;
-  const projects = path.join(home, "config/projects");
-  const folders = await continueAfterFailure(
+  const listed = await continueAfterFailure(
     () =>
-      orIfMissing(
-        () => readdir(projects, { withFileTypes: true }),
-        hasErrorCode("ENOENT", "ENOTDIR"),
-        undefined
+      inFolder(home, ["config", "projects"], (folder) =>
+        orIfMissing(
+          () => readdir(folder.path, { withFileTypes: true }),
+          hasErrorCode("ENOENT", "ENOTDIR"),
+          undefined
+        )
       ),
     (error) =>
       console.warn(
         `[provider] the Claude session folders could not be read (${failureCode(error)})`
       )
   );
+  // Transcripts are read for usage facts, not to allow anything: both absent and unverifiable are skipped,
+  // so no facts are found and no maintenance request is scheduled.
+  if (listed?.state !== "reached") return;
+  const folders = listed.value;
   if (!folders) return;
-  for (const folder of folders) {
-    if (!folder.isDirectory()) continue;
-    let file;
-    try {
-      file = await open(
-        path.join(projects, folder.name, `${id}.jsonl`),
-        constants.O_RDONLY | constants.O_NOFOLLOW
-      );
-      const info = await file.stat();
-      if (!info.isFile()) continue;
-      const value = await read(file, info.size);
-      if (value !== undefined) return value;
-    } catch (error) {
-      if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
+  for (const entry of folders) {
+    if (!entry.isDirectory()) continue;
+    const found = await continueAfterFailure(
+      () =>
+        inFolder(home, ["config", "projects", entry.name], async (folder) => {
+          let file: OpenedRegularFile | undefined;
+          try {
+            const opened = await openRegularFile(folder.at(`${id}.jsonl`));
+            if (typeof opened === "string") return;
+            file = opened;
+            return await read(opened.handle, Number(opened.info.size));
+          } catch (error) {
+            if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
+              console.warn(
+                `[provider] a Claude session transcript could not be read (${failureCode(error)})`
+              );
+            /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
+          } finally {
+            const opened = file;
+            if (opened)
+              await continueAfterFailure(
+                () => opened.handle.close(),
+                (error) =>
+                  console.warn(
+                    `[provider] a Claude session transcript handle could not be closed (${failureCode(error)})`
+                  )
+              );
+          }
+        }),
+      (error) =>
         console.warn(
           `[provider] a Claude session transcript could not be read (${failureCode(error)})`
-        );
-      /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
-    } finally {
-      await file?.close();
-    }
+        )
+    );
+    if (found?.state !== "reached") continue;
+    if (found.value !== undefined) return found.value;
   }
 }
 

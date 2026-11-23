@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { pinnedReader } from "../src/workspace.ts";
+import { pinnedReaderFile } from "../src/workspace.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
 /**
@@ -148,7 +148,20 @@ export type PinnedResult = {
   bytes: Buffer | null;
 };
 /**
- * 서버와 같은 읽는 프로세스(`pinnedReader`)를 띄우되 앞에 `preload` 코드를 붙여 파일 작업 사이에 바꿔치기를 넣는다.
+ * 읽는 프로세스보다 먼저 도는 코드(`--import`). `node:fs/promises`의 함수를 바꿔 끼우고, 바꾼 값이 이 뒤에 가져오는 ES
+ * module(`@babojubot/files` 포함)에도 보이게 한다(node:module `syncBuiltinESMExports`). 빈 코드면 아무것도 앞에 두지 않는다.
+ */
+export const preloadArgs = (code: string) =>
+  code === ""
+    ? []
+    : [
+        "--import",
+        `data:text/javascript,${encodeURIComponent(
+          `${code}\nprocess.getBuiltinModule("node:module").syncBuiltinESMExports();\n`
+        )}`,
+      ];
+/**
+ * 서버와 같은 읽는 프로세스(`pinnedReaderFile`)를 띄우되 `preload` 코드를 먼저 돌려 파일 작업 사이에 바꿔치기를 넣는다.
  * `cwd`는 서버처럼 `organizations` 폴더의 실제 경로다.
  */
 export const runPinned = (
@@ -167,8 +180,8 @@ export const runPinned = (
     execFile(
       process.execPath,
       [
-        "-e",
-        preload + pinnedReader,
+        ...preloadArgs(preload),
+        pinnedReaderFile,
         JSON.stringify([
           options.maxBytes ?? 1000,
           organizationId,

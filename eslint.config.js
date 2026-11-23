@@ -384,6 +384,14 @@ export default defineConfig([
     },
   },
   {
+    // 다른 쪽이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 여는 방식(O_NOFOLLOW·O_NONBLOCK 열기, dev·ino 대조)은
+    // @babojubot/files만 정한다(#278). 그 패키지가 정하는 곳이라 범위에서 뺀다.
+    files: productFiles,
+    ignores: [...testFiles, "packages/files/src/**"],
+    plugins: { product: productRules },
+    rules: { "product/no-own-untrusted-open": "error" },
+  },
+  {
     // 바깥 데이터(JSON.parse, 외부 프로그램 출력)는 unknown으로 받아 모양을 확인하거나 스키마로 읽은 뒤 쓴다.
     // 객체 리터럴은 `as`로 타입을 우기지 않고 선언하거나 `satisfies`로 맞춘다. 느슨한 비교는 `== null`만 쓴다.
     // 이 규칙들은 `as`를 붙인 값은 보지 않는다. `as`는 라이브러리 선언이 any로 비운 값이나 저장 때 보장한 짝처럼
