@@ -894,6 +894,7 @@ test("the command checks Git's file list and fails with the problems", async () 
     for (const script of [
       "scripts/check-code-map.mjs",
       "scripts/markdown.mjs",
+      "scripts/package-exports.ts",
       "scripts/test-files.mjs",
     ]) {
       mkdirSync(path.dirname(path.join(fixture, script)), { recursive: true });
