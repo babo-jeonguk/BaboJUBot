@@ -206,6 +206,8 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     if (prepared.refusal !== undefined || !prepared.attemptLogin)
       throw new Error(`no isolated login: ${prepared.refusal}`);
     const attemptLogin = prepared.attemptLogin;
+    // 준비(prepare)는 연결 폴더에 로그인 링크를 두며 같은 이름(`token`)으로 옮긴다. 자리 표시 게시만 센다.
+    race.published = 0;
     const place = path.join(
       root,
       "providers",
