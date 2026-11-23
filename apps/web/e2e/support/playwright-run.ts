@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { within } from "@babojubot/process/test-support";
 
 // 시험 하나 안에서 Playwright 실행을 따로 띄운다. 안쪽 실행이 끝난 뒤에야 보이는 것(fixture·globalSetup 정리 뒤의 상태, 종료 코드,
 // 실패 문구)을 바깥 시험이 확인할 때 쓴다(공용 서버 수명 shared-server.spec.ts, 전역 설정 정리 shared-settings.spec.ts).
@@ -59,6 +60,10 @@ export async function runPlaywright(options: {
   child.stdout!.on("data", (chunk) => (output += chunk));
   child.stderr!.on("data", (chunk) => (output += chunk));
   const exit = once(child, "exit") as Promise<[number | null]>;
+  const outputEnded = Promise.all([
+    once(child.stdout!, "end"),
+    once(child.stderr!, "end"),
+  ]);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<undefined>((resolve) => {
     timer = setTimeout(() => resolve(undefined), timeoutMs);
@@ -74,5 +79,11 @@ export async function runPlaywright(options: {
     );
   }
   const [code] = finished;
+  // `exit` 때는 출력이 아직 열려 있을 수 있다(Node 문서 child_process `'exit'`). 부른 쪽이 출력을 단언하므로 출력의 끝까지 읽는다.
+  await within(
+    outputEnded,
+    10_000,
+    "the output of the inner Playwright run did not end after it exited"
+  );
   return { code, output };
 }

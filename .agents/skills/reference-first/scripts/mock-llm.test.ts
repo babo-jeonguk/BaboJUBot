@@ -79,8 +79,14 @@ async function serve(defer: (step: CleanupStep) => void, args: string[]) {
       )?.[1];
       if (url) resolve(url);
     });
-    child.once("exit", (code) =>
-      reject(new Error(`mock-llm exited ${code} before listening`))
+    // 주소 줄 없이 출력이 끝나면 더 기다리지 않는다. `exit`로 포기하지 않는다: 그때는 마지막 출력이 아직 닿지 않았을 수 있다(Node
+    // 문서 child_process `'exit'`).
+    child.stdout.once("end", () =>
+      reject(
+        new Error(
+          `mock-llm's output ended (exit ${child.exitCode}, signal ${child.signalCode}) before it announced its address: ${output}`
+        )
+      )
     );
   });
   return within(announced, 30_000, "mock-llm did not announce its address");

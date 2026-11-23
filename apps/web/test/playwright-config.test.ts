@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { within } from "@babojubot/process/test-support";
 import { expect, it } from "vitest";
 
 // Playwright의 webServer는 Windows에서 서버를 taskkill /F로 끝내 정리할 기회를 주지 않는다. 그래서 공용 API 서버는
@@ -26,8 +27,15 @@ it("leaves the API server to the global setup and only the web preview to webSer
   );
   let output = "";
   runner.stdout!.on("data", (chunk) => (output += chunk));
+  const outputEnded = once(runner.stdout!, "end");
   const [code] = await once(runner, "exit");
   expect(code).toBe(0);
+  // `exit` 때는 출력이 아직 열려 있을 수 있다(Node 문서 child_process `'exit'`). 출력의 끝까지 읽은 뒤 해석한다.
+  await within(
+    outputEnded,
+    10_000,
+    "the output of the config reader did not end after it exited"
+  );
 
   const { globalSetup, commands } = JSON.parse(output) as {
     globalSetup: string;
