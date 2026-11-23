@@ -347,7 +347,7 @@ function filesOf(root, config) {
  * (scripts/test-files.mjs)대로 나누는가. 시험 코드는 시험 쪽에만, 그 밖은 제품 쪽에 든다(시험 쪽은 가져오는 제품 파일을 어차피 함께
  * 검사하므로 제품 파일이 들어도 된다). 어긋난 파일을 모두 돌려준다.
  */
-function splitGaps(root, packages) {
+function splitGaps(root, packages, _files = []) {
   const gaps = [];
   for (const folder of packages) {
     const project = filesOf(root, `${folder}/tsconfig.json`);
@@ -395,6 +395,64 @@ test("the product and test type checks split files the way the test scope does",
       )
     );
   assert.deepEqual(splitGaps(mirrorOf(context, samples), packages), []);
+});
+
+/** 표본 저장소: { 저장소 기준 경로: 내용 }. JSON 내용은 객체로 받는다. */
+function sampleRepository(context, files) {
+  const root = mkdtempSync(path.join(tmpdir(), "lint-scope-split-"));
+  context.after(() => removeFolder(root));
+  for (const [file, content] of Object.entries(files)) {
+    mkdirSync(path.join(root, path.dirname(file)), { recursive: true });
+    writeFileSync(
+      path.join(root, file),
+      typeof content === "string" ? content : JSON.stringify(content)
+    );
+  }
+  return root;
+}
+const sampleOptions = { allowJs: true, noEmit: true, types: [] };
+
+// 나눌 패키지를 tsconfig.test.json이 있는 폴더에서 고르면, 그 파일이 빠진 새 패키지는 표본도 실제 파일도 검사받지 않는다(#286 항목 26).
+// 패키지는 설정과 따로 workspace(package.json)에서 찾는다.
+test("finds the packages to split by their package.json, not by a test config they may lack", (context) => {
+  const root = sampleRepository(context, {
+    "packages/fresh/package.json": { name: "@babojubot/fresh" },
+    "packages/fresh/tsconfig.json": { compilerOptions: sampleOptions },
+    "packages/fresh/src/a.test.ts": "export {};\n",
+  });
+  assert.deepEqual(packagesToSplit(root), ["packages/fresh"]);
+});
+
+// lint 프로젝트(tsconfig.json)가 시험 파일을 통째로 빼면, 그 프로젝트의 파일만 훑는 판정은 그 시험 파일을 보지 못한다(#286 항목 26).
+// 저장소의 시험 파일을 설정과 따로 열거해 세 프로젝트의 소속을 각각 본다.
+test("reports a test file the lint project leaves out", (context) => {
+  const root = sampleRepository(context, {
+    "packages/fresh/package.json": { name: "@babojubot/fresh" },
+    "packages/fresh/tsconfig.json": {
+      compilerOptions: sampleOptions,
+      include: ["src"],
+      exclude: ["src/**/*.test.*"],
+    },
+    "packages/fresh/tsconfig.src.json": {
+      compilerOptions: sampleOptions,
+      include: ["src"],
+      exclude: ["src/**/*.test.*"],
+    },
+    "packages/fresh/tsconfig.test.json": {
+      compilerOptions: sampleOptions,
+      include: ["src/**/*.test.*"],
+    },
+    "packages/fresh/src/a.ts": "export {};\n",
+    "packages/fresh/src/a.test.ts": "export {};\n",
+  });
+  assert.deepEqual(
+    splitGaps(
+      root,
+      ["packages/fresh"],
+      ["packages/fresh/src/a.ts", "packages/fresh/src/a.test.ts"]
+    ),
+    ["packages/fresh/src/a.test.ts not in tsconfig.json"]
+  );
 });
 
 /** 시험 러너가 모으는 형식의 이름 하나(앞의 `.`이나 정규식의 `\.` 포함). */
