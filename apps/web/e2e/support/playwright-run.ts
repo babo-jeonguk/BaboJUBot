@@ -64,49 +64,72 @@ export async function runPlaywright(options: {
 }
 
 /**
- * 띄운 자식(stdout·stderr가 파이프)을 끝까지 돌려 종료 코드와 출력(stdout·stderr를 받은 차례대로)을 돌려준다. 끝은 종료와 출력의
- * 끝을 함께 본다. `timeoutMs` 안에 끝나지 않으면 자식을 끄고 `what`을 밝혀 실패한다.
+ * 띄운 자식(stdout·stderr가 파이프)을 끝까지 돌려 종료 코드와 출력(`output`은 stdout·stderr를 받은 차례대로, `stdout`은 표준
+ * 출력만)을 돌려준다. 끝은 종료와 출력의
+ * 끝을 함께 본다(`exit` 때는 출력이 아직 열려 있을 수 있다, Node 문서 child_process `'exit'`). 그 대기가 어떤 이유로든(`timeoutMs`
+ * 시한, 출력 읽기 오류, 시작 실패) 끝나지 않으면 자식을 끄고 그 끝을 확인한 뒤, 원래 실패와 끄기의 실패를 함께 알린다(#287 리뷰
+ * STD-3). 띄운 직후 넘겨받아 자식을 남기는 길이 없다.
  */
 export async function runToEnd(
   child: ChildProcess,
   { timeoutMs, what }: { timeoutMs: number; what: string }
 ) {
   let output = "";
-  child.stdout!.on("data", (chunk) => (output += chunk));
+  let stdout = "";
+  child.stdout!.on("data", (chunk) => {
+    output += chunk;
+    stdout += chunk;
+  });
   child.stderr!.on("data", (chunk) => (output += chunk));
-  // 종료와 출력의 끝을 한 대기로 본다. `exit` 때는 출력이 아직 열려 있을 수 있어(Node 문서 child_process `'exit'`) 부른 쪽이 단언할
-  // 출력은 그 끝까지 읽은 것이고, 어느 길에서도 이 대기를 버리지 않는다(#287 리뷰 STD-2).
+  // 자식의 끝은 출력과 따로, 거절하지 않는 기록으로 둔다. 끈 뒤의 확인은 출력의 끝이 아니라 이것으로 한다.
+  const exited = new Promise<void>((resolve) =>
+    child.once("exit", () => resolve())
+  );
   const ended = Promise.all([
     once(child, "exit") as Promise<[number | null]>,
     once(child.stdout!, "end"),
     once(child.stderr!, "end"),
   ]);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timedOut = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
-  const finished = await Promise.race([ended, timedOut]).finally(() =>
-    clearTimeout(timer)
-  );
-  if (!finished) {
-    child.kill("SIGKILL");
-    // 끈 실행도 끝까지 본다. 끝나지 않으면 그 실패를 시한 실패와 함께 알린다.
-    const failures = await attemptEach([
-      () =>
-        within(
-          ended,
-          10_000,
-          `${what}: the stopped child did not exit and end its output`
-        ),
-    ]);
-    throw combinedFailure(
-      [
-        new Error(`${what}이 ${timeoutMs}ms 안에 끝나지 않았다: ${output}`),
-        ...failures,
-      ],
-      `${what}이 시한 안에 끝나지 않았다`
-    );
+  const outcome = await Promise.race([ended, timedOut])
+    .then(
+      (result) =>
+        result === "timeout"
+          ? {
+              ended: false as const,
+              failure: new Error(
+                `${what}: ${timeoutMs}ms 안에 끝나지 않았다: ${output}`
+              ),
+            }
+          : { ended: true as const, result },
+      (error: unknown) => ({ ended: false as const, failure: error })
+    )
+    .finally(() => clearTimeout(timer));
+  if (outcome.ended) {
+    const [[code]] = outcome.result;
+    return { code, output, stdout };
   }
-  const [[code]] = finished;
-  return { code, output };
+  const failures = await attemptEach([() => stopChild(child, exited, what)]);
+  throw combinedFailure(
+    [outcome.failure, ...failures],
+    `${what} did not run to its end`
+  );
+}
+
+/**
+ * 끝까지 돌지 못한 자식을 끄고 그 끝을 상한 안에 확인한다. 띄우지 못한 자식(번호 없음)은 끌 것이 없다. Node가 이미 끝을 본 자식에는
+ * `kill()`이 신호를 보내지 않으므로, 끝난 자식의 번호가 다른 프로세스에 다시 쓰였어도 신호가 그쪽으로 가지 않는다.
+ */
+async function stopChild(
+  child: ChildProcess,
+  exited: Promise<void>,
+  what: string
+) {
+  if (child.pid === undefined) return;
+  if (child.exitCode === null && child.signalCode === null)
+    child.kill("SIGKILL");
+  await within(exited, 10_000, `${what}: the stopped child did not exit`);
 }
