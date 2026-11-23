@@ -1008,6 +1008,19 @@ mod tests {
             procargs_reading(&procargs(&["tool"], &[]), marker, not_restricted),
             Reading::Clear
         );
+        // #283 review 3 CI: a buffer that does not hold the shape (read while the process execs, when the kernel may give stale or
+        // mismatched parts) is not an empty environment, restricted or not.
+        let never_asked = || -> bool { panic!("a buffer without the shape is not asked about") };
+        assert_eq!(
+            procargs_reading(b"\x01", marker, never_asked),
+            Reading::Unreadable
+        );
+        let mut short = procargs(&["tool"], &[]);
+        short[..4].copy_from_slice(&3i32.to_ne_bytes());
+        assert_eq!(
+            procargs_reading(&short, marker, never_asked),
+            Reading::Unreadable
+        );
     }
 
     /// #283 review 2, STD-2: a held program whose state cannot be read has not ended; it could not be told (macOS EPERM or EACCES,
@@ -1215,13 +1228,19 @@ mod tests {
     #[test]
     fn an_empty_linux_environment_is_judged_by_the_process_state() {
         let marker = "6f1c2a3e-1111-4222-8333-944455556666";
-        let stat = |state: &'static str, threads: u32| {
-            move || {
-                Ok(format!(
-                    "9 (x) {state} 1 9 9 0 -1 0 0 0 0 0 0 0 0 0 20 0 {threads} 0 5"
-                ))
-            }
+        // A whole stat line (Linux 3.5 and later): after the command name, the state, ..., the thread count (the 18th), ...,
+        // `env_end` (the 49th), the exit code.
+        let line = |state: &str, threads: u32, env_end: u64| {
+            let mut fields = vec!["0".to_owned(); 50];
+            fields[0] = state.to_owned();
+            fields[17] = threads.to_string();
+            fields[19] = "5".to_owned();
+            fields[48] = env_end.to_string();
+            format!("9 (x) {}", fields.join(" "))
         };
+        let set_up = 0x7ffd_1234_5000;
+        let stat =
+            move |state: &'static str, threads: u32| move || Ok(line(state, threads, set_up));
         let failed = |code| {
             move || -> std::io::Result<String> { Err(std::io::Error::from_raw_os_error(code)) }
         };
@@ -1232,6 +1251,19 @@ mod tests {
         assert_eq!(read(stat("X", 1)), Some(Reading::Gone));
         assert_eq!(read(stat("S", 1)), Some(Reading::Clear));
         assert_eq!(read(stat("R", 4)), Some(Reading::Clear));
+        // #283 review 3 CI: a process in the middle of exec runs with its main thread but has no environment yet (`env_end` 0): it
+        // may carry the marker once exec ends. So does a stat line without `env_end`.
+        assert_eq!(
+            environ_reading(empty(), marker, move || Ok(line("R", 1, 0))).ok(),
+            Some(Reading::Unreadable)
+        );
+        assert_eq!(
+            environ_reading(empty(), marker, || Ok(
+                "9 (x) S 1 9 9 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5".to_owned()
+            ))
+            .ok(),
+            Some(Reading::Unreadable)
+        );
         assert_eq!(
             environ_reading(empty(), marker, failed(libc::ENOENT)).ok(),
             Some(Reading::Gone)
