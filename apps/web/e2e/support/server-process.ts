@@ -318,8 +318,16 @@ function waitForReadyLine(
 /**
  * 멈춤 메시지로 정리를 맡기고 시한 안에 끝나기를 기다린다. 시한은 요청을 보내는 일부터 덮는다. 넘기면 강제로 끝내고 실패로 알린다.
  */
+/** 멈추기가 자식에게서 쓰는 것만. */
+export type StoppableChild = {
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  send(message: unknown, callback: (error: Error | null) => void): boolean;
+  kill(signal: NodeJS.Signals): boolean;
+};
+
 export async function stopChild(
-  child: ChildProcess,
+  child: StoppableChild,
   exited: Promise<Exit>,
   label: string,
   output: () => string,

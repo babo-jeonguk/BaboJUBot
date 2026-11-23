@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
 import { expect, test } from "@playwright/test";
-import { alive, gone, startServerProcess } from "./server-process.ts";
+import {
+  alive,
+  gone,
+  startServerProcess,
+  stopChild,
+  type StoppableChild,
+} from "./server-process.ts";
 import { attemptAll } from "@babojubot/contracts";
 
 // E2E 서버 프로세스 helper의 실패 경로. 고장 난 가짜 서버(misbehaving-server.mjs)로 만든다. 어느 경우든 helper는 시한 안에
@@ -184,4 +190,43 @@ test("a lock file that cannot be read is reported with its path, and the folder 
     );
     expect(existsSync(path.dirname(temp))).toBe(true);
   });
+});
+
+// 멈춤 요청 시한을 넘긴 뒤 강제로 끝내고 그 끝까지 시한 안에 확인하지 못하면, 두 실패를 모두 알린다. 끝 확인 실패만 던지면 첫 실패(멈춤
+// 요청에 끝나지 않음)가 사라진다(#291 외부 리뷰 1회차 STD-1). 받은 신호와 메시지를 기록하는 가짜 자식으로 두 시한을 모두 넘기게 한다:
+// 멈춤 요청의 보내기 콜백도, 종료도 오지 않는다.
+test("reports both the stop request deadline and the end check after SIGKILL when neither ends", async () => {
+  const sent: unknown[] = [];
+  const signals: unknown[] = [];
+  const child: StoppableChild = {
+    exitCode: null,
+    signalCode: null,
+    send: (message) => {
+      sent.push(message);
+      return true;
+    },
+    kill: (signal) => {
+      signals.push(signal);
+      return true;
+    },
+  };
+  const neverEnds = new Promise<{ code: number | null; signal: null }>(
+    () => undefined
+  );
+  const failure = await stopChild(child, neverEnds, "fake server", () => "", {
+    exitWaitMs: 20,
+    killWaitMs: 20,
+  }).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(failure).toBeInstanceOf(Error);
+  const message =
+    failure instanceof Error
+      ? `${failure.message} ${String(failure.cause)}`
+      : "";
+  expect(message).toMatch(/멈춤 요청 뒤 20ms 안에 끝나지 않아/);
+  expect(message).toMatch(/did not end after SIGKILL within 20 ms/);
+  expect(sent).toHaveLength(1);
+  expect(signals).toEqual(["SIGKILL"]);
 });
