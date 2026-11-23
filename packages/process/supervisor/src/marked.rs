@@ -835,8 +835,9 @@ fn environment(buffer: &[u8]) -> impl Iterator<Item = &[u8]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Confirmed, Reading, Running, Seen, confirm, environment, is_marker_entry, procargs_reading,
-        running_from, running_from_handle, same_start,
+        Candidate, Confirmed, Reading, Running, Seen, candidate, confirm, environment,
+        is_marker_entry, procargs_reading, running_from, running_from_handle, same_start,
+        seen_in_record,
     };
 
     #[test]
@@ -962,6 +963,149 @@ mod tests {
         );
     }
 
+    /// #283 review 2 (round 3 orchestration): a macOS process of this user whose information or environment is refused is told by
+    /// its start, not passed over. One that started before the run is not ours; one that started after it may be ours and is
+    /// unverified; one whose start cannot be read at all is unverified. Without a beginning nothing is unverified (round 1).
+    #[test]
+    fn a_macos_candidate_is_told_by_its_start_and_not_passed_over_when_refused() {
+        fn error<T>(code: i32) -> std::io::Result<T> {
+            Err(std::io::Error::from_raw_os_error(code))
+        }
+        let seen = |start, zombie, user| {
+            Ok(Some(Seen {
+                start,
+                zombie,
+                user,
+            }))
+        };
+        let decide = |first, since, reading: Reading, second| {
+            candidate(first, 501, since, || reading, || second).ok()
+        };
+        let since = Some(100);
+        let unreadable = Reading::Unreadable;
+        // Started before the run: its environment being refused does not make it ours.
+        assert_eq!(
+            decide(
+                seen(50, false, 501),
+                since,
+                unreadable,
+                seen(50, false, 501)
+            ),
+            Some(Candidate::Pass)
+        );
+        // Started after the run: it may be ours.
+        assert_eq!(
+            decide(
+                seen(150, false, 501),
+                since,
+                unreadable,
+                seen(150, false, 501)
+            ),
+            Some(Candidate::Unverified)
+        );
+        // Its start could not be read: it may be ours, whatever the failure.
+        assert_eq!(
+            decide(error(libc::EPERM), since, unreadable, Ok(None)),
+            Some(Candidate::Unverified)
+        );
+        assert_eq!(
+            decide(error(libc::EIO), since, unreadable, Ok(None)),
+            Some(Candidate::Unverified)
+        );
+        assert_eq!(
+            decide(
+                seen(150, false, 501),
+                since,
+                Reading::Clear,
+                error(libc::EIO)
+            ),
+            Some(Candidate::Unverified)
+        );
+        // Without a beginning nothing is unverified.
+        assert_eq!(
+            decide(error(libc::EPERM), None, unreadable, Ok(None)),
+            Some(Candidate::Pass)
+        );
+        // What is read decides the rest.
+        assert_eq!(
+            decide(
+                seen(50, false, 501),
+                since,
+                Reading::Carries,
+                seen(50, false, 501)
+            ),
+            Some(Candidate::Hold { start: 50 })
+        );
+        assert_eq!(
+            decide(
+                seen(50, false, 501),
+                since,
+                Reading::Carries,
+                seen(60, false, 501)
+            ),
+            Some(Candidate::Pass)
+        );
+        assert_eq!(
+            decide(seen(150, false, 501), since, Reading::Carries, Ok(None)),
+            Some(Candidate::Pass)
+        );
+        assert_eq!(
+            decide(
+                seen(150, false, 502),
+                since,
+                unreadable,
+                seen(150, false, 502)
+            ),
+            Some(Candidate::Pass)
+        );
+        assert_eq!(
+            decide(
+                seen(150, true, 501),
+                since,
+                unreadable,
+                seen(150, true, 501)
+            ),
+            Some(Candidate::Pass)
+        );
+        assert_eq!(
+            decide(Ok(None), since, unreadable, Ok(None)),
+            Some(Candidate::Pass)
+        );
+    }
+
+    /// The kernel's record of a process on 64-bit macOS (`sysctl(KERN_PROC_PID)`, `struct kinfo_proc`, 648 bytes): the start at 0
+    /// (seconds, then microseconds at 8), the state at 36, the real user at 392, the process group at 564 (the layout cgo generates
+    /// for golang.org/x/sys `KinfoProc`). An empty answer is a process that is gone (psutil); any other size is not this record.
+    #[test]
+    fn the_kernel_record_of_a_process_is_read_only_at_its_size() {
+        let record = |stat: u8, usec: i32| {
+            let mut buffer = vec![0u8; 648];
+            buffer[..8].copy_from_slice(&1_700_000_000i64.to_ne_bytes());
+            buffer[8..12].copy_from_slice(&usec.to_ne_bytes());
+            buffer[36] = stat;
+            buffer[392..396].copy_from_slice(&501u32.to_ne_bytes());
+            buffer[564..568].copy_from_slice(&77i32.to_ne_bytes());
+            buffer
+        };
+        let running = seen_in_record(&record(2, 123_456))
+            .expect("read")
+            .expect("runs");
+        assert_eq!(running.start, 1_700_000_000_123_456);
+        assert!(!running.zombie);
+        assert_eq!(running.user, 501);
+        assert_eq!(running.group, 77);
+        assert!(
+            seen_in_record(&record(5, 0))
+                .expect("read")
+                .expect("is there")
+                .zombie
+        );
+        assert!(seen_in_record(&[]).expect("read").is_none());
+        assert!(seen_in_record(&record(2, 0)[..647]).is_err());
+        assert!(seen_in_record(&[record(2, 0), vec![0]].concat()).is_err());
+        assert!(seen_in_record(&record(2, -1)).is_err());
+    }
+
     /// #283 review 2, SPEC-3: a recorded start is compared exactly. Two processes with the same number that started in the same
     /// second are different processes.
     #[test]
@@ -1001,6 +1145,62 @@ mod tests {
         let entries: Vec<&[u8]> = environment(&buffer).collect();
         assert_eq!(entries, vec![&b"A=1"[..], &b"B=2"[..]]);
         assert_eq!(environment(b"\x01").count(), 0);
+    }
+}
+
+/// macOS: the kernel's record is read at the right places, and a process refused to this credential still has one.
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::macos::record;
+
+    /// This process's own record gives its real user, its process group, and the start `proc_pidinfo` gives.
+    #[test]
+    fn the_record_of_this_process_is_read_at_the_right_places() {
+        // SAFETY: getpid, getuid and getpgrp have no memory effects.
+        let (me, uid, group) = unsafe { (libc::getpid(), libc::getuid(), libc::getpgrp()) };
+        let seen = record(me).expect("read").expect("this process runs");
+        assert_eq!(seen.user, uid);
+        assert_eq!(seen.group, group);
+        assert!(!seen.zombie);
+        // SAFETY: a zeroed proc_bsdinfo is valid; proc_pidinfo fills at most its size.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: the buffer is valid for `size` bytes.
+        let filled = unsafe {
+            libc::proc_pidinfo(me, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
+        };
+        assert_eq!(filled, size);
+        assert_eq!(
+            seen.start,
+            info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+        );
+    }
+
+    /// launchd belongs to root, so its information is refused to this user's processes; its record still gives its start.
+    #[test]
+    fn a_process_of_another_user_has_its_record() {
+        let launchd = record(1).expect("read").expect("launchd runs");
+        assert_eq!(launchd.user, 0);
+        assert!(launchd.start > 0);
+    }
+
+    /// A child that ended shows as a zombie until it is reaped, and has no record after.
+    #[test]
+    fn an_ended_child_is_a_zombie_and_then_has_no_record() {
+        let mut child = std::process::Command::new("/usr/bin/true")
+            .spawn()
+            .expect("true starts");
+        let pid = child.id() as libc::pid_t;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !record(pid).expect("read").expect("not reaped").zombie {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child did not end"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.wait().expect("the child is reaped");
+        assert!(record(pid).expect("read").is_none());
     }
 }
 
