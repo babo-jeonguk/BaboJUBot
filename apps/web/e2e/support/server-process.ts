@@ -8,6 +8,7 @@ import {
   killUnlessGone,
   processAlive,
 } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.
@@ -152,9 +153,11 @@ export async function startServerProcess({
         async () => {
           if (child.exitCode === null && child.signalCode === null)
             child.kill("SIGKILL");
+          // 끝나기를 시한 안에 확인하지 못하면 그 이유로 실패를 남긴다(아래 남은 프로세스 확인과 별도로).
           await within(
             exited.catch(() => undefined),
-            killWaitMs
+            killWaitMs,
+            `${label} did not end after SIGKILL`
           );
         },
         async () => {
@@ -332,36 +335,48 @@ async function stopChild(
       if (error) resolve(error);
     })
   );
-  const outcome = await within(
-    Promise.race<{ exit: Exit } | { error: Error }>([
-      exited.then((exit) => ({ exit })),
-      sendFailed.then((error) => ({ error })),
-    ]),
-    exitWaitMs
-  );
-  if (outcome && "error" in outcome) {
-    // 확인과 보내기 사이에 서버가 끝나고 있었으면 채널이 닫혀 보내기가 실패한다. 그때도 멈추라고 하기 전에 끝난 것이다.
-    const early = await within(exited, killWaitMs);
-    if (early)
-      throw new Error(
-        `${label}가 멈추라고 하기 전에 끝났다(code ${early.code}, signal ${early.signal}): ${output()}`
-      );
+  // 시한은 거절로 끝난다(공용 within). 시한을 이행으로 접으면 그 뒤 종료 관찰의 거절이 아무 데도 닿지 않는다(#286 항목 21).
+  let stopped: "exited" | Error;
+  try {
+    stopped = await within(
+      Promise.race([exited.then(() => "exited" as const), sendFailed]),
+      exitWaitMs,
+      `${label} did not end after the stop request`
+    );
+  } catch (error) {
+    // 시한 안에 끝나지 않았다. 강제로 끝내고 그 끝을 확인한 뒤 실패로 알린다.
+    child.kill("SIGKILL");
+    await within(exited, killWaitMs, `${label} did not end after SIGKILL`);
     throw new Error(
-      `${label}에 멈춤 요청을 보내지 못했다: ${outcome.error.message}: ${output()}`
+      `${label}가 멈춤 요청 뒤 ${exitWaitMs}ms 안에 끝나지 않아 강제로 끝냈다: ${output()}`,
+      { cause: error }
     );
   }
-  if (outcome) {
-    if (outcome.exit.code !== 0)
-      throw new Error(
-        `${label}가 정리에 실패했다(code ${outcome.exit.code}, signal ${outcome.exit.signal}): ${output()}`
+  if (stopped instanceof Error) {
+    // 확인과 보내기 사이에 서버가 끝나고 있었으면 채널이 닫혀 보내기가 실패한다. 그때도 멈추라고 하기 전에 끝난 것이다.
+    let early: Exit;
+    try {
+      early = await within(
+        exited,
+        killWaitMs,
+        `${label} did not end after the stop request could not be sent`
       );
-    return;
+    } catch (error) {
+      throw new Error(
+        `${label}에 멈춤 요청을 보내지 못했다: ${stopped.message}: ${output()}`,
+        { cause: error }
+      );
+    }
+    throw new Error(
+      `${label}가 멈추라고 하기 전에 끝났다(code ${early.code}, signal ${early.signal}): ${output()}`
+    );
   }
-  child.kill("SIGKILL");
-  await within(exited, killWaitMs);
-  throw new Error(
-    `${label}가 멈춤 요청 뒤 ${exitWaitMs}ms 안에 끝나지 않아 강제로 끝냈다: ${output()}`
-  );
+  // 종료가 먼저 왔다. 이미 정해진 그 결과를 읽는다.
+  const exit = await exited;
+  if (exit.code !== 0)
+    throw new Error(
+      `${label}가 정리에 실패했다(code ${exit.code}, signal ${exit.signal}): ${output()}`
+    );
 }
 
 /** 임시 내장 Postgres가 임시 폴더에 남기는 항목(dataDir와 그 주인 기록 `.owner`). */
@@ -434,18 +449,4 @@ export function gone(pid: number, ms: number) {
     };
     check();
   });
-}
-
-async function within<T>(promise: Promise<T>, ms: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
