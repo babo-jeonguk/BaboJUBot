@@ -70,14 +70,19 @@ fn environ_reading(read: std::io::Result<Vec<u8>>, marker: &str) -> std::io::Res
     }
 }
 
-/// What a `KERN_PROCARGS2` buffer tells (macOS). Only an environment read to its end without the marker is Clear: macOS answers for a
-/// restricted executable without its environment (psutil notes it), and a buffer that does not hold the expected shape tells nothing,
-/// so no environment entry at all reads as Unreadable. A program of this run always has at least the marker in its environment.
+/// What a `KERN_PROCARGS2` buffer tells (macOS). macOS gives another process's environment only when that process is not code-signing
+/// restricted (psutil quotes XNU: empty "unless ... target process is not cs_restricted", with SIP on), and the empty answer looks like
+/// a process whose environment really is empty (this supervisor runs with none). So no environment entry is Clear only when
+/// `restricted` (asked only then) says the process is not restricted; otherwise it is Unreadable.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn procargs_reading(buffer: &[u8], marker: &str) -> Reading {
+fn procargs_reading(buffer: &[u8], marker: &str, restricted: impl FnOnce() -> bool) -> Reading {
     let mut entries = environment(buffer).peekable();
     if entries.peek().is_none() {
-        return Reading::Unreadable;
+        return if restricted() {
+            Reading::Unreadable
+        } else {
+            Reading::Clear
+        };
     }
     if entries.any(|entry| is_marker_entry(entry, marker)) {
         Reading::Carries
@@ -123,6 +128,12 @@ pub trait Holder {
     fn pid(&self) -> libc::pid_t;
 }
 
+impl<H: Holder> Holder for std::rc::Rc<H> {
+    fn pid(&self) -> libc::pid_t {
+        (**self).pid()
+    }
+}
+
 /// What one search found: the programs whose marker was read, and the programs that may be ours but could not be read.
 pub struct Found<H> {
     pub holders: Vec<H>,
@@ -138,7 +149,7 @@ fn stat_fields(stat: &str) -> Vec<&str> {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::{Held, find, hold, signal, start_of_self};
+pub use linux::{Held, find, hold, signal, start_of_self, still_runs};
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -313,6 +324,23 @@ mod linux {
         Ok((same && still_running(&handle)).then_some(Held { pid, handle }))
     }
 
+    /// Whether a held program still runs. Its handle says whether it ended; a process whose main thread is a zombie still runs while
+    /// another thread does (Node.js ended by a signal), and a state that cannot be read leaves it running.
+    pub fn still_runs(held: &Held) -> bool {
+        if !still_running(&held.handle) {
+            return false;
+        }
+        match std::fs::read_to_string(format!("/proc/{}/stat", held.pid)) {
+            Ok(stat) => {
+                let fields = stat_fields(&stat);
+                let state = fields.first().copied().unwrap_or("");
+                let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
+                state != "X" && (state != "Z" || threads.is_none_or(|threads| threads > 1))
+            }
+            Err(error) => !gone(&error),
+        }
+    }
+
     /// Whether the handle still reaches a running process (for the tests).
     #[cfg(test)]
     pub fn reaches(held: &Held) -> bool {
@@ -397,7 +425,7 @@ mod linux {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{Held, find, hold, signal, start_of_self};
+pub use macos::{Held, find, hold, signal, start_of_self, still_runs};
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -438,6 +466,35 @@ mod macos {
             return Ok(None);
         }
         Err(error)
+    }
+
+    unsafe extern "C" {
+        /// libSystem's code signing operations (XNU `sys/codesign.h`).
+        fn csops(
+            pid: libc::pid_t,
+            ops: u32,
+            useraddr: *mut libc::c_void,
+            usersize: libc::size_t,
+        ) -> libc::c_int;
+    }
+    /// `CS_OPS_STATUS` (XNU `sys/codesign.h`): the code signing flags of a process.
+    const CS_OPS_STATUS: u32 = 0;
+    /// `CS_RESTRICT` (XNU `osfmk/kern/cs_blobs.h`): the process is restricted; its environment is not given to others.
+    const CS_RESTRICT: u32 = 0x0000_0800;
+
+    /// Whether the kernel keeps this process's environment from others. A status that cannot be read leaves it kept.
+    fn restricted(pid: libc::pid_t) -> bool {
+        let mut flags: u32 = 0;
+        // SAFETY: the buffer is a u32 of the size given.
+        let read = unsafe {
+            csops(
+                pid,
+                CS_OPS_STATUS,
+                (&raw mut flags).cast(),
+                std::mem::size_of::<u32>(),
+            )
+        };
+        read != 0 || flags & CS_RESTRICT != 0
     }
 
     /// Microseconds since the epoch.
@@ -534,7 +591,7 @@ mod macos {
             }
             let start = start_of(&before);
             let reading = arguments(pid)
-                .map(|arguments| procargs_reading(&arguments, &search.marker))
+                .map(|arguments| procargs_reading(&arguments, &search.marker, || restricted(pid)))
                 .unwrap_or(Reading::Unreadable);
             // The start time read again says the arguments read in between were this process's.
             let same = read(pid)?.is_some_and(|after| start_of(&after) == start);
@@ -565,6 +622,15 @@ mod macos {
                 pid,
                 start: start_of(&now),
             }))
+    }
+
+    /// Whether a held program still runs: the same start time, and not a zombie. Another user's process with its number now is not it.
+    pub fn still_runs(held: &Held) -> bool {
+        match info(held.pid) {
+            Ok(Some(now)) => start_of(&now) == held.start && now.pbi_status != libc::SZOMB,
+            Ok(None) => false,
+            Err(error) => !unreadable(&error),
+        }
     }
 
     pub fn signal(held: &Held, signal: libc::c_int) -> Result<(), String> {
@@ -662,29 +728,40 @@ mod tests {
         buffer
     }
 
-    /// #283 review 1, SPEC-1: macOS can answer `KERN_PROCARGS2` for a restricted executable without its environment. A missing
-    /// environment is not a read that found no marker: it could not be read.
+    /// #283 review 1, SPEC-1: macOS answers `KERN_PROCARGS2` for a restricted executable without its environment. A missing
+    /// environment of a restricted process is not a read that found no marker: it could not be read. One of a process that is not
+    /// restricted is an environment that really is empty (macOS CI showed this supervisor's own processes, which run with none).
     #[test]
     fn a_macos_process_without_an_environment_could_not_be_read() {
         let marker = "6f1c2a3e-1111-4222-8333-944455556666";
         let entry = format!("BABOJUBOT_PROCESS_LEASE={marker}");
+        let restricted = || true;
+        let not_restricted = || false;
+        let never_asked = || -> bool { panic!("a process with an environment is not asked about") };
         assert_eq!(
-            procargs_reading(&procargs(&["tool"], &[&entry]), marker),
+            procargs_reading(&procargs(&["tool"], &[&entry]), marker, never_asked),
             Reading::Carries
         );
         assert_eq!(
-            procargs_reading(&procargs(&["tool"], &["A=1"]), marker),
+            procargs_reading(&procargs(&["tool"], &["A=1"]), marker, never_asked),
             Reading::Clear
         );
         assert_eq!(
-            procargs_reading(&procargs(&["tool"], &[]), marker),
+            procargs_reading(&procargs(&["tool"], &[]), marker, restricted),
             Reading::Unreadable
         );
         assert_eq!(
-            procargs_reading(&procargs(&["tool", &entry], &[]), marker),
+            procargs_reading(&procargs(&["tool", &entry], &[]), marker, restricted),
             Reading::Unreadable
         );
-        assert_eq!(procargs_reading(b"\x01", marker), Reading::Unreadable);
+        assert_eq!(
+            procargs_reading(b"\x01", marker, restricted),
+            Reading::Unreadable
+        );
+        assert_eq!(
+            procargs_reading(&procargs(&["tool"], &[]), marker, not_restricted),
+            Reading::Clear
+        );
     }
 
     /// #283 review 1, SPEC-2: the read made after the handle is open decides. One that cannot be read is not a read that found no
@@ -726,7 +803,7 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::linux::reaches;
-    use super::{Holder, Search, find, hold, signal, stat_fields};
+    use super::{Holder, Search, find, hold, signal, stat_fields, still_runs};
     use std::process::{Command, Stdio};
 
     #[test]
@@ -783,5 +860,36 @@ mod linux_tests {
         assert_eq!(signal(&held, libc::SIGKILL), Ok(()));
         child.wait().expect("sleep is reaped");
         assert!(hold(pid, start).expect("it can be looked at").is_none());
+    }
+
+    /// #283 review 1: a held program still runs until it has ended, even when a look no longer finds it by its environment.
+    #[test]
+    fn a_held_program_runs_until_it_has_ended() {
+        let marker = format!(
+            "runs-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+        );
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .env("BABOJUBOT_PROCESS_LEASE", &marker)
+            .spawn()
+            .expect("sleep runs");
+        let found = find(&Search {
+            marker: marker.clone(),
+            since: None,
+        })
+        .expect("the processes can be searched");
+        let held = &found.holders[0];
+        assert!(still_runs(held));
+        assert_eq!(signal(held, libc::SIGKILL), Ok(()));
+        // Ended but not reaped yet (a zombie of one thread): it no longer runs, though its number is still taken.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while still_runs(held) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!still_runs(held));
+        child.wait().expect("sleep is reaped");
+        assert!(!still_runs(held));
     }
 }

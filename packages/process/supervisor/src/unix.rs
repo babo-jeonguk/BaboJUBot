@@ -191,10 +191,43 @@ fn exit_of(code: libc::c_int, status: libc::c_int) -> Option<Exit> {
     }
 }
 
-/// The program, which is also its process group's leader, and its group. `search` finds the programs that carry this run's marker.
+/// The program, which is also its process group's leader, and its group. `marked` finds the programs that carry this run's marker.
 struct Leader {
     pid: libc::pid_t,
+    marked: Marked,
+}
+
+/// The programs that carry this run's marker, as a stop sees them. One a later look no longer finds (a dying process shows no
+/// environment) still counts until what holds it says it ended (#283 review 1): not finding it again is not its end.
+#[derive(Default)]
+struct Marked {
     search: Option<marked::Search>,
+    seen: std::cell::RefCell<Vec<std::rc::Rc<marked::Held>>>,
+}
+
+impl Marked {
+    fn new(search: Option<marked::Search>) -> Self {
+        Marked {
+            search,
+            seen: Default::default(),
+        }
+    }
+
+    /// This look's programs, and those held before that still run.
+    fn keep(&self, found: marked::Found<marked::Held>) -> marked::Found<std::rc::Rc<marked::Held>> {
+        let mut holders: Vec<std::rc::Rc<marked::Held>> =
+            found.holders.into_iter().map(std::rc::Rc::new).collect();
+        for held in self.seen.borrow_mut().drain(..) {
+            if !holders.iter().any(|each| each.pid() == held.pid()) && marked::still_runs(&held) {
+                holders.push(held);
+            }
+        }
+        *self.seen.borrow_mut() = holders.clone();
+        marked::Found {
+            holders,
+            unverified: found.unverified,
+        }
+    }
 }
 
 impl Leader {
@@ -290,13 +323,15 @@ fn marked_outside(
 }
 
 impl Reach for Leader {
-    type Held = marked::Held;
+    type Held = std::rc::Rc<marked::Held>;
 
-    fn marked(&self) -> Result<marked::Found<marked::Held>, String> {
-        marked_outside(self.search.as_ref(), Some(self.pid))
+    fn marked(&self) -> Result<marked::Found<Self::Held>, String> {
+        Ok(self
+            .marked
+            .keep(marked_outside(self.marked.search.as_ref(), Some(self.pid))?))
     }
 
-    fn signal_marked(&self, held: &marked::Held, signal: libc::c_int) -> Result<(), String> {
+    fn signal_marked(&self, held: &Self::Held, signal: libc::c_int) -> Result<(), String> {
         marked::signal(held, signal)
     }
 
@@ -338,12 +373,12 @@ impl Reach for Leader {
 /// The restart recovery's request when the run's server and supervisor both died: no program and no group, only what carries the
 /// run's marker and the process the run's record kept, when it is still that process (`clean`).
 struct Stray {
-    search: Option<marked::Search>,
+    marked: Marked,
     recorded: Option<(libc::pid_t, u64)>,
 }
 
 impl Reach for Stray {
-    type Held = marked::Held;
+    type Held = std::rc::Rc<marked::Held>;
 
     fn group_live(&self) -> Result<usize, String> {
         Ok(0)
@@ -353,15 +388,15 @@ impl Reach for Stray {
         Ok(Vec::new())
     }
 
-    fn marked(&self) -> Result<marked::Found<marked::Held>, String> {
-        let mut found = marked_outside(self.search.as_ref(), None)?;
+    fn marked(&self) -> Result<marked::Found<Self::Held>, String> {
+        let mut found = marked_outside(self.marked.search.as_ref(), None)?;
         if let Some((pid, start)) = self.recorded
             && !found.holders.iter().any(|held| held.pid() == pid)
             && let Some(held) = marked::hold(pid, start)?
         {
             found.holders.push(held);
         }
-        Ok(found)
+        Ok(self.marked.keep(found))
     }
 
     fn signal_group(&self, _signal: libc::c_int) -> Result<(), String> {
@@ -372,7 +407,7 @@ impl Reach for Stray {
         Ok(())
     }
 
-    fn signal_marked(&self, held: &marked::Held, signal: libc::c_int) -> Result<(), String> {
+    fn signal_marked(&self, held: &Self::Held, signal: libc::c_int) -> Result<(), String> {
         marked::signal(held, signal)
     }
 }
@@ -810,7 +845,10 @@ fn start(arguments: &[OsString], env: &[(String, String)]) -> Result<Leader, Sta
                 .map_err(|_| StartFailure::Failed("the program's id is out of range".to_owned()))?;
             // The child handle neither waits nor kills on drop; the supervisor reaps the program itself after the last signal.
             drop(child);
-            Ok(Leader { pid, search: None })
+            Ok(Leader {
+                pid,
+                marked: Marked::default(),
+            })
         }
         Err(error) => Err(StartFailure::NotStarted(
             errno_name(error.raw_os_error()),
@@ -856,10 +894,10 @@ pub fn run() -> i32 {
         protocol::StartRequest::Start(start) => start,
         protocol::StartRequest::Clean(clean) => {
             let stray = Stray {
-                search: clean.marker.map(|marker| marked::Search {
+                marked: Marked::new(clean.marker.map(|marker| marked::Search {
                     marker,
                     since: clean.since,
-                }),
+                })),
                 recorded: clean.recorded,
             };
             let result = end_tree(&stray, protocol::DEFAULT_GRACE, protocol::END_LIMIT);
@@ -886,10 +924,10 @@ pub fn run() -> i32 {
     };
     // Programs of this user that started after this supervisor and cannot be read may be the run's (`marked.rs`).
     // Without its own start, the widest beginning: every unreadable program of this user may then be ours.
-    leader.search = start_request.marker.clone().map(|marker| marked::Search {
+    leader.marked = Marked::new(start_request.marker.clone().map(|marker| marked::Search {
         marker,
         since: Some(marked::start_of_self().unwrap_or(0)),
-    });
+    }));
     control.write_message(&format!("ok {}", leader.pid));
     release_standard_streams();
     protocol::supervise(&mut control, &mut leader, &Signals, start_request)
