@@ -1,5 +1,6 @@
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { attemptEach, combinedFailure } from "@babojubot/contracts";
 import { within } from "./test-support.ts";
 
 /** 시험 프로그램 안에서 연결을 쥐는 실제 파일. */
@@ -48,6 +49,17 @@ export async function openLifelines() {
     };
     socket.on("data", read);
   });
+  /** 서버와 받은 연결(이름을 보내지 않은 연결 포함)을 닫고, 닫기의 실패를 거절로 상한 안에 알린다. */
+  const closeAll = async () => {
+    for (const socket of sockets) socket.destroy();
+    await within(
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      ),
+      10_000,
+      "the lifeline server did not close"
+    );
+  };
   try {
     await within(
       new Promise<void>((resolve, reject) => {
@@ -58,9 +70,13 @@ export async function openLifelines() {
       "the lifeline server did not start listening"
     );
   } catch (error) {
-    // 부른 쪽은 서버를 받지 못해 닫을 수 없다. 듣기 시작한 서버를 남기지 않고 그 실패를 알린다(#287 리뷰 STD-1).
-    if (server.listening) server.close();
-    throw error;
+    // 부른 쪽은 서버를 받지 못해 닫을 수 없다. 듣고 있는 서버(`listening`은 듣기를 마친 순간부터 참이다)는 여기서 닫고 그 끝을
+    // 기다리며, 닫기의 실패는 듣기의 실패와 함께 알린다(#287 리뷰 권고). 듣지 못한 서버는 닫을 것이 없다.
+    const failures = server.listening ? await attemptEach([closeAll]) : [];
+    throw combinedFailure(
+      [error, ...failures],
+      "the lifeline server did not start"
+    );
   }
   const address = server.address();
   if (address === null || typeof address === "string")
@@ -100,16 +116,7 @@ export async function openLifelines() {
     /** 연결이 온 모든 이름. */
     names: () => [...lines.keys()],
     /** 서버와 남은 연결(이름을 보내지 않은 연결 포함)을 닫는다. 남은 연결이 있으면 그 프로그램은 시험이 따로 끈다. */
-    close: async () => {
-      for (const socket of sockets) socket.destroy();
-      await within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        ),
-        10_000,
-        "the lifeline server did not close"
-      );
-    },
+    close: closeAll,
   };
 }
 
