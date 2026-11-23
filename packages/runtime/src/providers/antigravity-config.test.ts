@@ -92,13 +92,17 @@ const interrupt = `{
   process.getBuiltinModule("node:module").syncBuiltinESMExports();
 }
 `;
-const script = (cwd: string, plan: Record<string, unknown> = {}) =>
+const script = (
+  cwd: string,
+  plan: Record<string, unknown> = {},
+  preload = interrupt
+) =>
   new Promise<number>((resolve) => {
     const child = execFile(
       process.execPath,
       [
         "--import",
-        `data:text/javascript,${encodeURIComponent(interrupt)}`,
+        `data:text/javascript,${encodeURIComponent(preload)}`,
         configScriptFile,
         JSON.stringify([ownerMark]),
       ],
@@ -156,6 +160,46 @@ it("never removes another organization's file when .agents is swapped at any mom
   expect(results).toContain(0);
   expect(results.some((status) => status !== 0)).toBe(true);
 }, 240_000);
+
+// 사용자(이 컴퓨터의 Antigravity 실행)가 같은 이름으로 새 설정을 저장하는 장면을 스크립트의 파일 작업 앞에 끼운다. 편집기처럼
+// 다 쓴 임시 파일을 그 이름으로 옮긴다. `plan.at`이 "removal"이면 처음 지우는 작업 앞, "name"이면 설정 이름을 옮기거나 지우는
+// 처음 작업 앞이다. 스크립트가 가져오는 ES module에도 보이게 한다(node:module syncBuiltinESMExports).
+const userSave = `{
+  const fs = process.getBuiltinModule("node:fs");
+  const plan = JSON.parse(process.env.PLAN);
+  let saved = false;
+  for (const name of ["rename", "unlink"]) {
+    const real = fs.promises[name];
+    fs.promises[name] = (...args) => {
+      const due = plan.at === "removal" ? name === "unlink" : String(args[0]) === "mcp_config.json";
+      if (!saved && due) {
+        saved = true;
+        fs.writeFileSync(".user-save", plan.content);
+        fs.renameSync(".user-save", "mcp_config.json");
+      }
+      return real(...args);
+    };
+  }
+  process.getBuiltinModule("node:module").syncBuiltinESMExports();
+}
+`;
+
+// 정리는 우리 표시를 확인한 파일만 지운다. 확인한 뒤 같은 이름에 저장된 새 설정은 확인한 파일이 아니므로 지우지 않는다(#286 항목 8).
+it.each([
+  ["right before the removal", "removal"],
+  ["right before the name is first moved or removed", "name"],
+])(
+  "keeps a configuration the user saved under the same name %s",
+  async (_moment, at) => {
+    const { cwd, agents, config } = await workspace();
+    await writeFile(config, ownedLeftover);
+    const saved = '{"mcpServers":{"mine":{}}}';
+    await script(cwd, { at, content: saved }, userSave);
+    expect(await readFile(config, "utf8")).toBe(saved);
+    // 정리가 옮겨 둔 것을 남기지 않는다.
+    expect(await readdir(agents)).toEqual(["mcp_config.json"]);
+  }
+);
 
 it.each([
   ["empty", ""],

@@ -16,7 +16,24 @@ const race = vi.hoisted(() => ({
   onOpenMissing: undefined as undefined | (() => Promise<void>),
   /** 실행 시도 폴더 밖의 쓰기가 파일을 만든 뒤 이 오류로 실패한다(디스크가 찬 경우처럼). */
   failAfterCreate: undefined as Error | undefined,
+  /** 로그인 자리 이름(`token`)으로 옮겨 둔 횟수. 자리 표시를 게시한 횟수다. */
+  published: 0,
+  /** 제품이 키 하나의 차례를 청할 때 그 키로 부른다(`oneAtATime`). */
+  turnRequested: undefined as undefined | ((key: string) => void),
 }));
+// 같은 자리의 확인과 게시는 키마다 차례로 한다(`./one-at-a-time.ts`). 차례를 청한 것을 시험이 본다. 기다리는 쪽은 아무 일도
+// 하지 않으므로, 이 신호가 없으면 "기다리는 중"을 알 수 없다.
+vi.mock("./one-at-a-time.ts", async (importOriginal) => {
+  const real = await importOriginal<{
+    oneAtATime: <T>(key: string, task: () => Promise<T>) => Promise<T>;
+  }>();
+  return {
+    oneAtATime: <T>(key: string, task: () => Promise<T>) => {
+      race.turnRequested?.(key);
+      return real.oneAtATime(key, task);
+    },
+  };
+});
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const writeFile: typeof real.writeFile = async (file, ...rest) => {
@@ -50,13 +67,25 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       throw error;
     }
   };
-  return { ...real, writeFile, open, default: { ...real, writeFile, open } };
+  const rename: typeof real.rename = async (from, to) => {
+    await real.rename(from, to);
+    if (path.basename(String(to)) === "token") race.published++;
+  };
+  return {
+    ...real,
+    writeFile,
+    open,
+    rename,
+    default: { ...real, writeFile, open, rename },
+  };
 });
 afterEach(() => {
   race.outside = [];
   race.holdFirstWrite = undefined;
   race.onOpenMissing = undefined;
   race.failAfterCreate = undefined;
+  race.published = 0;
+  race.turnRequested = undefined;
 });
 
 const folders = testFolders();
@@ -158,54 +187,61 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     }
   );
 
-  // 같은 조직의 두 실행 시도가 함께 자리 표시를 둔다(#279 CI macOS 간헐 실패). 한쪽이 자리를 비우고 쓰는 사이에 다른 쪽이 확인하면
-  // 열기는 "없음"인데 바로 뒤에는 파일이 있어 확인이 오류로 끝났다. 자리 표시는 완성된 파일로 한 번에 나타나야 하고, 이미 있는
-  // 자리 표시는 다른 컨테이너가 그 위에 로그인을 넣고 있을 수 있어 바꾸지 않는다.
-  it("lets two attempts of one organization place the stand-in at the same time", async () => {
+  // 같은 조직의 두 실행 시도가 함께 자리 표시를 둔다(#279 CI macOS 간헐 실패). 자리 표시는 완성된 파일로 한 번에 나타나야 하고,
+  // 먼저 게시한 자리 표시는 바뀌면 안 된다: 그 실행 시도의 컨테이너가 그 파일 위에 로그인을 넣었고, 파일이 바뀌면 그 마운트가
+  // 떨어져 나간다. 그래서 자리를 확인하고 게시하는 일은 자리마다 하나씩 한다. 먼저 온 시도가 게시하는 도중(임시 파일 쓰기)에
+  // 다른 시도를 시작하고, 그 시도가 차례를 청하거나(차례로 함) 자리를 확인해 없음을 보면(함께 함) 먼저 온 시도의 쓰기를 푼다
+  // (#286 항목 6). 이 시험은 앞서 두 시도가 함께 확인하는 것을 전제로 했으나, 그 동작이 먼저 게시한 파일을 바꾸므로 고쳤다.
+  it("lets two attempts of one organization place the stand-in one after the other, never replacing the one placed first", async () => {
     const root = await folders.make("babojubot-file-login-");
     const login = fileLogin(root, "nested", nested);
     const prepared = await login.prepare(organizationId, true);
     if (prepared.refusal !== undefined || !prepared.attemptLogin)
       throw new Error(`no isolated login: ${prepared.refusal}`);
     const attemptLogin = prepared.attemptLogin;
+    const place = path.join(
+      root,
+      "providers",
+      "nested",
+      "organizations",
+      organizationId,
+      nested.loginFile
+    );
     const first = await folders.make("babojubot-attempt-");
     const second = await folders.make("babojubot-attempt-");
     race.outside = [first, second];
     let secondDone: Promise<unknown> = Promise.resolve();
-    let missed!: () => void;
-    const secondMissed = new Promise<void>((resolve) => (missed = resolve));
-    let wrote!: () => void;
-    const firstWrote = new Promise<void>((resolve) => (wrote = resolve));
+    let checkedWhilePlacing = false;
     race.holdFirstWrite = async (write) => {
-      race.onOpenMissing = async () => {
-        missed();
-        await firstWrote;
-      };
+      const secondArrived = new Promise<void>((resolve) => {
+        race.turnRequested = (key) => {
+          if (key === place) resolve();
+        };
+        race.onOpenMissing = async () => {
+          checkedWhilePlacing = true;
+          resolve();
+        };
+      });
       secondDone = attemptLogin(second, "grant-two");
-      await Promise.race([
-        secondMissed,
-        secondDone.then(
-          () => undefined,
-          () => undefined
-        ),
-      ]);
+      await secondArrived;
       await write();
-      wrote();
     };
 
     const placed = await attemptLogin(first, "grant-one");
     const other = (await secondDone) as typeof placed;
+    expect(checkedWhilePlacing).toBe(false);
+    expect(race.published).toBe(1);
+    expect(placed.target).toBe(place);
+    expect(other.target).toBe(place);
     expect(await readFile(placed.source, "utf8")).toBe(
       JSON.stringify({ token: "grant-one" })
     );
     expect(await readFile(other.source, "utf8")).toBe(
       JSON.stringify({ token: "grant-two" })
     );
-    expect(await readFile(placed.target, "utf8")).toBe(
-      JSON.stringify({ token: "" })
-    );
+    expect(await readFile(place, "utf8")).toBe(JSON.stringify({ token: "" }));
     // 쓰다 만 임시 파일을 남기지 않는다.
-    expect(await readdir(path.dirname(placed.target))).toEqual(["token"]);
+    expect(await readdir(path.dirname(place))).toEqual(["token"]);
   });
 
   // 자리 표시를 쓰다 실패해도 조직 폴더에 임시 파일을 남기지 않는다(#280 리뷰 2회차 STD-2).

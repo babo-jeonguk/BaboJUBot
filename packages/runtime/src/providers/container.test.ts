@@ -17,7 +17,11 @@ import { tmpdir } from "node:os";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
+import type {
+  EgressRefusal,
+  ProviderConnection,
+  RunRequest,
+} from "@babojubot/contracts";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import {
@@ -46,6 +50,10 @@ import { testFolders } from "./test-folders.ts";
 let refusal: string | null = null;
 /** 이 이름이 경로에 든 폴더 지우기가 잠긴 파일처럼(EBUSY) 계속 실패한다. 비어 있으면 실제로 지운다. */
 const locked = vi.hoisted(() => ({ folder: null as RegExp | null }));
+/** 이름이 `opencode.db-wal`인 파일을 열기 바로 전에 한 번 부른다. 비어 있으면 그냥 연다. */
+const opening = vi.hoisted(() => ({
+  beforeWal: undefined as undefined | (() => void),
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -66,6 +74,41 @@ vi.mock("node:fs/promises", async (importOriginal) => {
             })
           )
         : actual.symlink(...args),
+    open: (...args: Parameters<typeof actual.open>) => {
+      const before = opening.beforeWal;
+      if (before && String(args[0]).endsWith("opencode.db-wal")) {
+        opening.beforeWal = undefined;
+        before();
+      }
+      return actual.open(...args);
+    },
+  };
+});
+
+/**
+ * 중계의 목적지 판정을 갈음한다. 비어 있으면 실제 판정이다. 격리 확인은 중계의 주소 확인이 금지 목적지를 막는지 보는 검사이므로,
+ * 그 확인이 고장 난 중계(금지 목적지를 열어 주거나 다른 이유로 거부함)를 만들어 확인이 그것을 알아보는지 본다.
+ */
+const policy = vi.hoisted(() => ({
+  decide: undefined as
+    | undefined
+    | ((
+        host: string,
+        port: number
+      ) =>
+        | { allowed: true; addresses: string[] }
+        | { allowed: false; reason: EgressRefusal }),
+}));
+vi.mock("./egress-policy.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./egress-policy.ts")>();
+  return {
+    ...actual,
+    decideDestination: (
+      ...args: Parameters<typeof actual.decideDestination>
+    ) =>
+      policy.decide
+        ? Promise.resolve(policy.decide(args[1], args[2]))
+        : actual.decideDestination(...args),
   };
 });
 
@@ -78,6 +121,8 @@ const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 afterEach(() => {
   refusal = null;
   locked.folder = null;
+  policy.decide = undefined;
+  opening.beforeWal = undefined;
   vi.unstubAllEnvs();
 });
 
@@ -1722,6 +1767,46 @@ describe.skipIf(process.platform === "win32")(
       20000
     );
 
+    // 서버는 조직의 저장소를 경로로 열지 않고 DB와 WAL을 차례로 복사해 사본을 연다. 그 사이 원본의 체크포인트가 WAL에만 있던
+    // 로그인 행을 DB로 옮기고 WAL을 비우면, 사본은 옛 DB와 빈 WAL이 되어 정상적으로 열리면서 행을 0개로 센다. 그런 사본은
+    // 원본의 어느 한 때와도 같지 않으므로 남은 로그인이 없다고 볼 근거가 되지 못한다(#286 항목 7).
+    it("does not start a container when the organization's database moved a login from its log into the database while it was being copied", async () => {
+      const t = await openCodeSetup();
+      const store = path.join(t.organization, "data", "opencode");
+      await mkdir(store, { recursive: true });
+      const db = new DatabaseSync(path.join(store, "opencode.db"));
+      try {
+        db.exec("PRAGMA journal_mode=WAL");
+        db.exec("PRAGMA wal_autocheckpoint=0");
+        db.exec(
+          "create table credential (id text primary key, integration_id text, label text not null, value text not null, active integer)"
+        );
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        // 로그인 행은 WAL에만 있다.
+        db.prepare(
+          "insert into credential (id, integration_id, label, value, active) values (?, ?, ?, ?, 1)"
+        ).run("cred_left", "opencode-go", "Go", JSON.stringify({ key: "x" }));
+        let checkpointed = false;
+        opening.beforeWal = () => {
+          db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+          checkpointed = true;
+        };
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+
+        const result = await t
+          .provider()
+          .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+        expect(checkpointed).toBe(true);
+        expect(result.stopReason).toBe("failed");
+        expect(result.error).toContain("로그인 기록");
+        expect(await t.env.calls()).toEqual([]);
+        expect(t.network.urls).toHaveLength(0);
+      } finally {
+        db.close();
+      }
+    }, 20000);
+
     it("copies no connection login into the organization's product folder while an isolated run of the organization is still going, even after isolation is turned off (PR #171 SP-2)", async () => {
       const t = await openCodeSetup(true, true);
 
@@ -2703,6 +2788,31 @@ describe("docker failures during container cleanup", () => {
     });
   });
 
+  // 바깥에서 받은 종료 신호로 끝난 docker 명령도 그 신호가 원인이다. "끝남 코드 없음"으로 접지 않는다(#286 항목 2).
+  // Windows에는 프로세스를 끝내는 신호가 없어(끝남 코드로만 끝난다) 이 갈래가 생기지 않는다.
+  it.skipIf(process.platform === "win32")(
+    "keeps the signal that ended a docker command, and fails leftover cleanup with it",
+    async () => {
+      const signalled = {
+        ...failing,
+        docker: [
+          process.execPath,
+          "-e",
+          `process.kill(process.pid, "SIGTERM");`,
+        ] as const,
+      };
+      await expect(runDocker(signalled, ["ps"])).resolves.toMatchObject({
+        code: null,
+        signal: "SIGTERM",
+      });
+      await expect(
+        createDockerEnvironment(signalled).removeOrphans()
+      ).rejects.toThrow(
+        "leftover containers could not be listed (signal SIGTERM)"
+      );
+    }
+  );
+
   it("fails leftover cleanup with the output limit as the cause when docker prints too much", async () => {
     const flooding = {
       ...failing,
@@ -2880,7 +2990,225 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
       }))
     );
   });
+
+  // 확인 컨테이너가 실패하고 정리도 실패하면 두 실패를 함께 알린다. 정리 실패만 남기면 확인 컨테이너의 끝남 코드와 오류
+  // 출력이 사라진다(#286 항목 3).
+  it("keeps the probe container's own failure when removing the container fails too", async () => {
+    const root = await folders.make("babojubot-probe-");
+    await writeFile(path.join(root, "rm-fails"), "");
+    const broken = path.join(root, "broken.mjs");
+    await writeFile(
+      broken,
+      `process.stderr.write("probe broke"); process.exit(3);\n`
+    );
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const environment = createDockerEnvironment({
+      docker: [
+        process.execPath,
+        fixture("fake-docker.mjs"),
+        root,
+        JSON.stringify({ node: [process.execPath, broken] }),
+      ],
+      image,
+      owner: "owner-test",
+      relay: attachedRelayHub(),
+    });
+    const failure = await environment
+      .probe({ blocked: [], forbidden: [] }, AbortSignal.timeout(10_000))
+      .then(
+        () => new Error("the probe did not fail"),
+        (error: unknown) => error
+      );
+    if (!(failure instanceof AggregateError))
+      throw new Error(`expected both failures, got ${String(failure)}`, {
+        cause: failure,
+      });
+    const [ran, removed, ...rest] = failure.errors as Error[];
+    expect(rest).toEqual([]);
+    expect(ran?.message).toBe("isolation probe container failed");
+    expect((ran?.cause as Error | undefined)?.message).toBe(
+      "exit 3: probe broke"
+    );
+    expect(removed?.message).toMatch(
+      /^the isolation probe container babojubot-probe-\S+ could not be removed$/
+    );
+  });
 });
+
+/**
+ * 실제 확인 스크립트를 이 컴퓨터에서 돌린다. 가짜 docker가 `node`를 이 프로그램으로 바꿔 띄우고, 먼저 읽히는 모듈이 컨테이너의
+ * 네트워크를 대신한다: 네트워크 장치는 loopback뿐이고, 컨테이너 안 중계 포트(이미지의 relay.mjs가 잇는 127.0.0.1:39280·39281)는 이 확인이 연 실제 중계의 파일
+ * 소켓으로 잇고, `HTTPS_PROXY`는 이미지의 시작 프로그램처럼 둔다. 직접 연결은 옆 파일 `direct.json`에 적은 주소만 정한 결과
+ * (연결됨·연결 오류 코드·답 없음)를 내고, 그 밖은 이 컴퓨터에서 실제로 연결한다.
+ */
+const containerNetwork = `
+import { readFileSync } from "node:fs";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+// --network none의 컨테이너에는 loopback만 있다.
+os.networkInterfaces = () => ({
+  lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.1/8" }],
+});
+const mounts = JSON.parse(process.env.FAKE_DOCKER_MOUNTS);
+const relay = mounts.find((mount) => mount.target === "/run/babojubot").source;
+const outcomes = JSON.parse(readFileSync(new URL("./direct.json", import.meta.url), "utf8"));
+const relayed = { 39280: "egress.sock", 39281: "tools.sock" };
+process.env.HTTPS_PROXY = "http://127.0.0.1:39280";
+const real = net.connect;
+const connect = (options, ...rest) => {
+  if (typeof options === "object" && options.host === "127.0.0.1" && relayed[options.port])
+    return real({ path: path.join(relay, relayed[options.port]) }, ...rest);
+  const outcome = typeof options === "object" ? outcomes[options.host + ":" + options.port] : undefined;
+  if (outcome === undefined) return real(options, ...rest);
+  const socket = new net.Socket();
+  setImmediate(() => {
+    if (outcome === "connected") socket.emit("connect");
+    else if (outcome === "silent") socket.emit("timeout");
+    else socket.emit("error", Object.assign(new Error(outcome), { code: outcome }));
+  });
+  return socket;
+};
+net.connect = connect;
+net.createConnection = connect;
+`;
+
+describe.skipIf(process.platform === "win32")(
+  "the isolation probe script against its relay",
+  () => {
+    /** 확인 스크립트를 돌릴 가짜 docker. `direct`는 직접 연결의 정한 결과(`host:port` → 결과)다. */
+    async function probeEnvironmentWith(direct: Record<string, string> = {}) {
+      const root = await folders.make("babojubot-probe-");
+      const network = path.join(root, "container-network.mjs");
+      await writeFile(network, containerNetwork);
+      await writeFile(path.join(root, "direct.json"), JSON.stringify(direct));
+      return createDockerEnvironment({
+        docker: [
+          process.execPath,
+          fixture("fake-docker.mjs"),
+          root,
+          JSON.stringify({ node: [process.execPath, "--import", network] }),
+        ],
+        image,
+        owner: "owner-test",
+        relay: attachedRelayHub(),
+      });
+    }
+
+    /** 받는 곳이 없는 이 컴퓨터의 포트: 잠깐 열어 번호를 받고 닫는다. */
+    async function closedPort() {
+      const server = net.createServer();
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve)
+      );
+      const { port } = server.address() as net.AddressInfo;
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      );
+      return port;
+    }
+
+    it("finds a forbidden destination blocked only when the relay refuses its address", async () => {
+      const target = { host: "127.0.0.1", port: await closedPort() };
+      const environment = await probeEnvironmentWith();
+      await expect(
+        environment.probe(
+          { blocked: [], forbidden: [target] },
+          AbortSignal.timeout(20_000)
+        )
+      ).resolves.toEqual({
+        interfaces: [],
+        reached: [],
+        proxied: [],
+        toolsReached: true,
+        unverified: [],
+      });
+    });
+
+    // 중계가 502로 답한 것은 정책이 그 목적지를 열고 연결만 실패한 것이다. 주소 확인이 막지 못했으므로 막혔다고 세지 않는다
+    // (#286 항목 1).
+    it("counts a forbidden destination the relay let through as reached, even when the connection behind it failed", async () => {
+      const target = { host: "127.0.0.1", port: await closedPort() };
+      policy.decide = () => ({ allowed: true, addresses: ["127.0.0.1"] });
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const environment = await probeEnvironmentWith();
+      await expect(
+        environment.probe(
+          { blocked: [], forbidden: [target] },
+          AbortSignal.timeout(20_000)
+        )
+      ).resolves.toMatchObject({ proxied: [target] });
+    });
+
+    // 주소 확인이 아닌 이유의 거부(정책을 읽지 못함·목록에 없음·이름을 풀지 못함)로는 주소 확인이 막는지 알 수 없다. 확인 불가다.
+    it.each([
+      "policy_unavailable",
+      "destination_not_allowed",
+      "not_resolved",
+    ] as const)(
+      "reports the relay check as unverified when the relay refuses for %s instead of the address",
+      async (reason) => {
+        const target = { host: "127.0.0.1", port: await closedPort() };
+        policy.decide = () => ({ allowed: false, reason });
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+        const environment = await probeEnvironmentWith();
+        await expect(
+          environment.probe(
+            { blocked: [], forbidden: [target] },
+            AbortSignal.timeout(20_000)
+          )
+        ).resolves.toMatchObject({ proxied: [], unverified: ["proxied"] });
+      }
+    );
+
+    // 직접 연결이 거부되거나 길이 없으면 닿지 않은 것이다. 답이 없거나(시한) 그 밖의 오류는 닿지 못했다는 답이 아니다.
+    it.each([
+      ["refused", "ECONNREFUSED", []],
+      ["unreachable", "ENETUNREACH", []],
+      ["silent until its limit", "silent", ["direct"]],
+      ["timed out by the system", "ETIMEDOUT", ["direct"]],
+      ["unresolvable", "ENOTFOUND", ["direct"]],
+    ])(
+      "tells a direct connection that was %s from one it could not check",
+      async (_case, outcome, unverified) => {
+        const target = { host: "192.0.2.10", port: 5432 };
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+        const environment = await probeEnvironmentWith({
+          "192.0.2.10:5432": outcome,
+        });
+        await expect(
+          environment.probe(
+            { blocked: [target], forbidden: [] },
+            AbortSignal.timeout(20_000)
+          )
+        ).resolves.toEqual({
+          interfaces: [],
+          reached: [],
+          proxied: [],
+          toolsReached: true,
+          unverified,
+        });
+      }
+    );
+
+    it("counts a direct connection that opened as reached", async () => {
+      const target = { host: "192.0.2.10", port: 5432 };
+      const environment = await probeEnvironmentWith({
+        "192.0.2.10:5432": "connected",
+      });
+      await expect(
+        environment.probe(
+          { blocked: [target], forbidden: [] },
+          AbortSignal.timeout(20_000)
+        )
+      ).resolves.toMatchObject({ reached: [target], unverified: [] });
+    });
+  }
+);
 
 describe("the Docker engine check", () => {
   async function engine(files: Record<string, string> = {}) {

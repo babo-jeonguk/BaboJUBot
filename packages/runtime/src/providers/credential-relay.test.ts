@@ -71,6 +71,11 @@ async function upstream() {
       res.end();
       return;
     }
+    // 상류가 답하기 전에 연결을 끊는다(TCP RST). 프로그램은 아직 답을 기다린다.
+    if (req.url?.startsWith("/base/v1/reset")) {
+      req.socket.resetAndDestroy();
+      return;
+    }
     if (req.url?.startsWith("/base/v1/redirect")) {
       res.writeHead(302, { location: "https://elsewhere.invalid/" });
       res.end();
@@ -220,6 +225,7 @@ const profile = (url: string): RelayProfile => ({
     { method: "POST", path: "/v1/messages" },
     { method: "POST", path: "/v1/stream" },
     { method: "POST", path: "/v1/redirect" },
+    { method: "POST", path: "/v1/reset" },
     { method: "POST", path: "/v1/rejected" },
     { method: "POST", path: "/v1/unchanged" },
     { method: "POST", path: "/v1/echo-header" },
@@ -318,6 +324,79 @@ describe("the credential relay", () => {
     expect(warned).toHaveBeenCalledWith(
       expect.stringContaining("(ECONNREFUSED)")
     );
+  });
+
+  // 상류가 끊은 것은 상류 장애다. 프로그램이 떠나거나 실행이 취소되어 중계가 끊은 것과 같은 오류 코드(ECONNRESET)여도 원인을
+  // 남긴다(#286 항목 4).
+  it("answers 502 and leaves why when the upstream resets the connection while the program still waits", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { relay, url } = await setup();
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/v1/reset");
+    expect(response.status).toBe(502);
+    await response.body?.cancel();
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the credential relay could not reach the upstream; it answered 502 (ECONNRESET)",
+    ]);
+  });
+
+  it("leaves why when the upstream resets an answer it was streaming", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { up, relay, url } = await setup();
+    const grant = relay.grant(scope());
+    const stream = await send(url, grant.token, "/v1/stream");
+    const reader = stream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+      "first"
+    );
+    up.streams[0]!.socket!.resetAndDestroy();
+    await expect(
+      (async () => {
+        for (;;) if ((await reader.read()).done) return "ended";
+      })()
+    ).rejects.toThrow();
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] an upstream answer broke off in the credential relay (ECONNRESET)",
+    ]);
+  });
+
+  // 중계가 스스로 상류 요청을 끊은 것(프로그램이 떠남·실행 취소)은 답이다. 상류 장애로 남기지 않는다.
+  it("leaves no upstream failure when it cuts the upstream itself, because the program hung up or the run was cancelled", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { up, relay, url } = await setup();
+    const hangingUp = new AbortController();
+    const stream = await fetch(`${url}/v1/stream`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${relay.grant(scope()).token}` },
+      body: "{}",
+      signal: hangingUp.signal,
+    });
+    const reader = stream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+      "first"
+    );
+    hangingUp.abort();
+    await expect.poll(() => up.closed, settles).toEqual(["/base/v1/stream"]);
+    const cancel = new AbortController();
+    const cancelled = await send(
+      url,
+      relay.grant(scope(cancel.signal)).token,
+      "/v1/stream"
+    );
+    const cancelledReader = cancelled.body!.getReader();
+    expect(
+      new TextDecoder().decode((await cancelledReader.read()).value)
+    ).toContain("first");
+    cancel.abort();
+    await expect
+      .poll(() => up.closed, settles)
+      .toEqual(["/base/v1/stream", "/base/v1/stream"]);
+    // 판정 시점: 그 뒤 보낸 요청이 상류의 답까지 받은 다음. 두 끊김의 처리는 그보다 먼저 끝났다.
+    expect(await statusOf(url, relay.grant(scope()).token, "after")).toBe(200);
+    expect(warned).not.toHaveBeenCalled();
   });
 
   it("sends an allowed request to the fixed upstream with the real credential in place of the run's grant, and returns no cookie", async () => {
