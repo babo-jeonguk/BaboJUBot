@@ -92,8 +92,10 @@ function htmlHrefs(html) {
     }
     at = tagEnd.lastIndex;
     if (rawTextElements.has(name.toLowerCase())) {
-      const close = html.toLowerCase().indexOf(`</${name.toLowerCase()}`, at);
-      at = close === -1 ? html.length : close;
+      // 같은 이름의 닫는 태그에서 끝난다: 이름 뒤가 공백·`/`·`>`여야 한다(`</script-other>`는 아니다).
+      const close = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, "gi");
+      close.lastIndex = at;
+      at = close.exec(html)?.index ?? html.length;
     }
   }
   return found;
