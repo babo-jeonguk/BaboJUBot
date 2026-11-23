@@ -573,3 +573,56 @@ test("takes JavaScript moved to TypeScript and edited JavaScript", (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /pnpm typecheck:tools/);
 });
+
+// Git은 줄바꿈·따옴표·탭이 든 이름을 줄 단위 출력에서 따옴표로 감싸 이스케이프한다(core.quotePath를 꺼도). 그런 이름을 줄 단위로 읽으면
+// 확장자가 `.mjs"`가 되어 새 JS를 놓치고, 검사 계획에 없는 경로를 넣는다. 경로 목록은 NUL 구분(-z)으로 읽는다(#285 리뷰 STD-1).
+// Windows는 이런 이름을 만들 수 없다.
+const quotedNames =
+  process.platform === "win32"
+    ? "Windows file names cannot hold these characters"
+    : false;
+
+test(
+  "refuses new JavaScript whose name Git would quote, committed or not",
+  { skip: quotedNames },
+  (t) => {
+    const { cwd, base } = repository(t);
+    write(cwd, 'scripts/quote"d.mjs', "export const a = 1;\n");
+    commit(cwd, "add a script");
+    write(cwd, "scripts/new\nline.mjs", "export const b = 1;\n");
+
+    const result = run(cwd, ["--dry-run", "--base", base]);
+    assert.equal(result.status, 1, result.stdout);
+    assert.ok(
+      result.stderr.includes('scripts/quote"d.mjs: a new JavaScript file'),
+      result.stderr
+    );
+    assert.ok(
+      result.stderr.includes("scripts/new\nline.mjs: a new JavaScript file"),
+      result.stderr
+    );
+  }
+);
+
+test(
+  "plans the checks of a changed file whose name Git would quote by its real name",
+  { skip: quotedNames },
+  (t) => {
+    const { cwd } = repository(t);
+    write(cwd, "packages/a/src/tab\tname.ts", "export const c = 1;\n");
+    commit(cwd, "add a file");
+    const base = git(cwd, "rev-parse", "HEAD");
+    write(cwd, "packages/a/src/tab\tname.ts", "export const c = 2;\n");
+
+    const result = run(cwd, ["--dry-run", "--base", base]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout.split("\n")[0],
+      "pnpm exec eslint --no-warn-ignored 'packages/a/src/tab\tname.ts'"
+    );
+    assert.ok(
+      result.stdout.split("\n").includes("pnpm --filter @x/a run typecheck"),
+      result.stdout
+    );
+  }
+);

@@ -113,6 +113,22 @@ test("listens on the port the system picks for port 0 and answers by its rules",
     );
     assert.equal(plain.status, 200, plain.text);
     assert.match(plain.text, /"content":"mock reply"/);
+    // 글이 없는 조각(이미지)은 맞출 글이 없을 뿐 잘못된 요청이 아니다.
+    const parts = await post(
+      url,
+      JSON.stringify({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image_url" },
+              { type: "text", text: "fail now" },
+            ],
+          },
+        ],
+      })
+    );
+    assert.equal(parts.status, 503, parts.text);
     const failed = await post(
       url,
       JSON.stringify({ messages: [{ role: "user", content: "fail now" }] })
@@ -136,6 +152,19 @@ test("answers 500 naming a rule whose fields are not the documented types", asyn
       { match: "^a", hang: "yes" },
       { match: "^a", message: "text" },
       "not a rule",
+      // 성공 상태만으로는 답이 없다. 오류 상태(400-599)만 status가 답이다(#285 리뷰 SPEC-2).
+      { match: "^a", status: 200 },
+      { match: "^a", status: 201, reply: "a" },
+      { match: "^a", status: 99, error: "a" },
+      // 도구 호출이 빈 목록인 메시지, 도구 호출과 함께 둔 글이 아닌 content도 답이 아니다.
+      {
+        match: "^a",
+        message: { role: "assistant", content: null, tool_calls: [] },
+      },
+      {
+        match: "^a",
+        message: { role: "assistant", content: 3, tool_calls: [{ id: "c" }] },
+      },
     ]) {
       writeFileSync(path.join(dir, "rules.json"), JSON.stringify([rule]));
       const answer = await post(
@@ -159,6 +188,13 @@ test("answers 400 to a request without a message list or with a stream flag that
       JSON.stringify({ messages: [{ role: "user", content: 3 }] }),
       JSON.stringify({ messages: [], stream: "yes" }),
       "[]",
+      // 객체가 아닌 메시지·역할 없는 메시지, 객체가 아닌 조각·글이 아닌 text(#285 리뷰 SPEC-3).
+      JSON.stringify({ messages: [42] }),
+      JSON.stringify({ messages: [{ content: "hi" }] }),
+      JSON.stringify({ messages: [{ role: "user", content: [42] }] }),
+      JSON.stringify({
+        messages: [{ role: "user", content: [{ type: "text", text: 3 }] }],
+      }),
     ]) {
       const answer = await post(url, body);
       assert.equal(answer.status, 400, `${body}: ${answer.text}`);
