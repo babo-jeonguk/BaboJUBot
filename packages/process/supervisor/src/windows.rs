@@ -387,7 +387,10 @@ impl Job {
         }
         let mut code = 1;
         // SAFETY: valid handle and pointer.
-        unsafe { GetExitCodeProcess(self.process, &mut code) };
+        if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 {
+            // The end could not be read: it is not taken as a code (a stop then answers that the end is unknown).
+            return None;
+        }
         Some(Exit::Code(code as i32))
     }
 

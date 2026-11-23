@@ -624,18 +624,40 @@ const noProcessGroupSignal = {
   },
 };
 
-/** 번호로 프로세스를 끄는 명령. */
+/** 번호로 프로세스를 끄는 명령(경로를 떼고 소문자로, `.exe` 없이). */
 const killCommands = new Set(["kill", "pkill", "killall", "taskkill"]);
-/** 명령 이름을 첫 인수로 받는 실행 함수. */
-const commandRunners = new Set([
-  "spawn",
-  "spawnSync",
-  "execFile",
-  "execFileSync",
-  "runCommand",
+/**
+ * 프로세스 패키지(@babojubot/process)가 내보내는 함수 가운데 프로그램을 띄우는 입구와 그 명령을 받는 자리: `first`는 첫 인수,
+ * `option`은 첫 인수 객체의 `command` 튜플 첫 원소. 패키지가 함수를 새로 내보내면 이 표나 `processNonLaunchers`에 넣어야 한다
+ * (scripts/script-lint-rules.test.mjs가 index.ts의 내보내기를 모두 견준다). 그래야 새 실행 입구가 번호 신호 판정에서 빠지지 않는다.
+ */
+export const processLaunchers = new Map([
+  ["launchTree", "option"],
+  ["runTree", "option"],
+  ["runCommand", "first"],
 ]);
-/** 명령줄 문자열 하나를 받는 실행 함수. */
-const shellRunners = new Set(["exec", "execSync"]);
+/** 프로세스 패키지가 내보내지만 프로그램을 띄우지 않는 함수(띄운 자식을 받는 `boundChild`, 준비·조회·시계). */
+export const processNonLaunchers = [
+  "prepareSupervisor",
+  "requireSupervisor",
+  "TreeLaunchRefused",
+  "boundChild",
+  "psField",
+  "realClock",
+];
+/** child_process·cross-spawn에서 프로그램을 띄우는 함수와 그 명령을 받는 자리(`line`은 명령줄 문자열 하나). */
+const nodeLaunchers = new Map([
+  ["module:child_process:spawn", "first"],
+  ["module:child_process:spawnSync", "first"],
+  ["module:child_process:execFile", "first"],
+  ["module:child_process:execFileSync", "first"],
+  ["module:child_process:fork", "first"],
+  ["module:child_process:exec", "line"],
+  ["module:child_process:execSync", "line"],
+  ["module:cross-spawn:", "first"],
+  ["module:cross-spawn:spawn", "first"],
+  ["module:cross-spawn:sync", "first"],
+]);
 /** 식이 문자열 리터럴(또는 바꿀 자리 없는 템플릿)이면 그 값. */
 const stringOf = (node) =>
   node?.type === "Literal" && typeof node.value === "string"
@@ -643,13 +665,54 @@ const stringOf = (node) =>
     : node?.type === "TemplateLiteral" && node.expressions.length === 0
       ? node.quasis[0].value.cooked
       : undefined;
+/** 실행 파일 이름: 경로를 떼고 소문자로, Windows의 `.exe`를 뗀다(`/bin/kill`, `C:\\…\\taskkill.exe`). */
+const commandName = (file) =>
+  file
+    .split(/[\\/]/)
+    .at(-1)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+/** 실행 입구 호출이 받는 명령의 실행 파일(문자열로 적힌 것만). */
+function launchedCommand(kind, args) {
+  if (kind === "first") return stringOf(args[0]);
+  if (kind === "line") return stringOf(args[0])?.trim().split(/\s+/)[0];
+  const options = args[0];
+  if (options?.type !== "ObjectExpression") return undefined;
+  const command = options.properties.find(
+    (property) =>
+      property.type === "Property" &&
+      !property.computed &&
+      ((property.key.type === "Identifier" &&
+        property.key.name === "command") ||
+        stringOf(property.key) === "command")
+  );
+  return command?.value.type === "ArrayExpression"
+    ? stringOf(command.value.elements[0])
+    : undefined;
+}
+/** 호출이 실행 입구면 그 명령을 받는 자리(출처로 판정: 별칭·이름을 바꾼 가져오기·모듈 객체도 같다). */
+function launcherKind(context, callee) {
+  const origin = originOf(context.sourceCode.getScope(callee), callee);
+  if (!origin || origin.global !== undefined) return undefined;
+  const name = `module:${origin.module}:${origin.path.join(".")}`;
+  if (nodeLaunchers.has(name)) return nodeLaunchers.get(name);
+  // 프로세스 패키지의 실행 입구: 다른 패키지는 패키지 이름으로, 패키지 안은 정의한 파일(상대 경로)로 가져온다.
+  const target = targetOf(context.filename, origin.module);
+  if (
+    target?.package?.name !== "@babojubot/process" ||
+    origin.path.length !== 1
+  )
+    return undefined;
+  return processLaunchers.get(origin.path[0]);
+}
 /**
  * 번호(pid)로 신호를 보내는 일은 감독 실행기(Rust, packages/process/supervisor)만 한다(#268 PR 2). 실행기는 표식이나 시작 시각을
  * 확인한 바로 그 프로세스에만 신호한다(Linux pidfd, Windows 프로세스 핸들, macOS 신호 직전 시작 시각 재확인). 서버가 찾은 번호에
  * 나중에 신호하면 그 사이 번호가 다른 프로그램에 다시 주어질 수 있다(재시작 복구의 그룹 끄기·`taskkill /PID`, 서버 쪽 표식 정리가
- * 그랬다). 제품 코드에서 `process.kill(번호, 신호)`(신호를 빼면 SIGTERM)와 번호로 끄는 명령(`kill`·`pkill`·`killall`·`taskkill`)을
- * 띄우는 호출(명령 이름이 문자열로 적힌 것)을 짚는다. 신호 0(살아 있는지 보기)은 신호를 보내지 않으므로 짚지 않는다. 자식 객체의
- * `kill()`은 번호가 아니라 그 자식의 핸들로 보내므로 짚지 않는다. 명령 이름을 변수에 담아 넘기는 호출은 따라가지 않으며 리뷰가 본다.
+ * 그랬다). 제품 코드에서 `process.kill(번호, 신호)`(신호를 빼면 SIGTERM, 별칭으로 불러도 출처로 본다)와, 실행 입구(child_process·
+ * cross-spawn, 프로세스 패키지의 `processLaunchers`)에 번호로 끄는 명령(`kill`·`pkill`·`killall`·`taskkill`, 경로·`.exe`를 떼고 본다)을
+ * 넘기는 호출을 짚는다. 신호 0(살아 있는지 보기)과 자식 객체의 `kill()`(번호가 아니라 그 자식의 핸들)은 짚지 않는다. 명령 이름을
+ * 변수에 담아 넘기는 호출은 따라가지 않으며 리뷰가 본다(#283 외부 리뷰 1회차 STD-1).
  */
 const noNumberSignal = {
   meta: {
@@ -668,26 +731,15 @@ const noNumberSignal = {
     return {
       CallExpression(node) {
         const { callee, arguments: args } = node;
-        const processKill =
-          callee.type === "MemberExpression" &&
-          callee.object.type === "Identifier" &&
-          callee.object.name === "process" &&
-          calledMethod(callee) === "kill";
-        if (processKill) {
+        if (originName(context.sourceCode, callee) === "global:process.kill") {
           const signal = args[1];
           const probe = signal?.type === "Literal" && signal.value === 0;
           if (!probe) context.report({ node, messageId: "signal" });
           return;
         }
-        const name =
-          calledMethod(callee) ??
-          (callee.type === "Identifier" ? callee.name : undefined);
-        const command = commandRunners.has(name)
-          ? stringOf(args[0])
-          : shellRunners.has(name)
-            ? stringOf(args[0])?.trim().split(/\s+/)[0]
-            : undefined;
-        if (command !== undefined && killCommands.has(command))
+        const kind = launcherKind(context, callee);
+        const command = kind && launchedCommand(kind, args);
+        if (command !== undefined && killCommands.has(commandName(command)))
           context.report({ node, messageId: "signal" });
       },
     };

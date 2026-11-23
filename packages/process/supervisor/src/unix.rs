@@ -885,9 +885,10 @@ pub fn run() -> i32 {
         }
     };
     // Programs of this user that started after this supervisor and cannot be read may be the run's (`marked.rs`).
+    // Without its own start, the widest beginning: every unreadable program of this user may then be ours.
     leader.search = start_request.marker.clone().map(|marker| marked::Search {
         marker,
-        since: marked::start_of_self(),
+        since: Some(marked::start_of_self().unwrap_or(0)),
     });
     control.write_message(&format!("ok {}", leader.pid));
     release_standard_streams();

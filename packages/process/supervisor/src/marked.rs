@@ -70,10 +70,16 @@ fn environ_reading(read: std::io::Result<Vec<u8>>, marker: &str) -> std::io::Res
     }
 }
 
-/// What a `KERN_PROCARGS2` buffer tells (macOS).
+/// What a `KERN_PROCARGS2` buffer tells (macOS). Only an environment read to its end without the marker is Clear: macOS answers for a
+/// restricted executable without its environment (psutil notes it), and a buffer that does not hold the expected shape tells nothing,
+/// so no environment entry at all reads as Unreadable. A program of this run always has at least the marker in its environment.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn procargs_reading(buffer: &[u8], marker: &str) -> Reading {
-    if environment(buffer).any(|entry| is_marker_entry(entry, marker)) {
+    let mut entries = environment(buffer).peekable();
+    if entries.peek().is_none() {
+        return Reading::Unreadable;
+    }
+    if entries.any(|entry| is_marker_entry(entry, marker)) {
         Reading::Carries
     } else {
         Reading::Clear
@@ -88,18 +94,21 @@ pub enum Confirmed {
     /// Pass it over.
     Pass,
     /// It may be ours but could not be read: no signal, and the stop is not clean while it stays.
-    #[allow(dead_code)]
-    // `confirm` does not give it yet; the next commit does (#283 review 1, SPEC-2).
     Unverified,
 }
 
-/// Decides on a candidate from the read made after its handle was opened.
+/// Decides on a candidate from the read made after its handle was opened. A candidate that cannot be read now may still be ours (it
+/// carried the marker a moment ago): it stays unverified, not passed over. Another failure is a failed look.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn confirm(second: std::io::Result<Vec<u8>>, marker: &str) -> Result<Confirmed, String> {
-    Ok(match environ_reading(second, marker) {
-        Ok(Reading::Carries) => Confirmed::Hold,
-        Ok(Reading::Clear | Reading::Gone | Reading::Unreadable) | Err(_) => Confirmed::Pass,
-    })
+    match environ_reading(second, marker) {
+        Ok(Reading::Carries) => Ok(Confirmed::Hold),
+        Ok(Reading::Clear | Reading::Gone) => Ok(Confirmed::Pass),
+        Ok(Reading::Unreadable) => Ok(Confirmed::Unverified),
+        Err(error) => Err(format!(
+            "the environment of a candidate could not be read: {error}"
+        )),
+    }
 }
 
 /// What to look for: this run's marker, and when the run began, in the system's own measure of a start time (Linux: clock ticks
@@ -237,8 +246,14 @@ mod linux {
                             own
                         }
                     };
-                    let Ok(handle) = open_handle(pid) else {
-                        continue;
+                    let handle = match open_handle(pid) {
+                        Ok(handle) => handle,
+                        Err(error) if gone(&error) => continue,
+                        Err(error) => {
+                            return Err(format!(
+                                "a handle on process {pid} could not be opened: {error}"
+                            ));
+                        }
                     };
                     if may_be_ours(pid, since, own.as_deref())? && still_running(&handle) {
                         found.unverified.push(pid);
@@ -327,18 +342,27 @@ mod linux {
     }
 
     /// A program whose environment could not be read may be ours: this user's, still running, started after the run, and in the
-    /// supervisor's cgroup (a run's descendants inherit it; a desktop app or a systemd service runs in another one).
+    /// supervisor's cgroup (a run's descendants inherit it; a desktop app or a systemd service runs in another one). Once it is this
+    /// user's, what cannot be read about it does not clear it: an unreadable state or cgroup leaves it possibly ours, and a kernel
+    /// without cgroups leaves the user and the start to decide. Its status cannot be read only when /proc hides another user's
+    /// process (hidepid), so then it is not ours.
     fn may_be_ours(pid: libc::pid_t, since: u64, own: Option<&str>) -> Result<bool, String> {
-        let Some(own) = own else { return Ok(false) };
+        enum Read {
+            Text(String),
+            Gone,
+            Unreadable,
+        }
         let read = |what: &str| match std::fs::read_to_string(format!("/proc/{pid}/{what}")) {
-            Ok(text) => Ok(Some(text)),
-            Err(error) if gone(&error) || unreadable(&error) => Ok(None),
+            Ok(text) => Ok(Read::Text(text)),
+            Err(error) if gone(&error) => Ok(Read::Gone),
+            Err(error) if unreadable(&error) => Ok(Read::Unreadable),
             Err(error) => Err(format!(
                 "the {what} of process {pid} could not be read: {error}"
             )),
         };
-        let Some(status) = read("status")? else {
-            return Ok(false);
+        let status = match read("status")? {
+            Read::Text(status) => status,
+            Read::Gone | Read::Unreadable => return Ok(false),
         };
         // SAFETY: getuid has no memory effects.
         let me = unsafe { libc::getuid() };
@@ -350,18 +374,25 @@ mod linux {
         if uid != Some(me) {
             return Ok(false);
         }
-        let Some(stat) = read("stat")? else {
-            return Ok(false);
+        let stat = match read("stat")? {
+            Read::Text(stat) => stat,
+            Read::Gone => return Ok(false),
+            Read::Unreadable => return Ok(true),
         };
         let fields = stat_fields(&stat);
         let state = fields.first().copied().unwrap_or("");
         let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
         let runs = state != "X" && (state != "Z" || threads.is_none_or(|threads| threads > 1));
         let start = fields.get(19).and_then(|field| field.parse::<u64>().ok());
-        if !runs || start.is_none_or(|start| start < since) {
+        if !runs || start.is_some_and(|start| start < since) {
             return Ok(false);
         }
-        Ok(read("cgroup")?.as_deref() == Some(own))
+        let Some(own) = own else { return Ok(true) };
+        Ok(match read("cgroup")? {
+            Read::Text(cgroup) => cgroup == own,
+            Read::Gone => false,
+            Read::Unreadable => true,
+        })
     }
 }
 

@@ -386,7 +386,7 @@ test("every function the process package exports is classified as a launcher or 
     .filter((name) => name && !name.startsWith("type "));
   for (const name of exported)
     assert.ok(
-      name in processLaunchers || processNonLaunchers.includes(name),
+      processLaunchers.has(name) || processNonLaunchers.includes(name),
       `${name} is exported by @babojubot/process but not classified for product/no-number-signal`
     );
 });
