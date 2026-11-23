@@ -46,6 +46,8 @@ function parseArgs(argv) {
     const value = argv[i + 1];
     if (name === undefined || !known.has(name) || value === undefined)
       fail(`bad argument: ${argv[i]}`);
+    // 두 번 주면 어느 값을 쓸지 정하지 않는다(전에는 뒤 값이 조용히 이겼다).
+    if (values.has(name)) fail(`--${name} given twice`);
     values.set(name, value);
   }
   const model = values.get("model");
