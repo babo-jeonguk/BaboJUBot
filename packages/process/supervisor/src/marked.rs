@@ -1406,7 +1406,29 @@ mod macos_tests {
 mod linux_tests {
     use super::linux::reaches;
     use super::{Holder, Running, Search, find, hold, signal, stat_fields, still_runs};
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, Stdio};
+
+    /// A program that carries `name=marker` and already runs. Right after spawn returns, the kernel may not have placed the child's
+    /// environment yet (the parent wakes before exec ends); that moment is what `an_empty_linux_environment_is_judged_by_the_process_state`
+    /// covers. So it is handed over once its own code has written a line (`read` is a shell builtin: no further process carries the
+    /// marker).
+    fn running_with(name: &str, marker: &str) -> Child {
+        let mut child = Command::new("sh")
+            .args(["-c", "echo ready; read line"])
+            .env(name, marker)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("sh runs");
+        let mut ready = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().expect("piped")),
+            &mut ready,
+        )
+        .expect("sh writes its line");
+        assert_eq!(ready, "ready\n");
+        child
+    }
 
     #[test]
     fn a_marked_program_is_found_and_held_to_that_very_process() {
@@ -1415,12 +1437,7 @@ mod linux_tests {
             std::process::id(),
             std::time::SystemTime::now()
         );
-        let mut marked = Command::new("sleep")
-            .arg("30")
-            .env("BABOJUBOT_PROCESS_LEASE_3", &marker)
-            .stdin(Stdio::null())
-            .spawn()
-            .expect("sleep runs");
+        let mut marked = running_with("BABOJUBOT_PROCESS_LEASE_3", &marker);
         let mut other = Command::new("sleep").arg("30").spawn().expect("sleep runs");
         let search = Search {
             marker: marker.clone(),
@@ -1431,8 +1448,8 @@ mod linux_tests {
         assert_eq!(pids, vec![marked.id() as libc::pid_t]);
         // The program ends and is reaped: its number is free for another process, but the handle stays on the ended one.
         assert!(reaches(&found.holders[0]));
-        marked.kill().expect("sleep can be killed");
-        marked.wait().expect("sleep is reaped");
+        marked.kill().expect("sh can be killed");
+        marked.wait().expect("sh is reaped");
         assert!(!reaches(&found.holders[0]));
         assert_eq!(signal(&found.holders[0], libc::SIGKILL), Ok(()));
         assert!(
@@ -1460,7 +1477,7 @@ mod linux_tests {
             .expect("it is that process");
         assert_eq!(held.pid(), pid);
         assert_eq!(signal(&held, libc::SIGKILL), Ok(()));
-        child.wait().expect("sleep is reaped");
+        child.wait().expect("sh is reaped");
         assert!(hold(pid, start).expect("it can be looked at").is_none());
     }
 
@@ -1472,11 +1489,7 @@ mod linux_tests {
             std::process::id(),
             std::time::SystemTime::now()
         );
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .env("BABOJUBOT_PROCESS_LEASE", &marker)
-            .spawn()
-            .expect("sleep runs");
+        let mut child = running_with("BABOJUBOT_PROCESS_LEASE", &marker);
         let found = find(&Search {
             marker: marker.clone(),
             since: None,
@@ -1491,7 +1504,7 @@ mod linux_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(still_runs(held), Running::Ended);
-        child.wait().expect("sleep is reaped");
+        child.wait().expect("sh is reaped");
         assert_eq!(still_runs(held), Running::Ended);
     }
 }
