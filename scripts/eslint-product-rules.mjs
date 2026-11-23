@@ -635,23 +635,50 @@ const noProcessGroupSignal = {
 /** 번호로 프로세스를 끄는 명령(경로를 떼고 소문자로, `.exe` 없이). */
 const killCommands = new Set(["kill", "pkill", "killall", "taskkill"]);
 /**
- * 프로세스 패키지(@babojubot/process)가 내보내는 함수 가운데 프로그램을 띄우는 입구와 그 명령을 받는 자리: `first`는 첫 인수,
- * `option`은 첫 인수 객체의 `command` 튜플 첫 원소. 패키지가 함수를 새로 내보내면 이 표나 `processNonLaunchers`에 넣어야 한다
- * (scripts/script-lint-rules.test.mjs가 index.ts의 내보내기를 모두 견준다). 그래야 새 실행 입구가 번호 신호 판정에서 빠지지 않는다.
+ * 프로세스 패키지(@babojubot/process)의 입구들이 내보내는 함수 가운데 프로그램을 띄우는 것과 그 명령을 받는 자리: `first`는 첫 인수,
+ * `option`은 첫 인수 객체의 `command` 튜플 첫 원소. 패키지의 어느 입구든 함수를 새로 내보내면 이 표나 `processNonLaunchers`에 넣어야
+ * 한다(scripts/script-lint-rules.test.mjs가 package.json `exports`의 모든 입구가 내보내는 함수를 견주고, 표에 남은 낡은 이름도
+ * 잡는다). 그래야 새 실행 입구가 번호 신호 판정에서 빠지지 않는다.
  */
 export const processLaunchers = new Map([
   ["launchTree", "option"],
   ["runTree", "option"],
   ["runCommand", "first"],
+  // 시험 도움(`/test-support`): 확인 명령을 띄운다.
+  ["commandFailure", "first"],
 ]);
-/** 프로세스 패키지가 내보내지만 프로그램을 띄우지 않는 함수(띄운 자식을 받는 `boundChild`, 준비·조회·시계). */
+/**
+ * 프로세스 패키지가 내보내지만 프로그램을 띄우지 않는 함수: 준비·조회(실행기 준비, 띄운 자식 받기, 그룹·표식·시작 시각 조회, 실행기에
+ * 청하는 정리), 폴더 지우기, 시험 도움(정리·기다림·시계·환경 확인, 띄운 자식의 끝 기다리기와 끄기).
+ */
 export const processNonLaunchers = [
   "prepareSupervisor",
   "requireSupervisor",
   "TreeLaunchRefused",
   "boundChild",
   "psField",
-  "realClock",
+  "groupAlive",
+  "identity",
+  "members",
+  "holdsLease",
+  "processStartTicks",
+  "cleanThroughSupervisor",
+  "removeFolder",
+  "folderCleanup",
+  "withCleanup",
+  "processAlive",
+  "killUnlessGone",
+  "awaitedLater",
+  "openLifelines",
+  "testFolders",
+  "exited",
+  "killAndWait",
+  "readyLine",
+  "untilExited",
+  "within",
+  "manualClock",
+  "permissionDenial",
+  "probeEnvironment",
 ];
 /** child_process·cross-spawn에서 프로그램을 띄우는 함수와 그 명령을 받는 자리(`line`은 명령줄 문자열 하나). */
 const nodeLaunchers = new Map([
