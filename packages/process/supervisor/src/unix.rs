@@ -218,7 +218,8 @@ impl<H: Holder> Marked<H> {
         }
     }
 
-    /// This look's programs, and those held before that still run as `runs` tells (`marked::still_runs`).
+    /// This look's programs, and those held before that still run as `runs` tells (`marked::still_runs`). One whose state cannot be
+    /// told is unverified and stays held; one is let go only when it was told to have ended.
     fn keep(
         &self,
         found: marked::Found<H>,
@@ -227,6 +228,7 @@ impl<H: Holder> Marked<H> {
         let mut holders: Vec<std::rc::Rc<H>> =
             found.holders.into_iter().map(std::rc::Rc::new).collect();
         let mut unverified = found.unverified;
+        let mut untold = Vec::new();
         for held in self.seen.borrow_mut().drain(..) {
             if holders.iter().any(|each| each.pid() == held.pid()) {
                 continue;
@@ -234,10 +236,17 @@ impl<H: Holder> Marked<H> {
             match runs(&held) {
                 marked::Running::Yes => holders.push(held),
                 marked::Running::Ended => {}
-                marked::Running::Unknown => unverified.push(held.pid()),
+                // It could not be told: no signal, unverified, and still held for the next look, which may neither find it nor
+                // read it (#283 review 3, STD-3). Only an end that was told lets it go.
+                marked::Running::Unknown => {
+                    if !unverified.contains(&held.pid()) {
+                        unverified.push(held.pid());
+                    }
+                    untold.push(held);
+                }
             }
         }
-        *self.seen.borrow_mut() = holders.clone();
+        *self.seen.borrow_mut() = holders.iter().cloned().chain(untold).collect();
         marked::Found {
             holders,
             unverified,
