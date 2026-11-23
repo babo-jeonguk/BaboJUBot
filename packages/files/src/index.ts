@@ -2,4 +2,5 @@
 export * from "./folder.ts";
 export * from "./publish-file.ts";
 export * from "./regular-file.ts";
+export * from "./remove-confirmed.ts";
 export * from "./working-folder.ts";

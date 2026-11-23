@@ -1,9 +1,10 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { credentialResidue, residueRefusal } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink, readLogin } from "./login-link.ts";
-import { inFolder, publishFile } from "@babojubot/files";
+import { oneAtATime } from "./one-at-a-time.ts";
+import { inFolder, publishFile, removeConfirmed } from "@babojubot/files";
 
 /**
  * 로그인을 파일로 같이 쓰는 연결(Codex·Antigravity)마다 다른 것. 나머지 준비 순서는 `fileLogin`이 맡는다(#146).
@@ -85,26 +86,28 @@ export function fileLogin(
    * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 실행 시도마다 그 위에 자기 로그인 파일을 넣는 자리다(Docker는 넣을 자리가 있어야 한다).
    * 이미 있는 자리 표시는 바꾸지 않는다(다른 컨테이너가 그 위에 자기 로그인을 넣었을 수 있고, 파일을 바꾸면 그 연결이 떨어져 나간다).
    * 그 밖에는 `publishFile`이 완성된 자리 표시를 한 번에 제자리에 두므로, 다른 실행 시도는 이전 것이나 완성된 자리 표시만 보고
-   * 비어 있거나 반쯤 쓰인 파일은 보지 않는다. hard link를 쓰지 않으므로 링크를 만들 수 없는 디스크(#209)에서도 된다. 자리가 비어
-   * 있는 것을 둘 다 본 두 실행 시도는 같은 내용을 각각 게시하고, 나중 것이 먼저 것을 바꾼다. 자리로 가는 폴더 칸은 확인한 폴더의
-   * handle을 거쳐 내려가므로, 다른 실행 시도의 컨테이너가 그 칸을 링크로 바꿔도 그 너머를 쓰지 않는다.
+   * 비어 있거나 반쯤 쓰인 파일은 보지 않는다. hard link를 쓰지 않으므로 링크를 만들 수 없는 디스크(#209)에서도 된다. 자리마다
+   * 확인과 게시를 차례로 하므로, 뒤에 온 실행 시도는 앞 시도가 게시한 자리 표시를 보고 바꾸지 않는다. 자리로 가는 폴더 칸은
+   * 확인한 폴더의 handle을 거쳐 내려가므로, 다른 실행 시도의 컨테이너가 그 칸을 링크로 바꿔도 그 너머를 쓰지 않는다.
    */
   const placePlaceholder = async (organization: string) => {
-    const placed = await inFolder(
-      organization,
-      loginParts,
-      async (folder) => {
-        const loginAt = folder.at(loginName);
-        // 이미 있는 자리 표시는 바꾸지 않는다. 같은 조직의 다른 컨테이너가 그 위에 자기 로그인을 넣고 있을 수 있고, 파일을 바꾸면 그 연결이 떨어져 나간다.
-        if (await shape.isStandIn(loginAt)) return;
-        await publishFile(loginAt, shape.contents(""), { mode: 0o600 });
-      },
-      { create: true }
-    );
-    if (placed.state !== "reached")
-      throw new Error(
-        "the login place in the organization folder is not a folder; the stand-in was not placed"
+    await oneAtATime(loginFileIn(organization), async () => {
+      const placed = await inFolder(
+        organization,
+        loginParts,
+        async (folder) => {
+          const loginAt = folder.at(loginName);
+          // 이미 있는 자리 표시는 바꾸지 않는다. 같은 조직의 다른 컨테이너가 그 위에 자기 로그인을 넣고 있을 수 있고, 파일을 바꾸면 그 연결이 떨어져 나간다.
+          if (await shape.isStandIn(loginAt)) return;
+          await publishFile(loginAt, shape.contents(""), { mode: 0o600 });
+        },
+        { create: true }
       );
+      if (placed.state !== "reached")
+        throw new Error(
+          "the login place in the organization folder is not a folder; the stand-in was not placed"
+        );
+    });
   };
   /**
    * 조직 폴더의 로그인 자리에 이 어댑터가 둔 자리 표시가 있는가. 폴더 칸이 링크 등이면 확인할 수 없으므로 아니다. 자리 표시는
@@ -148,21 +151,30 @@ export function fileLogin(
     }
     // 이 컴퓨터의 실행도 확인한 폴더를 거쳐 내려간다. 격리 실행이 남긴 폴더 링크는 격리를 끈 뒤에도 남아 있다.
     await mkdir(organization, { recursive: true, mode: 0o700 });
-    const placed = await inFolder(
-      organization,
-      loginParts,
-      async (folder) => {
-        const at = folder.at(loginName);
-        if (await shape.isStandIn(at)) await rm(at, { force: true });
-        return share(at);
-      },
-      { create: true }
-    );
-    if (placed.state !== "reached")
-      throw new Error(
-        "the login place in the organization folder is not a folder; the run was not started"
+    const linked = await oneAtATime(loginFileIn(organization), async () => {
+      const placed = await inFolder(
+        organization,
+        loginParts,
+        async (folder) => {
+          const at = folder.at(loginName);
+          if (await shape.isStandIn(at)) {
+            // 자리 표시인지 확인한 뒤 같은 이름에 그 조직의 컨테이너가 둔 파일은 확인한 것이 아니므로 지우지 않는다(#286 항목 8).
+            const removal = await removeConfirmed(at, shape.isStandIn);
+            if (typeof removal === "object")
+              console.warn(
+                `[provider] a file put in place of the ${shape.label} login stand-in was kept as ${removal.keptAs}`
+              );
+          }
+          return share(at);
+        },
+        { create: true }
       );
-    const linked = placed.value;
+      if (placed.state !== "reached")
+        throw new Error(
+          "the login place in the organization folder is not a folder; the run was not started"
+        );
+      return placed.value;
+    });
     const productHome = linked ? organization : home;
     await mkdir(productHome, { recursive: true, mode: 0o700 });
     return { home: productHome };

@@ -1,8 +1,9 @@
 // 예전 판(#148 전)이 작업 폴더에 둔 Antigravity 설정(`.agents/mcp_config.json`)의 남은 것을 지우는 별도 프로세스다.
 // `antigravity-config.ts`의 `clearOwnedConfig`가 조직의 작업 폴더를 현재 폴더로 띄우고, 인수는 JSON `[우리 표시]`다.
 // 작업 폴더로 `.agents`를 붙들려고 별도 프로세스로 돈다(@babojubot/files `enterFolder`). 열기와 폴더 확인은 그 패키지가 한다.
-// 끝난 코드: 0 지움(또는 지울 것 없음), 3 우리 표시가 없는 설정이나 확인한 폴더가 아님(지우지 않음), 그 밖은 실패.
-import { lstat, readdir, unlink } from "node:fs/promises";
+// 끝난 코드: 0 지움(또는 지울 것 없음), 3 우리 표시가 없는 설정이나 확인한 폴더가 아님(지우지 않음), 확인한 뒤 같은 이름에
+// 저장된 파일을 되돌리지 못하고 옮긴 이름으로 남김(3), 그 밖은 실패.
+import { lstat, readdir } from "node:fs/promises";
 import {
   continueAfterFailure,
   failureCode,
@@ -10,7 +11,11 @@ import {
   orIfMissing,
   orIfUnreadable,
 } from "@babojubot/contracts/failure";
-import { enterFolder, openRegularFile } from "@babojubot/files";
+import {
+  enterFolder,
+  openRegularFile,
+  removeConfirmed,
+} from "@babojubot/files";
 import { record } from "./record.ts";
 
 const unsafe = 3;
@@ -50,10 +55,33 @@ const agents = await orIfMissing(
 if (agents === undefined) process.exit(0);
 if (!agents.isDirectory() || !(await enterFolder(".agents", agents)))
   process.exit(unsafe);
+let kept = false;
 for (const name of await readdir("."))
-  if (temporary(name) && (await owned(name)) === true) await unlink(name);
+  if (temporary(name) && (await owned(name)) === true) {
+    // 확인한 뒤 이름으로 지우면 그 사이 같은 이름에 저장된 새 파일을 지운다. 옮긴 파일을 확인해 맞을 때만 지운다(#286 항목 8).
+    const removal = await removeConfirmed(
+      name,
+      async (moved) => (await owned(moved)) === true
+    );
+    if (typeof removal === "object") {
+      process.stderr.write(
+        `[config] a file saved under ${name} while it was cleared is kept as ${removal.keptAs}\n`
+      );
+      kept = true;
+    }
+  }
 const config = await owned(file);
 if (config === false) process.exit(unsafe);
-// 지우기는 이름 자체에 하는 일이라 링크를 따라가지 않는다. `.agents`는 그 조직의 에이전트가 원래 지울 수 있는 곳이다.
-if (config === true)
-  await orIfMissing(() => unlink(file), hasErrorCode("ENOENT"), undefined);
+if (config === true) {
+  const removal = await removeConfirmed(
+    file,
+    async (moved) => (await owned(moved)) === true
+  );
+  if (typeof removal === "object") {
+    process.stderr.write(
+      `[config] a file saved under ${file} while it was cleared is kept as ${removal.keptAs}\n`
+    );
+    process.exit(unsafe);
+  }
+}
+if (kept) process.exit(unsafe);

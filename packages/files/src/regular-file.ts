@@ -12,8 +12,10 @@ import {
 export type OpenedRegularFile = { handle: FileHandle; info: BigIntStats };
 /**
  * 열지 않은 이유: 경로에 아무것도 없음(`"missing"`), 그 자리가 일반 파일이 아님(링크·폴더·FIFO 같은 특수 파일, `"not-regular"`),
- * 또는 열 때와 그 직후 `lstat` 사이에 자리가 바뀜(`"changed"`). `"changed"`는 연 것이 없음·링크·폴더를 만났는데 그 직후
- * `lstat`이 일반 파일을 본 경우다. `"not-regular"`처럼 안전한 부정이 아니므로 부르는 쪽이 정하고, 다시 열지 않는다.
+ * 또는 열 때와 그 직후 `lstat` 사이에 자리가 바뀜(`"changed"`). `"missing"`은 열기와 바로 뒤 `lstat`이 모두 없다고 볼 때만이고,
+ * 열기가 권한·디스크 오류로 실패했으면 그 자리를 확인하지 못한 것이라 던진다. `"changed"`는 연 것이 없음·링크·폴더를 만났는데
+ * 그 직후 `lstat`이 일반 파일을 본 경우, 또는 링크·폴더를 만났는데 그 직후 자리가 비어 있는 경우다. `"not-regular"`처럼 안전한
+ * 부정이 아니므로 부르는 쪽이 정하고, 다시 열지 않는다.
  */
 export type NotOpened = "missing" | "not-regular" | "changed";
 /** 파일 식별(장치·inode). 같은 두 값이면 같은 파일 시스템 항목이다. */
@@ -29,10 +31,11 @@ export const sameEntry = (a: EntryIdentity, b: EntryIdentity) =>
  * POSIX에서는 `O_NOFOLLOW`로 링크를 열 때부터 거절하고, `O_NONBLOCK`으로 FIFO를 기다리지 않는다. Windows에는 두 값이 없어
  * 링크를 따라 연 뒤, 경로 항목(`lstat`)이 연 파일 자신(dev·ino)인지 대조해 링크를 거절한다.
  * 열지 못하면 열기 오류 코드로 짐작하지 않고 링크를 따라가지 않는 `lstat`으로 그 항목을 본다. 링크를 따라 여는 Windows에서는
- * 대상 없는 링크도 ENOENT이고, 위 폴더의 링크 순환도 링크 거절과 같은 ELOOP이기 때문이다. 없으면 `"missing"`, 일반 파일이
- * 아니면 `"not-regular"`, 그 밖(위 칸이 폴더가 아님·위 폴더 순환·권한 등)은 열기 오류를 그대로 던진다. 그 `lstat`이 일반
- * 파일을 봤는데 열기가 없음·링크·폴더를 만났다면 그사이 자리가 바뀐 것이므로 `"changed"`다. 그 밖의 열기 오류(권한 등)가
- * 일반 파일에서 났으면 전처럼 던진다. 그 `lstat` 뒤에는 아무것도 읽지 않으므로 그사이 바뀌어도 쓰는 것이 없다.
+ * 대상 없는 링크도 ENOENT이고, 위 폴더의 링크 순환도 링크 거절과 같은 ELOOP이기 때문이다. 열기와 바로 뒤 `lstat`이 모두 없다고
+ * 볼 때만(`lstat`이 ENOENT이고 열기 오류도 ENOENT) `"missing"`, 일반 파일이 아니면 `"not-regular"`, 그 밖(위 칸이 폴더가 아님·위
+ * 폴더 순환·권한 등)은 열기 오류를 그대로 던진다. 그 `lstat`이 일반 파일을 봤는데 열기가 없음·링크·폴더를 만났거나, 열기가
+ * 링크·폴더를 만났는데 그 직후 자리가 비었으면 그사이 자리가 바뀐 것이므로 `"changed"`다. 그 밖의 열기 오류(권한·디스크 등)는
+ * `lstat`이 비었든 일반 파일이든 던진다. 그 `lstat` 뒤에는 아무것도 읽지 않으므로 그사이 바뀌어도 쓰는 것이 없다.
  */
 export async function openRegularFile(
   file: string
@@ -76,7 +79,11 @@ async function unopened(file: string, openError: unknown): Promise<NotOpened> {
   try {
     entry = await lstat(file);
   } catch (error) {
-    if (failureCode(error) === "ENOENT") return "missing";
+    if (!hasErrorCode("ENOENT")(error)) throw openError;
+    // 열기와 바로 뒤 lstat이 모두 없다고 볼 때만 "missing"이다. 열기가 없음이 아니었으면 그 자리를 확인하지 못한 것이고,
+    // 열기가 링크·폴더를 만났는데 그 사이 비었으면 그 자리가 바뀐 것이다.
+    if (hasErrorCode("ENOENT")(openError)) return "missing";
+    if (hasErrorCode("ELOOP", "EISDIR")(openError)) return "changed";
     throw openError;
   }
   if (entry.isFile()) {
