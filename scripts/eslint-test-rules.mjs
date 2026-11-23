@@ -2242,8 +2242,9 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
     return undefined;
   };
   /**
-   * 함수가 실행될 수 있는가. 이름 있는 함수는 내보냈거나, 자기 밖에서 읽는 자리가 있고 그 자리가 실행될 수 있어야 한다. 이름 없는
-   * 함수(콜백·메서드)는 그것을 담은 함수가 실행될 수 있으면 된다. 파일의 맨 위는 실행된다.
+   * 함수가 실행될 수 있는가. 이름 있는 함수는 내보냈거나, 자기 밖에서 부르는 자리(호출의 callee)가 있고 그 자리가 실행될 수 있어야
+   * 한다. 이름을 읽기만 하는 자리(다른 함수의 인자로 넘기기, 다른 이름에 담기)는 넘겨받은 쪽이 부르는지 모르므로 실행으로 세지 않는다.
+   * 이름 없는 함수(그 자리에 쓴 콜백·메서드)는 그것을 담은 함수가 실행될 수 있으면 된다. 파일의 맨 위는 실행된다.
    */
   const runs = (fn, seen = new Set()) => {
     if (!fn) return true;
@@ -2255,8 +2256,20 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
       fn.type === "FunctionDeclaration" ? fn : fn.parent.parent;
     if (declaration.parent?.type === "ExportNamedDeclaration") return true;
     return variable.references.some((reference) => {
-      if (!reference.isRead()) return false;
-      if (reference.identifier.parent?.type === "ExportSpecifier") return true;
+      const parent = reference.identifier.parent;
+      // 내보내면 다른 파일이 부른다.
+      if (
+        parent?.type === "ExportSpecifier" ||
+        parent?.type === "ExportDefaultDeclaration"
+      )
+        return true;
+      // 부르는 자리만 실행이다. 읽기만 하는 것(인자로 넘기기·다른 이름에 담기·기록하기)은 넘겨받은 쪽이 부르는지 모른다.
+      if (!(
+        (parent?.type === "CallExpression" ||
+          parent?.type === "NewExpression") &&
+        parent.callee === reference.identifier
+      ))
+        return false;
       const owner = enclosingFunction(reference.identifier);
       // 자기 안에서만 부르는 재귀는 실행되지 않는다.
       for (let at = owner; at; at = enclosingFunction(at))
@@ -2502,7 +2515,8 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
  * - 부르지 않고 함수 값으로 넘기거나 다시 내보내는 것(`items.map(awaitedLater)`, `export { awaitedLater } from …`). 결과를 따라갈 수 없다.
  * 속성을 다른 파일에서 읽어 기다리는 것은 따라가지 않아 짚는다. 루트는 이름으로 맞추므로 같은 이름으로 넘겨받은 객체(다른 함수의
  * 매개변수 `child`)는 같은 경로다. 실행되지 않는 기다림은 세지 않는다(#286 항목 21): 도달할 수 없는 코드(조기 `return`·`throw` 뒤)와,
- * 아무도 부르지 않거나 그런 함수만 부르는 이름 있는 함수 안(내보낸 함수, 콜백으로 넘긴 이름 없는 함수, 메서드는 실행된다고 본다).
+ * 부르는 자리(호출의 callee)가 없거나 그런 함수만 부르는 이름 있는 함수 안(이름을 인자로 넘기거나 다른 이름에 담기만 한 것은 부르는
+ * 것이 아니다; 내보낸 함수, 그 자리에 쓴 이름 없는 콜백, 메서드는 실행된다고 본다).
  * `Promise.race`·`any` 안의 기다림은 다른 값이 모두 거절만 할 수 있을 때(시한을 거절로 끝내는 공용 within의 모양)만 센다. 다른 값이
  * 먼저 이행할 수 있으면 표시한 Promise가 정해지기 전에 끝나, 그 뒤의 거절을 기다리지 않는다.
  */
