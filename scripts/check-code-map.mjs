@@ -167,19 +167,31 @@ function isCallableValue(expression) {
   );
 }
 
-/** 부를 수 있는 멤버: 메서드, 함수 타입의 속성, 함수·클래스 값의 속성. */
-function isCallableMember(member) {
-  if (ts.isMethodDeclaration(member) || ts.isMethodSignature(member))
+/**
+ * 이름으로 부를 수 있는 정의인가. 이 검사는 타입 checker 없이 구문 트리만 읽으므로, 부를 수 있는 선언 종류를 한곳에서 정한다:
+ * 이름 있는 함수·클래스(생성자로 부름), 메서드, 함수 타입의 속성, 함수·클래스 값을 담은 속성·변수. 함수처럼 생겼어도 이름으로 부를 수
+ * 없는 것(접근자 get·set은 속성, 생성자·인덱스·호출·생성 시그니처는 이름이 없음)은 아니다(#289 외부 리뷰 SPEC-3).
+ */
+function isCallableDefinition(node) {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isClassLike(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isMethodSignature(node)
+  )
     return true;
   if (
-    (ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) &&
-    member.type &&
-    ts.isFunctionTypeNode(member.type)
+    (ts.isPropertySignature(node) || ts.isPropertyDeclaration(node)) &&
+    node.type &&
+    ts.isFunctionTypeNode(node.type)
   )
     return true;
   return (
-    (ts.isPropertyAssignment(member) || ts.isPropertyDeclaration(member)) &&
-    isCallableValue(member.initializer)
+    (ts.isPropertyAssignment(node) ||
+      ts.isPropertyDeclaration(node) ||
+      ts.isVariableDeclaration(node)) &&
+    isCallableValue(node.initializer)
   );
 }
 
@@ -215,7 +227,7 @@ export function definitionsOf(file, text) {
       const full = prefix ? `${prefix}.${name}` : name;
       found.names.add(name);
       found.paths.add(full);
-      if (isCallableMember(member)) {
+      if (isCallableDefinition(member)) {
         found.callables.add(name);
         found.callablePaths.add(full);
       }
@@ -275,8 +287,7 @@ export function definitionsOf(file, text) {
         const name = textOf(node.name);
         if (name !== undefined) {
           found.names.add(name);
-          // 이름 있는 함수와 클래스(생성자)는 부를 수 있다. 화살표 함수는 이름이 없고 변수·속성이 그 이름이다.
-          found.callables.add(name);
+          if (isCallableDefinition(node)) found.callables.add(name);
         }
       }
       if (
@@ -291,8 +302,7 @@ export function definitionsOf(file, text) {
       } else if (ts.isVariableDeclaration(node)) {
         addBindings(node.name);
         if (ts.isIdentifier(node.name)) {
-          if (isCallableValue(node.initializer))
-            found.callables.add(node.name.text);
+          if (isCallableDefinition(node)) found.callables.add(node.name.text);
           addMembers(node.name.text, membersOf(node));
         }
       } else if (
