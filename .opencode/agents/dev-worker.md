@@ -17,14 +17,19 @@ permissions:
     resource: "*"
     effect: allow
   # Test helpers the test scope (scripts/test-files.mjs testFiles) names in a package's src. `*` also crosses `/`,
-  # so an allow reopens sub folders, where the same names are product code. The denials below (secrets, test
-  # files, settings) come later and still win there.
+  # so after each folder's helper denials an allow reopens everything below that folder (`<folder>/*/*`): files in sub
+  # folders, and folders whose names start with a helper's name (`runtime-contract.schema/index.ts`), are product code.
+  # A sub folder's own helper denials come after that allow. The denials below (secrets, test files, settings) come
+  # later and still win everywhere.
   - action: edit
     resource: "*packages/runtime/src/testing.*"
     effect: deny
   - action: edit
     resource: "*packages/runtime/src/runtime-contract.*"
     effect: deny
+  - action: edit
+    resource: "*packages/runtime/src/*/*"
+    effect: allow
   - action: edit
     resource: "*packages/runtime/src/providers/test-folders.*"
     effect: deny
@@ -55,6 +60,9 @@ permissions:
   - action: edit
     resource: "*packages/db/src/test-cluster.*"
     effect: deny
+  - action: edit
+    resource: "*packages/db/src/*/*"
+    effect: allow
   - action: edit
     resource: ".env*"
     effect: deny
