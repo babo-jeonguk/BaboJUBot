@@ -13,7 +13,8 @@
 //
 // Exit codes: 0 finished without an error event; 2 error event (move to the next model);
 // 3 no session started twice (parent takes over); 4 opencode failed without an error event, could not start (also when
-// the supervisor is not available: the runner refuses to start a worker it could not stop), the call reached
+// the supervisor is not available: the runner refuses to start a worker it could not stop), the brief could not be sent to the
+// worker (a run failure, not a model's error event), the call reached
 // --limit (a limit on the whole call, retries included; default 110 minutes, inside the parent's 2-hour background limit), or
 // the worker's process tree could not be confirmed stopped (no retry after that); 128+n stopped by signal n; 1 usage.
 import { closeSync, openSync, readFileSync } from "node:fs";
@@ -117,20 +118,19 @@ const args = [
 if (opts.session) args.push("-s", opts.session);
 
 /**
- * Why the brief could not be sent to the last attempt, if it could not. A worker without its brief has nothing to do, so the
- * reason becomes one of the call's errors.
+ * Writes the brief to one worker's standard input and closes it, so opencode reads the whole brief and knows it ended. Settles
+ * with why it could not be sent (an error code, e.g. EPIPE when the worker ended without reading), or undefined once sent. The
+ * result belongs to that worker's attempt (worker-run.mjs `delivered`).
  */
-let briefFailure;
-/** Writes the brief to the worker's standard input and closes it, so opencode reads the whole brief and knows it ended. */
 function sendBrief(stdin) {
-  if (!stdin) {
-    briefFailure = "could not send the brief: the worker has no standard input";
-    return;
-  }
-  stdin.on("error", (error) => {
-    briefFailure = `could not send the brief (${failureCode(error)})`;
+  if (!stdin) return Promise.resolve("no standard input");
+  return new Promise((resolve) => {
+    // The end callback also gets the write's error; the listener keeps a later error from being unhandled.
+    stdin.on("error", (error) => resolve(failureCode(error)));
+    stdin.end(message, (error) =>
+      resolve(error ? failureCode(error) : undefined)
+    );
   });
-  stdin.end(message);
 }
 
 // Events written so far. No output file yet means no events; a line that is not JSON (a partly written last line) is skipped.
@@ -164,8 +164,12 @@ function launch() {
       env: { ...process.env, OPENCODE_CONFIG: config },
       stdio: ["pipe", out, err],
     });
-    sendBrief(tree.stdin);
-    return tree;
+    return {
+      started: tree.started,
+      exited: tree.exited,
+      stop: () => tree.stop(),
+      delivered: sendBrief(tree.stdin),
+    };
   } finally {
     // opencode holds its own copies. A file that cannot be closed only stays open until the runner ends.
     continueAfterFailure(
@@ -197,12 +201,9 @@ const { attempts, result, deadlineAt, requested } = await workerRun.run();
 const events = readEvents();
 
 const session = sessionOf(events);
-const errors = [
-  ...(briefFailure === undefined ? [] : [briefFailure]),
-  ...events
-    .filter((e) => e.type === "error")
-    .map((e) => e.error?.message ?? JSON.stringify(e.error)),
-];
+const errors = events
+  .filter((e) => e.type === "error")
+  .map((e) => e.error?.message ?? JSON.stringify(e.error));
 const tools = events
   .filter((e) => e.type === "tool_use")
   .map((e) => e.part ?? {});
