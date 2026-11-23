@@ -759,7 +759,10 @@ async function holdConnection(dir: string) {
 
 /**
  * 이 주인 기록 폴더의 주인 연결을 닫고, 닫힌 것을 확인한다(소켓 파일도 함께 지워진다). 쥐지 않았으면 아무것도 하지 않는다. 닫기가
- * 실패하면 그 원인과 함께 `EMBEDDED_OWNER_CLOSE_FAILED`로 던진다(#286). 이 서버는 받은 연결을 바로 끊으므로 닫기는 곧 끝난다.
+ * 실패하면 그 원인과 함께 `EMBEDDED_OWNER_CLOSE_FAILED`로 던진다(#286). 닫기에 시간 상한을 두지 않는다(#288 리뷰 2회차 STD-3): 서버는
+ * 받은 연결을 처리기에서 바로 끊으므로(`listenAt`의 `socket.destroy()`) 닫기의 끝이 상대에 달려 있지 않다. 상대가 자기 쪽을 쥐고
+ * 있어도 끝나는 것은 embedded-owner.test.ts의 "releases its owner connection while another side keeps its end of a connection open"이
+ * 본다.
  */
 async function dropConnection(dir: string) {
   const connection = held.get(dir);

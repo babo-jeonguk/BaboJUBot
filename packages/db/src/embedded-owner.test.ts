@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { isDisconnect } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
@@ -254,6 +255,38 @@ describe.runIf(posix)(
       });
       inject.closeFails = undefined;
       expect(await listenedStates()).toEqual(["closed"]);
+    }, 60_000);
+
+    // #288 리뷰 2회차 STD-3: 주인 연결의 닫기에는 시간 상한을 두지 않는다. 그 서버는 받은 연결을 처리기에서 바로 끊으므로(`holdConnection`)
+    // 닫기의 끝이 상대에 달려 있지 않다. 상대가 연결한 뒤 자기 쪽을 닫지 않고 쥐고 있어도 멈춤은 끝나고 소켓 파일은 사라진다.
+    it("releases its owner connection while another side keeps its end of a connection open", async () => {
+      const { base, cleanup } = await ownTemporaryFolder();
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      const { stop } = await startOwned(cleanup, { dataDir, persistent: true });
+      expect(inject.listened).toHaveLength(1);
+      const handle = inject.listened[0]!;
+      // 상대 쪽은 끝을 받아도 스스로 닫지 않는다(allowHalfOpen). 상대가 끊어 생긴 오류(끊김)만 답으로 받고, 그 밖의 오류는 시험 실패다.
+      const peer = net.connect({ path: handle, allowHalfOpen: true });
+      let peerFailure: unknown;
+      peer.on("error", (error) => {
+        if (!isDisconnect(error)) peerFailure ??= error;
+      });
+      onTestFinished(() => {
+        peer.destroy();
+      });
+      await within(
+        new Promise<void>((resolve) => peer.once("connect", () => resolve())),
+        10_000,
+        "the other side did not connect to the owner connection"
+      );
+      await within(
+        stop(),
+        30_000,
+        "the stop did not finish while the other side kept its connection"
+      );
+      expect(fs.existsSync(handle)).toBe(false);
+      expect(peer.destroyed).toBe(false);
+      expect(peerFailure).toBeUndefined();
     }, 60_000);
 
     it("fails a temporary stop with the owner connection's close failure", async () => {
