@@ -23,7 +23,38 @@ const inject = vi.hoisted(() => ({
   recordFails: undefined as Error | undefined,
   /** 임시 cluster 폴더(`babojubot-pg-…`)를 지우면 이 오류로 실패한다. */
   removeFails: undefined as Error | undefined,
+  /** 주인 연결을 그 자리(경로)에서 듣지 못하게 한다. 오류를 돌려주면 듣기가 그 오류로 실패한다. */
+  listenFails: undefined as ((handle: string) => Error | undefined) | undefined,
+  /** 제품이 경로에서 듣기를 시도한 자리와 그 결과. 주입한 실패도 여기 남는다. */
+  listens: [] as { handle: string; failure?: Error }[],
 }));
+vi.mock("node:net", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:net")>();
+  // 경로(소켓·pipe)에서 듣는 서버만 본다. 번호로 듣는 서버(빈 port 고르기)는 그대로 둔다.
+  const createServer = ((...args: Parameters<typeof real.createServer>) => {
+    const server = real.createServer(...args);
+    const listen = server.listen.bind(server);
+    const listenAt = (...listenArgs: unknown[]) => {
+      const [handle, callback] = listenArgs;
+      if (typeof handle !== "string")
+        return listen(...(listenArgs as Parameters<typeof listen>));
+      if (listenArgs.length !== 2 || typeof callback !== "function")
+        throw new Error(
+          `the owner connection was listened in an unexpected way: ${JSON.stringify(listenArgs)}`
+        );
+      const failure = inject.listenFails?.(handle);
+      inject.listens.push({ handle, ...(failure && { failure }) });
+      if (failure) {
+        process.nextTick(() => server.emit("error", failure));
+        return server;
+      }
+      return listen(handle, callback as () => void);
+    };
+    server.listen = listenAt as typeof server.listen;
+    return server;
+  }) as typeof real.createServer;
+  return { ...real, createServer, default: { ...real, createServer } };
+});
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
@@ -184,6 +215,68 @@ describe.runIf(posix)(
       stopping = Promise.resolve();
       inject.removeFails = undefined;
       expect(await listeningUnder(base)).toEqual([]);
+    }, 60_000);
+
+    // #286 항목 10: 후보 폴더의 검사를 통과해도 실제로 듣기가 실패할 수 있다(소켓을 지원하지 않는 볼륨 등). 듣기까지가 그 후보의
+    // 시도라서, 실패하면 다음 후보(`/tmp`)에서 듣는다.
+    it("moves on to the next folder when listening in a candidate fails", async () => {
+      const { base, cleanup } = await ownTemporaryFolder();
+      const first = privateFolder(base);
+      const next = privateFolder("/tmp");
+      inject.listens = [];
+      inject.listenFails = (handle) =>
+        path.dirname(handle) === first
+          ? Object.assign(new Error(`injected: cannot listen at ${handle}`), {
+              code: "EOPNOTSUPP",
+            })
+          : undefined;
+      onTestFinished(() => {
+        inject.listenFails = undefined;
+      });
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      const { stop } = await startOwned(cleanup, { dataDir, persistent: true });
+      expect(
+        inject.listens.map(({ handle, failure }) => ({
+          folder: path.dirname(handle),
+          failed: failure !== undefined,
+        }))
+      ).toEqual([
+        { folder: first, failed: true },
+        { folder: next, failed: false },
+      ]);
+      await stop();
+    }, 60_000);
+
+    // 모든 후보에서 듣기가 실패하면 후보마다 그 원인을 함께 남기고 실패한다.
+    it("names the failure of every folder when listening fails in all of them", async () => {
+      const { base } = await ownTemporaryFolder();
+      inject.listens = [];
+      inject.listenFails = (handle) =>
+        Object.assign(new Error(`injected: cannot listen at ${handle}`), {
+          code: "EOPNOTSUPP",
+        });
+      onTestFinished(() => {
+        inject.listenFails = undefined;
+      });
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      const refused: unknown = await startEmbeddedCluster({
+        dataDir,
+        persistent: true,
+      }).then(
+        () => new Error("the cluster started although no folder could listen"),
+        (error: unknown) => error
+      );
+      expect(inject.listens.map(({ handle }) => path.dirname(handle))).toEqual([
+        privateFolder(base),
+        privateFolder("/tmp"),
+      ]);
+      expect(refused).toBeInstanceOf(Error);
+      const cause = (refused as Error).cause;
+      // 듣기 실패는 그 자리를 이름에 담는다(Node의 listen 오류도 그렇다). 후보마다 그 실패가 그대로 남는다.
+      expect(cause).toBeInstanceOf(AggregateError);
+      expect((cause as AggregateError).errors).toEqual(
+        inject.listens.map(({ failure }) => failure)
+      );
     }, 60_000);
 
     // SPEC-3: 후보 폴더를 쓸 수 없으면(그 자리에 파일이 있음, 쓰기 권한 없음) 그 후보만 건너뛰고 다음 후보(`/tmp`)로 간다.
