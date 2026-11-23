@@ -63,6 +63,203 @@ permissions:
   - action: edit
     resource: "*packages/db/src/*/*"
     effect: allow
+  # Check settings, judged by the file name (the path's last piece). OpenCode's `*` crosses `/`, so each name is denied at
+  # the root and below any folder (`*/name`), and where a `*` inside a name could reach into a folder (`eslint.config.d/x.ts`,
+  # `vitest.helpers/run.ts`) an allow right after reopens what lies below such a folder. Names without a `*` and whole
+  # settings folders come after the reopening allows, and secrets and test files are denied after this block, so they still
+  # win below such folders.
+  - action: edit
+    resource: "eslint.config.*"
+    effect: deny
+  - action: edit
+    resource: "*/eslint.config.*"
+    effect: deny
+  - action: edit
+    resource: "eslint.config.*/*"
+    effect: allow
+  - action: edit
+    resource: "*/eslint.config.*/*"
+    effect: allow
+  - action: edit
+    resource: "vitest.config.*"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.config.*"
+    effect: deny
+  - action: edit
+    resource: "vitest.*.config.*"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.*.config.*"
+    effect: deny
+  - action: edit
+    resource: "vitest.workspace.*"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.workspace.*"
+    effect: deny
+  - action: edit
+    resource: "vitest.*/*"
+    effect: allow
+  - action: edit
+    resource: "*/vitest.*/*"
+    effect: allow
+  - action: edit
+    resource: "vite.config.*"
+    effect: deny
+  - action: edit
+    resource: "*/vite.config.*"
+    effect: deny
+  - action: edit
+    resource: "vite.config.*/*"
+    effect: allow
+  - action: edit
+    resource: "*/vite.config.*/*"
+    effect: allow
+  - action: edit
+    resource: "playwright.config.*"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.config.*"
+    effect: deny
+  - action: edit
+    resource: "playwright.*.config.*"
+    effect: deny
+  - action: edit
+    resource: "*/playwright.*.config.*"
+    effect: deny
+  - action: edit
+    resource: "playwright.*/*"
+    effect: allow
+  - action: edit
+    resource: "*/playwright.*/*"
+    effect: allow
+  - action: edit
+    resource: ".prettierrc*"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierrc*"
+    effect: deny
+  - action: edit
+    resource: ".prettierrc*/*"
+    effect: allow
+  - action: edit
+    resource: "*/.prettierrc*/*"
+    effect: allow
+  - action: edit
+    resource: ".lintstagedrc*"
+    effect: deny
+  - action: edit
+    resource: "*/.lintstagedrc*"
+    effect: deny
+  - action: edit
+    resource: ".lintstagedrc*/*"
+    effect: allow
+  - action: edit
+    resource: "*/.lintstagedrc*/*"
+    effect: allow
+  - action: edit
+    resource: "*tsconfig*.json"
+    effect: deny
+  - action: edit
+    resource: "*tsconfig*/*"
+    effect: allow
+  - action: edit
+    resource: ".prettierignore"
+    effect: deny
+  - action: edit
+    resource: "*/.prettierignore"
+    effect: deny
+  - action: edit
+    resource: ".editorconfig"
+    effect: deny
+  - action: edit
+    resource: "*/.editorconfig"
+    effect: deny
+  - action: edit
+    resource: ".npmrc"
+    effect: deny
+  - action: edit
+    resource: "*/.npmrc"
+    effect: deny
+  - action: edit
+    resource: ".gitignore"
+    effect: deny
+  - action: edit
+    resource: "*/.gitignore"
+    effect: deny
+  - action: edit
+    resource: ".gitattributes"
+    effect: deny
+  - action: edit
+    resource: "*/.gitattributes"
+    effect: deny
+  - action: edit
+    resource: "package.json"
+    effect: deny
+  - action: edit
+    resource: "*/package.json"
+    effect: deny
+  - action: edit
+    resource: "pnpm-lock.yaml"
+    effect: deny
+  - action: edit
+    resource: "*/pnpm-lock.yaml"
+    effect: deny
+  - action: edit
+    resource: "pnpm-workspace.yaml"
+    effect: deny
+  - action: edit
+    resource: "*/pnpm-workspace.yaml"
+    effect: deny
+  - action: edit
+    resource: "paseo.json"
+    effect: deny
+  - action: edit
+    resource: "*/paseo.json"
+    effect: deny
+  - action: edit
+    resource: ".claude/*"
+    effect: deny
+  - action: edit
+    resource: "*/.claude/*"
+    effect: deny
+  - action: edit
+    resource: "patches/*"
+    effect: deny
+  - action: edit
+    resource: "*/patches/*"
+    effect: deny
+  - action: edit
+    resource: ".github/*"
+    effect: deny
+  - action: edit
+    resource: "*/.github/*"
+    effect: deny
+  - action: edit
+    resource: ".husky/*"
+    effect: deny
+  - action: edit
+    resource: "*/.husky/*"
+    effect: deny
+  - action: edit
+    resource: ".agents/*"
+    effect: deny
+  - action: edit
+    resource: "*/.agents/*"
+    effect: deny
+  - action: edit
+    resource: ".opencode/*"
+    effect: deny
+  - action: edit
+    resource: "*/.opencode/*"
+    effect: deny
+  - action: edit
+    resource: "scripts/*"
+    effect: deny
+  - action: edit
+    resource: "*/scripts/*"
+    effect: deny
   - action: edit
     resource: ".env*"
     effect: deny
@@ -83,94 +280,25 @@ permissions:
     resource: "*.spec.*"
     effect: deny
   - action: edit
-    resource: "*apps/server/test/*"
+    resource: "apps/server/test/*"
     effect: deny
   - action: edit
-    resource: "*apps/web/test/*"
+    resource: "*/apps/server/test/*"
     effect: deny
   - action: edit
-    resource: "*apps/web/e2e/*"
+    resource: "apps/web/test/*"
+    effect: deny
+  - action: edit
+    resource: "*/apps/web/test/*"
+    effect: deny
+  - action: edit
+    resource: "apps/web/e2e/*"
+    effect: deny
+  - action: edit
+    resource: "*/apps/web/e2e/*"
     effect: deny
   - action: edit
     resource: "*/test-fixtures/*"
-    effect: deny
-  - action: edit
-    resource: "*eslint.config.*"
-    effect: deny
-  - action: edit
-    resource: "*vitest*config*"
-    effect: deny
-  - action: edit
-    resource: "*vite.config.*"
-    effect: deny
-  - action: edit
-    resource: "*.prettierrc*"
-    effect: deny
-  - action: edit
-    resource: "*.prettierignore"
-    effect: deny
-  - action: edit
-    resource: "*.lintstagedrc*"
-    effect: deny
-  - action: edit
-    resource: "*.editorconfig"
-    effect: deny
-  - action: edit
-    resource: "*.npmrc"
-    effect: deny
-  - action: edit
-    resource: "*.gitignore"
-    effect: deny
-  - action: edit
-    resource: "*.gitattributes"
-    effect: deny
-  - action: edit
-    resource: "*.claude/*"
-    effect: deny
-  - action: edit
-    resource: "patches/*"
-    effect: deny
-  - action: edit
-    resource: "*/patches/*"
-    effect: deny
-  - action: edit
-    resource: "*vitest.workspace.*"
-    effect: deny
-  - action: edit
-    resource: "*playwright*config*"
-    effect: deny
-  - action: edit
-    resource: "*tsconfig*.json"
-    effect: deny
-  - action: edit
-    resource: "*package.json"
-    effect: deny
-  - action: edit
-    resource: "*pnpm-lock.yaml"
-    effect: deny
-  - action: edit
-    resource: "*pnpm-workspace.yaml"
-    effect: deny
-  - action: edit
-    resource: "*paseo.json"
-    effect: deny
-  - action: edit
-    resource: "*.github/*"
-    effect: deny
-  - action: edit
-    resource: "*.husky/*"
-    effect: deny
-  - action: edit
-    resource: "*.agents/*"
-    effect: deny
-  - action: edit
-    resource: "*.opencode/*"
-    effect: deny
-  - action: edit
-    resource: "scripts/*"
-    effect: deny
-  - action: edit
-    resource: "*/scripts/*"
     effect: deny
   - action: edit
     resource: "*.md"
