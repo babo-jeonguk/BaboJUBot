@@ -364,11 +364,16 @@ function splitGaps(root, packages) {
   return gaps;
 }
 
+/** 제품·시험 타입 검사로 나눌 패키지 폴더. */
+function packagesToSplit(root) {
+  return globSync("{apps,packages}/*/tsconfig.test.json", {
+    cwd: root,
+  }).map((file) => path.dirname(file).replaceAll("\\", "/"));
+}
+
 test("the product and test type checks split files the way the test scope does", async (context) => {
   // tsconfig는 JSON이라 시험 범위(codeFormats)를 가져올 수 없다. 저장소 파일과 형식마다 만든 표본으로 같은 범위인지 본다.
-  const packages = globSync("{apps,packages}/*/tsconfig.test.json", {
-    cwd: repository,
-  }).map((file) => path.dirname(file).replaceAll("\\", "/"));
+  const packages = packagesToSplit(repository);
   assert.ok(packages.length > 0, "no tsconfig.test.json found");
   assert.deepEqual(splitGaps(repository, packages), []);
   // 패키지마다 제품·시험·러너 설정 자리를 두어(새 패키지도 표본을 받는다) 위의 자리 목록과 함께 쓴다.
