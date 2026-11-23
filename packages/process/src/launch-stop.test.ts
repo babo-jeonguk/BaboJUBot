@@ -64,7 +64,8 @@ const unique = (label: string) => `${label}-${++count}`;
 const keep = "setInterval(() => {}, 1000);";
 
 /**
- * 연결을 쥐고 자기 번호를 파일에 남기는 프로그램. 대역 때문에 시험이 끄지 못한 프로그램은 정리가 그 번호로 끈다. 연결이 열려 있으면
+ * 자기 번호를 파일에 남긴 뒤 연결을 쥐는 프로그램(#286: 번호를 먼저 남겨, 연결이 보이면 정리가 그 번호를 읽을 수 있다. 연결 뒤에
+ * 남기면 그 사이 시험이 끝날 때 정리가 아직 없는 파일을 읽었다). 대역 때문에 시험이 끄지 못한 프로그램은 정리가 그 번호로 끈다. 연결이 열려 있으면
  * 그 번호의 프로세스는 아직 그 프로그램이다.
  */
 async function holder(label: string, body = keep) {
@@ -78,7 +79,7 @@ async function holder(label: string, body = keep) {
   }, name);
   return {
     name,
-    script: `${lifelines.hold(name, `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`)} ${body}`,
+    script: `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(name)} ${body}`,
   };
 }
 

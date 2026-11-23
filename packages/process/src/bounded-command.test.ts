@@ -60,8 +60,9 @@ describe("runCommand", () => {
         killUnlessGone(Number(await readFile(pidFile, "utf8")));
       await lifelines.closed(name);
     }, "the child holding the output");
-    const child = `${lifelines.hold(name, `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`)} ${keep}`;
-    // 대표는 자식이 연결을 쥐고 번호를 남긴 뒤 끝난다. 자식은 대표의 출력을 물려받아 쥔 채 남는다.
+    const child = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(name)} ${keep}`;
+    // 자식은 번호를 먼저 남긴 뒤 연결을 쥔다(#286: 연결이 보이면 정리가 그 번호를 읽을 수 있다). 대표는 자식이 번호를 남긴 뒤
+    // 끝난다. 자식은 대표의 출력을 물려받아 쥔 채 남는다.
     const result = await node(
       `const c = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(child)}], { stdio: ["ignore", "inherit", "ignore"], detached: true });
        c.unref();
@@ -71,6 +72,7 @@ describe("runCommand", () => {
     );
     expect(result).toMatchObject({ code: 0, killed: false });
     expect(result.stdout).toContain("leader");
+    await lifelines.connected(name);
     expect(lifelines.open(name)).toBe(true);
   });
 
