@@ -199,13 +199,18 @@ struct Leader {
 
 /// The programs that carry this run's marker, as a stop sees them. One a later look no longer finds (a dying process shows no
 /// environment) still counts until what holds it says it ended (#283 review 1): not finding it again is not its end.
-#[derive(Default)]
-struct Marked {
+struct Marked<H = marked::Held> {
     search: Option<marked::Search>,
-    seen: std::cell::RefCell<Vec<std::rc::Rc<marked::Held>>>,
+    seen: std::cell::RefCell<Vec<std::rc::Rc<H>>>,
 }
 
-impl Marked {
+impl<H: Holder> Default for Marked<H> {
+    fn default() -> Self {
+        Marked::new(None)
+    }
+}
+
+impl<H: Holder> Marked<H> {
     fn new(search: Option<marked::Search>) -> Self {
         Marked {
             search,
@@ -213,16 +218,20 @@ impl Marked {
         }
     }
 
-    /// This look's programs, and those held before that still run.
-    fn keep(&self, found: marked::Found<marked::Held>) -> marked::Found<std::rc::Rc<marked::Held>> {
-        let mut holders: Vec<std::rc::Rc<marked::Held>> =
+    /// This look's programs, and those held before that still run as `runs` tells (`marked::still_runs`).
+    fn keep(
+        &self,
+        found: marked::Found<H>,
+        runs: impl Fn(&H) -> marked::Running,
+    ) -> marked::Found<std::rc::Rc<H>> {
+        let mut holders: Vec<std::rc::Rc<H>> =
             found.holders.into_iter().map(std::rc::Rc::new).collect();
         let mut unverified = found.unverified;
         for held in self.seen.borrow_mut().drain(..) {
             if holders.iter().any(|each| each.pid() == held.pid()) {
                 continue;
             }
-            match marked::still_runs(&held) {
+            match runs(&held) {
                 marked::Running::Yes => holders.push(held),
                 marked::Running::Ended => {}
                 marked::Running::Unknown => unverified.push(held.pid()),
@@ -332,9 +341,10 @@ impl Reach for Leader {
     type Held = std::rc::Rc<marked::Held>;
 
     fn marked(&self) -> Result<marked::Found<Self::Held>, String> {
-        Ok(self
-            .marked
-            .keep(marked_outside(self.marked.search.as_ref(), Some(self.pid))?))
+        Ok(self.marked.keep(
+            marked_outside(self.marked.search.as_ref(), Some(self.pid))?,
+            marked::still_runs,
+        ))
     }
 
     fn signal_marked(&self, held: &Self::Held, signal: libc::c_int) -> Result<(), String> {
@@ -402,7 +412,7 @@ impl Reach for Stray {
         {
             found.holders.push(held);
         }
-        Ok(self.marked.keep(found))
+        Ok(self.marked.keep(found, marked::still_runs))
     }
 
     fn signal_group(&self, _signal: libc::c_int) -> Result<(), String> {
