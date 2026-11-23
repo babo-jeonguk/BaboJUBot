@@ -16,9 +16,12 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
+  configInputs,
   diagnosticsOf,
   isJavaScript,
+  isTypeScriptConfig,
   javaScriptConfigs,
+  ownershipProblems,
   readConfig,
 } from "./typecheck-js.mjs";
 import { codeFormatNames } from "./test-files.mjs";
@@ -121,17 +124,7 @@ test("every JS file in the repository is type-checked", () => {
     .split("\0")
     .filter((file) => file && isJavaScript(file));
   assert.ok(javaScript.length > 0, "no JS file found");
-  const checked = new Set(
-    javaScriptConfigs().flatMap(({ parsed }) =>
-      parsed.fileNames.map((file) =>
-        path.relative(root, file).replaceAll("\\", "/")
-      )
-    )
-  );
-  assert.deepEqual(
-    javaScript.filter((file) => !checked.has(file)),
-    []
-  );
+  assert.deepEqual(ownershipProblems(), []);
 });
 
 // 패키지·앱 안 어디에 새 JS를 두어도 검사 설정 하나가 맡는다. 손 목록이나 폴더별 설정에 기대면 새 폴더의 JS가 빠진다: #274가 더한
@@ -141,19 +134,17 @@ test("a JS file added anywhere in a package or app is type-checked by exactly on
   const mirror = mkdtempSync(path.join(tmpdir(), "typecheck-js-places-"));
   context.after(() => removeFolder(mirror));
   git(mirror, "init", "-q");
-  // 검사기(javaScriptConfigs)처럼 아직 커밋하지 않은 설정도 옮긴다.
+  // 검사기(javaScriptConfigs)처럼 아직 커밋하지 않은 설정도 같은 판정(isTypeScriptConfig)으로 옮긴다.
   for (const config of git(
     root,
     "ls-files",
     "--cached",
     "--others",
     "--exclude-standard",
-    "-z",
-    "--",
-    "*tsconfig*.json"
+    "-z"
   )
     .split("\0")
-    .filter(Boolean)) {
+    .filter(isTypeScriptConfig)) {
     mkdirSync(path.join(mirror, path.dirname(config)), { recursive: true });
     copyFileSync(path.join(root, config), path.join(mirror, config));
   }
@@ -238,4 +229,72 @@ test("the JS check finds JS checking configs, reports the mistakes of their JS f
     ]),
     [["caller.mjs", 2554]]
   );
+});
+
+/** JS 검사 설정을 둔 표본 저장소. `configs`는 { 설정 경로: include }, `files`는 표본 JS 경로다. */
+function sampleRepository(context, configs, files) {
+  const folder = mkdtempSync(path.join(tmpdir(), "typecheck-js-owners-"));
+  context.after(() => removeFolder(folder));
+  git(folder, "init", "-q");
+  for (const [config, include] of Object.entries(configs)) {
+    mkdirSync(path.join(folder, path.dirname(config)), { recursive: true });
+    writeFileSync(
+      path.join(folder, config),
+      JSON.stringify({
+        compilerOptions: { allowJs: true, checkJs: true, noEmit: true },
+        include,
+      })
+    );
+  }
+  for (const file of files) {
+    mkdirSync(path.join(folder, path.dirname(file)), { recursive: true });
+    writeFileSync(path.join(folder, file), "export const a = 1;\n");
+  }
+  return folder;
+}
+
+// 파일마다 소속 설정 수를 센다. 두 설정에 든 파일을 한 집합으로 합치면 "들었음"으로 통과하지만, 같은 오류를 두 번 알리고 두 설정 중
+// 어느 쪽 옵션으로 검사되는지 정해지지 않는다(#286 항목 28).
+test("reports a JS file that two JS checking configs both include", (context) => {
+  const folder = sampleRepository(
+    context,
+    { "tsconfig.json": ["**/*"], "tools/tsconfig.json": ["**/*"] },
+    ["tools/shared.mjs", "alone.mjs"]
+  );
+  assert.deepEqual(ownershipProblems(folder), [
+    "tools/shared.mjs: 2 JS checking tsconfigs include it (tools/tsconfig.json, tsconfig.json)",
+  ]);
+});
+
+// TypeScript는 한 폴더에서 확장자만 다른 같은 이름의 JS 중 하나만 프로그램에 넣는다. 빠진 쪽은 어느 설정에도 들지 않은 파일로 잡는다.
+test("reports the JS file TypeScript leaves out beside a same-named JS file of another format", (context) => {
+  const folder = sampleRepository(context, { "tsconfig.json": ["**/*"] }, [
+    "ui/sample.js",
+    "ui/sample.jsx",
+  ]);
+  const problems = ownershipProblems(folder);
+  assert.equal(problems.length, 1, problems.join("\n"));
+  assert.match(
+    problems[0] ?? "",
+    /^ui\/sample\.jsx?: no JS checking tsconfig includes it \(TypeScript keeps one of ui\/sample\.js, ui\/sample\.jsx\)$/
+  );
+});
+
+// verify:changed는 이 목록이 바뀌면 JS 검사를 돌린다. 이름이 설정 모양이 아닌 `extends` 대상도 검사 결과를 바꾸므로 든다.
+test("lists the configs the JS check reads with the files they extend", (context) => {
+  const folder = sampleRepository(context, {}, []);
+  mkdirSync(path.join(folder, "config"));
+  writeFileSync(
+    path.join(folder, "config/strict.json"),
+    JSON.stringify({ compilerOptions: { strict: true } })
+  );
+  writeFileSync(
+    path.join(folder, "alternate-tsconfig.json"),
+    JSON.stringify({ extends: "./config/strict.json", include: [] })
+  );
+  writeFileSync(path.join(folder, "notes.json"), "{}");
+  assert.deepEqual([...configInputs(folder)].sort(), [
+    "alternate-tsconfig.json",
+    "config/strict.json",
+  ]);
 });

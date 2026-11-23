@@ -1,10 +1,19 @@
 // 가져오는 자리를 모으는 공용 판정(scripts/eslint-imports.mjs)이 모든 가져오기 모양에서 경로·종류·이름을 내는지 본다(#266 리뷰 SPEC-1).
 // 가져오기를 보는 저장소 규칙은 모두 이 판정을 쓰므로, 여기서 한 모양을 놓치면 모든 규칙이 함께 놓친다.
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { Linter } from "eslint";
 import tseslint from "typescript-eslint";
-import { importSites, originOf } from "./eslint-imports.mjs";
+import {
+  importSites,
+  originOf,
+  packageEntry,
+  workspacePackage,
+} from "./eslint-imports.mjs";
 
 /** `code`의 가져오는 자리를 `{ kind, source, loader, typeOnly, names }`로 모은다. 이름은 `imported>local` 문자열. */
 function sitesOf(code) {
@@ -359,4 +368,74 @@ test("does not take a local function named like require, createRequire or getBui
     ),
     []
   );
+});
+
+// 다른 패키지의 입구는 Node가 푸는 대로 판정한다(scripts/package-exports.ts). exports 키만 보면 null로 막은 입구도 가져올 수 있는 것으로,
+// 조건 객체·`*` 무늬 입구는 대상 파일이 없는 것으로 읽어, 막힌 입구를 쓰는 가져오기를 놓치고 무늬 입구를 쓰는 가져오기를 막는다
+// (#286 항목 24와 같은 모양).
+/** 임시 저장소에 둔 표본 workspace 패키지(packages/sample). 입구는 Node가 그 폴더에서 푼다. */
+function samplePackage(context, exports) {
+  const root = mkdtempSync(path.join(tmpdir(), "eslint-imports-package-"));
+  context.after(() => removeFolder(root));
+  const folder = "packages/sample";
+  const manifest = { name: "@babojubot/sample", exports };
+  mkdirSync(path.join(root, folder), { recursive: true });
+  writeFileSync(
+    path.join(root, folder, "package.json"),
+    JSON.stringify(manifest)
+  );
+  return workspacePackage(folder, manifest, root);
+}
+
+test("resolves a workspace package entry as Node does: blocked, conditional and wildcard entries", (context) => {
+  const pkg = samplePackage(context, {
+    ".": { types: "./src/index.d.ts", import: "./src/index.ts" },
+    "./testing": null,
+    "./fixtures/*": "./src/fixtures/*.ts",
+    "./browser": { browser: "./src/browser.ts" },
+  });
+  assert.deepEqual(
+    [".", "./testing", "./fixtures/lifeline", "./browser", "./gone"].map(
+      (entry) => [entry, packageEntry(pkg, entry)]
+    ),
+    [
+      [".", { exported: true, file: "packages/sample/src/index" }],
+      ["./testing", { exported: false, file: undefined }],
+      [
+        "./fixtures/lifeline",
+        { exported: true, file: "packages/sample/src/fixtures/lifeline" },
+      ],
+      ["./browser", { exported: false, file: undefined }],
+      ["./gone", { exported: false, file: undefined }],
+    ]
+  );
+});
+
+// Node 자신의 해석기와 같아야 한다(#289 외부 리뷰 SPEC-1·2): `..`·`node_modules` 대상은 가져올 수 없고, 접두사가 같은 와일드카드는 더
+// 긴 키가 이긴다(선언 순서와 무관).
+test("resolves workspace package entries with Node's own resolver: invalid targets and wildcard key order", (context) => {
+  for (const order of ["short first", "long first"]) {
+    const wildcards =
+      order === "short first"
+        ? { "./a/*": "./src/a/*.ts", "./a/*.js": "./src/aj/*.ts" }
+        : { "./a/*.js": "./src/aj/*.ts", "./a/*": "./src/a/*.ts" };
+    const pkg = samplePackage(context, {
+      ".": "./src/index.ts",
+      "./up": "./../outside.ts",
+      "./nm": "./node_modules/x.ts",
+      ...wildcards,
+    });
+    assert.deepEqual(
+      ["./up", "./nm", "./a/x.js"].map((entry) => [
+        entry,
+        packageEntry(pkg, entry),
+      ]),
+      [
+        ["./up", { exported: false, file: undefined }],
+        ["./nm", { exported: false, file: undefined }],
+        ["./a/x.js", { exported: true, file: "packages/sample/src/aj/x" }],
+      ],
+      order
+    );
+  }
 });
