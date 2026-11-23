@@ -16,14 +16,34 @@ import {
 import { attemptAll } from "@babojubot/contracts";
 
 /**
- * 실행의 시작: 이 시험 프로세스의 시작 시각을 감독 실행기의 단위로(Linux는 부팅 뒤 clock tick, /proc가 없는 시스템은 epoch 뒤
- * 마이크로초). 기록의 시작 시각은 정리 요청의 실행 시작(`since`)으로도 쓰인다. 실제 기록처럼 시험이 시작한 때로 두어, 그 전부터
- * 있던 이 컴퓨터의 숨은 프로그램(gpg-agent, macOS에서 정보가 막힌 로그인 때 프로세스 등)을 "확인하지 못함"으로 세지 않게 한다.
+ * 실행의 시작: 이 시험 프로세스의 시작 시각을 감독 실행기가 쓰는 단위로 나타낸 것. 기록의 시작 시각은 정리 요청의 실행 시작(`since`)으로도
+ * 쓰이므로, 실제 기록처럼 과거의 값이어야 그 전부터 있던 이 컴퓨터의 숨은 프로그램(gpg-agent, macOS에서 정보가 막힌 로그인 때
+ * 프로세스 등)을 "확인하지 못함"으로 세지 않고, 그 뒤에 생긴 것은 판정에 그대로 든다. 단위는 시스템마다 정해 고른다: Linux는
+ * `/proc`의 부팅 뒤 clock tick(읽지 못하면 던진다. 다른 단위의 값으로 대신하면 실행 시작이 미래가 되어 판정이 꺼진다), macOS는
+ * epoch 뒤 마이크로초, Windows는 100나노초 FILETIME.
  */
-const testStart = () =>
-  String(
-    processStartTicks(process.pid) ?? Math.floor(performance.timeOrigin * 1000)
-  );
+function testStart(): string {
+  switch (process.platform) {
+    case "linux": {
+      const ticks = processStartTicks(process.pid);
+      if (ticks === undefined)
+        throw new Error(
+          "this test process's start could not be read from /proc"
+        );
+      return String(ticks);
+    }
+    case "darwin":
+      return String(Math.floor(performance.timeOrigin * 1000));
+    case "win32":
+      // 1601년부터의 100나노초. 2^53을 넘으므로 BigInt로 센다.
+      return String(
+        (BigInt(Math.floor(performance.timeOrigin)) + 11_644_473_600_000n) *
+          10_000n
+      );
+    default:
+      throw new Error(`no start unit is known on ${process.platform}`);
+  }
+}
 
 // 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다.
 const lease = vi.hoisted(() => ({
@@ -169,12 +189,11 @@ it("leaves a process whose start differs from the recorded one", async () => {
 
   await writeFile(
     path.join(directory, `${child.pid}.json`),
-    // 다른 시작 시각은 아직 오지 않은 값으로 둔다. 실행 시작 시각(`since`)으로도 쓰여, 그 뒤에 생긴 이 컴퓨터의 숨은 프로그램을
-    // "확인하지 못함"으로 세지 않게 한다.
+    // 다른 시작 시각: 이 시험 프로세스의 것(자식은 그 뒤에 시작했다). 실제 기록처럼 과거의 값이다.
     JSON.stringify({
       pid: child.pid,
       lease: "lease",
-      start: "9007199254740991",
+      start: testStart(),
     })
   );
   await recoverProviderProcesses(root, { platform: withoutProc });
