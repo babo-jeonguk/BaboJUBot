@@ -2005,6 +2005,19 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wait = async (value) => {\n  if (Math.random() > 0.5) await value;\n};\nawait wait(later);\n`,
       /한 분기/,
     ],
+    // 실행되지 않는 기다림은 기다림이 아니다(#286 항목 21): 아무도 부르지 않는 함수 안, 그런 함수만 부르는 함수 안, 조기 return 뒤.
+    "an await in a function nobody calls": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst never = async () => {\n  await later;\n};\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await in a function only an uncalled function calls": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nconst outer = () => inner();\n`,
+      /기다리지 않습니다/,
+    ],
+    "an await after an early return": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nexport async function run() {\n  return 1;\n  await later;\n}\n`,
+      /기다리지 않습니다/,
+    ],
   };
   for (const [shape, [code, kind]] of Object.entries(found))
     for (const place of testPlaces) {
@@ -2034,6 +2047,11 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     // 같은 파일의 함수는 받은 인자를 기다리는지 따라가고, 가져온 함수(시한 도움 등)는 따라갈 수 없어 기다림으로 본다.
     `const later = awaitedLater(p);\nconst wait = async (value) => {\n  await value;\n};\nawait wait(later);\n`,
     `const later = awaitedLater(p);\nfunction race(value) {\n  return Promise.race([value, p]);\n}\nawait race(later);\n`,
+    // 함수 안의 기다림은 그 함수를 부르거나 내보내거나 콜백으로 넘기면 된다.
+    `const later = awaitedLater(p);\nconst run = async () => {\n  await later;\n};\nawait run();\n`,
+    `const later = awaitedLater(p);\nexport async function run() {\n  await later;\n}\n`,
+    `const later = awaitedLater(p);\ntest("waits", async () => {\n  await later;\n});\n`,
+    `const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nexport const outer = () => inner();\n`,
     `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait within(later, 1000);\n`,
     `import * as support from "./support.ts";\nconst later = awaitedLater(p);\nawait support.within(later, 1000);\n`,
     `const later = awaitedLater(p);\nawait expect(later).resolves.toBe(1);\n`,
