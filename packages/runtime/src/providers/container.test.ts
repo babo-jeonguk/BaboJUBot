@@ -2936,10 +2936,14 @@ describe("docker failures during container cleanup", () => {
         `process.stdout.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000);`,
       ] as const,
     };
+    // 끈 트리를 끝낸 신호도 남는다(#286 리뷰 1회차 STD-2). 어느 신호로 끝났는지는 공용 실행의 끄기 단계가 정하고, Windows에는
+    // 신호가 없다. 예전 기대는 신호를 버린 문구를 고정했다.
     await expect(
       createDockerEnvironment(flooding).removeOrphans()
     ).rejects.toThrow(
-      "leftover containers could not be listed (stopped: output)"
+      process.platform === "win32"
+        ? /^leftover containers could not be listed \(stopped: output\)$/
+        : /^leftover containers could not be listed \(stopped: output, signal SIG[A-Z]+\)$/
     );
   });
 

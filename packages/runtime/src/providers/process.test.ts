@@ -178,6 +178,13 @@ it("keeps the end of the error output for the caller", async () => {
   expect(exit.stderr.length).toBeLessThanOrEqual(8192);
 });
 
+/**
+ * 끈 실행의 기대 끝남 문구: 끈 이유가 원인이고, 그 트리를 끝낸 신호가 있으면 덧붙인다. Windows에는 신호가 없어 결과가 가진 신호로
+ * 기대값을 만든다(#286 리뷰 1회차 STD-2). 예전 기대는 신호를 버린 문구를 고정했다.
+ */
+const stoppedEnding = (stopped: string, signal: unknown) =>
+  `stopped: ${stopped}${typeof signal === "string" ? `, signal ${signal}` : ""}`;
+
 describe("runProbe", () => {
   const probe = (script: string, timeout = 5_000) =>
     runProbe([process.execPath, "-e", script], [], {
@@ -227,7 +234,9 @@ describe("runProbe", () => {
   // 끈 이유(시한·취소)와 끝낸 신호는 원인이다. 일반 문구("killed")로 접지 않는다(#264 외부 리뷰 4회차 STD-3).
   it("stops a program that outlives its limit and names the limit as the cause", async () => {
     await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toSatisfy(
-      (error) => probeEnding(error) === "stopped: limit"
+      (error) =>
+        probeEnding(error) ===
+        stoppedEnding("limit", (error as { signal?: unknown }).signal)
     );
   });
 
@@ -284,7 +293,9 @@ describe("runProbe", () => {
       const pid = Number(readFileSync(ready, "utf8"));
       controller.abort();
       await expect(probing).rejects.toSatisfy(
-        (error) => probeEnding(error) === "stopped: aborted"
+        (error) =>
+          probeEnding(error) ===
+          stoppedEnding("aborted", (error as { signal?: unknown }).signal)
       );
       expect(alive(pid)).toBe(false);
     },
