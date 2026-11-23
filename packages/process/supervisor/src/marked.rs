@@ -82,7 +82,12 @@ fn environ_reading(
 /// `restricted` (asked only then) says the process is not restricted; otherwise it is Unreadable.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn procargs_reading(buffer: &[u8], marker: &str, restricted: impl FnOnce() -> bool) -> Reading {
-    let mut entries = environment(buffer).peekable();
+    // A buffer without the shape is no environment read: XNU reads the argument count, their length and the stack top apart, and an
+    // exec in progress may give stale or mismatched parts (`sysctl_procargsx`, bsd/kern/kern_sysctl.c) (#283 review 3).
+    let Some(entries) = environment(buffer) else {
+        return Reading::Unreadable;
+    };
+    let mut entries = entries.peekable();
     if entries.peek().is_none() {
         return if restricted() {
             Reading::Unreadable
@@ -105,7 +110,17 @@ fn procargs_reading(buffer: &[u8], marker: &str, restricted: impl FnOnce() -> bo
 fn empty_environ(stat: impl FnOnce() -> std::io::Result<String>) -> Reading {
     match stat() {
         Ok(stat) => match life_in_stat(&stat) {
-            Life::Runs => Reading::Clear,
+            // A process in the middle of exec runs with its main thread before its environment is placed: the kernel wakes the
+            // spawning parent (`mm_exit_exec_release`, fs/exec.c) before it attaches the new memory and well before it sets
+            // `env_end` (`create_elf_tables`, fs/binfmt_elf.c), and /proc/<id>/environ answers nothing until then (`if (!mm ||
+            // !mm->env_end) return 0;`, fs/proc/base.c, "Ensure the process spawned far enough to have an environment"). So only a
+            // set `env_end` makes an empty read an empty environment (#283 review 3). The kernel shows `env_end` as 0 also to a
+            // reader it does not permit (`if (mm && permitted)`, fs/proc/array.c, `permitted` from `ptrace_may_access`), which
+            // could not read the environment either (`environ_open` asks the same access, fs/proc/base.c): unreadable as well.
+            Life::Runs => match env_end_in_stat(&stat) {
+                Some(env_end) if env_end != 0 => Reading::Clear,
+                Some(_) | None => Reading::Unreadable,
+            },
             Life::Ended => Reading::Gone,
             Life::ThreadsRun | Life::Unknown => Reading::Unreadable,
         },
@@ -308,6 +323,12 @@ pub enum Life {
     Ended,
     /// The line holds no state.
     Unknown,
+}
+
+/// `env_end` in a line of `/proc/<id>/stat` (the 51st field, Linux 3.5 and later), or `None` when the line has none.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn env_end_in_stat(stat: &str) -> Option<u64> {
+    stat.rsplit_once(") ")?.1.split(' ').nth(48)?.parse().ok()
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -902,27 +923,21 @@ mod macos {
 }
 
 /// The environment entries in a `KERN_PROCARGS2` buffer: after the argument count, the executable path and its padding, and the
-/// arguments, up to the first empty entry. A buffer that does not hold that shape gives none.
+/// arguments, up to the first empty entry. A buffer that does not hold that shape gives `None`, not an empty environment.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn environment(buffer: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let entries = (|| {
-        let count = i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?);
-        let rest = buffer.get(4..)?;
-        let path_end = rest.iter().position(|&byte| byte == 0)?;
-        let mut rest = rest.get(path_end..)?;
-        while rest.first() == Some(&0) {
-            rest = &rest[1..];
-        }
-        let mut entries = rest.split(|&byte| byte == 0);
-        for _ in 0..count.max(0) {
-            entries.next()?;
-        }
-        Some(entries)
-    })();
-    entries
-        .into_iter()
-        .flatten()
-        .take_while(|entry| !entry.is_empty())
+fn environment(buffer: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
+    let count = usize::try_from(i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?)).ok()?;
+    let rest = buffer.get(4..)?;
+    let path_end = rest.iter().position(|&byte| byte == 0)?;
+    let mut rest = rest.get(path_end..)?;
+    while rest.first() == Some(&0) {
+        rest = &rest[1..];
+    }
+    let mut entries = rest.split(|&byte| byte == 0);
+    for _ in 0..count {
+        entries.next()?;
+    }
+    Some(entries.take_while(|entry| !entry.is_empty()))
 }
 
 #[cfg(test)]
@@ -1323,9 +1338,9 @@ mod tests {
         buffer.extend_from_slice(
             b"/bin/tool\0\0\0tool\0BABOJUBOT_PROCESS_LEASE=in-an-argument\0A=1\0B=2\0\0junk\0",
         );
-        let entries: Vec<&[u8]> = environment(&buffer).collect();
+        let entries: Vec<&[u8]> = environment(&buffer).expect("the shape holds").collect();
         assert_eq!(entries, vec![&b"A=1"[..], &b"B=2"[..]]);
-        assert_eq!(environment(b"\x01").count(), 0);
+        assert!(environment(b"\x01").is_none());
     }
 }
 
