@@ -22,7 +22,7 @@ import { attemptAll } from "@babojubot/contracts";
 // 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
 const testStart = () => String(processStartTicks(process.pid) ?? 1);
 
-// 표식 조회 실패를 주입한다.
+// 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다.
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
@@ -31,13 +31,13 @@ vi.mock("@babojubot/process/recovery", async (original) => {
   const real = await original<typeof import("@babojubot/process/recovery")>();
   return {
     ...real,
-    stopLeaseHolders: async (
+    cleanThroughSupervisor: async (
       value: string,
-      options?: Parameters<typeof real.stopLeaseHolders>[1]
+      options?: Parameters<typeof real.cleanThroughSupervisor>[1]
     ) => {
       lease.stopped.push(value);
-      if (lease.fails) throw new Error("ps failed");
-      return real.stopLeaseHolders(value, options);
+      if (lease.fails) throw new Error("the supervisor's cleanup failed");
+      return real.cleanThroughSupervisor(value, options);
     },
   };
 });

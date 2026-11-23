@@ -547,7 +547,7 @@ test("other modules reach runtime and the process package only through their lis
     ],
     [
       "packages/db/src/client.ts",
-      `import { stopLeaseHolders } from "@babojubot/process/recovery";\nvoid stopLeaseHolders;\n`,
+      `import { cleanThroughSupervisor } from "@babojubot/process/recovery";\nvoid cleanThroughSupervisor;\n`,
     ],
     [
       "scripts/provider-live.mjs",
@@ -755,7 +755,7 @@ test("other workspace packages are imported only through their exported entries"
     ],
     [
       "packages/runtime/src/providers/process.ts",
-      `import { stopLeaseHolders } from "../../../process/src/lease.ts";\nvoid stopLeaseHolders;\n`,
+      `import { holdsLease } from "../../../process/src/lease.ts";\nvoid holdsLease;\n`,
     ],
     [
       "packages/db/src/client.ts",

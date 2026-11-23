@@ -16,9 +16,15 @@
 //!                                     what was still running and why. The supervisor exits right after
 //! ```
 //!
-//! Before the program runs, the server writes `env <NAME>=<VALUE>` messages (the run's marker: the program gets them on top of the
-//! supervisor's own environment, and the supervisor itself does not carry them, so marker cleanup never reaches the supervisor) and
-//! then `start`. The supervisor starts the program only after `start`; the end of the channel before it ends the supervisor.
+//! Before the program runs, the server writes `env <NAME>=<VALUE>` messages (the run's markers: the program gets them on top of the
+//! supervisor's own environment, and the supervisor itself does not carry them, so marker cleanup never reaches the supervisor),
+//! `marker <VALUE>` (this run's own marker: a stop also ends the programs that carry it, wherever they run; protocol 4) and then
+//! `start`. The supervisor starts the program only after `start`; the end of the channel before it ends the supervisor.
+//!
+//! Instead of `start`, the server may write `clean` (protocol 4): the restart recovery's request when the run's server and supervisor
+//! both died. No program runs; the supervisor ends the programs that carry `marker`, answers `ended` or `left: <what>` and exits.
+//! `since <N>` before it says when that run began (Linux: clock ticks after boot; macOS: microseconds since the epoch), so a program
+//! of this user that started after it and whose environment cannot be read is reported as unverified instead of passed over.
 //!
 //! Then the server writes `stop <grace ms>` (end the tree, report, exit), `kill-leader` (end the program only, as a crash would)
 //! and `interrupt` (SIGINT to the program's process group; nothing on Windows). The end of the channel means the server is gone and
@@ -27,7 +33,7 @@
 
 use std::time::Duration;
 
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 /// The grace after SIGTERM when the channel ends without a stop (the server is gone).
 pub const DEFAULT_GRACE: Duration = Duration::from_millis(2000);
 /// How long a stop waits, after the last signal, until nothing of the tree runs.
@@ -151,16 +157,28 @@ fn parse(message: &str) -> Option<Command> {
     Some(Command::Stop(Duration::from_millis(grace)))
 }
 
-/// What the server asked for before the start: the environment entries for the program, and what arrived after `start`.
+/// What the server asked for before the start: the environment entries for the program, this run's own marker, and what arrived
+/// after `start`.
 pub struct Start {
     pub env: Vec<(String, String)>,
+    /// Windows ends a run with its job object and has no marker search.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub marker: Option<String>,
     pub rest: Messages,
     pub waiting: Vec<String>,
+}
+
+/// The restart recovery's request: end what carries `marker`; `since` is when that run began. Windows refuses it.
+#[cfg_attr(windows, allow(dead_code))]
+pub struct Clean {
+    pub marker: String,
+    pub since: Option<u64>,
 }
 
 /// How reading the start request ended.
 pub enum StartRequest {
     Start(Start),
+    Clean(#[cfg_attr(windows, allow(dead_code))] Clean),
     /// The channel ended or termination was requested first: nothing ran.
     Ended,
     /// The server sent something the supervisor must not use (a malformed message, an environment entry that cannot be one).
@@ -178,10 +196,20 @@ fn environment_entry(entry: &str) -> Result<(String, String), String> {
     Ok((name.to_owned(), value.to_owned()))
 }
 
-/// Reads the server's `env` messages until `start`.
+/// A marker the supervisor can compare: not empty, without NUL.
+fn marker_value(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.contains('\0') {
+        return Err("the run's marker is empty or has a NUL byte".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
+/// Reads the server's `env`, `marker` and `since` messages until `start` or `clean`.
 pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) -> StartRequest {
     let mut messages = Messages::default();
     let mut env = Vec::new();
+    let mut marker = None;
+    let mut since = None;
     loop {
         if termination.requested() {
             return StartRequest::Ended;
@@ -200,14 +228,35 @@ pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) ->
             if message == "start" {
                 return StartRequest::Start(Start {
                     env,
+                    marker,
                     rest: messages,
                     waiting: complete.collect(),
                 });
+            }
+            if message == "clean" {
+                let Some(marker) = marker else {
+                    return StartRequest::Refused("clean came without the run's marker".to_owned());
+                };
+                return StartRequest::Clean(Clean { marker, since });
             }
             if let Some(entry) = message.strip_prefix("env ") {
                 match environment_entry(entry) {
                     Ok(pair) => env.push(pair),
                     Err(why) => return StartRequest::Refused(why),
+                }
+            } else if let Some(value) = message.strip_prefix("marker ") {
+                match marker_value(value) {
+                    Ok(value) => marker = Some(value),
+                    Err(why) => return StartRequest::Refused(why),
+                }
+            } else if let Some(value) = message.strip_prefix("since ") {
+                match value.parse::<u64>() {
+                    Ok(value) => since = Some(value),
+                    Err(_) => {
+                        return StartRequest::Refused(format!(
+                            "\"since {value}\" is not a start time"
+                        ));
+                    }
                 }
             }
         }
@@ -472,6 +521,7 @@ mod tests {
         };
         let start = Start {
             env: Vec::new(),
+            marker: None,
             rest: Messages::default(),
             waiting: Vec::new(),
         };
@@ -544,6 +594,42 @@ mod tests {
                 assert_eq!(start.waiting, vec!["stop 5".to_owned()]);
             }
             _ => panic!("the start request was not read"),
+        }
+    }
+
+    #[test]
+    fn the_restart_recovery_asks_for_a_clean_with_the_run_s_marker() {
+        let read = |messages: &[&str]| {
+            let mut bytes = Vec::new();
+            for message in messages {
+                bytes.extend(frame(message));
+            }
+            let mut channel = Script {
+                reads: VecDeque::from([Read::Bytes(bytes)]),
+                written: Vec::new(),
+            };
+            read_start(&mut channel, &Never)
+        };
+        match read(&["marker abc", "since 12", "clean"]) {
+            StartRequest::Clean(clean) => {
+                assert_eq!(clean.marker, "abc");
+                assert_eq!(clean.since, Some(12));
+            }
+            _ => panic!("the clean request was not read"),
+        }
+        match read(&["env BABOJUBOT_PROCESS_LEASE=abc", "marker abc", "start"]) {
+            StartRequest::Start(start) => assert_eq!(start.marker.as_deref(), Some("abc")),
+            _ => panic!("the start request was not read"),
+        }
+        for refused in [
+            &["clean"][..],
+            &["marker ", "clean"],
+            &["since soon", "marker abc", "clean"],
+        ] {
+            assert!(
+                matches!(read(refused), StartRequest::Refused(_)),
+                "{refused:?}"
+            );
         }
     }
 }

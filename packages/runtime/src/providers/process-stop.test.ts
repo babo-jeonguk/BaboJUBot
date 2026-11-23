@@ -16,13 +16,11 @@ import { startProcess } from "./process.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 실행 시도의 끄기가 실패하는 길(#263 외부 리뷰 1회차 SP1). 실제 프로세스로는 SIGKILL 뒤에도 끝나지 않는 대표를 만들 수 없어,
-// 공용 실행(@babojubot/process의 launchTree)이 돌려준 트리의 끄기만 대역으로 바꾸고 나머지는 실제 프로세스로 본다. 그룹 끄기와
-// 표식 정리 각각의 실패가 끄기의 실패가 되는지는 @babojubot/process의 launch-stop.test.ts가 본다.
+// 공용 실행(@babojubot/process의 launchTree)이 돌려준 트리의 끄기만 대역으로 바꾸고 나머지는 실제 프로세스로 본다. 감독 실행기의
+// 답이 끄기의 실패가 되는 길은 @babojubot/process의 launch-stop.test.ts가 본다.
 const fault = vi.hoisted(() => ({
-  /** 그룹 끄기가 끝을 확인하지 못한다. */
-  group: false,
-  /** 표식 정리가 아무것도 끄지 못한다. */
-  marks: false,
+  /** 트리의 끄기가 끝을 확인하지 못한다. */
+  stop: false,
 }));
 vi.mock("@babojubot/process", async (original) => {
   const real = await original<typeof import("@babojubot/process")>();
@@ -31,8 +29,10 @@ vi.mock("@babojubot/process", async (original) => {
     const stop = tree.stop.bind(tree);
     // 대역이 켜져 있으면 아무것도 끄지 않고 실패한다. 대표는 남고, 시험 정리가 그 번호로 끈다.
     tree.stop = async (options) => {
-      if (fault.group || fault.marks)
-        throw new Error("Process group did not stop");
+      if (fault.stop)
+        throw new Error(
+          "programs of this tree did not end (left: 1 (the tree did not end))"
+        );
       return stop(options);
     };
     return tree;
@@ -49,8 +49,7 @@ afterAll(async () => {
   await lifelines.close();
 });
 afterEach(() => {
-  fault.group = false;
-  fault.marks = false;
+  fault.stop = false;
 });
 let count = 0;
 const unique = (label: string) => `${label}-${++count}`;
@@ -80,8 +79,7 @@ describe.skipIf(process.platform === "win32")(
   () => {
     it("ends an attempt as broken when its stop fails and the leader does not end", async () => {
       const leader = await holder("stuck-attempt");
-      fault.group = true;
-      fault.marks = true;
+      fault.stop = true;
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       onTestFinished(() => error.mockRestore());
       const attempt = startProcess({

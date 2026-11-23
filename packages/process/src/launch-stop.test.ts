@@ -18,29 +18,11 @@ import { testFolders } from "./test-folders.ts";
 // 끄기가 실패하는 길(#263 외부 리뷰 1회차 S2·SP1·SP2). 실제 감독 실행기로는 그룹을 끄지 못한 답, 시작 응답 전에 멈춘 실행기를 만들 수
 // 없어, 실행기만 같은 약속으로 답하는 가짜(Node.js 프로그램)로 바꾸고 나머지는 실제 프로세스로 본다(#268).
 const fault = vi.hoisted(() => ({
-  /** 표식 정리가 아무것도 끄지 않고 대표가 남았다고 답한다. */
-  marks: false,
-  /** 표식 정리가 아무것도 하지 않고 남은 것이 없다고 답한다(실행기만으로 트리가 끝나는지 본다). */
-  marksIdle: false,
   /** 진짜 감독 실행기 대신 이 Node.js 프로그램을 띄운다. 프로그램은 약속 판과 띄울 명령(JSON), SIGTERM 기록 파일을 인수로 받는다. */
   supervisor: undefined as string | undefined,
   /** 가짜 실행기가 SIGTERM을 받으면 이 파일에 남긴다. */
   termLog: undefined as string | undefined,
 }));
-vi.mock("./lease.ts", async (original) => {
-  const real = await original<typeof import("./lease.ts")>();
-  return {
-    ...real,
-    stopLeaseHolders: async (
-      ...args: Parameters<typeof real.stopLeaseHolders>
-    ) =>
-      fault.marks
-        ? { stopped: [], left: [4242] }
-        : fault.marksIdle
-          ? { stopped: [], left: [] }
-          : real.stopLeaseHolders(...args),
-  };
-});
 vi.mock("./supervisor.ts", async (original) => {
   const real = await original<typeof import("./supervisor.ts")>();
   return {
@@ -74,8 +56,6 @@ afterAll(async () => {
   await lifelines.close();
 });
 afterEach(() => {
-  fault.marks = false;
-  fault.marksIdle = false;
   fault.supervisor = undefined;
   fault.termLog = undefined;
 });
@@ -105,8 +85,8 @@ async function holder(label: string, body = keep) {
 /**
  * 프로그램을 띄우고 시작을 알리지만, 끄기 요청에는 `reply`(기본은 그룹이 끝나지 않았다는 답)로 답하고 아무것도 끄지 않는 가짜 실행기.
  * 프로그램의 끝은 알리지 않는다. 서버가 제어 통로로 준 환경(표식)을 프로그램에 주고, 약속 판 2부터는 `start`를 받은 뒤에 띄운다. 판
- * 3부터는 메시지를 netstring으로 주고받는다. 답한 뒤 `linger`ms 있다가 `code`로 끝난다. SIGTERM을 받으면 기록 파일에 남긴다(관리자인
- * 실행기에 표식 정리가 신호를 보냈는지 본다). Linux·macOS 제어 통로는 넷째 표준 핸들의 소켓이다.
+ * 3부터는 메시지를 netstring으로 주고받는다(판 4의 `marker`는 무시한다). 답한 뒤 `linger`ms 있다가 `code`로 끝난다. SIGTERM을 받으면
+ * 기록 파일에 남긴다(서버가 관리자인 실행기에 TERM을 보냈는지 본다). Linux·macOS 제어 통로는 넷째 표준 핸들의 소켓이다.
  */
 const stubbornSupervisor = (
   linger: number,
@@ -174,9 +154,9 @@ async function fakeSupervisor(body: string) {
 describe.skipIf(process.platform === "win32")(
   "stopping a tree on Linux and macOS",
   () => {
-    // S2: 그룹 끄기(감독 실행기)와 표식 정리는 서로 독립이다. 실행기가 그룹을 끄지 못했다고 답해도 새 세션으로 나간 자손과 대표를
-    // 표식으로 끄고, 실패는 알린다.
-    it("still stops what carries the marker when the supervisor could not stop the group", async () => {
+    // #268 PR 2: 표식으로 찾아 끄는 일은 실행기 안에서 한다(신호는 표식을 확인한 바로 그 프로세스에만). 실행기가 트리를 끄지 못했다고
+    // 답하면 서버는 그 실패로 끝내고, 번호로 따로 찾아 신호하지 않는다. 남은 것은 기록에 남아 다음 시작의 복구가 실행기로 정리한다.
+    it("fails with the supervisor's answer and signals nothing by number itself", async () => {
       const leader = await holder("leader");
       const moved = await holder("moved");
       fault.supervisor = await fakeSupervisor(stubbornSupervisor(0));
@@ -194,13 +174,14 @@ describe.skipIf(process.platform === "win32")(
       await lifelines.connected(leader.name);
       await lifelines.connected(moved.name);
       await expect(tree.stop()).rejects.toThrow(/process group did not end/);
-      await lifelines.closed(moved.name);
-      await lifelines.closed(leader.name);
+      expect(lifelines.open(moved.name)).toBe(true);
+      expect(lifelines.open(leader.name)).toBe(true);
     }, 60_000);
 
-    // #274 외부 리뷰 1회차 STD-1/SPEC-1: 감독 실행기는 트리의 관리자라 실행 시도의 표식을 지니지 않는다. 실행기가 트리의 끝을 확인하지
-    // 못했다고 답하고 아직 끝나지 않았어도, 표식 정리는 실행기에 신호를 보내지 않는다(표식 정리는 실행기가 끝난 뒤에 한다).
-    it("never signals the supervisor while cleaning up what carries the marker", async () => {
+    // #274 외부 리뷰 1회차 STD-1/SPEC-1: 감독 실행기는 트리의 관리자다. 실행기가 트리의 끝을 확인하지 못했다고 답하고 아직 끝나지
+    // 않았어도, 서버의 끄기는 실행기에 TERM을 보내지 않는다(실행기의 끝을 기다리고, 상한을 넘기면 강제로 끝낸다). 표식 정리는
+    // 실행기 안에서 하고 실행기 자신은 표식을 지니지 않는다(#268 PR 2).
+    it("never signals the supervisor with SIGTERM while it answers the stop", async () => {
       const leader = await holder("leader");
       const folder = await folders.make("babojubot-launch-stop-term-");
       fault.termLog = path.join(folder, "term");
@@ -214,7 +195,6 @@ describe.skipIf(process.platform === "win32")(
       });
       await lifelines.connected(leader.name);
       await expect(tree.stop()).rejects.toThrow(/process group did not end/);
-      await lifelines.closed(leader.name);
       expect(existsSync(fault.termLog)).toBe(false);
     }, 60_000);
 
@@ -234,7 +214,6 @@ describe.skipIf(process.platform === "win32")(
       });
       await lifelines.connected(leader.name);
       await expect(tree.stop()).rejects.toThrow(/broke the protocol/);
-      await lifelines.closed(leader.name);
     }, 60_000);
 
     // #274 외부 리뷰 2회차 SPEC-4: 실행기가 프로그램의 끝을 알리지 않고 끝나면, 프로그램의 끝은 모르는 것이다. 실행기 자신의 종료
@@ -254,7 +233,6 @@ describe.skipIf(process.platform === "win32")(
       await lifelines.connected(leader.name);
       await expect(tree.stop()).rejects.toThrow(/process group did not end/);
       expect(await tree.exited).toEqual({ code: null, signal: null });
-      await lifelines.closed(leader.name);
     }, 60_000);
 
     // SP1: 끄기를 시작한 뒤의 끝은 끄기의 결과로 정한다. 트리가 끝나지 않으면 끄기는 원인과 함께 실패하고, 그 실패로 끝나야 한다.
@@ -262,7 +240,6 @@ describe.skipIf(process.platform === "win32")(
     it("ends a run at its limit with the stop failure when the leader does not end", async () => {
       const leader = await holder("stuck-run");
       fault.supervisor = await fakeSupervisor(stubbornSupervisor(0));
-      fault.marks = true;
       await expect(
         runTree({
           command: [process.execPath, "-e", leader.script],
@@ -273,43 +250,38 @@ describe.skipIf(process.platform === "win32")(
           maxOutputBytes: 1024,
           overflow: "stop",
         })
-      ).rejects.toThrow(/marker did not stop: 4242/);
+      ).rejects.toThrow(/process group did not end/);
     }, 60_000);
   }
 );
 
 // Linux의 감독 실행기는 트리의 고아를 거두는 부모(subreaper)다. 그룹을 끈 뒤 새 세션으로 나간 자손도 자기 자식이 되므로 직접 끄고
-// 끝까지 확인한다. 서버 쪽 표식 정리가 아무것도 하지 않아도(부하로 시한을 넘긴 경우와 같다) 트리가 남지 않는다. 거두지 않은 자식이라
-// 그 번호는 다른 프로세스에 가지 않는다. macOS에는 subreaper가 없어 표식 정리가 맡는다.
-describe.runIf(process.platform === "linux")(
-  "stopping a tree on Linux without the marker cleanup",
-  () => {
-    it("ends what left for a new session through the supervisor alone", async () => {
-      const leader = await holder("leader");
-      const moved = await holder(
-        "moved",
-        `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`
-      );
-      fault.marksIdle = true;
-      const tree = launchTree({
-        command: [
-          process.execPath,
-          "-e",
-          `${leader.script} require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(moved.script)}], { stdio: "ignore", detached: true });`,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        stdio: ["ignore", "ignore", "ignore"],
-      });
-      await lifelines.connected(leader.name);
-      await lifelines.connected(moved.name);
-      await tree.stop();
-      await lifelines.closed(leader.name);
-      await lifelines.closed(moved.name);
-    }, 60_000);
-  }
-);
+// 끝까지 확인한다. 거두지 않은 자식이라 그 번호는 다른 프로세스에 가지 않는다. macOS에는 subreaper가 없어 실행기의 표식 정리가 맡는다.
+describe.runIf(process.platform === "linux")("stopping a tree on Linux", () => {
+  it("ends what left for a new session through the supervisor alone", async () => {
+    const leader = await holder("leader");
+    const moved = await holder(
+      "moved",
+      `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);`
+    );
+    const tree = launchTree({
+      command: [
+        process.execPath,
+        "-e",
+        `${leader.script} require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(moved.script)}], { stdio: "ignore", detached: true });`,
+      ],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    await lifelines.connected(leader.name);
+    await lifelines.connected(moved.name);
+    await tree.stop();
+    await lifelines.closed(leader.name);
+    await lifelines.closed(moved.name);
+  }, 60_000);
+});
 
 // SP2: 끄기는 시작 응답을 상한 없이 기다리지 않는다. 시작 응답 전에 멈춘 감독 실행기는 그 프로세스를 끄고 끝을 확인한 뒤, 트리의 끝을
 // 확인하지 못했다는 원인과 함께 실패한다. 세 OS가 같은 길이다.

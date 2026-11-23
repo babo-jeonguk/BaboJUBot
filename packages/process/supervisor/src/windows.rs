@@ -593,6 +593,13 @@ pub fn run() -> i32 {
     control.write_message(&protocol::hello());
     let start_request = match protocol::read_start(&mut control, &NoTermination) {
         protocol::StartRequest::Start(start) => start,
+        // Windows ends a run with its job object; no marker search runs here, and the restart recovery does not ask for one.
+        protocol::StartRequest::Clean(_) => {
+            control.write_message(
+                "failed: Windows has no marker cleanup; the job object ends the tree",
+            );
+            return 1;
+        }
         protocol::StartRequest::Ended => return 1,
         protocol::StartRequest::Refused(why) => {
             control.write_message(&format!("failed: {why}"));

@@ -2,22 +2,18 @@ import spawn from "cross-spawn";
 import { spawn as spawnChild } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { Readable, Writable, Duplex } from "node:stream";
-import { attemptAll, failureCode, settled } from "@babojubot/contracts";
-import {
-  leaseEnvironment,
-  processStartTicks,
-  stopLeaseHolders,
-} from "./lease.ts";
+import { failureCode, settled } from "@babojubot/contracts";
+import { leaseEnvironment } from "./lease.ts";
 
 /**
  * 감독 실행기 아래의 트리 하나(#268). 실행기를 띄우고 넷째 표준 핸들의 제어 통로로 약속(실행기 `src/protocol.rs` 머리말)대로 말한다.
  * 제품의 실행 시도(`launch.ts` `launchTree`)와 준비의 시험 실행(`supervisor.ts`)이 같은 이 코드로 띄우고 끄며, 약속의 해석과 순서
  * 검사도 이 한 곳에서 한다. 실행기는 트리의 관리자라 실행 시도의 표식을 지니지 않는다: 표식은 통로로 넘겨 실행기가 프로그램에만 주고,
- * 표식 정리는 실행기가 끝난 뒤에 한다.
+ * 표식을 가진 프로그램을 찾아 끄는 일도 실행기가 한다(#268 PR 2). 재시작 복구의 정리(`clean`)도 이 코드로 청한다.
  */
 
 /** 이 서버가 쓰는 제어 통로의 약속 판. 실행기가 첫 줄로 알리는 판과 같아야 한다(`protocol.rs`의 `PROTOCOL`). */
-export const supervisorProtocol = 3;
+export const supervisorProtocol = 4;
 
 /** 표준 입력·출력·오류. `"pipe"`는 셋 모두 파이프다. 숫자는 이미 연 파일 기술자다. */
 export type TreeStdio =
@@ -170,7 +166,7 @@ export function readSupervisorLine(
 /** 실행기가 시작 응답(`ok`·`failed`·`not-started`)을 쓸 때까지의 상한. 실행기는 프로그램을 띄운 직후 답한다. */
 const supervisorStartLimitMs = 10_000;
 /** 실행기가 끄기를 받고 트리가 끝났다고 답할 때까지의 상한(유예 뒤). 실행기가 마지막 신호 뒤 끝을 기다리는 10초에 여유를 둔다. */
-const supervisorStopLimitMs = 20_000;
+export const supervisorStopLimitMs = 20_000;
 /** 실행기가 끝나거나 대표의 끝이 전달되기를 기다리는 상한. 트리가 끝나 출력이 닫히기를 기다리는 상한도 같다. */
 export const endLimitMs = 10_000;
 
@@ -304,12 +300,26 @@ export function superviseTree(
   lease: string,
   {
     inherited = process.env,
+    clean,
   }: {
     /** 이 프로세스가 물려받아 새 트리에 넘길 표식이 든 환경. 준비의 시험 실행은 바깥 표식이 필요 없어 비운다. */
     inherited?: NodeJS.ProcessEnv;
+    /**
+     * 재시작 복구의 정리(`cleanThroughSupervisor`): 프로그램을 띄우지 않고 `lease` 표식을 가진 프로그램만 끄게 한다. `since`는 그
+     * 실행 시도가 시작한 때(Linux: 부팅 뒤 clock tick, macOS: epoch 뒤 마이크로초)다.
+     */
+    clean?: { since?: number };
   } = {}
-): { tree: LaunchedTree; abandon: () => Promise<void> } {
-  const { env, leases } = leaseEnvironment(options.env, lease, inherited);
+): {
+  tree: LaunchedTree;
+  abandon: () => Promise<void>;
+  answered: (limitMs: number) => Promise<void>;
+} {
+  // 정리만 청할 때는 프로그램이 없어 표식을 환경으로 넘기지 않는다. 기록의 표식은 견주기만 하므로 모양을 따지지 않는다(실행기는 빈
+  // 값과 NUL만 거절한다).
+  const { env, leases } = clean
+    ? { env: options.env, leases: [] }
+    : leaseEnvironment(options.env, lease, inherited);
   const stdio =
     options.stdio === "pipe"
       ? (["pipe", "pipe", "pipe"] as const)
@@ -327,9 +337,6 @@ export function superviseTree(
   });
   const control = (child.stdio[3] ?? undefined) as Duplex | undefined;
   const pid = child.pid;
-  // 표식을 읽을 수 없는 프로그램은 이 트리가 시작한 뒤에 생겼을 때만 우리 것일 수 있다. 실행기의 시작 시각을 기준으로 둔다(Linux).
-  const since =
-    process.platform === "linux" && pid ? processStartTicks(pid) : undefined;
 
   let reportStart!: (start: TreeStart) => void;
   const started = new Promise<TreeStart>((resolve) => {
@@ -465,6 +472,8 @@ export function superviseTree(
         );
         return;
       }
+      // 정리만 청한 실행기는 판 다음에 정리의 답만 쓴다. 정리 요청도 표의 사건이다(끄기와 같다).
+      if (message.kind === "hello" && clean) phase = nextPhase(phase, "clean")!;
       if (message.kind === "ok") reportStart({ kind: "running" });
       else if (message.kind === "failed")
         reportStart({ kind: "failed", reason: message.reason });
@@ -495,9 +504,12 @@ export function superviseTree(
     if (control && !control.destroyed && control.writable)
       control.write(encodeMessage(message));
   };
-  // 프로그램이 받을 표식을 넘기고 시작을 청한다. 실행기는 이것을 받은 뒤에 프로그램을 띄운다.
-  for (const [name, value] of leases) send(`env ${name}=${value}`);
-  send("start");
+  // 프로그램이 받을 표식과 이 실행 시도의 표식을 넘기고 시작을 청한다. 실행기는 이것을 받은 뒤에 프로그램을 띄우고, 끌 때 이 실행
+  // 시도의 표식을 가진 프로그램도 찾아 끈다(트리 밖으로 나간 것, 서버가 죽은 경우 포함). 정리만 청할 때는 프로그램이 없다.
+  if (!clean) for (const [name, value] of leases) send(`env ${name}=${value}`);
+  send(`marker ${lease}`);
+  if (clean?.since !== undefined) send(`since ${clean.since}`);
+  send(clean ? "clean" : "start");
 
   /**
    * 실행기가 끝난 것을 상한 안에서 확인한다. 스스로 끝나지 않으면 강제로 끝내고 다시 확인한다. 끝을 확인하지 못하면 던진다. 표식
@@ -515,22 +527,16 @@ export function superviseTree(
     if (!gone) await forceEnd();
   };
   /**
-   * 실행기에 끄기를 보내고 답을 기다린다. 답이 무엇이든(답이 없어도) 실행기가 끝난 것을 확인한 뒤 판단한다: 트리가 끝났다는 답과
-   * 실행기의 정상 종료가 있어야 성공이다.
+   * 실행기의 끄기(정리) 답을 `limitMs`까지 기다린다. 답이 무엇이든(답이 없어도) 실행기가 끝난 것을 확인한 뒤 판단한다: 트리가
+   * 끝났다는 답과 실행기의 정상 종료가 있어야 성공이다.
    */
-  const stopThroughSupervisor = async (graceMs: number) => {
-    // 끄기도 표의 사건이다. 지금 단계에서 끄기를 보낼 수 없으면(약속을 어겨 끝난 실행기) 보내지 않고, 답 없음으로 판단한다.
-    const next = nextPhase(phase, "stop");
-    if (next !== undefined) {
-      phase = next;
-      send(`stop ${graceMs}`);
-    }
+  const answered = async (limitMs: number) => {
     let answer: string | undefined;
     let unanswered: unknown;
     try {
       answer = await within(
         ended,
-        graceMs + supervisorStopLimitMs,
+        limitMs,
         "the supervisor did not answer the stop"
       );
     } catch (error) {
@@ -549,25 +555,15 @@ export function superviseTree(
         `the supervisor confirmed the end but exited with ${supervisorExit?.signal ?? `code ${supervisorExit?.code}`}`
       );
   };
-  /**
-   * Linux·macOS: 그룹 밖(새 세션)으로 나간 자손을 표식으로 찾아 끈다. 실행기는 표식을 지니지 않고, 이것은 실행기가 끝난 뒤에 한다.
-   * Linux는 실행기가 그룹 밖의 고아까지 끄므로 트리 밖으로 나간 것을 위한 둘째 겹이고, macOS는 이것이 새 세션 자손을 끄는 수단이다.
-   */
-  const stopMarked = async () => {
-    let left: number[];
-    try {
-      // 실행기의 시작 시각을 읽지 못했으면 가장 넓게 본다.
-      ({ left } = await stopLeaseHolders(lease, { since: since ?? 0 }));
-    } catch (error) {
-      throw new Error(
-        "programs with this tree's marker could not be looked up",
-        { cause: error }
-      );
+  /** 실행기에 끄기를 보내고 답을 판단한다(`answered`). */
+  const stopThroughSupervisor = async (graceMs: number) => {
+    // 끄기도 표의 사건이다. 지금 단계에서 끄기를 보낼 수 없으면(약속을 어겨 끝난 실행기) 보내지 않고, 답 없음으로 판단한다.
+    const next = nextPhase(phase, "stop");
+    if (next !== undefined) {
+      phase = next;
+      send(`stop ${graceMs}`);
     }
-    if (left.length)
-      throw new Error(
-        `programs with this tree's marker did not stop: ${left.join(", ")}`
-      );
+    await answered(graceMs + supervisorStopLimitMs);
   };
   const stopTree = async (graceMs: number) => {
     if (pid === undefined) {
@@ -602,15 +598,9 @@ export function superviseTree(
       );
       return;
     }
-    // 실행기의 끄기와 표식 정리는 차례로 한다: 실행기의 끝을 확인(필요하면 강제로 끝냄)한 뒤에 표식을 찾는다. 실행기가 트리의 끝을
-    // 확인하지 못해도 표식 정리는 하고, 두 실패를 모아 함께 던진다. Windows는 묶음이 트리 전체라 표식 정리가 없다.
-    await attemptAll(
-      [
-        () => stopThroughSupervisor(graceMs),
-        ...(windows() ? [] : [stopMarked]),
-      ],
-      "this tree did not stop"
-    );
+    // 실행기가 트리(그룹·고아, Linux·macOS는 이 실행 시도의 표식을 가진 프로그램까지)를 끄고 끝을 확인해 답한다. 서버는 표식을 따로
+    // 찾지 않는다: 찾은 번호에 나중에 신호하면 그 사이 번호가 다른 프로그램에 갈 수 있다(#268 PR 2).
+    await stopThroughSupervisor(graceMs);
     // 트리가 끝났으면 대표도 끝났다. 그 끝(exit)이 전달될 때까지 기다린다.
     await within(exited, endLimitMs, `the program did not report its end`);
   };
@@ -639,5 +629,5 @@ export function superviseTree(
       return stopping;
     },
   };
-  return { tree, abandon: forceEnd };
+  return { tree, abandon: forceEnd, answered };
 }

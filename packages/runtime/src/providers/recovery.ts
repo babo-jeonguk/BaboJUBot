@@ -22,7 +22,7 @@ import {
   holdsLease,
   identity,
   members,
-  stopLeaseHolders,
+  cleanThroughSupervisor,
   stopProcessGroup,
 } from "@babojubot/process/recovery";
 const boot = () =>
@@ -318,18 +318,28 @@ async function recoverRecord(saved: ProcessRecord, platform: NodeJS.Platform) {
     platform === "linux"
       ? await recoverLinuxGroup(saved)
       : await recoverWithoutProc(saved, platform);
-  // 그룹 밖(새 세션)으로 나간 자손도 이 실행 시도의 표식을 가진다. 표식으로 시스템 전체에서 찾아 끈다(#219). Windows는 묶음이 끈다.
-  if (saved.lease && platform !== "win32") {
-    // 기록한 대표의 시작 시각 뒤에 생긴, 환경을 읽을 수 없는 프로그램은 우리 것일 수 있어 확인하지 못한 것으로 남는다.
-    const since = Number.isFinite(Number(saved.start))
-      ? Number(saved.start)
-      : undefined;
-    const { left } = await stopLeaseHolders(saved.lease, { since });
-    if (left.length)
-      throw new Error("Programs with the run marker did not stop");
-  }
+  // 그룹 밖(새 세션)으로 나간 자손도 이 실행 시도의 표식을 가진다. 감독 실행기에 정리만 청해 표식으로 찾아 끈다(#219, #268 PR 2):
+  // 신호는 표식을 확인한 바로 그 프로세스에만 간다. Windows는 묶음이 끈다.
+  if (saved.lease && platform !== "win32")
+    // 기록한 실행기의 시작 시각 뒤에 생긴, 환경을 읽을 수 없는 이 사용자의 프로그램은 우리 것일 수 있어 확인하지 못한 것으로 남는다.
+    await cleanThroughSupervisor(saved.lease, {
+      since: runStart(saved, platform),
+    });
   if (unidentified?.remains())
     throw new Error(`${unidentified.reason}; manual cleanup required`);
+}
+/**
+ * 기록한 실행기의 시작 시각을 실행기가 견주는 단위로. Linux는 부팅 뒤 clock tick(기록의 `start`), macOS는 epoch 뒤 마이크로초(기록의
+ * `started`는 `ps`의 초 단위 시각을 밀리초로 둔 것). 모르면 `undefined`이고, 그때는 확인하지 못한 것을 찾지 않는다.
+ */
+function runStart(saved: ProcessRecord, platform: NodeJS.Platform) {
+  const value =
+    platform === "linux"
+      ? Number(saved.start)
+      : saved.started === undefined
+        ? Number.NaN
+        : saved.started * 1000;
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 async function recoverLinuxGroup(
   saved: ProcessRecord

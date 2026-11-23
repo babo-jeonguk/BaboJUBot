@@ -1,6 +1,7 @@
 import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { attemptAll } from "@babojubot/contracts";
+import { readFileSync } from "node:fs";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,7 +21,6 @@ import {
   runTree,
   type LaunchedTree,
 } from "./launch.ts";
-import { leaseHolders } from "./lease.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { supervisorProtocol } from "./supervisor.ts";
 import { killUnlessGone } from "./test-cleanup.ts";
@@ -59,6 +59,19 @@ const ignoreTerm = 'process.on("SIGTERM", () => {});';
 /** 자식 하나를 띄우는 코드. 자식은 연결 `name`을 쥐고 돈다. */
 const child = (name: string, options: string, body = "") =>
   `process.getBuiltinModule("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold(name)} ${body} ${keep}`)}], ${options});`;
+/** 프로세스의 환경 항목. Linux는 `/proc`, macOS는 `ps -E`(실행 인자 뒤에 환경이 붙는다)로 읽는다. */
+function environmentOf(pid: number): string[] {
+  if (process.platform === "linux")
+    return readFileSync(`/proc/${pid}/environ`, "latin1").split("\0");
+  const listing = spawnSync(
+    "ps",
+    ["-E", "-ww", "-o", "command=", "-p", String(pid)],
+    { encoding: "utf8", timeout: 10_000 }
+  );
+  if (listing.status !== 0)
+    throw new Error(`ps could not read process ${pid}: ${listing.stderr}`);
+  return listing.stdout.trim().split(/\s+/);
+}
 let count = 0;
 /** 시험마다 겹치지 않는 연결 이름. */
 const unique = (label: string) => `${label}-${++count}`;
@@ -199,8 +212,8 @@ describe("launchTree", () => {
   });
 
   // 서버가 강제로 끝나면 제어 통로가 끊기고, 감독 실행기가 자기 트리(대표와 같은 그룹의 자손, Windows는 묶음 전체)를 끄고 끝을
-  // 확인한다(#268). 다음 시작의 복구에 맡기지 않는다. Linux는 그룹 밖으로 나간 고아도 실행기가 끈다. macOS의 새 세션 자손은 아직
-  // 다음 시작의 표식 정리가 맡는다.
+  // 확인한다(#268). 다음 시작의 복구에 맡기지 않는다. Linux는 그룹 밖으로 나간 고아도, 두 OS 모두 표식을 가진 프로그램도 실행기가
+  // 끈다(아래 시험).
   // 서버는 이 시험이 띄운 트리의 대표이고, killLeader로 서버만 강제로 끝낸다.
   it("stops the tree when the process that launched it is killed", async () => {
     const leader = unique("leader");
@@ -280,7 +293,9 @@ describe("launchTree", () => {
           env: { PATH: process.env.PATH, BABOJUBOT_PROCESS_LEASE: marker },
         }
       );
-      onTestFinished(() => killUnlessGone(stray.pid!));
+      onTestFinished(() => {
+        killUnlessGone(stray.pid!);
+      });
       await lifelines.connected(outside);
       server.killLeader();
       await server.exited;
@@ -296,11 +311,19 @@ describe("launchTree", () => {
     "keeps the run's marker off its supervisor",
     async () => {
       const leader = unique("leader");
-      const tree = launch(`${lifelines.hold(leader)} ${keep}`);
+      const pidFile = path.join(dataDir, `${leader}.pid`);
+      const tree = launch(
+        `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(leader)} ${keep}`
+      );
       await lifelines.connected(leader);
-      const { holders } = await leaseHolders(tree.lease);
-      expect(holders.length).toBeGreaterThan(0);
-      expect(holders).not.toContain(tree.pid);
+      const marked = (pid: number) =>
+        environmentOf(pid).some(
+          (entry) =>
+            /^BABOJUBOT_PROCESS_LEASE(_\d+)?=/.test(entry) &&
+            entry.endsWith(`=${tree.lease}`)
+        );
+      expect(marked(Number(await readFile(pidFile, "utf8")))).toBe(true);
+      expect(marked(tree.pid!)).toBe(false);
     },
     60_000
   );
