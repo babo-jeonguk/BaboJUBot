@@ -19,15 +19,15 @@ const scriptPlaces = [
   "scripts/provider-live.mjs",
   "scripts/live/chaos-run.mjs",
   // agent가 직접 읽고 돌리는 도구 스크립트도 같은 규칙을 받는다.
-  ".agents/scripts/run-worker.mjs",
-  ".agents/skills/reference-first/scripts/mock-llm.mjs",
+  ".agents/scripts/run-worker.ts",
+  ".agents/skills/reference-first/scripts/mock-llm.ts",
 ];
 // 시험 파일, 시험이 부르는 가짜 프로그램, 일부러 실패하는 시험 묶음은 스크립트 규칙을 받지 않는다.
 const scriptTestPlaces = [
   "scripts/gh-post.test.mjs",
   "scripts/test-fixtures/stuck-run.mjs",
   "scripts/fixtures/test-exit-code/broken-setup.mjs",
-  ".agents/scripts/check-worker-change.test.mjs",
+  ".agents/scripts/check-worker-change.test.ts",
 ];
 
 const scriptRules = {
@@ -85,7 +85,7 @@ test("development scripts get the product rules", async () => {
   for (const place of scriptTestPlaces)
     for (const [rule, { reported }] of Object.entries(scriptRules)) {
       const expected =
-        testPromiseRules.has(rule) && place.endsWith(".test.mjs") ? 1 : 0;
+        testPromiseRules.has(rule) && /\.test\.[cm]?[jt]s$/.test(place) ? 1 : 0;
       assert.equal(
         (await lint(reported, place, [rule])).length,
         expected,

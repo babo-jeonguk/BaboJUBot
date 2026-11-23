@@ -1726,11 +1726,11 @@ test("test code may bound a wait with a timed signal, expect another failure und
       );
 });
 
-// JS 시험(node:test·가짜 서버)도 타입 정보로 본다. scripts·.agents는 그 폴더의 tsconfig.json, 시험 폴더의 .mjs는 기본 프로젝트다.
+// JS 시험(node:test·가짜 서버)도 타입 정보로 본다. scripts는 그 폴더의 tsconfig.json, 시험 폴더의 .mjs는 기본 프로젝트다. agent 도구의
+// 시험은 TypeScript다(scripts/script-lint-rules.test.mjs가 Promise 규칙을 본다).
 const jsPromisePlaces = [
   "scripts/gh-post.test.mjs",
   "scripts/live/processes.test.mjs",
-  ".agents/scripts/check-worker-change.test.mjs",
   "apps/server/test/chaos-harness.test.mjs",
   "apps/web/e2e/support/misbehaving-server.mjs",
 ];

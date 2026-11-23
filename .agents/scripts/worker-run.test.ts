@@ -1,31 +1,39 @@
 // worker 호출의 시도·멈춤·결과 판정(#255 리뷰 SPEC-1·SPEC-4). opencode를 띄우는 일은 그 끄기와 한 쌍(공용 실행의 트리)인 대역으로
 // 넣는다. 실제 프로세스로는 끄기 확인 실패(SIGKILL 뒤에도 끝나지 않는 트리)를 만들 수 없어 여기서 본다. 실제 프로세스 시험은
-// run-worker.test.mjs.
+// run-worker.test.ts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { TreeExit, TreeStart } from "@babojubot/process";
 import { within } from "@babojubot/process/test-support";
-import { createWorkerRun, outcome } from "./worker-run.mjs";
+import { createWorkerRun, outcome, type WorkerTree } from "./worker-run.ts";
+
+/** 띄운 opencode 트리 대역: 번호와 대표의 종료를 흉내 내는 `end`가 더 있다. */
+interface FakeWorker extends WorkerTree {
+  pid: number;
+  end: (code: number | null, signal?: NodeJS.Signals | null) => void;
+}
 
 /**
  * 띄운 opencode 트리 대역. 스스로는 끝나지 않는다. `end(code)`로 대표의 종료를 흉내 내고, `stop()`은 시험이 준 끄기로 끝난다.
  */
-function fakeWorker(pid, stop) {
-  let reportExit;
-  const tree = {
+function fakeWorker(
+  pid: number,
+  stop: (tree: FakeWorker) => Promise<void>
+): FakeWorker {
+  const exit = Promise.withResolvers<TreeExit>();
+  const tree: FakeWorker = {
     pid,
-    started: Promise.resolve({ kind: "running" }),
-    exited: new Promise((resolve) => {
-      reportExit = resolve;
-    }),
-    end: (code, signal = null) => reportExit({ code, signal }),
+    started: Promise.resolve<TreeStart>({ kind: "running" }),
+    exited: exit.promise,
+    end: (code, signal = null) => exit.resolve({ code, signal }),
     stop: () => stop(tree),
   };
   return tree;
 }
 
 /** 대역을 띄우는 launch와 띄운 목록. `stop`은 각 트리의 끄기다. */
-function launcher(stop) {
-  const launched = [];
+function launcher(stop: (tree: FakeWorker) => Promise<void>) {
+  const launched: FakeWorker[] = [];
   return {
     launched,
     launch: () => {
@@ -40,13 +48,16 @@ const treeStuck = () => Promise.reject(new Error("Process tree did not stop"));
 const treeGone = () => Promise.resolve();
 
 /** 호출을 끝까지 돌린다. 대역은 모두 메모리 안이라 곧 끝난다. 끝나지 않으면(시도가 무언가를 끝없이 기다리면) 그렇게 알리고 실패한다. */
-async function finish(run, options) {
+async function finish(
+  run: ReturnType<typeof createWorkerRun>,
+  options: { limitMs: number; session: string; errors: string[] }
+) {
   const ended = await within(run.run(), 10_000, "the worker call did not end");
   return { ...ended, outcome: outcome({ ...ended, ...options }) };
 }
 
 test("a stop that cannot confirm the tree gone at --limit ends the call with exit code 4 and its reason", async () => {
-  const stopped = [];
+  const stopped: number[] = [];
   const { launch, launched } = launcher((tree) => {
     stopped.push(tree.pid);
     return treeStuck();
@@ -117,7 +128,7 @@ test("an attempt stopped at --limit is not launched again and ends with exit cod
 });
 
 test("a signal to the runner stops the attempt, starts no other and ends with 128 + its number", async () => {
-  const stopped = [];
+  const stopped: number[] = [];
   const { launch, launched } = launcher((tree) => {
     stopped.push(tree.pid);
     return treeGone();
@@ -155,7 +166,7 @@ test("a signal whose stop fails keeps the stop failure as the result", async () 
 
 // 스스로 끝난 worker도 남긴 명령(백그라운드 셸 등)이 있을 수 있다. 시도는 그 트리를 끈 결과로 끝난다.
 test("a worker that ends on its own with a session finishes after its tree is stopped", async () => {
-  const stopped = [];
+  const stopped: number[] = [];
   let session = false;
   const { launch, launched } = launcher((tree) => {
     stopped.push(tree.pid);
@@ -290,8 +301,8 @@ test("a brief failure belongs to its attempt: a second attempt that sends the br
  * 지침 쓰기가 끝나지 않는 시도(살아 있는 worker가 표준 입력을 읽지 않아 큰 지침의 쓰기가 보류됨)의 대역. `delivered`는 스스로 끝나지
  * 않고, `abandonBrief()`가 불리면 그 기록을 남기고 "다 보내지 못함"을 돌려준다(run-worker는 이때 자기가 쥔 입력을 닫는다).
  */
-function unfinishedBrief(tree, abandoned) {
-  tree.delivered = new Promise(() => {});
+function unfinishedBrief(tree: FakeWorker, abandoned: number[]) {
+  tree.delivered = new Promise<string | undefined>(() => {});
   tree.abandonBrief = () => {
     abandoned.push(tree.pid);
     return "unfinished";
@@ -303,7 +314,7 @@ function unfinishedBrief(tree, abandoned) {
 // 접어 끄기 실패와 그 원인으로 끝난다. 보내기 결과는 그 시도 결과에 남지만 끄기 실패를 가리지 않는다(#284 리뷰 2회차 SPEC-1).
 // 고치기 전에는 시도가 끝나지 않는 쓰기를 기다려 호출이 끝나지 않았다.
 test("a stop that fails while the brief is still being written ends the call with the stop failure, without waiting for the write", async () => {
-  const abandoned = [];
+  const abandoned: number[] = [];
   const { launch, launched } = launcher(treeStuck);
   const run = createWorkerRun({
     launch: () => unfinishedBrief(launch(), abandoned),
@@ -323,7 +334,7 @@ test("a stop that fails while the brief is still being written ends the call wit
 
 // 시작하지 못한 시도는 끄기를 거치지 않으므로 트리의 끝이 확인되지 않았다. 끝나지 않은 쓰기를 접고 시작 실패로 끝난다.
 test("an attempt that failed to start while the brief is still being written ends with the start failure", async () => {
-  const abandoned = [];
+  const abandoned: number[] = [];
   const { launch } = launcher(treeGone);
   const run = createWorkerRun({
     launch: () => {
@@ -348,9 +359,8 @@ test("an attempt that failed to start while the brief is still being written end
 // 끄기가 트리의 끝을 확인한 시도는 읽을 쪽이 남지 않아 쓰기가 반드시 끝난다(보냄 또는 EPIPE). 그 결과를 기다려 남기고 쓰기를
 // 접지 않는다: 접으면 다 보낸 지침을 못 보낸 것으로 잘못 볼 수 있다.
 test("an attempt whose tree was confirmed stopped waits for the brief's write instead of abandoning it", async () => {
-  const abandoned = [];
-  /** @type {PromiseWithResolvers<string | undefined>} */
-  const write = Promise.withResolvers();
+  const abandoned: number[] = [];
+  const write = Promise.withResolvers<string | undefined>();
   const run = createWorkerRun({
     launch: () => {
       const tree = fakeWorker(100, treeGone);

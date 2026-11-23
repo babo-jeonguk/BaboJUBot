@@ -10,6 +10,14 @@ import path from "node:path";
 export const codeFormats = "{ts,tsx,mts,cts,js,jsx,mjs,cjs}";
 /** codeFormats의 형식 이름들. 형식마다 다르게 다루는 곳(파서 종류 등)은 이 목록에서 만든다. */
 export const codeFormatNames = codeFormats.slice(1, -1).split(",");
+/** TypeScript가 JS로 읽는 형식(js·jsx·mjs·cjs): codeFormats에서 이름에 j가 든 것이다. 새 파일로는 받지 않는다(scripts/javascript-files.ts). */
+export const javaScriptFormatNames = codeFormatNames.filter((name) =>
+  name.includes("j")
+);
+/** TypeScript 형식(ts·tsx·mts·cts). */
+export const typeScriptFormatNames = codeFormatNames.filter(
+  (name) => !javaScriptFormatNames.includes(name)
+);
 /** 정규식에 넣는 형식 이름 하나(앞의 `\.`은 쓰는 곳이 붙인다). */
 export const codeFormatPattern = `(?:${codeFormatNames.join("|")})`;
 

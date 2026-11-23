@@ -1,13 +1,14 @@
 // 저장소의 JS(개발 스크립트·agent 도구·가짜 프로그램·시험의 JS·뿌리 설정)를 타입 검사한다(#270 PR 3a). 대상은 JS 검사(checkJs)를 켠
 // tsconfig이고 저장소의 tsconfig에서 찾는다: 목록을 손으로 두지 않아 새 tsconfig도 빠지지 않는다. 모든 JS가 그중 하나에 드는지는
 // scripts/typecheck-js.test.mjs가 본다. 패키지·앱은 tsconfig.js.json 하나가 폴더를 고르지 않고 전체를 덮어, 새 폴더의 JS도 빠지지 않는다.
-// JS를 .ts로 옮기면 그 영역은 패키지 typecheck의 엄격 설정을 받는다.
+// JS를 .ts로 옮기면 그 영역은 엄격 설정을 받는다(패키지는 패키지 typecheck, 패키지 밖은 tsconfig.tools.json의 pnpm typecheck:tools).
 // pnpm typecheck가 패키지 typecheck 뒤에 부르므로 CI(ci / typecheck)와 완료 검사가 돌리고, verify:changed는 코드 파일이나 tsconfig가
 // 바뀌면 돌린다(#270 PR 3a-2).
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
+import { isJavaScript } from "./javascript-files.ts";
 
 const repository = path.resolve(import.meta.dirname, "..");
 
@@ -69,18 +70,8 @@ export function javaScriptConfigs(root = repository) {
     }));
 }
 
-/**
- * TypeScript가 JS로 읽는 형식.
- * @type {Set<string>}
- */
-const javaScriptExtensions = new Set([
-  ts.Extension.Js,
-  ts.Extension.Jsx,
-  ts.Extension.Mjs,
-  ts.Extension.Cjs,
-]);
-export const isJavaScript = (file) =>
-  javaScriptExtensions.has(path.extname(file));
+/** TypeScript가 JS로 읽는 형식인가. 새 JS 금지(scripts/javascript-files.ts)와 같은 판정이다. */
+export { isJavaScript };
 
 /**
  * 설정마다 그 설정에 든 JS 파일의 타입 검사 진단. 같은 프로그램의 TypeScript 파일은 패키지 typecheck가 엄격 설정으로 검사하므로 여기서는

@@ -156,9 +156,9 @@ for (const file of [
 
 test("lints scripts outside packages without type-checking a package", () => {
   assert.deepEqual(
-    plan(["scripts/ci-changes.mjs", ".agents/scripts/run-worker.mjs"], graph),
+    plan(["scripts/ci-changes.mjs", ".agents/scripts/run-worker.ts"], graph),
     [
-      lint(".agents/scripts/run-worker.mjs", "scripts/ci-changes.mjs"),
+      lint(".agents/scripts/run-worker.ts", "scripts/ci-changes.mjs"),
       ...outsidePackages,
       docs,
       agents,

@@ -3,7 +3,7 @@
 // parent wakes once: it relaunches a run that never starts a session, then prints a short summary
 // of the result. Contract: docs/agents/review-fixes.md 「코드 수정 worker」.
 //
-// usage: node .agents/scripts/run-worker.mjs --model <provider/model> --title <title>
+// usage: node .agents/scripts/run-worker.ts --model <provider/model> --title <title>
 //          --out <file.jsonl> (--brief <file> | --message <text>)
 //          [--session <sessionID>] [--start-check <seconds>] [--limit <minutes>]
 //
@@ -21,6 +21,7 @@ import { closeSync, openSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { launchTree, prepareSupervisor } from "@babojubot/process";
+import type { Writable } from "node:stream";
 import {
   continueAfterFailure,
   failureCode,
@@ -28,13 +29,19 @@ import {
   orIfMissing,
   orIfUnreadable,
 } from "@babojubot/contracts";
-import { createWorkerRun, outcome } from "./worker-run.mjs";
+import { field, numberField, textField } from "./json-field.ts";
+import {
+  createWorkerRun,
+  outcome,
+  type StopSignal,
+  type WorkerTree,
+} from "./worker-run.ts";
 
-const USAGE = `usage: run-worker.mjs --model <provider/model> --title <title> --out <file.jsonl>
+const USAGE = `usage: run-worker.ts --model <provider/model> --title <title> --out <file.jsonl>
   (--brief <file> | --message <text>) [--session <sessionID>] [--start-check <seconds>]
   [--limit <minutes>]`;
 
-function parseArgs(argv) {
+function parseArgs(argv: string[]) {
   const known = new Set([
     "model",
     "title",
@@ -45,8 +52,8 @@ function parseArgs(argv) {
     "start-check",
     "limit",
   ]);
-  /** @type {Map<string, string>} 인수 이름 → 값 */
-  const values = new Map();
+  /** 인수 이름 → 값 */
+  const values = new Map<string, string>();
   for (let i = 0; i < argv.length; i += 2) {
     const name = argv[i]?.replace(/^--/, "");
     const value = argv[i + 1];
@@ -62,7 +69,7 @@ function parseArgs(argv) {
   if (!model || !title || !out) fail("--model, --title and --out are required");
   const briefFile = values.get("brief");
   const message = values.get("message");
-  let text;
+  let text: string | undefined;
   if (briefFile && !message) {
     // Read the brief once here, so the file checked is the file sent.
     text = orIfMissing(
@@ -73,6 +80,8 @@ function parseArgs(argv) {
     if (text === undefined) fail(`brief not found: ${briefFile}`);
   } else if (message && !briefFile) text = message;
   else fail("give exactly one of --brief and --message");
+  // 위 갈래는 지침을 읽었거나 끝났다(fail은 돌아오지 않는다). 빈 파일도 지침이다.
+  if (text === undefined) fail("give exactly one of --brief and --message");
   const startCheck = Number(values.get("start-check") ?? 180);
   if (!(startCheck > 0))
     fail("--start-check must be a positive number of seconds");
@@ -89,8 +98,7 @@ function parseArgs(argv) {
   };
 }
 
-/** @returns {never} */
-function fail(message) {
+function fail(message: string): never {
   console.error(`${message}\n${USAGE}`);
   process.exit(1);
 }
@@ -122,31 +130,34 @@ const unfinished = "not all written when the attempt ended";
 
 /**
  * Writes the brief to one worker's standard input and closes it, so opencode reads the whole brief and knows it ended. The
- * result belongs to that worker's attempt (worker-run.mjs `delivered`, `abandonBrief`): `delivered` settles with why it could
+ * result belongs to that worker's attempt (worker-run.ts `delivered`, `abandonBrief`): `delivered` settles with why it could
  * not be sent (an error code, e.g. EPIPE when the worker ended without reading), or undefined once sent. `abandonBrief` ends a
  * write still going by closing the runner's end of the input (a live worker that never reads holds it otherwise), and returns
  * how the send stands.
  */
-function sendBrief(stdin) {
+function sendBrief(
+  stdin: Writable | null
+): Pick<WorkerTree, "delivered" | "abandonBrief"> {
   if (!stdin)
     return {
       delivered: Promise.resolve("no standard input"),
       abandonBrief: () => "no standard input",
     };
-  /** @type {PromiseWithResolvers<string | undefined>} */
-  const send = Promise.withResolvers();
+  const send = Promise.withResolvers<string | undefined>();
   let sending = true;
-  /** @type {string | undefined} */
-  let failure;
-  const settle = (/** @type {string | undefined} */ result) => {
+  let failure: string | undefined;
+  const settle = (result: string | undefined) => {
     if (!sending) return;
     sending = false;
     failure = result;
     send.resolve(result);
   };
-  // The end callback also gets the write's error; the listener keeps a later error from being unhandled.
-  stdin.on("error", (error) => settle(failureCode(error)));
-  stdin.end(message, (error) => settle(error ? failureCode(error) : undefined));
+  // Node passes the end callback the write's error (its type declaration leaves the argument out); the listener keeps a later
+  // error from being unhandled.
+  stdin.on("error", (error: Error) => settle(failureCode(error)));
+  stdin.end(message, (error?: Error | null) =>
+    settle(error ? failureCode(error) : undefined)
+  );
   return {
     delivered: send.promise,
     abandonBrief: () => {
@@ -159,8 +170,25 @@ function sendBrief(stdin) {
   };
 }
 
+/** What the summary reads from one of opencode's JSON event lines. Lines it does not know read as empty. */
+interface WorkerEvent {
+  type: string | undefined;
+  sessionID: string | undefined;
+  /** The `error` of an error event. */
+  error: unknown;
+  /** The `part` of a tool, step or text event. */
+  part: unknown;
+}
+
+const toEvent = (line: unknown): WorkerEvent => ({
+  type: textField(line, "type"),
+  sessionID: textField(line, "sessionID"),
+  error: field(line, "error"),
+  part: field(line, "part"),
+});
+
 // Events written so far. No output file yet means no events; a line that is not JSON (a partly written last line) is skipped.
-function readEvents() {
+function readEvents(): WorkerEvent[] {
   return orIfMissing(
     () => readFileSync(opts.out, "utf8"),
     hasErrorCode("ENOENT"),
@@ -168,10 +196,12 @@ function readEvents() {
   )
     .split("\n")
     .filter(Boolean)
-    .flatMap((line) => orIfUnreadable(() => [JSON.parse(line)], []));
+    .flatMap((line) => orIfUnreadable((): unknown[] => [JSON.parse(line)], []))
+    .map(toEvent);
 }
 
-const sessionOf = (events) => events.find((e) => e.sessionID)?.sessionID ?? "";
+const sessionOf = (events: WorkerEvent[]) =>
+  events.find((e) => e.sessionID)?.sessionID ?? "";
 
 /**
  * Launches opencode through the product's shared launch, which returns the tree with the stop that matches how it was
@@ -179,7 +209,7 @@ const sessionOf = (events) => events.find((e) => e.sessionID)?.sessionID ?? "";
  * a Windows job object. The stop confirms the whole tree ended and rejects when it cannot. On Windows a worker is not
  * started without the job object (the launch throws, and the call ends with the reason).
  */
-function launch() {
+function launch(): WorkerTree {
   const out = openSync(opts.out, "w");
   const err = openSync(errFile, "w");
   try {
@@ -214,14 +244,14 @@ function launch() {
 await prepareSupervisor();
 const started = Date.now();
 // The start check, --limit and a signal to the runner all stop through the tree's own stop, and the attempt ends with its
-// result (worker-run.mjs). A worker that ends on its own is stopped too, for what it left running.
+// result (worker-run.ts). A worker that ends on its own is stopped too, for what it left running.
 const workerRun = createWorkerRun({
   launch,
   hasSession: () => Boolean(sessionOf(readEvents())),
   startCheckMs: opts.startCheckMs,
   limitMs: opts.limitMs,
 });
-for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] satisfies StopSignal[])
   process.on(signal, () => workerRun.requestStop(signal));
 const { attempts, result, deadlineAt, requested } = await workerRun.run();
 const events = readEvents();
@@ -229,43 +259,45 @@ const events = readEvents();
 const session = sessionOf(events);
 const errors = events
   .filter((e) => e.type === "error")
-  .map((e) => e.error?.message ?? JSON.stringify(e.error));
+  .map((e) => textField(e.error, "message") ?? JSON.stringify(e.error));
+/** A tool call: the tool, its state and the input it was given. */
 const tools = events
   .filter((e) => e.type === "tool_use")
-  .map((e) => e.part ?? {});
+  .map(({ part }) => {
+    const state = field(part, "state");
+    const input = field(state, "input");
+    return {
+      tool: textField(part, "tool"),
+      status: textField(state, "status"),
+      error: textField(state, "error"),
+      command: textField(input, "command"),
+      file: textField(input, "filePath") ?? textField(input, "path"),
+    };
+  });
 const written = [
   ...new Set(
     tools
       .filter(
         (t) =>
-          ["edit", "write", "patch", "multiedit"].includes(t.tool) &&
-          t.state?.status === "completed"
+          ["edit", "write", "patch", "multiedit"].includes(t.tool ?? "") &&
+          t.status === "completed"
       )
-      .map((t) => t.state.input?.filePath ?? t.state.input?.path)
-      .filter(Boolean)
-      .map((path) => path.replace(`${process.cwd()}/`, ""))
+      .flatMap((t) => (t.file ? [t.file.replace(`${process.cwd()}/`, "")] : []))
   ),
 ];
 const denied = tools
-  .filter((t) => /Permission denied|rejected/i.test(t.state?.error ?? ""))
-  .map(
-    (t) =>
-      `${t.tool}: ${
-        t.state.input?.command ??
-        t.state.input?.filePath ??
-        t.state.input?.path ??
-        ""
-      }`
-  );
+  .filter((t) => /Permission denied|rejected/i.test(t.error ?? ""))
+  .map((t) => `${t.tool}: ${t.command ?? t.file ?? ""}`);
 const tokens = { input: 0, output: 0, reasoning: 0, cacheRead: 0 };
 for (const e of events.filter((e) => e.type === "step_finish")) {
-  const t = e.part?.tokens ?? {};
-  tokens.input += t.input ?? 0;
-  tokens.output += t.output ?? 0;
-  tokens.reasoning += t.reasoning ?? 0;
-  tokens.cacheRead += t.cache?.read ?? 0;
+  const t = field(e.part, "tokens");
+  tokens.input += numberField(t, "input") ?? 0;
+  tokens.output += numberField(t, "output") ?? 0;
+  tokens.reasoning += numberField(t, "reasoning") ?? 0;
+  tokens.cacheRead += numberField(field(t, "cache"), "read") ?? 0;
 }
-const report = events.filter((e) => e.type === "text").at(-1)?.part?.text ?? "";
+const report =
+  textField(events.filter((e) => e.type === "text").at(-1)?.part, "text") ?? "";
 
 const [status, exitCode] = outcome({
   result,

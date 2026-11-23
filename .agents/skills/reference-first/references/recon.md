@@ -64,7 +64,7 @@ provider 오류·timeout·빈 응답·느린 응답·tool call) 그 OSS를 로�
 2. **상한**: `free -g`로 여유를 보고 설치·실행을 메모리 상한 안에서 돌린다 —
    `systemd-run --user --scope -p MemoryMax=2G <명령>` 또는 docker `--memory 2g`. 여유가 상한보다 작으면 띄우지
    않고 미확인으로 둔다. 설치·실행 규칙(lifecycle script 끄기, 키 없는 셸)은 Behavioral Recon과 같다.
-3. **모델 API**: 실제 키 대신 [scripts/mock-llm.mjs](../scripts/mock-llm.mjs)를 붙인다. OpenAI 호환
+3. **모델 API**: 실제 키 대신 [scripts/mock-llm.ts](../scripts/mock-llm.ts)를 붙인다. OpenAI 호환
    `/v1/chat/completions`·`/v1/models`를 흉내 내고, 마지막 user 메시지에 걸리는 규칙으로 정상 응답·오류 status·
    지연·빈 응답·무응답·tool call을 고른다(규칙 형식은 `--help`). 앱의 provider base URL을
    `http://127.0.0.1:<port>/v1`, 키를 `sk-dummy`로 둔다. provider가 코드에 고정돼 있으면 그 줄만 바꾸고 기록한다.

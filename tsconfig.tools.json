@@ -1,0 +1,11 @@
+// 작업공간 패키지 밖의 TypeScript(agent 도구, 개발 스크립트의 .ts)를 제품 코드와 같은 엄격 설정으로 검사한다(pnpm typecheck:tools,
+// #270 PR 3b). 패키지 typecheck는 이 파일들을 보지 않는다. 각 폴더의 tsconfig.json은 lint가 타입 정보를 얻는 설정이고, 아직 옮기지 않은
+// scripts의 설정은 그 JS 때문에 느슨해서 그 안의 .ts도 여기서 엄격하게 본다. JS는 타입 검사하지 않는다(pnpm typecheck:js가 본다).
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "incremental": false },
+  // 폴더 전체를 넣는다(형식 목록은 scripts/test-files.mjs 한 곳에 둔다). 이 설정은 JS를 타입 검사하지 않는다(checkJs 꺼짐).
+  "include": [".agents/**/*", "scripts/**/*"],
+  // 시험 실패 종료 코드 확인의 vitest 전역(`it`)은 그 폴더의 설정만 받는다(fixtures/test-exit-code/tsconfig.json).
+  "exclude": ["scripts/fixtures/test-exit-code"]
+}
