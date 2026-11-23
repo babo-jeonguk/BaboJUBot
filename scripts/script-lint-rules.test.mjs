@@ -573,11 +573,11 @@ test("other modules reach runtime and the process package only through their lis
       `import { openLifelines } from "@babojubot/runtime/lifelines";\nvoid openLifelines;\n`,
     ],
     [
-      ".agents/scripts/run-worker.mjs",
+      ".agents/scripts/run-worker.ts",
       `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
     ],
     [
-      ".agents/scripts/run-worker.mjs",
+      ".agents/scripts/run-worker.ts",
       `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
     ],
     [
@@ -764,7 +764,7 @@ test("other workspace packages are imported only through their exported entries"
       `const { withClient } = await import("../../packages/db/src/client.ts");\nvoid withClient;\n`,
     ],
     [
-      ".agents/scripts/run-worker.mjs",
+      ".agents/scripts/run-worker.ts",
       `export { attemptAll } from "../../packages/contracts/src/failure.ts";\n`,
     ],
     [
