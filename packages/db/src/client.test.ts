@@ -26,9 +26,65 @@ import {
   withCleanup,
 } from "@babojubot/process/test-cleanup";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
+import { within } from "@babojubot/process/test-support";
+
+/**
+ * 붙잡을 단계(#286). 놓기 전까지 그 단계는 끝나지 않는다. `stop`은 다음 `pg_ctl stop` 호출, `remove`는 그 폴더의 다음 지우기다.
+ * 붙잡지 않으면 실제 함수를 그대로 부른다.
+ */
+const holds = vi.hoisted(() => ({
+  stop: undefined as
+    { reached: () => void; released: Promise<void> } | undefined,
+  remove: undefined as
+    | { target: string; reached: () => void; released: Promise<void> }
+    | undefined,
+}));
+vi.mock("@babojubot/process", async (original) => {
+  const real = await original<typeof import("@babojubot/process")>();
+  const runCommand = (async (...args: Parameters<typeof real.runCommand>) => {
+    const hold = holds.stop;
+    if (hold && args[1][0] === "stop") {
+      holds.stop = undefined;
+      hold.reached();
+      await hold.released;
+    }
+    return real.runCommand(...args);
+  }) as typeof real.runCommand;
+  return { ...real, runCommand };
+});
+vi.mock("node:fs/promises", async (original) => {
+  const real = await original<typeof import("node:fs/promises")>();
+  const rm: typeof real.rm = async (target, options) => {
+    const hold = holds.remove;
+    if (hold && String(target) === hold.target) {
+      holds.remove = undefined;
+      hold.reached();
+      await hold.released;
+    }
+    return real.rm(target, options);
+  };
+  return { ...real, rm, default: { ...real, rm } };
+});
+
+/** 다음 그 단계를 붙잡는다. `reached`는 그 단계에 닿았을 때, `release`는 놓는다(여러 번 불러도 된다). */
+function holdNext(step: "stop" | "remove", target = "") {
+  let reach!: () => void;
+  let release!: () => void;
+  const reached = new Promise<void>((resolve) => (reach = resolve));
+  const released = new Promise<void>((resolve) => (release = resolve));
+  if (step === "stop") holds.stop = { reached: reach, released };
+  else holds.remove = { target, reached: reach, released };
+  onTestFinished(() => {
+    holds[step] = undefined;
+    release();
+  });
+  return { reached, release };
+}
 
 describe("embedded Postgres lifetime", () => {
-  // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts).
+  // 정리 시한이 지나면 서버가 DB를 닫다 어디서 멈췄는지 알린다(apps/server/src/shutdown.ts). 단계마다 그 단계를 붙잡아 둔 동안
+  // 알리는 단계를 본다(#286): 연결 닫기는 빌려 둔 연결이, Postgres 정지는 `pg_ctl stop` 호출이, 임시 폴더 지우기는 그 폴더의 지우기가
+  // 놓일 때까지 끝나지 않는다. 이벤트 루프 차례마다 표본으로 읽으면 짧은 단계는 놓치고, 본 단계도 그 단계에서 본 것인지 모른다.
   it("reports what closing is doing, from the connections to stopping Postgres", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
     const cluster = folderCleanup(() => removeCluster(dataDir));
@@ -36,36 +92,48 @@ describe("embedded Postgres lifetime", () => {
     const handle = await openDatabase({
       embedded: { dataDir, persistent: false },
     });
-    // 닫기는 이 시험의 대상이다. 시험이 닫기 전에 실패해도 정리가 닫은 뒤에 폴더를 지운다(한 번만 닫는다).
+    const stop = holdNext("stop");
+    const remove = holdNext("remove", dataDir);
+    // 닫기는 이 시험의 대상이다. 시험이 닫기 전에 실패해도 정리가 붙잡은 단계를 놓고 닫은 뒤에 폴더를 지운다(한 번만 닫는다).
     let closing: Promise<void> | undefined;
     const close = () => (closing ??= handle.close());
-    cluster.own(close);
-    expect(handle.progress()).toBe("open");
-    const seen = new Set<string>();
-    let closed = false;
-    void close().then(
-      () => (closed = true),
-      () => (closed = true)
+    // 연결 하나를 트랜잭션으로 빌려 둔다. 놓을 때까지 연결 닫기(pool.end)는 끝나지 않는다.
+    let giveBack!: () => void;
+    const given = new Promise<void>((resolve) => (giveBack = resolve));
+    let borrowedConnection!: () => void;
+    const connectionBorrowed = new Promise<void>(
+      (resolve) => (borrowedConnection = resolve)
     );
-    while (!closed) {
-      seen.add(handle.progress());
-      await new Promise((resolve) => setImmediate(resolve));
-    }
-    await close();
+    cluster.own(() => {
+      giveBack();
+      stop.release();
+      remove.release();
+      return close();
+    });
+    expect(handle.progress()).toBe("open");
+    const borrowed = awaitedLater(
+      handle.db.transaction(async () => {
+        borrowedConnection();
+        await given;
+      })
+    );
+    await within(connectionBorrowed, 30_000, "no connection was borrowed");
+    const closed = awaitedLater(close());
+    expect(handle.progress()).toBe("closing connections");
+    giveBack();
+    await borrowed;
+    await within(stop.reached, 30_000, "closing did not stop Postgres");
+    expect(handle.progress()).toBe("stopping Postgres (fast)");
+    stop.release();
+    await within(
+      remove.reached,
+      30_000,
+      "closing did not remove its temporary folder"
+    );
+    expect(handle.progress()).toBe("removing its temporary folder");
+    remove.release();
+    await closed;
     expect(handle.progress()).toBe("closed");
-    expect(seen).toContain("stopping Postgres (fast)");
-    expect(
-      [...seen].filter(
-        (step) =>
-          ![
-            "closing connections",
-            "stopping Postgres",
-            "stopping Postgres (fast)",
-            "removing its temporary folder",
-            "stopped",
-          ].includes(step)
-      )
-    ).toEqual([]);
   }, 60_000);
 
   // 임시 cluster는 멈출 때 지우므로 디스크에 확정 기록(fsync)을 기다릴 까닭이 없다. 기다리면 정지 때 밀린 기록을 확정하느라
