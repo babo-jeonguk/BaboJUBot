@@ -217,15 +217,21 @@ impl Marked {
     fn keep(&self, found: marked::Found<marked::Held>) -> marked::Found<std::rc::Rc<marked::Held>> {
         let mut holders: Vec<std::rc::Rc<marked::Held>> =
             found.holders.into_iter().map(std::rc::Rc::new).collect();
+        let mut unverified = found.unverified;
         for held in self.seen.borrow_mut().drain(..) {
-            if !holders.iter().any(|each| each.pid() == held.pid()) && marked::still_runs(&held) {
-                holders.push(held);
+            if holders.iter().any(|each| each.pid() == held.pid()) {
+                continue;
+            }
+            match marked::still_runs(&held) {
+                marked::Running::Yes => holders.push(held),
+                marked::Running::Ended => {}
+                marked::Running::Unknown => unverified.push(held.pid()),
             }
         }
         *self.seen.borrow_mut() = holders.clone();
         marked::Found {
             holders,
-            unverified: found.unverified,
+            unverified,
         }
     }
 }

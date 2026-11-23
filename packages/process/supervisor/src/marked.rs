@@ -116,6 +116,71 @@ fn confirm(second: std::io::Result<Vec<u8>>, marker: &str) -> Result<Confirmed, 
     }
 }
 
+/// Whether a held program still runs, as far as could be told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Running {
+    Yes,
+    Ended,
+    /// It could not be told.
+    #[allow(dead_code)]
+    // No reading gives it yet; the next commit does (#283 review 2, STD-2).
+    Unknown,
+}
+
+/// What reading a process's information now gave (macOS `proc_pidinfo`): its start and whether it is a zombie.
+#[derive(Debug, Clone, Copy)]
+pub struct Seen {
+    pub start: u64,
+    pub zombie: bool,
+}
+
+/// Whether the recorded start and the start read now are the same process's (macOS, to the second as records kept it).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn same_start(recorded: u64, now: u64) -> bool {
+    recorded / 1_000_000 == now / 1_000_000
+}
+
+/// Whether a held program that started at `start` still runs, from what reading its information gave (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn running_from(now: std::io::Result<Option<Seen>>, start: u64) -> Running {
+    match now {
+        Ok(Some(seen)) if seen.start == start && !seen.zombie => Running::Yes,
+        Ok(Some(_) | None) => Running::Ended,
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES)) => {
+            Running::Ended
+        }
+        Err(_) => Running::Yes,
+    }
+}
+
+/// Whether a held program still runs, from its handle's answer and its state (Linux). A process whose main thread is a zombie
+/// still runs while another thread does (Node.js ended by a signal).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn running_from_handle(handle: std::io::Result<()>, stat: std::io::Result<String>) -> Running {
+    if handle.is_err() {
+        return Running::Ended;
+    }
+    match stat {
+        Ok(stat) => {
+            let fields = stat
+                .rsplit_once(") ")
+                .map(|(_, rest)| rest.split(' ').collect::<Vec<_>>())
+                .unwrap_or_default();
+            let state = fields.first().copied().unwrap_or("");
+            let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
+            if state != "X" && (state != "Z" || threads.is_none_or(|threads| threads > 1)) {
+                Running::Yes
+            } else {
+                Running::Ended
+            }
+        }
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            Running::Ended
+        }
+        Err(_) => Running::Yes,
+    }
+}
+
 /// What to look for: this run's marker, and when the run began, in the system's own measure of a start time (Linux: clock ticks
 /// after boot; macOS: microseconds since the epoch). Without a beginning nothing is taken as unverified.
 pub struct Search {
@@ -153,7 +218,10 @@ pub use linux::{Held, find, hold, signal, start_of_self, still_runs};
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{Confirmed, Found, Reading, Search, confirm, environ_reading, stat_fields};
+    use super::{
+        Confirmed, Found, Reading, Running, Search, confirm, environ_reading, running_from_handle,
+        stat_fields,
+    };
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -326,19 +394,11 @@ mod linux {
 
     /// Whether a held program still runs. Its handle says whether it ended; a process whose main thread is a zombie still runs while
     /// another thread does (Node.js ended by a signal), and a state that cannot be read leaves it running.
-    pub fn still_runs(held: &Held) -> bool {
-        if !still_running(&held.handle) {
-            return false;
-        }
-        match std::fs::read_to_string(format!("/proc/{}/stat", held.pid)) {
-            Ok(stat) => {
-                let fields = stat_fields(&stat);
-                let state = fields.first().copied().unwrap_or("");
-                let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
-                state != "X" && (state != "Z" || threads.is_none_or(|threads| threads > 1))
-            }
-            Err(error) => !gone(&error),
-        }
+    pub fn still_runs(held: &Held) -> Running {
+        running_from_handle(
+            send(&held.handle, 0),
+            std::fs::read_to_string(format!("/proc/{}/stat", held.pid)),
+        )
     }
 
     /// Whether the handle still reaches a running process (for the tests).
@@ -429,7 +489,9 @@ pub use macos::{Held, find, hold, signal, start_of_self, still_runs};
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{Found, Reading, Search, procargs_reading};
+    use super::{
+        Found, Reading, Running, Search, Seen, procargs_reading, running_from, same_start,
+    };
     use std::io;
 
     /// A program whose marker was read, with the start time read along with it.
@@ -615,9 +677,7 @@ mod macos {
             Err(error) => return Err(format!("process {pid} could not be read: {error}")),
         };
         Ok(now
-            .filter(|now| {
-                now.pbi_status != libc::SZOMB && start_of(now) / 1_000_000 == start / 1_000_000
-            })
+            .filter(|now| now.pbi_status != libc::SZOMB && same_start(start, start_of(now)))
             .map(|now| Held {
                 pid,
                 start: start_of(&now),
@@ -625,12 +685,16 @@ mod macos {
     }
 
     /// Whether a held program still runs: the same start time, and not a zombie. Another user's process with its number now is not it.
-    pub fn still_runs(held: &Held) -> bool {
-        match info(held.pid) {
-            Ok(Some(now)) => start_of(&now) == held.start && now.pbi_status != libc::SZOMB,
-            Ok(None) => false,
-            Err(error) => !unreadable(&error),
-        }
+    pub fn still_runs(held: &Held) -> Running {
+        running_from(
+            info(held.pid).map(|now| {
+                now.map(|now| Seen {
+                    start: start_of(&now),
+                    zombie: now.pbi_status == libc::SZOMB,
+                })
+            }),
+            held.start,
+        )
     }
 
     pub fn signal(held: &Held, signal: libc::c_int) -> Result<(), String> {
@@ -803,7 +867,7 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::linux::reaches;
-    use super::{Holder, Search, find, hold, signal, stat_fields, still_runs};
+    use super::{Holder, Running, Search, find, hold, signal, stat_fields, still_runs};
     use std::process::{Command, Stdio};
 
     #[test]
@@ -881,15 +945,15 @@ mod linux_tests {
         })
         .expect("the processes can be searched");
         let held = &found.holders[0];
-        assert!(still_runs(held));
+        assert_eq!(still_runs(held), Running::Yes);
         assert_eq!(signal(held, libc::SIGKILL), Ok(()));
         // Ended but not reaped yet (a zombie of one thread): it no longer runs, though its number is still taken.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while still_runs(held) && std::time::Instant::now() < deadline {
+        while still_runs(held) == Running::Yes && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(!still_runs(held));
+        assert_eq!(still_runs(held), Running::Ended);
         child.wait().expect("sleep is reaped");
-        assert!(!still_runs(held));
+        assert_eq!(still_runs(held), Running::Ended);
     }
 }
