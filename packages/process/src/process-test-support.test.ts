@@ -1,6 +1,7 @@
 import { spawn, type SpawnSyncReturns } from "node:child_process";
 import { once } from "node:events";
 import { createServer, type AddressInfo, type Socket } from "node:net";
+import { isDisconnect } from "@babojubot/contracts";
 import { finished } from "node:stream/promises";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { awaitedLater, withCleanup } from "./test-cleanup.ts";
@@ -85,7 +86,7 @@ it("still reads a ready line written just before the program exits", async () =>
 it("keeps reading after the program exits until its output ends", async () => {
   await lateReadyLine(
     (port) =>
-      `const s = require("node:net").connect(${port}, "127.0.0.1", () => s.write(process.pid + "\\n")); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`
+      `const s = require("node:net").connect(${port}, "127.0.0.1"); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`
   );
 });
 
@@ -115,19 +116,18 @@ async function lateReadyLine(
 ) {
   await withCleanup(async (defer) => {
     const server = createServer();
-    // 자손은 연결하자마자 자기 번호를 보낸다. 정리가 그 연결을 닫은 뒤 자손이 끝났는지 그 번호로 확인한다.
+    // 받은 연결은 받는 즉시 정리 대상이다(#288 리뷰 2회차 STD-2). 연결의 정보(무엇을 보냈는지)를 기다리지 않는다.
+    const sockets = new Set<Socket>();
+    // 상대가 끊은 것(자손이 끝남)은 답이다. 그 밖의 연결 오류는 서버 정리 단계에서 알린다(연결은 자손의 것 하나다).
+    let socketFailure: unknown;
     const connected = awaitedLater(
-      new Promise<{ socket: Socket; pid: number }>((resolve, reject) =>
-        server.once("connection", (socket: Socket) => {
-          socket.once("error", reject);
-          let text = "";
-          const read = (chunk: Buffer) => {
-            text += String(chunk);
-            if (!text.includes("\n")) return;
-            socket.off("data", read);
-            resolve({ socket, pid: Number(text.trim()) });
-          };
-          socket.on("data", read);
+      new Promise<Socket>((resolve) =>
+        server.on("connection", (socket: Socket) => {
+          sockets.add(socket);
+          socket.on("error", (error) => {
+            if (!isDisconnect(error)) socketFailure ??= error;
+          });
+          resolve(socket);
         })
       )
     );
@@ -135,23 +135,47 @@ async function lateReadyLine(
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => resolve());
     });
-    defer(() =>
-      within(
+    // 서버는 받은 연결이 모두 끝나야 닫히므로, 받은 연결을 먼저 끊고 닫는다(한 단계).
+    defer(async () => {
+      for (const socket of sockets) socket.destroy();
+      await within(
         new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve()))
         ),
         limitMs,
         "the test's server did not close"
-      )
-    );
+      );
+      if (socketFailure !== undefined)
+        throw new Error("the connection with the descendant failed", {
+          cause: socketFailure,
+        });
+    });
     const { port } = server.address() as AddressInfo;
+    // 프로그램은 자손을 띄운 즉시 그 번호를 오류 출력에 한 줄로 남긴다. 자손의 끝은 띄운 쪽이 알린 이 번호로 확인한다(연결과 무관).
     const child = spawn(
       process.execPath,
       [
         "-e",
-        `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant(port))}], { stdio: ["ignore", "inherit", "ignore"], detached: true, windowsHide: true }).unref(); process.stdin.once("data", () => process.exit(0));`,
+        `const d = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant(port))}], { stdio: ["ignore", "inherit", "ignore"], detached: true, windowsHide: true }); d.unref(); process.stderr.write(d.pid + "\\n"); process.stdin.once("data", () => process.exit(0));`,
       ],
-      { stdio: ["pipe", "pipe", "ignore"] }
+      { stdio: ["pipe", "pipe", "pipe"] }
+    );
+    const descendantPid = awaitedLater(
+      new Promise<number>((resolve, reject) => {
+        let text = "";
+        child.stderr!.on("data", (chunk: Buffer) => {
+          text += String(chunk);
+          if (text.includes("\n"))
+            resolve(Number(text.slice(0, text.indexOf("\n"))));
+        });
+        child.stderr!.once("end", () =>
+          reject(
+            new Error(
+              `the program ended without reporting its descendant (${JSON.stringify(text)})`
+            )
+          )
+        );
+      })
     );
     // 프로그램은 성공·실패 어디서든 끝난 것을 확인한다. 시험이 끝내라고 하기 전에 실패했으면 끈다. 띄우지 못했으면 그 오류로 실패한다.
     const childEnded = awaitedLater(once(child, "exit"));
@@ -160,16 +184,20 @@ async function lateReadyLine(
         child.kill("SIGKILL");
       await within(childEnded, limitMs, "the program did not end");
     });
-    const { socket: output, pid } = await within(
+    // 자손은 띄운 즉시 정리 대상이다. 번호를 받지 못했으면 끝을 확인하지 못한 것이므로 정리가 그 이유로 실패한다.
+    defer(async () => {
+      const pid = await within(
+        descendantPid,
+        limitMs,
+        "the program did not report its descendant"
+      );
+      await killAndWait([pid]);
+    });
+    const output = await within(
       connected,
       limitMs,
       "the descendant did not connect"
     );
-    // 자손은 연결이 닫히면 스스로 끝난다. 닫은 뒤 끝난 것을 확인한다.
-    defer(async () => {
-      output.destroy();
-      await untilExited([pid], limitMs);
-    });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     defer(() => {
       vi.useRealTimers();
