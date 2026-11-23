@@ -36,6 +36,36 @@ export type EmbeddedOptions = {
 export const clusterUrl = (port: number, database: string) =>
   `postgres://postgres:postgres@127.0.0.1:${port}/${database}`;
 
+/** 내장 Postgres의 실패 원인(#286). 진단은 문구 대신 이 code로 남긴다(`failureCode`). 문구는 사용자가 읽고 고치도록 그대로 둔다. */
+export type EmbeddedFailureCode =
+  | "EMBEDDED_SETTING_UNSUPPORTED"
+  | "EMBEDDED_EXITED_BEFORE_READY"
+  | "EMBEDDED_CREATE_FAILED"
+  | "EMBEDDED_POSTGRES_UNKNOWN"
+  | "EMBEDDED_POSTGRES_UNCONFIRMED"
+  | "EMBEDDED_STOP_TIMEOUT"
+  | "EMBEDDED_STATUS_UNKNOWN"
+  | "EMBEDDED_PG_CTL_TIMEOUT"
+  | "EMBEDDED_SOCKET_PATH_TOO_LONG"
+  | "EMBEDDED_FOLDER_NOT_PRIVATE"
+  | "EMBEDDED_NO_OWNER_FOLDER"
+  | "EMBEDDED_OWNER_NO_ANSWER"
+  | "EMBEDDED_OWNER_UNCHECKED"
+  | "EMBEDDED_IN_USE"
+  | "EMBEDDED_OWNERSHIP_CONTESTED";
+export class EmbeddedPostgresFailure extends Error {
+  override readonly name = "EmbeddedPostgresFailure";
+  readonly code: EmbeddedFailureCode;
+  constructor(
+    code: EmbeddedFailureCode,
+    message: string,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.code = code;
+  }
+}
+
 // Postgres는 모든 OS에서 묶여 온 pg_ctl로 켜고 끈다(docs/research/embedded-postgres-lifecycle-references.md).
 // - 켜기: pg_ctl은 POSIX에서 Postgres를 새 session으로 띄우고, Windows에서는 관리자 권한을 내려놓고 숨은 콘솔에서 띄운다.
 //   그래서 터미널의 Ctrl+C·창 닫기가 Postgres에 바로 가지 않고, Windows 관리자 계정에서도 켜진다. Windows에서 pg_ctl에 출력
@@ -101,7 +131,10 @@ export async function startEmbeddedCluster(
   // 설정은 pg_ctl을 거쳐 shell 명령줄에 들어가므로 따옴표가 필요 없는 값만 받는다.
   for (const setting of settings)
     if (!/^[A-Za-z_][A-Za-z0-9_.]*=[A-Za-z0-9_.:/-]+$/.test(setting))
-      throw new Error(`unsupported Postgres setting "${setting}"`);
+      throw new EmbeddedPostgresFailure(
+        "EMBEDDED_SETTING_UNSUPPORTED",
+        `unsupported Postgres setting "${setting}"`
+      );
   const { pg_ctl: pgCtl } = await getBinaries();
   const lease = await acquireOwner(dataDir, persistent);
   try {
@@ -116,8 +149,7 @@ export async function startEmbeddedCluster(
       else releaseOwner(dataDir, lease, lease.previous);
     } catch (cleanupError) {
       console.error(
-        "[db] cleaning up after a failed start failed",
-        cleanupError
+        `[db] cleaning up after a failed start failed (${failureCode(cleanupError)})`
       );
     }
     throw error;
@@ -163,8 +195,7 @@ export async function startEmbeddedCluster(
         () => fsp.rm(log, { force: true }),
         (error) =>
           console.error(
-            "[db] the previous Postgres log could not be removed; the new start writes after it",
-            error
+            `[db] the previous Postgres log could not be removed; the new start writes after it (${failureCode(error)})`
           )
       );
       // 접속하는 주소(clusterUrl의 127.0.0.1)에서만 듣는다. localhost로 두면 127.0.0.1을 남이 잡았을 때 ::1에서만 듣고 성공으로 켜져, 접속이 그 port를 잡은 다른 프로그램으로 간다.
@@ -213,14 +244,16 @@ export async function startEmbeddedCluster(
         !(await isRunning(pgCtl, dataDir))
       )
         continue;
-      throw new Error(`embedded Postgres exited before it was ready: ${tail}`);
+      throw new EmbeddedPostgresFailure(
+        "EMBEDDED_EXITED_BEFORE_READY",
+        `embedded Postgres exited before it was ready: ${tail}`
+      );
     }
   } catch (error) {
     // 이 dataDir의 주인은 이 프로세스뿐이므로 여기서 도는 postgres는 이번에 켜다 만 것이다.
     await stop().catch((stopError: unknown) =>
       console.error(
-        "[db] could not stop embedded Postgres after a failed start",
-        stopError
+        `[db] could not stop embedded Postgres after a failed start (${failureCode(stopError)})`
       )
     );
     throw error;
@@ -244,7 +277,8 @@ async function initialise(dataDir: string) {
   try {
     await cluster.initialise();
   } catch (error) {
-    throw new Error(
+    throw new EmbeddedPostgresFailure(
+      "EMBEDDED_CREATE_FAILED",
       `could not create embedded Postgres in ${dataDir}: ${log.trim()}`,
       { cause: error }
     );
@@ -266,11 +300,13 @@ async function stopLeftover(
   if (!running || !(await isRunning(pgCtl, dataDir))) return;
   const manual = `Stop it with: ${stopCommand(pgCtl, dataDir)}`;
   if (!previous)
-    throw new Error(
+    throw new EmbeddedPostgresFailure(
+      "EMBEDDED_POSTGRES_UNKNOWN",
       `Postgres (pid ${running.pid}) is already running in ${dataDir} and BaboJUBot has no record of starting it. ${manual}`
     );
   if (!(await servesDataDir(running.port, dataDir)))
-    throw new Error(
+    throw new EmbeddedPostgresFailure(
+      "EMBEDDED_POSTGRES_UNCONFIRMED",
       `Postgres (pid ${running.pid}) holds ${dataDir} but could not be confirmed as its server. ${manual}`
     );
   console.warn(
@@ -300,7 +336,8 @@ async function stopCluster(
     );
   }
   if (await isRunning(pgCtl, dataDir))
-    throw new Error(
+    throw new EmbeddedPostgresFailure(
+      "EMBEDDED_STOP_TIMEOUT",
       `embedded Postgres in ${dataDir} did not stop in ${seconds}s. Stop it with: ${stopCommand(pgCtl, dataDir)}`
     );
 }
@@ -382,7 +419,8 @@ async function isRunning(pgCtl: string, dataDir: string) {
   const code = await run(pgCtl, ["status", "-D", dataDir], pgCtlQuickMs);
   if (code === 0) return true;
   if (code === 3 || code === 4) return false;
-  throw new Error(
+  throw new EmbeddedPostgresFailure(
+    "EMBEDDED_STATUS_UNKNOWN",
     `pg_ctl status could not tell whether Postgres runs in ${dataDir} (exit ${code})`
   );
 }
@@ -419,8 +457,7 @@ async function servesDataDir(port: number, dataDir: string) {
       () => client.end(),
       (error) =>
         console.error(
-          "[db] closing the data directory check connection failed",
-          error
+          `[db] closing the data directory check connection failed (${failureCode(error)})`
         )
     );
   }
@@ -446,7 +483,8 @@ const pgCtlQuickMs = 15_000;
 async function run(file: string, args: string[], limitMs: number) {
   const result = await runCommand(file, args, { limitMs, maxOutputBytes: 0 });
   if (result.killed)
-    throw new Error(
+    throw new EmbeddedPostgresFailure(
+      "EMBEDDED_PG_CTL_TIMEOUT",
       `pg_ctl ${args[0]} did not finish within ${limitMs / 1000}s and was ended`
     );
   return result.code ?? 1;
@@ -562,8 +600,7 @@ function removeQuietly(file: string) {
     () => fs.rmSync(file, { force: true }),
     (error) =>
       console.error(
-        `[db] an old owner record ${file} could not be removed; the larger number still decides`,
-        error
+        `[db] an old owner record ${file} could not be removed; the larger number still decides (${failureCode(error)})`
       )
   );
 }
@@ -620,13 +657,15 @@ async function listenInPrivateFolder(): Promise<{
       if (chosen !== undefined) return;
       const folder = path.join(base, `babojubot-${uid}`);
       if (Buffer.byteLength(path.join(folder, sample)) >= limit)
-        throw new Error(
+        throw new EmbeddedPostgresFailure(
+          "EMBEDDED_SOCKET_PATH_TOO_LONG",
           `${folder}: a socket path there would be longer than ${limit} bytes`
         );
       fs.mkdirSync(folder, { mode: 0o700, recursive: true });
       const stat = fs.lstatSync(folder);
       if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0)
-        throw new Error(
+        throw new EmbeddedPostgresFailure(
+          "EMBEDDED_FOLDER_NOT_PRIVATE",
           `${folder} is not a private folder of this user (owned by this user, mode 0700, not a link)`
         );
       // 소켓을 만들려면 이 사용자가 그 폴더에 쓰고 들어갈 수 있어야 한다(0500 같은 폴더는 남은 막혀도 이 사용자도 못 쓴다).
@@ -641,9 +680,11 @@ async function listenInPrivateFolder(): Promise<{
     })
   );
   if (chosen !== undefined) return chosen;
-  throw new Error("no private folder for embedded Postgres owner connections", {
-    cause: combinedFailure(failures, "every candidate folder failed"),
-  });
+  throw new EmbeddedPostgresFailure(
+    "EMBEDDED_NO_OWNER_FOLDER",
+    "no private folder for embedded Postgres owner connections",
+    { cause: combinedFailure(failures, "every candidate folder failed") }
+  );
 }
 
 /** 그 자리에서 주인 연결을 듣는 서버를 연다. 듣지 못하면 그 listen 오류를 그대로 던진다(자리가 이름에 담긴다). */
@@ -670,8 +711,7 @@ function sweepStaleSockets(folder: string) {
       () => fs.readdirSync(folder),
       (error) =>
         console.error(
-          `[db] stale owner connections in ${folder} could not be listed; they are harmless`,
-          error
+          `[db] stale owner connections in ${folder} could not be listed; they are harmless (${failureCode(error)})`
         )
     ) ?? [];
   // 남은 파일 치우기는 덤이라 주인 되기를 기다리게 하지 않는다. 확인하지 못한 소켓은 둔다.
@@ -682,8 +722,7 @@ function sweepStaleSockets(folder: string) {
         () => connectsTo(socket),
         (error) =>
           console.error(
-            `[db] whether ${socket} still has an owner could not be checked; it is left`,
-            error
+            `[db] whether ${socket} still has an owner could not be checked; it is left (${failureCode(error)})`
           )
       );
       if (answered !== false) continue;
@@ -694,8 +733,7 @@ function sweepStaleSockets(folder: string) {
         },
         (error) =>
           console.error(
-            `[db] a stale owner connection ${socket} could not be removed; it is harmless`,
-            error
+            `[db] a stale owner connection ${socket} could not be removed; it is harmless (${failureCode(error)})`
           )
       );
     }
@@ -739,7 +777,8 @@ function connectsTo(handle: string): Promise<boolean> {
     const timer = setTimeout(() => {
       socket.destroy();
       reject(
-        new Error(
+        new EmbeddedPostgresFailure(
+          "EMBEDDED_OWNER_NO_ANSWER",
           `the connection ${handle} did not answer within ${ownerCheckMs} ms`
         )
       );
@@ -767,9 +806,11 @@ async function ownerAlive(dir: string, owner: Owner): Promise<boolean> {
   try {
     return await connectsTo(owner.handle);
   } catch (error) {
-    throw new Error(`whether the owner of ${dir} runs could not be checked`, {
-      cause: error,
-    });
+    throw new EmbeddedPostgresFailure(
+      "EMBEDDED_OWNER_UNCHECKED",
+      `whether the owner of ${dir} runs could not be checked`,
+      { cause: error }
+    );
   }
 }
 
@@ -833,7 +874,8 @@ async function takeOwnership(
           !persistent
         )
           return { generation, previous: undefined };
-        throw new Error(
+        throw new EmbeddedPostgresFailure(
+          "EMBEDDED_IN_USE",
           `embedded Postgres in ${dataDir} is in use by a running process (pid ${owner.pid}). Stop that process first. If no BaboJUBot process uses it, delete ${dir}.`
         );
       }
@@ -854,7 +896,10 @@ async function takeOwnership(
       opened = false;
       return { generation: mine, previous: owner };
     }
-    throw new Error(`could not take ownership of ${dataDir}`);
+    throw new EmbeddedPostgresFailure(
+      "EMBEDDED_OWNERSHIP_CONTESTED",
+      `could not take ownership of ${dataDir}`
+    );
   } finally {
     if (opened) dropConnection(dir);
   }
@@ -911,8 +956,7 @@ export async function ephemeralCluster(): Promise<EmbeddedOptions> {
   } catch (error) {
     await removeTemporary(dataDir).catch((removeError: unknown) =>
       console.error(
-        "[db] removing the temporary folder after a failed start failed",
-        removeError
+        `[db] removing the temporary folder after a failed start failed (${failureCode(removeError)})`
       )
     );
     throw error;
@@ -937,8 +981,7 @@ async function removeTemporaryLeftovers() {
         ),
       (error) =>
         console.error(
-          "[db] the temporary folder could not be listed; leftover temporary clusters are not cleaned at this start",
-          error
+          `[db] the temporary folder could not be listed; leftover temporary clusters are not cleaned at this start (${failureCode(error)})`
         )
     )) ?? [];
   for (const entry of entries) {
@@ -957,8 +1000,7 @@ async function removeTemporaryLeftovers() {
       }),
       (error) =>
         console.error(
-          `[db] the leftover temporary cluster ${dataDir} could not be inspected; it is left`,
-          error
+          `[db] the leftover temporary cluster ${dataDir} could not be inspected; it is left (${failureCode(error)})`
         )
     );
     if (!inspected) continue;
@@ -972,8 +1014,7 @@ async function removeTemporaryLeftovers() {
         () => ownerAlive(ownerDir(dataDir), owner),
         (error) =>
           console.error(
-            `[db] whether the owner of the leftover temporary cluster ${dataDir} runs could not be checked; it is left`,
-            error
+            `[db] whether the owner of the leftover temporary cluster ${dataDir} runs could not be checked; it is left (${failureCode(error)})`
           )
       );
       if (alive !== false) continue;
@@ -982,8 +1023,7 @@ async function removeTemporaryLeftovers() {
       () => acquireOwner(dataDir, false),
       (error) =>
         console.error(
-          `[db] the leftover temporary cluster ${dataDir} could not be taken over; it is left`,
-          error
+          `[db] the leftover temporary cluster ${dataDir} could not be taken over; it is left (${failureCode(error)})`
         )
     );
     if (!lease) continue;
@@ -1003,8 +1043,7 @@ async function removeTemporaryLeftovers() {
       await removeTemporary(dataDir);
     } catch (error) {
       console.warn(
-        `[db] could not remove temporary Postgres left in ${dataDir}:`,
-        error instanceof Error ? error.message : error
+        `[db] could not remove temporary Postgres left in ${dataDir} (${failureCode(error)})`
       );
       releaseOwner(dataDir, lease, lease.previous);
     }
