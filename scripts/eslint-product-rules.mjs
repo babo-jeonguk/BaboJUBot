@@ -1785,6 +1785,61 @@ const noOwnUntrustedOpen = {
   },
 };
 
+/**
+ * NUL이 없음을 뜻하는 정규식(`export const nulFree = /^[^\x00]*$/`)은 NUL을 일부러 담아, 그 파일(`packages/contracts/src/nul-free.ts`)
+ * 에서만 no-control-regex를 끈다. 그 예외가 정규식 하나만 덮도록 이 규칙이 그 파일의 문장을 그 선언 하나로 막는다(#286 항목 25): 다른
+ * 선언·다른 이름·다른 flag·다른 문장은 모두 짚는다. 도구 정의의 pattern으로 그 철자가 나가므로 `\0` 같은 다른 표기로 바꿀 수 없다(#147).
+ */
+const nulFreeFileShape = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "keep the file that turns no-control-regex off down to the one NUL-free pattern",
+    },
+    schema: [],
+    messages: {
+      other:
+        "이 파일은 no-control-regex를 끄므로 `export const nulFree = /^[^\\x00]*$/;` 하나만 둡니다. 다른 코드는 제어 문자 검사를 받는 다른 파일에 두세요. eslint.config.js",
+      missing:
+        "이 파일에 `export const nulFree = /^[^\\x00]*$/;`가 없습니다. 이 파일은 그 정규식 하나를 위해 no-control-regex를 끕니다. eslint.config.js",
+    },
+  },
+  create(context) {
+    const isNulFree = (statement) => {
+      const declaration =
+        statement.type === "ExportNamedDeclaration"
+          ? statement.declaration
+          : undefined;
+      const [declarator, ...more] =
+        declaration?.type === "VariableDeclaration" &&
+        declaration.kind === "const"
+          ? declaration.declarations
+          : [];
+      const init = declarator?.init;
+      return (
+        more.length === 0 &&
+        declarator?.id.type === "Identifier" &&
+        declarator.id.name === "nulFree" &&
+        init?.type === "Literal" &&
+        init.regex?.pattern === "^[^\\x00]*$" &&
+        init.regex.flags === ""
+      );
+    };
+    return {
+      Program(program) {
+        const kept = program.body.filter(isNulFree);
+        for (const statement of program.body)
+          if (!isNulFree(statement) || statement !== kept[0])
+            context.report({ node: statement, messageId: "other" });
+        if (kept.length === 0)
+          context.report({ node: program, messageId: "missing" });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -1805,5 +1860,6 @@ export default {
     "no-number-signal": noNumberSignal,
     "no-check-then-reopen": noCheckThenReopen,
     "no-own-untrusted-open": noOwnUntrustedOpen,
+    "nul-free-file-shape": nulFreeFileShape,
   },
 };
