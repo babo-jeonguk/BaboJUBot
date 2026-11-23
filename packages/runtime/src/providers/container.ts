@@ -482,17 +482,21 @@ export function dockerClientEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return result;
 }
 
-/** `runDocker`가 돌려주는 결과: 끝남 코드(또는 `null`)와 출력, 끈 경우 그 이유(공용 실행이 정한 값). */
+/** `runDocker`가 돌려주는 결과: 끝남 코드(또는 `null`)와 출력, 끈 경우 그 이유(공용 실행이 정한 값), 명령을 끝낸 신호. */
 type DockerResult = {
   code: number | null;
   stdout: string;
   stderr: string;
   stopped?: Extract<TreeRun, { started: true }>["stopped"];
+  /** 공용 실행이 알린, 명령을 끝낸 신호. */
+  signal?: NodeJS.Signals;
+  /** 끝남 코드·끈 이유·신호가 없는 까닭(띄우지 못함, 끝났음을 확인하지 못함). */
+  failure?: "not-started" | "not-confirmed-stopped";
 };
 
 /**
  * docker 클라이언트 명령 하나를 공용 실행으로 끝까지 돌린다. 상한·취소에 닿으면 그 트리를 끄고 확인한다. 실패해도 던지지 않고
- * `code: null`로 돌려준다(띄우지 못함, 상한·취소·출력 상한, 끝났음을 확인하지 못함).
+ * `code: null`로 돌려준다(띄우지 못함, 상한·취소·출력 상한, 끝났음을 확인하지 못함). 바깥 신호로 끝났으면 그 신호를 함께 돌려준다.
  */
 export async function runDocker(
   settings: ContainerSettings,
@@ -516,6 +520,10 @@ export async function runDocker(
     return {
       code: null,
       stdout: "",
+      failure:
+        error instanceof TreeLaunchRefused
+          ? "not-started"
+          : "not-confirmed-stopped",
       // 감독 실행기를 쓸 수 없어 띄우지 않았거나, 띄운 클라이언트가 끝났음을 확인하지 못했다.
       stderr:
         error instanceof TreeLaunchRefused
@@ -523,24 +531,41 @@ export async function runDocker(
           : `the docker client could not be confirmed stopped (${failureCode(error)})`,
     };
   }
-  if (!run.started) return { code: null, stdout: "", stderr: run.reason };
+  if (!run.started)
+    return {
+      code: null,
+      stdout: "",
+      stderr: run.reason,
+      failure: "not-started",
+    };
   const stdout = run.stdout.toString(),
     stderr = run.stderr.toString();
   if (run.stopped) return { code: null, stdout, stderr, stopped: run.stopped };
-  return { code: run.code, stdout, stderr };
+  return {
+    code: run.code,
+    stdout,
+    stderr,
+    ...(run.signal ? { signal: run.signal } : {}),
+  };
 }
 
-/** docker 명령이 어떻게 끝났는지: 종료 코드(없으면 띄우지 못했거나 시한·취소·출력 상한에 멈춤과 그 이유)와 오류 출력의 끝(`runDocker`는 띄우지 못한 이유를 여기 담는다). 진단에만 쓴다. */
+/** docker 명령이 어떻게 끝났는지: 종료 코드(없으면 띄우지 못했거나 시한·취소·출력 상한에 멈춤, 바깥 신호로 끝남, 끝났음을 확인하지 못함과 그 이유)와 오류 출력의 끝(`runDocker`는 띄우지 못한 이유를 여기 담는다). 진단에만 쓴다. */
 function dockerEnding(
-  result: Pick<DockerResult, "code" | "stderr" | "stopped">
+  result: Pick<
+    DockerResult,
+    "code" | "stderr" | "stopped" | "signal" | "failure"
+  >
 ) {
   const reported = result.stderr.trim().slice(-300);
-  const ending =
-    result.code === null
-      ? result.stopped
-        ? `stopped: ${result.stopped}`
-        : "no exit code"
-      : `exit ${result.code}`;
+  // 띄우지 못했거나 끝났음을 확인하지 못한 것은 이유가 stderr에 있다. "끝남 코드 없음"으로 접지 않는다.
+  let ending: string;
+  if (result.code !== null) ending = `exit ${result.code}`;
+  else if (result.stopped) ending = `stopped: ${result.stopped}`;
+  else if (result.signal) ending = `signal ${result.signal}`;
+  else if (result.failure === "not-started") ending = "not started";
+  else if (result.failure === "not-confirmed-stopped")
+    ending = "not confirmed stopped";
+  else ending = "no exit code or signal";
   return `${ending}${reported ? `: ${reported}` : ""}`;
 }
 
@@ -549,9 +574,11 @@ export async function removeContainer(
   name: string
 ): Promise<boolean> {
   let lastFailure:
-    Pick<DockerResult, "code" | "stderr" | "stopped"> | undefined;
+    | Pick<DockerResult, "code" | "stderr" | "stopped" | "signal" | "failure">
+    | undefined;
   let lastInspected:
-    Pick<DockerResult, "code" | "stderr" | "stopped"> | undefined;
+    | Pick<DockerResult, "code" | "stderr" | "stopped" | "signal" | "failure">
+    | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
     const removed = await runDocker(settings, ["rm", "-f", name]);
     if (removed.code !== 0) lastFailure = removed;
@@ -573,19 +600,17 @@ export async function removeContainer(
 }
 
 // 컨테이너 안에서 돈다(이미지 시작 프로그램 뒤). 네트워크 장치, 직접 연결, 중계를 거친 금지 목적지, 조직 도구 연결(양성 대조)을 본다.
-// TCP 연결이 되면 HTTP 응답 코드와 상관없이 닿은 것이다. 연결 실패만으로 안전하다고 보지 않도록 조직 도구 연결을 함께 본다.
+// 막힘으로 세는 답은 직접 연결의 거부(연결 거부·경로 없음·권한 거부)와 중계의 주소 거부(403 address_not_allowed)뿐이다.
+// 그 밖의 답·오류·시한·머리를 다 받기 전에 닫힌 연결은 닿았는지 확인하지 못한 것이므로, 원인만 남겨 서버가 확인 불가로 넘기게 한다.
 const probeScript = `
 const net = require("node:net");
 const os = require("node:os");
 const input = JSON.parse(process.argv[1]);
-// 금지 목적지에 닿지 못한 연결 오류는 답이다. 그 밖의 오류와 중계·조직 도구 연결의 오류는 원인을 남긴다.
-// 원래 오류의 사실(code·name)만 보내고 이름 붙이기는 서버(failureCode)가 한다. 문구는 주소가 섞일 수 있어 보내지 않는다.
+// 원래 오류의 사실(code·name)·상태·기다린 시간만 보내고 이름 붙이기는 서버(failureCode·probeFailureText)가 한다. 문구는 주소가 섞일 수 있어 보내지 않는다.
 const failures = [];
-const unreachable = (error) =>
-  ["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "EPERM", "EACCES", "ENOTFOUND", "EAI_AGAIN"].includes(error.code);
-const note = (probe, error, expected) => {
-  if (!expected(error)) failures.push({ probe, code: error.code, name: error.name });
-};
+const note = (probe, error) => failures.push({ probe, code: error.code, name: error.name });
+// 직접 연결이 닿지 못했다는 답인 오류. 그 밖의 오류(이름을 풀지 못함·시스템 시한 등)는 확인하지 못한 것이다.
+const refused = ["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EPERM", "EACCES"];
 const attempt = (host, port) =>
   new Promise((resolve) => {
     const socket = net.connect({ host, port });
@@ -598,41 +623,106 @@ const attempt = (host, port) =>
     };
     socket.setTimeout(3000);
     socket.once("connect", () => finish(true));
-    socket.once("timeout", () => finish(false));
-    socket.once("error", (error) => { note("direct", error, unreachable); finish(false); });
+    socket.once("timeout", () => {
+      failures.push({ probe: "direct", timeoutMs: 3000 });
+      finish(false);
+    });
+    socket.once("error", (error) => {
+      if (!refused.includes(error.code)) note("direct", error);
+      finish(false);
+    });
   });
+const statusOf = (text) => {
+  const match = /^HTTP\\/1\\.[01] (\\d{3})/.exec(text.split("\\r\\n")[0] ?? "");
+  return match ? Number(match[1]) : undefined;
+};
+const refusalOf = (text) => {
+  for (const line of text.split("\\r\\n")) {
+    const at = line.indexOf(":");
+    if (at < 0) continue;
+    if (line.slice(0, at).trim().toLowerCase() !== "x-babojubot-refusal") continue;
+    return line.slice(at + 1).trim();
+  }
+  return undefined;
+};
 const proxied = (host, port) =>
   new Promise((resolve) => {
     const socket = net.connect({ host: "127.0.0.1", port: ${relayPorts.proxy} });
     let text = "";
+    let settled = false;
     const finish = (value) => {
+      if (settled) return;
+      settled = true;
       socket.destroy();
       resolve(value);
     };
-    socket.setTimeout(5000, () => { failures.push({ probe: "proxied", timeoutMs: 5000 }); finish(false); });
-    socket.once("error", (error) => { note("proxied", error, () => false); finish(false); });
+    const answer = () => {
+      const status = statusOf(text);
+      // 머리 첫 줄을 아직 읽지 못했으면 더 기다린다. 다 읽기 전에 닫히면 close가 확인 불가로 남긴다.
+      if (status === undefined) return;
+      // 200(연결됨)과 502(정책은 열었지만 목적지 연결 실패)는 중계 정책이 그 목적지를 연 것이다.
+      if (status === 200 || status === 502) return finish(true);
+      const refusal = refusalOf(text);
+      // 주소 확인이 막은 거부만 답이다. 그 밖의 거부 이유는 주소 확인이 막는지 알려 주지 않는다.
+      if (status === 403 && refusal === "address_not_allowed") return finish(false);
+      failures.push({
+        probe: "proxied",
+        status,
+        ...(refusal && /^[a-z_]{1,64}$/.test(refusal) ? { refusal } : {}),
+      });
+      finish(false);
+    };
+    socket.setTimeout(5000, () => {
+      failures.push({ probe: "proxied", timeoutMs: 5000 });
+      finish(false);
+    });
+    socket.once("error", (error) => {
+      note("proxied", error);
+      finish(false);
+    });
     socket.on("connect", () =>
       socket.write("CONNECT " + (host.includes(":") ? "[" + host + "]" : host) + ":" + port + " HTTP/1.1\\r\\n\\r\\n")
     );
     socket.on("data", (chunk) => {
       text += chunk;
-      if (text.includes("\\r\\n")) finish(/^HTTP\\/1\\.[01] 200/.test(text));
+      if (text.includes("\\r\\n\\r\\n")) answer();
+    });
+    socket.once("close", () => {
+      if (settled) return;
+      failures.push({ probe: "proxied", closed: true });
+      finish(false);
     });
   });
 const tools = () =>
   new Promise((resolve) => {
     const socket = net.connect({ host: "127.0.0.1", port: ${relayPorts.tools} });
     let text = "";
+    let settled = false;
     const finish = (value) => {
+      if (settled) return;
+      settled = true;
       socket.destroy();
       resolve(value);
     };
-    socket.setTimeout(5000, () => { failures.push({ probe: "tools", timeoutMs: 5000 }); finish(false); });
-    socket.once("error", (error) => { note("tools", error, () => false); finish(false); });
+    socket.setTimeout(5000, () => {
+      failures.push({ probe: "tools", timeoutMs: 5000 });
+      finish(false);
+    });
+    socket.once("error", (error) => {
+      note("tools", error);
+      finish(false);
+    });
     socket.on("connect", () => socket.write("GET /api/tools/probe HTTP/1.1\\r\\nHost: tools\\r\\nConnection: close\\r\\n\\r\\n"));
     socket.on("data", (chunk) => {
       text += chunk;
-      if (text.includes("\\r\\n")) finish(/^HTTP\\/1\\.[01] \\d{3}/.test(text));
+      const at = text.indexOf("\\r\\n");
+      if (at < 0) return;
+      finish(/^HTTP\\/1\\.[01] \\d{3}/.test(text.slice(0, at)));
+    });
+    socket.once("close", () => {
+      if (settled) return;
+      failures.push({ probe: "tools", closed: true });
+      finish(false);
     });
   });
 (async () => {
@@ -666,16 +756,43 @@ const isTarget = (value: unknown): value is { host: string; port: number } =>
   typeof (value as { host?: unknown }).host === "string" &&
   typeof (value as { port?: unknown }).port === "number";
 
-/** 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다), 답이 없었으면 기다린 시간. */
+/**
+ * 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다), 답이 없었으면 기다린 시간,
+ * 중계가 답한 상태(주소 거부가 아닌 이유), 머리를 다 받기 전에 닫혔는지.
+ */
 type ProbeFailure =
   | { probe: string; code?: unknown; name: string }
-  | { probe: string; timeoutMs: number };
-const isProbeFailure = (value: unknown): value is ProbeFailure =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof (value as { probe?: unknown }).probe === "string" &&
-  (typeof (value as { name?: unknown }).name === "string" ||
-    typeof (value as { timeoutMs?: unknown }).timeoutMs === "number");
+  | { probe: string; timeoutMs: number }
+  | { probe: string; status: number; refusal?: string }
+  | { probe: string; closed: true };
+const isProbeFailure = (value: unknown): value is ProbeFailure => {
+  if (typeof value !== "object" || value === null) return false;
+  const failure = value as {
+    probe?: unknown;
+    name?: unknown;
+    timeoutMs?: unknown;
+    status?: unknown;
+    refusal?: unknown;
+    closed?: unknown;
+  };
+  if (typeof failure.probe !== "string") return false;
+  if (typeof failure.name === "string") return true;
+  if (typeof failure.timeoutMs === "number") return true;
+  if (typeof failure.status === "number" && Number.isInteger(failure.status))
+    return failure.refusal === undefined || typeof failure.refusal === "string";
+  return failure.closed === true;
+};
+
+/** 확인 실패를 한 문구로 적는다. 모든 갈래를 다루며, 오류는 원래 이름·코드만 남긴다. */
+function probeFailureText(failure: ProbeFailure): string {
+  if ("timeoutMs" in failure) return `no answer within ${failure.timeoutMs} ms`;
+  if ("status" in failure)
+    return `answered ${failure.status}${failure.refusal ? ` ${failure.refusal}` : ""}`;
+  if ("closed" in failure) return "closed before answering";
+  return failureCode(
+    Object.assign(new Error(), { name: failure.name, code: failure.code })
+  );
+}
 
 export function createDockerEnvironment(
   settings: ContainerSettings
@@ -768,8 +885,8 @@ export function createDockerEnvironment(
           port: target.port,
         })),
       });
-      let result: DockerResult | undefined;
-      // 본문(확인 컨테이너 실행)과 서로 독립인 정리(중계 닫기, 확인 컨테이너 지우기)를 모두 하고 실패를 함께 알린다.
+      let output: string | undefined;
+      // 본문(확인 컨테이너 실행)의 실패도 서로 독립인 정리(중계 닫기, 확인 컨테이너 지우기)의 실패와 함께 알린다.
       // 중계를 먼저 닫아, 컨테이너가 늦게 지워지거나 못 지워져도 그 사이 밖에 닿지 못하게 한다.
       await attemptAll(
         [
@@ -793,7 +910,13 @@ export function createDockerEnvironment(
               args: ["-e", probeScript, JSON.stringify(input)],
               relay: relay.directory,
             });
-            result = await runDocker(settings, args, 60_000, signal);
+            const finished = await runDocker(settings, args, 60_000, signal);
+            // 정리 단계가 먼저 던지면 이 실패의 끝남 코드·오류 출력이 사라진다. 본문에서 바로 검사한다.
+            if (finished.code !== 0)
+              throw new Error("isolation probe container failed", {
+                cause: new Error(dockerEnding(finished)),
+              });
+            output = finished.stdout;
           },
           () => relay.close(),
           async () => {
@@ -805,12 +928,9 @@ export function createDockerEnvironment(
         ],
         "the isolation probe could not finish"
       );
-      const finished = result!;
-      if (finished.code !== 0)
-        throw new Error("isolation probe container failed", {
-          cause: new Error(dockerEnding(finished)),
-        });
-      const line = finished.stdout
+      if (output === undefined)
+        throw new Error("the isolation probe container did not run");
+      const line = output
         .split("\n")
         .map((value) => value.trim())
         .filter(Boolean)
@@ -837,20 +957,11 @@ export function createDockerEnvironment(
         typeof value.proxyEnv !== "boolean"
       )
         throw new Error("isolation probe returned an invalid result");
-      // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다. 답이 없었으면 기다린 시간을 적는다.
+      // 컨테이너 안의 오류를 같은 모양으로 되살려 이름 붙이기를 failureCode 한 곳에 맡긴다. 다른 갈래는 상태·닫힘·기다린 시간을 그대로 적는다.
       const failures = value.failures as ProbeFailure[];
       for (const failure of failures)
         console.warn(
-          `[provider] the isolation probe's ${failure.probe} check failed (${
-            "timeoutMs" in failure
-              ? `no answer within ${failure.timeoutMs} ms`
-              : failureCode(
-                  Object.assign(new Error(), {
-                    name: failure.name,
-                    code: failure.code,
-                  })
-                )
-          })`
+          `[provider] the isolation probe's ${failure.probe} check failed (${probeFailureText(failure)})`
         );
       return {
         interfaces: value.interfaces as string[],
@@ -896,12 +1007,13 @@ export type IsolationProbeResult = {
   /** loopback 밖의 네트워크 장치. 없어야 한다. */
   interfaces: string[];
   reached: { host: string; port: number }[];
+  /** 중계 정책이 열어 준 금지 목적지(연결됨 200, 정책은 열었지만 목적지 연결 실패 502). */
   proxied: { host: string; port: number }[];
   /** 중계를 거쳐 조직 도구에 닿았고 이미지의 시작 프로그램이 프록시 환경을 정했는지. */
   toolsReached: boolean;
   /**
-   * 끝까지 확인하지 못한 검사(`direct`·`proxied`·`tools`)의 이름. 예상한 차단(닿지 못한 연결)은 들지 않는다. 하나라도 있으면
-   * 결과를 모르는 것이므로 안전하다고 보지 않는다(fail closed).
+   * 끝까지 확인하지 못한 검사(`direct`·`proxied`·`tools`)의 이름. 닿지 못했다는 답(연결 거부·경로 없음·권한 거부)과
+   * 중계의 주소 거부(403 address_not_allowed)는 들지 않는다. 하나라도 있으면 결과를 모르는 것이므로 안전하다고 보지 않는다(fail closed).
    */
   unverified: string[];
 };
