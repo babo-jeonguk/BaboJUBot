@@ -125,12 +125,76 @@ pub enum Running {
     Unknown,
 }
 
-/// What reading a process's information now gave (macOS `proc_pidinfo`): its start, whether it is a zombie, and its real user.
+/// What the kernel's record of a process says (macOS): its start (microseconds since the epoch), whether it is a zombie, its real
+/// user and its process group.
 #[derive(Debug, Clone, Copy)]
 pub struct Seen {
     pub start: u64,
     pub zombie: bool,
     pub user: libc::uid_t,
+    /// Read by the macOS count of a process group's live members.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub group: libc::pid_t,
+}
+
+/// The size of the kernel's record of a process on 64-bit macOS (`struct kinfo_proc`, XNU `bsd/sys/sysctl.h`): 0x288 in the layout
+/// cgo generates from the system headers for golang.org/x/sys `KinfoProc` (darwin/amd64 and darwin/arm64 alike).
+const KINFO_PROC_SIZE: usize = 648;
+/// Where the fields read are in that record (the same generated layout). `kp_proc` (`struct extern_proc`, XNU `bsd/sys/proc.h`) opens
+/// with the union `p_un`, whose `__p_starttime` (`struct timeval`: seconds as i64, then microseconds as i32) is at 0; `kp_proc.p_stat`
+/// is at 36; `kp_eproc` follows at 296, with `e_pcred.p_ruid` at 392 and `e_pgid` at 564.
+const KINFO_START_SECONDS: usize = 0;
+const KINFO_START_MICROSECONDS: usize = 8;
+const KINFO_STAT: usize = 36;
+const KINFO_REAL_USER: usize = 392;
+const KINFO_GROUP: usize = 564;
+/// `SZOMB` (XNU `bsd/sys/proc.h`): the process ended and waits to be reaped.
+const SZOMB: u8 = 5;
+
+/// `N` bytes of a record at `at`, in range by the record's checked size.
+fn record_bytes<const N: usize>(record: &[u8], at: usize) -> [u8; N] {
+    let mut bytes = [0u8; N];
+    bytes.copy_from_slice(&record[at..at + N]);
+    bytes
+}
+
+/// What the kernel's record of a process (`sysctl(KERN_PROC_PID)`) says, or `None` for an empty answer: the process is gone (psutil
+/// takes it so). A record of another size, or with a start that is not a time, is not this record: an error, not a guess.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn seen_in_record(record: &[u8]) -> std::io::Result<Option<Seen>> {
+    let invalid = |what: String| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("the kernel's record of a process {what}"),
+        )
+    };
+    if record.is_empty() {
+        return Ok(None);
+    }
+    if record.len() != KINFO_PROC_SIZE {
+        return Err(invalid(format!(
+            "has {} bytes, not {KINFO_PROC_SIZE}",
+            record.len()
+        )));
+    }
+    let seconds = i64::from_ne_bytes(record_bytes(record, KINFO_START_SECONDS));
+    let microseconds = i32::from_ne_bytes(record_bytes(record, KINFO_START_MICROSECONDS));
+    let start = u64::try_from(seconds)
+        .ok()
+        .zip(u64::try_from(microseconds).ok())
+        .filter(|&(_, microseconds)| microseconds < 1_000_000)
+        .and_then(|(seconds, microseconds)| {
+            seconds
+                .checked_mul(1_000_000)
+                .and_then(|start| start.checked_add(microseconds))
+        })
+        .ok_or_else(|| invalid(format!("has the start {seconds}.{microseconds}")))?;
+    Ok(Some(Seen {
+        start,
+        zombie: record[KINFO_STAT] == SZOMB,
+        user: u32::from_ne_bytes(record_bytes(record, KINFO_REAL_USER)),
+        group: i32::from_ne_bytes(record_bytes(record, KINFO_GROUP)),
+    }))
 }
 
 /// What a macOS candidate was decided to be.
@@ -145,9 +209,10 @@ pub enum Candidate {
     Unverified,
 }
 
-/// Decides on a process of this user's list (macOS) from its information read before and after its environment. The environment
-/// read in between is the process's only when the start read again is the same. A process refused to this credential is passed
-/// over, and another failure is a failed look.
+/// Decides on a process of this user's list (macOS) from its record read before and after its environment. The environment read in
+/// between is the process's only when the start read again is the same. A process whose environment cannot be read is told by its
+/// start: one that started before the run is not ours, one that started after it may be. One whose record cannot be read may be ours
+/// as well: passing it over would let a holder of the marker outlive a stop that answers `ended` (#283 review 2).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn candidate(
     first: std::io::Result<Option<Seen>>,
@@ -155,33 +220,32 @@ fn candidate(
     since: Option<u64>,
     reading: impl FnOnce() -> Reading,
     second: impl FnOnce() -> std::io::Result<Option<Seen>>,
-) -> std::io::Result<Candidate> {
-    let refused =
-        |error: &std::io::Error| matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES));
+) -> Candidate {
     let before = match first {
         Ok(Some(before)) => before,
-        Ok(None) => return Ok(Candidate::Pass),
-        Err(error) if refused(&error) => return Ok(Candidate::Pass),
-        Err(error) => return Err(error),
+        Ok(None) => return Candidate::Pass,
+        // Without a beginning nothing is unverified (a clean request for a record kept without a start).
+        Err(_) if since.is_none() => return Candidate::Pass,
+        Err(_) => return Candidate::Unverified,
     };
     if before.user != user || before.zombie {
-        return Ok(Candidate::Pass);
+        return Candidate::Pass;
     }
     let reading = reading();
     let same = match second() {
-        Ok(None) => return Ok(Candidate::Pass),
+        Ok(None) => return Candidate::Pass,
         Ok(Some(after)) => after.start == before.start,
-        Err(error) if refused(&error) => return Ok(Candidate::Unverified),
-        Err(error) => return Err(error),
+        // What was read a moment ago cannot be told to be this process's.
+        Err(_) => return Candidate::Unverified,
     };
     let after_run = same && since.is_some_and(|since| before.start >= since);
-    Ok(match reading {
+    match reading {
         Reading::Carries if same => Candidate::Hold {
             start: before.start,
         },
         Reading::Unreadable if after_run => Candidate::Unverified,
         Reading::Carries | Reading::Unreadable | Reading::Clear | Reading::Gone => Candidate::Pass,
-    })
+    }
 }
 
 /// Whether the recorded start and the start read now are the same process's. Both are in the system's finest measure (the supervisor
@@ -192,13 +256,13 @@ fn same_start(recorded: u64, now: u64) -> bool {
     recorded == now
 }
 
-/// Whether a held program that started at `start` still runs, from what reading its information gave (macOS).
+/// Whether a held program that started at `start` still runs, from what reading its record gave (macOS).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn running_from(now: std::io::Result<Option<Seen>>, start: u64) -> Running {
     match now {
         Ok(Some(seen)) if seen.start == start && !seen.zombie => Running::Yes,
         Ok(Some(_) | None) => Running::Ended,
-        // Only a process that is not there (`None`) has ended; a read refused (EPERM, EACCES) or failed tells nothing.
+        // Only a process that is not there (`None`) has ended; a read that failed tells nothing.
         Err(_) => Running::Unknown,
     }
 }
@@ -560,13 +624,13 @@ mod linux {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{Held, find, hold, signal, start_of_self, still_runs};
+pub use macos::{Held, find, hold, record, signal, start_of_self, still_runs};
 
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{
-        Candidate, Found, Reading, Running, Search, Seen, candidate, procargs_reading,
-        running_from, same_start,
+        Candidate, Found, KINFO_PROC_SIZE, Reading, Running, Search, Seen, candidate,
+        procargs_reading, running_from, same_start, seen_in_record,
     };
     use std::io;
 
@@ -582,28 +646,30 @@ mod macos {
         }
     }
 
-    /// Another user's or a protected process (EPERM): not this user's program.
-    fn unreadable(error: &io::Error) -> bool {
-        matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES))
-    }
-
-    /// The process's BSD information, or `None` when it ended.
-    fn info(pid: libc::pid_t) -> io::Result<Option<libc::proc_bsdinfo>> {
-        // SAFETY: a zeroed proc_bsdinfo is valid; proc_pidinfo fills at most its size.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    /// The kernel's record of the process (`sysctl(KERN_PROC_PID)`, what `ps` and psutil read), or `None` when it is gone. Unlike
+    /// `proc_pidinfo`, it is given for every process, also one whose information is refused to this credential (a set-id program,
+    /// another user's), so such a process is told by its start rather than passed over. A record longer than this one makes the
+    /// call fail (ENOMEM); a shorter one is refused by `seen_in_record`.
+    pub fn record(pid: libc::pid_t) -> io::Result<Option<Seen>> {
+        let mut buffer = vec![0u8; KINFO_PROC_SIZE];
+        let mut size = buffer.len();
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
         // SAFETY: the buffer is valid for `size` bytes.
-        let filled = unsafe {
-            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size)
-        };
-        if filled == size {
-            return Ok(Some(info));
+        if unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                4,
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
         }
-        let error = io::Error::last_os_error();
-        if filled <= 0 && error.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(None);
-        }
-        Err(error)
+        buffer.truncate(size);
+        seen_in_record(&buffer)
     }
 
     unsafe extern "C" {
@@ -635,27 +701,11 @@ mod macos {
         read != 0 || flags & CS_RESTRICT != 0
     }
 
-    /// Microseconds since the epoch.
-    fn start_of(info: &libc::proc_bsdinfo) -> u64 {
-        info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
-    }
-
-    /// The process's information as what was seen, or `None` when it ended.
-    fn seen(pid: libc::pid_t) -> io::Result<Option<Seen>> {
-        info(pid).map(|now| {
-            now.map(|now| Seen {
-                start: start_of(&now),
-                zombie: now.pbi_status == libc::SZOMB,
-                user: now.pbi_ruid,
-            })
-        })
-    }
-
     /// When this supervisor started (microseconds since the epoch).
     pub fn start_of_self() -> Option<u64> {
         // SAFETY: getpid has no memory effects.
         let me = unsafe { libc::getpid() };
-        info(me).ok().flatten().map(|info| start_of(&info))
+        record(me).ok().flatten().map(|seen| seen.start)
     }
 
     /// `PROC_RUID_ONLY` from XNU's libproc.h (`proc_listpids` type: processes of one real user).
@@ -733,12 +783,8 @@ mod macos {
         let pids =
             pids_of(uid).map_err(|error| format!("the processes could not be listed: {error}"))?;
         for pid in pids.into_iter().filter(|&pid| pid > 0 && pid != me) {
-            // macOS refuses a process's information to another credential (a set-id program, a protected one). Its start cannot be read
-            // either (the pinned libc has no `kinfo_proc` for `sysctl(KERN_PROC_PID)`), so it cannot be told from one that ran before
-            // this run: taking it as unverified failed every stop on macOS CI (a login-time process of this user). It is passed over;
-            // the gap is written in the PR (#283 review 2, STD-2).
             let decided = candidate(
-                seen(pid),
+                record(pid),
                 uid,
                 search.since,
                 || {
@@ -748,9 +794,8 @@ mod macos {
                         })
                         .unwrap_or(Reading::Unreadable)
                 },
-                || seen(pid),
-            )
-            .map_err(|error| format!("process {pid} could not be read: {error}"))?;
+                || record(pid),
+            );
             match decided {
                 Candidate::Hold { start } => found.holders.push(Held { pid, start }),
                 Candidate::Unverified => found.unverified.push(pid),
@@ -763,34 +808,30 @@ mod macos {
     /// The recorded process when it is still the one that started at `start` (microseconds since the epoch, as the run's supervisor
     /// reported its own start).
     pub fn hold(pid: libc::pid_t, start: u64) -> Result<Option<Held>, String> {
-        let now = match info(pid) {
-            Ok(now) => now,
-            // Not this user's process: not the recorded one.
-            Err(error) if unreadable(&error) => None,
-            Err(error) => return Err(format!("process {pid} could not be read: {error}")),
-        };
+        let now =
+            record(pid).map_err(|error| format!("process {pid} could not be read: {error}"))?;
         Ok(now
-            .filter(|now| now.pbi_status != libc::SZOMB && same_start(start, start_of(now)))
+            .filter(|now| !now.zombie && same_start(start, now.start))
             .map(|now| Held {
                 pid,
-                start: start_of(&now),
+                start: now.start,
             }))
     }
 
     /// Whether a held program still runs: the same start time, and not a zombie. Another user's process with its number now is not it.
     pub fn still_runs(held: &Held) -> Running {
-        running_from(seen(held.pid), held.start)
+        running_from(record(held.pid), held.start)
     }
 
     pub fn signal(held: &Held, signal: libc::c_int) -> Result<(), String> {
         // No process handle on macOS: the start time read right before the signal must be the one read with the marker.
-        let now = info(held.pid).map_err(|error| {
+        let now = record(held.pid).map_err(|error| {
             format!(
                 "program {} could not be read before its signal: {error}",
                 held.pid
             )
         })?;
-        if now.is_none_or(|now| start_of(&now) != held.start || now.pbi_status == libc::SZOMB) {
+        if now.is_none_or(|now| now.start != held.start || now.zombie) {
             return Ok(());
         }
         // SAFETY: kill has no memory effects; the number was checked to still be that process just above.
@@ -929,6 +970,7 @@ mod tests {
                 start,
                 zombie,
                 user: 501,
+                group: 9,
             }))
         };
         assert_eq!(running_from(seen(7, false), 7), Running::Yes);
@@ -963,7 +1005,7 @@ mod tests {
         );
     }
 
-    /// #283 review 2 (round 3 orchestration): a macOS process of this user whose information or environment is refused is told by
+    /// #283 review 2, STD-2 follow-up: a macOS process of this user whose information or environment is refused is told by
     /// its start, not passed over. One that started before the run is not ours; one that started after it may be ours and is
     /// unverified; one whose start cannot be read at all is unverified. Without a beginning nothing is unverified (round 1).
     #[test]
@@ -976,10 +1018,11 @@ mod tests {
                 start,
                 zombie,
                 user,
+                group: 9,
             }))
         };
         let decide = |first, since, reading: Reading, second| {
-            candidate(first, 501, since, || reading, || second).ok()
+            Some(candidate(first, 501, since, || reading, || second))
         };
         let since = Some(100);
         let unreadable = Reading::Unreadable;

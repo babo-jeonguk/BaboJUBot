@@ -653,22 +653,11 @@ fn live_group_members(group: libc::pid_t) -> io::Result<usize> {
         if pid == 0 {
             continue;
         }
-        // SAFETY: a zeroed proc_bsdinfo is valid; proc_pidinfo fills it.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let info_size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-        // SAFETY: the buffer is valid for `info_size`.
-        let got = unsafe {
-            libc::proc_pidinfo(
-                pid,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                (&mut info as *mut libc::proc_bsdinfo).cast(),
-                info_size,
-            )
-        };
-        // A process that ended in the meantime has no information any more: it is not live.
-        if got == info_size && info.pbi_pgid == group as u32 && info.pbi_status != libc::SZOMB {
-            count += 1;
+        // The kernel's record is given for every process, also a set-id member whose `proc_pidinfo` is refused, so a member that still
+        // runs is not missed (#283 review 2). One that ended in the meantime has none; one that cannot be read fails the look.
+        match marked::record(pid)? {
+            Some(seen) if seen.group == group && !seen.zombie => count += 1,
+            Some(_) | None => {}
         }
     }
     Ok(count)
