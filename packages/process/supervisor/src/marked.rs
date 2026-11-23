@@ -749,7 +749,10 @@ fn environment(buffer: &[u8]) -> impl Iterator<Item = &[u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Confirmed, Reading, confirm, environment, is_marker_entry, procargs_reading};
+    use super::{
+        Confirmed, Reading, Running, Seen, confirm, environment, is_marker_entry, procargs_reading,
+        running_from, running_from_handle, same_start,
+    };
 
     #[test]
     fn a_marker_entry_has_a_marker_name_and_exactly_the_value() {
@@ -826,6 +829,54 @@ mod tests {
             procargs_reading(&procargs(&["tool"], &[]), marker, not_restricted),
             Reading::Clear
         );
+    }
+
+    /// #283 review 2, STD-2: a held program whose state cannot be read has not ended; it could not be told (macOS EPERM or EACCES,
+    /// another failure). Only a process that is gone, a zombie, or another process with its number has ended.
+    #[test]
+    fn a_held_program_whose_state_cannot_be_read_has_not_ended() {
+        fn error<T>(code: i32) -> std::io::Result<T> {
+            Err(std::io::Error::from_raw_os_error(code))
+        }
+        let seen = |start, zombie| Ok(Some(Seen { start, zombie }));
+        assert_eq!(running_from(seen(7, false), 7), Running::Yes);
+        assert_eq!(running_from(seen(7, true), 7), Running::Ended);
+        assert_eq!(running_from(seen(8, false), 7), Running::Ended);
+        assert_eq!(running_from(Ok(None), 7), Running::Ended);
+        assert_eq!(running_from(error(libc::EPERM), 7), Running::Unknown);
+        assert_eq!(running_from(error(libc::EACCES), 7), Running::Unknown);
+        assert_eq!(running_from(error(libc::EIO), 7), Running::Unknown);
+        let stat = |state: &str| {
+            Ok(format!(
+                "9 (x) {state} 1 9 9 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5"
+            ))
+        };
+        assert_eq!(running_from_handle(Ok(()), stat("S")), Running::Yes);
+        assert_eq!(running_from_handle(Ok(()), stat("Z")), Running::Ended);
+        assert_eq!(
+            running_from_handle(error(libc::ESRCH), stat("S")),
+            Running::Ended
+        );
+        assert_eq!(
+            running_from_handle(error(libc::EPERM), stat("S")),
+            Running::Unknown
+        );
+        assert_eq!(
+            running_from_handle(Ok(()), error(libc::EACCES)),
+            Running::Yes
+        );
+        assert_eq!(
+            running_from_handle(Ok(()), error(libc::ENOENT)),
+            Running::Ended
+        );
+    }
+
+    /// #283 review 2, SPEC-3: a recorded start is compared exactly. Two processes with the same number that started in the same
+    /// second are different processes.
+    #[test]
+    fn a_recorded_start_is_compared_exactly() {
+        assert!(same_start(1_700_000_000_123_456, 1_700_000_000_123_456));
+        assert!(!same_start(1_700_000_000_123_456, 1_700_000_000_654_321));
     }
 
     /// #283 review 1, SPEC-2: the read made after the handle is open decides. One that cannot be read is not a read that found no

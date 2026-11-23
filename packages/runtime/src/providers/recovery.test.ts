@@ -26,6 +26,8 @@ const testStart = () => String(processStartTicks(process.pid) ?? 1);
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
+  /** 실행기에 청한 정리 요청 전부. */
+  requests: [] as { recorded?: unknown }[],
 }));
 vi.mock("@babojubot/process/recovery", async (original) => {
   const real = await original<typeof import("@babojubot/process/recovery")>();
@@ -34,6 +36,7 @@ vi.mock("@babojubot/process/recovery", async (original) => {
     cleanThroughSupervisor: async (
       request: Parameters<typeof real.cleanThroughSupervisor>[0]
     ) => {
+      lease.requests.push(request);
       if (request.lease !== undefined) lease.stopped.push(request.lease);
       if (lease.fails) throw new Error("the supervisor's cleanup failed");
       return real.cleanThroughSupervisor(request);
@@ -48,6 +51,7 @@ const groups: number[] = [];
 afterEach(() => {
   lease.fails = false;
   lease.stopped = [];
+  lease.requests = [];
   // 그룹마다 끄고 끝나기를 기다린다. 한 그룹이 실패해도 나머지 그룹을 정리한다.
   return attemptAll(
     groups.splice(0).map((group) => async () => {
@@ -262,6 +266,42 @@ it("leaves a process whose start differs from the recorded one", async () => {
   expect(gone(child.pid!)).toBe(false);
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
+
+// #283 외부 리뷰 2회차 SPEC-3: 초 단위로만 남은 예전 기록(`ps -o lstart`)은 그 정보만으로 신원을 확정하지 않는다. 같은 초 안에 번호가
+// 다시 주어진 관계없는 프로그램일 수 있으므로, 그 번호의 프로세스를 정리 요청에 넣지 않고(신호 없음) 기록을 남겨 경고한다.
+it.skipIf(process.platform === "win32")(
+  "does not take a recorded start kept only to the second as the process's identity",
+  async () => {
+    const { root, directory } = await records();
+    const child = folders.ownChild(longRunning());
+    // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+    await once(child, "spawn");
+    const file = `${child.pid}.json`;
+    // 예전 서버가 남긴 그대로: ps가 초 단위로 알린 시작 시각을 밀리초로.
+    const lstart = spawnSync("ps", ["-o", "lstart=", "-p", String(child.pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 10_000,
+    }).stdout;
+    await writeFile(
+      path.join(directory, file),
+      JSON.stringify({
+        pid: child.pid,
+        lease: crypto.randomUUID(),
+        started: Date.parse(lstart.trim()),
+      })
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    warn.mockRestore();
+    expect(lease.requests.map((request) => request.recorded)).toEqual([
+      undefined,
+    ]);
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([file]);
+  },
+  60_000
+);
 
 // 시작 시각을 남기기 전에 서버가 죽은 기록이다. 우리 것인지 모르니 건드리지 않고 남긴다.
 it("keeps a record without a start and leaves the process alone", async () => {
