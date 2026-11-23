@@ -17,7 +17,8 @@ import { testFolders } from "./test-folders.ts";
 
 // 실행 시도의 끄기가 실패하는 길(#263 외부 리뷰 1회차 SP1). 실제 프로세스로는 SIGKILL 뒤에도 끝나지 않는 대표를 만들 수 없어,
 // 공용 실행(@babojubot/process의 launchTree)이 돌려준 트리의 끄기만 대역으로 바꾸고 나머지는 실제 프로세스로 본다. 감독 실행기의
-// 답이 끄기의 실패가 되는 길은 @babojubot/process의 launch-stop.test.ts가 본다.
+// 답이 끄기의 실패가 되는 길은 @babojubot/process의 launch-stop.test.ts가 본다. 끄기의 실패를 실행 시도의 끝으로 받는 길은 모든
+// 시스템이 같으므로(Windows는 감독 실행기의 묶음이 끈다) 세 시스템에서 돈다(#286 항목 13).
 const fault = vi.hoisted(() => ({
   /** 트리의 끄기가 끝을 확인하지 못한다. */
   stop: false,
@@ -74,33 +75,30 @@ async function holder(label: string, body = keep) {
   };
 }
 
-describe.skipIf(process.platform === "win32")(
-  "stopping a tree on Linux and macOS",
-  () => {
-    it("ends an attempt as broken when its stop fails and the leader does not end", async () => {
-      const leader = await holder("stuck-attempt");
-      fault.stop = true;
-      const error = vi.spyOn(console, "error").mockImplementation(() => {});
-      onTestFinished(() => error.mockRestore());
-      const attempt = startProcess({
-        // 입력이 닫혀도 끝나지 않는다.
-        command: [
-          process.execPath,
-          "-e",
-          `process.stdin.resume(); ${leader.script}`,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        onFrame: async () => {},
-      });
-      await lifelines.connected(leader.name);
-      attempt.end();
-      const exit = await attempt.done;
-      expect(exit.broken).toBe(true);
-      expect(error).toHaveBeenCalledWith(
-        expect.stringContaining("could not all be stopped")
-      );
-    }, 60_000);
-  }
-);
+describe("stopping a tree", () => {
+  it("ends an attempt as broken when its stop fails and the leader does not end", async () => {
+    const leader = await holder("stuck-attempt");
+    fault.stop = true;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => error.mockRestore());
+    const attempt = startProcess({
+      // 입력이 닫혀도 끝나지 않는다.
+      command: [
+        process.execPath,
+        "-e",
+        `process.stdin.resume(); ${leader.script}`,
+      ],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      onFrame: async () => {},
+    });
+    await lifelines.connected(leader.name);
+    attempt.end();
+    const exit = await attempt.done;
+    expect(exit.broken).toBe(true);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("could not all be stopped")
+    );
+  }, 60_000);
+});
