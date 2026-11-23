@@ -37,7 +37,8 @@ const windows = process.platform === "win32";
 // - FAKE_SKIP_INPUT: 쉼표로 적은 몇 번째 띄움(1부터)에서는 표준 입력을 읽지 않고 곧바로 끝난다(지침을 읽기 전에 끝난 worker).
 // - FAKE_SESSION: 표준 입력을 끝까지 읽은 뒤 세션을 알리고 끝난다(일을 마친 worker).
 // - FAKE_IGNORE_INPUT: 표준 입력을 읽지 않은 채 멈춰 있다(지침을 받지 않고 살아 있는 worker).
-// - FAKE_EVENTS: 표준 입력을 끝까지 읽은 뒤 받은 줄들(JSON 배열)을 그대로 출력하고 끝난다. 줄 안의 {cwd}는 자기 작업 폴더다.
+// - FAKE_EVENTS: 표준 입력을 끝까지 읽은 뒤 받은 줄들(JSON 배열)을 그대로 출력하고 끝난다. 줄 안의 {cwd}는 자기 작업 폴더다(JSON
+//   문자열 안에 넣으므로 이스케이프한다. Windows 경로의 역슬래시).
 const fakeOpencode = `import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
@@ -56,7 +57,7 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
   if (process.env.FAKE_EVENTS) {
-    for (const line of JSON.parse(process.env.FAKE_EVENTS)) console.log(line.replaceAll("{cwd}", process.cwd()));
+    for (const line of JSON.parse(process.env.FAKE_EVENTS)) console.log(line.replaceAll("{cwd}", JSON.stringify(process.cwd()).slice(1, -1)));
     process.exit(0);
   }
 });
