@@ -67,6 +67,7 @@ export function createWorkerRun({
   hasSession,
   startCheckMs,
   limitMs,
+  clock,
 }: {
   launch: () => WorkerTree;
   hasSession: () => boolean;
@@ -99,14 +100,14 @@ export function createWorkerRun({
       let stopping: StopReason | undefined;
       let exit: TreeExit | undefined;
       let finished = false;
-      const timers: ReturnType<typeof setTimeout>[] = [];
+      const timers: unknown[] = [];
       // The attempt's result also says whether its brief reached the worker. A tree confirmed stopped has no reader left, so
       // its write ends (sent, or failed because the worker's input closed) and the attempt waits for that. A failed stop or
       // start leaves that unknown: a live worker that never reads would hold the write forever, so the attempt ends it now.
       const finish = (result: AttemptResult) => {
         if (finished) return;
         finished = true;
-        for (const timer of timers) clearTimeout(timer);
+        for (const timer of timers) clock.clearTimeout(timer);
         stopCurrent = undefined;
         const withSend = (sendFailure: string | undefined) =>
           sendFailure === undefined ? result : { ...result, sendFailure };
@@ -118,7 +119,7 @@ export function createWorkerRun({
       const stopFor = (reason: StopReason) => {
         if (stopping || finished) return;
         stopping = reason;
-        for (const timer of timers) clearTimeout(timer);
+        for (const timer of timers) clock.clearTimeout(timer);
         tree.stop().then(
           () => finish({ stopped: reason, exit }),
           (error: unknown) =>
@@ -127,10 +128,13 @@ export function createWorkerRun({
       };
       stopCurrent = stopFor;
       timers.push(
-        setTimeout(() => {
+        clock.setTimeout(() => {
           if (!hasSession()) stopFor("start-check");
         }, startCheckMs),
-        setTimeout(() => stopFor("limit"), Math.max(0, deadlineAt - Date.now()))
+        clock.setTimeout(
+          () => stopFor("limit"),
+          Math.max(0, deadlineAt - clock.now())
+        )
       );
       void tree.started.then((started) => {
         if (started.kind === "failed" && !stopping)
@@ -141,7 +145,7 @@ export function createWorkerRun({
         if (stopping || finished) return;
         // The worker ended on its own. Stop what it left running; the attempt ends with that stop.
         stopping = "exit";
-        for (const timer of timers) clearTimeout(timer);
+        for (const timer of timers) clock.clearTimeout(timer);
         tree.stop().then(
           () => finish({ exit }),
           (error: unknown) =>
@@ -160,7 +164,7 @@ export function createWorkerRun({
     },
     /** Runs the attempts. Resolves with how many were made, the last attempt's result and the call's deadline. */
     async run() {
-      const deadlineAt = Date.now() + limitMs;
+      const deadlineAt = clock.now() + limitMs;
       let attempts = 0;
       let result: AttemptResult;
       do {
@@ -172,7 +176,7 @@ export function createWorkerRun({
         !result.spawnError &&
         !result.stopFailure &&
         result.stopped !== "limit" &&
-        Date.now() < deadlineAt &&
+        clock.now() < deadlineAt &&
         !hasSession()
       );
       return { attempts, result, deadlineAt, requested };
