@@ -36,9 +36,11 @@ appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", () =>
-  appendFileSync(process.env.FAKE_OPENCODE_CALLS, JSON.stringify({ args: process.argv.slice(2), input }) + "\\n")
-);
+process.stdin.on("end", () => {
+  appendFileSync(process.env.FAKE_OPENCODE_CALLS, JSON.stringify({ args: process.argv.slice(2), input }) + "\\n");
+  // 남긴 뒤 시험의 연결을 쥐어 남겼음을 알린다(FAKE_RECORDED는 그 연결을 쥐는 문장이다).
+  if (process.env.FAKE_RECORDED) (0, eval)(process.env.FAKE_RECORDED);
+});
 const command = (code, pidFile) =>
   \`process.on("SIGTERM", () => {}); \${code} require("node:fs").writeFileSync(\${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);\`;
 if (process.env.FAKE_STUBBORN)
@@ -52,7 +54,10 @@ setInterval(() => {}, 1000);
  * 가짜 opencode를 둔 폴더와 run-worker 인수·환경. POSIX는 PATH의 shebang 스크립트, Windows는 그 스크립트를 부르는 .cmd다.
  * 시험이 끝나면 남은 하위 명령을 끄고 폴더를 지운다.
  */
-async function fixture(defer, { stubborn = false, moved = false } = {}) {
+async function fixture(
+  defer,
+  { stubborn = false, moved = false, recorded = false } = {}
+) {
   const dir = mkdtempSync(path.join(tmpdir(), "babojubot-run-worker-"));
   defer(() => removeFolder(dir));
   const lifelines = await openLifelines();
@@ -81,6 +86,7 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
     PATH: `${dir}${path.delimiter}${process.env.PATH}`,
     FAKE_OPENCODE_LAUNCHES: launches,
     FAKE_OPENCODE_CALLS: calls,
+    ...(recorded ? { FAKE_RECORDED: lifelines.hold("recorded") } : {}),
   };
   for (const [name, wanted] of Object.entries(commands)) {
     if (!wanted) continue;
@@ -119,8 +125,11 @@ async function fixture(defer, { stubborn = false, moved = false } = {}) {
   };
 }
 
-/** run-worker를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다. */
-function runner(defer, f, limitMinutes, brief = undefined) {
+/**
+ * run-worker를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다.
+ * @param {string[]} [brief] 지침 인수(`--brief <파일>`이나 `--message <글>`). 주지 않으면 `--message hi`다.
+ */
+function runner(defer, f, limitMinutes, brief) {
   const child = spawn(process.execPath, f.args(limitMinutes, brief), {
     env: f.env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -218,19 +227,14 @@ test("a runner refuses missing, repeated, conflicting and unknown arguments befo
 test("a runner sends a multi-line brief on the worker's standard input, not as an argument", async () => {
   const text = '첫 줄\n둘째 줄\n\n  들여 쓴 줄 "따옴표" & | %PATH%\n';
   await withCleanup(async (defer) => {
-    const f = await fixture(defer);
-    const brief = path.join(f.dir, "brief.md");
-    writeFileSync(brief, text);
-    for (const source of [
-      ["--brief", brief],
-      ["--message", text],
-    ]) {
-      writeFileSync(f.calls, "");
-      // 한도 6초. 그 전에 가짜가 표준 입력의 끝까지 읽고 남긴다.
-      const run = runner(defer, f, 0.1, source);
-      const deadline = Date.now() + 30_000;
-      while (readFileSync(f.calls, "utf8") === "" && Date.now() < deadline)
-        await new Promise((resolve) => setTimeout(resolve, 50));
+    for (const kind of ["--brief", "--message"]) {
+      const f = await fixture(defer, { recorded: true });
+      const brief = path.join(f.dir, "brief.md");
+      writeFileSync(brief, text);
+      const args = kind === "--brief" ? [kind, brief] : [kind, text];
+      // 한도 6초. 가짜는 표준 입력의 끝까지 읽어 남긴 뒤 연결로 알린다.
+      const run = runner(defer, f, 0.1, args);
+      await f.lifelines.connected("recorded", 30_000);
       assert.equal(await run.exited, 4, run.output());
       const calls = readFileSync(f.calls, "utf8")
         .split("\n")
@@ -256,7 +260,7 @@ test("a runner sends a multi-line brief on the worker's standard input, not as a
             input: text,
           },
         ],
-        `${source[0]}: ${run.output()}`
+        `${kind}: ${run.output()}`
       );
     }
   });
