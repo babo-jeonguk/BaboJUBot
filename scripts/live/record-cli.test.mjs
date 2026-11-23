@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { isDisconnect } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
@@ -69,7 +70,10 @@ const eventMs = 10_000;
 /** 중계가 끝나기까지의 상한. 감독 실행기의 준비·끄기 확인이 그 안에 든다. */
 const runMs = 60_000;
 
-/** 중계를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다. */
+/**
+ * 중계를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다. 끝남은 종료와 출력의 끝을 따로 본다: `exit` 때는 출력이 아직
+ * 열려 있을 수 있어(마지막 조각이 뒤에 온다, Node 문서 child_process `'exit'`) 출력을 단언하기 전에 출력의 끝(`end`)까지 확인한다.
+ */
 function recordCli(defer, args, env = {}) {
   const child = spawn(process.execPath, [script, ...args], {
     env: { ...environment, ...env },
@@ -77,46 +81,53 @@ function recordCli(defer, args, env = {}) {
   });
   let stdout = "";
   let stderr = "";
-  /** @type {(() => void)[]} 표준 출력을 더 받으면 깨울 대기 */
-  const waiting = [];
+  /** 표준 출력에 완전한 줄이 처음 닿으면 이행한다. */
+  const line = Promise.withResolvers();
   child.stdout.on("data", (chunk) => {
     stdout += chunk;
-    for (const wake of waiting.splice(0)) wake();
+    if (stdout.includes("\n")) line.resolve(undefined);
   });
   child.stderr.on("data", (chunk) => (stderr += chunk));
   const exited = once(child, "exit");
+  const stdoutEnded = once(child.stdout, "end");
+  const outputEnded = Promise.all([stdoutEnded, once(child.stderr, "end")]);
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
     if (child.pid !== undefined) killUnlessGone(child.pid);
     await within(exited, eventMs, "a killed record-cli did not exit");
+    await within(
+      outputEnded,
+      eventMs,
+      "the output of a killed record-cli did not end"
+    );
   });
   return {
     child,
     stdout: () => stdout,
     stderr: () => stderr,
-    /** 표준 출력의 첫 줄. 중계가 끝나면 기다리지 않는다. 상한 안에 오지 않으면 그렇게 알리고 실패한다. */
+    /** 표준 출력의 첫 줄. 줄 없이 출력이 끝나면 더 기다리지 않는다. 상한 안에 둘 다 오지 않으면 그렇게 알리고 실패한다. */
     firstLine: async () => {
       await within(
-        (async () => {
-          while (!stdout.includes("\n") && child.exitCode === null)
-            await new Promise((resolve) => {
-              waiting.push(() => resolve(undefined));
-              child.once("exit", () => resolve(undefined));
-            });
-        })(),
+        Promise.race([line.promise, stdoutEnded]),
         runMs,
-        "record-cli did not print an output line or exit"
+        "record-cli did not print an output line or end its output"
       );
       assert.ok(stdout.includes("\n"), `no output line: ${stderr}`);
       return stdout.slice(0, stdout.indexOf("\n"));
     },
-    /** 중계의 종료 코드. 상한 안에 끝나지 않으면 그렇게 알리고 실패한다. */
-    exited: () =>
-      within(
-        exited.then(([code]) => code),
-        runMs,
-        "record-cli did not exit"
-      ),
+    /**
+     * 중계의 종료 코드. 종료와 출력의 끝을 각각 상한 안에 확인한 뒤 돌려주므로, 그 뒤의 `stdout()`·`stderr()`는 출력 전부다.
+     * 상한 안에 오지 않으면 무엇이 오지 않았는지 알리고 실패한다.
+     */
+    ended: async () => {
+      const [code] = await within(exited, runMs, "record-cli did not exit");
+      await within(
+        outputEnded,
+        eventMs,
+        "the output of record-cli did not end after it exited"
+      );
+      return code;
+    },
   };
 }
 
@@ -149,6 +160,29 @@ async function proxyUrl(run, announced) {
   return url;
 }
 
+/**
+ * 시험이 연 프록시 연결. 시험 쪽은 끝까지 닫지 않으므로(정리만 끊는다) `closed`는 프록시가 끊었다는 뜻이다. 프록시가 끊어 생긴
+ * 끊김(재설정 등)도 닫힘이고, 그 밖의 오류로 끝나면 그 오류로 거절한다. `reply()`는 그때까지 받은 답이다.
+ */
+async function openToProxy(defer, proxy) {
+  const socket = net.connect(Number(proxy.port), "127.0.0.1");
+  defer(() => socket.destroy());
+  let reply = "";
+  socket.on("data", (chunk) => (reply += chunk));
+  const closed = new Promise((resolve, reject) => {
+    socket.once("close", () => resolve(undefined));
+    socket.on("error", (error) => {
+      if (!isDisconnect(error)) reject(error);
+    });
+  });
+  await within(
+    once(socket, "connect"),
+    eventMs,
+    "the connection to the proxy did not open"
+  );
+  return { socket, closed, reply: () => reply };
+}
+
 test("record-cli answers a missing folder or program with its usage", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "babojubot-record-cli-usage-"));
   context.after(() => removeFolder(dir));
@@ -175,7 +209,7 @@ test("record-cli passes a program's input, output and exit code through and reco
     const { recordings, program } = folders(defer);
     const run = recordCli(defer, [recordings, process.execPath, program]);
     run.child.stdin.end("hello\n");
-    assert.equal(await run.exited(), 3, run.stderr());
+    assert.equal(await run.ended(), 3, run.stderr());
     assert.equal(run.stdout(), "echo:hello\n");
     assert.match(run.stderr(), /fake stderr/);
     const rows = recording(recordings);
@@ -221,7 +255,7 @@ test("record-cli puts a recording proxy in front of the address the program anno
     // 기록이 읽히도록 압축하지 않은 응답을 받는다.
     assert.deepEqual(encodings, ["identity"]);
     run.child.stdin.end();
-    assert.equal(await run.exited(), 3, run.stderr());
+    assert.equal(await run.ended(), 3, run.stderr());
     const rows = recording(recordings);
     assert.deepEqual(
       rows
@@ -289,11 +323,18 @@ test("record-cli cuts and records a reply that has no valid status line", async 
       FAKE_URL: announced,
     });
     const proxy = await proxyUrl(run, announced);
-    await assert.rejects(
-      fetch(new URL("/x", proxy), { signal: AbortSignal.timeout(30_000) })
+    // 연결을 이어 쓰는 요청(HTTP/1.1 기본)이라 프록시가 답을 마쳐도 스스로 닫지 않는다. 닫힘은 프록시가 끊은 것이고, 시험의 상한을
+    // 넘기면 끊김으로 받지 않고 그렇게 알리고 실패한다. 상태 줄을 쓰기 전에 끊으므로 받은 답은 없다.
+    const connection = await openToProxy(defer, proxy);
+    connection.socket.write("GET /x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    await within(
+      connection.closed,
+      eventMs,
+      "the proxy did not cut the connection after the reply it could not read"
     );
+    assert.equal(connection.reply(), "");
     run.child.stdin.end();
-    assert.equal(await run.exited(), 3, run.stderr());
+    assert.equal(await run.ended(), 3, run.stderr());
     const rows = recording(recordings);
     assert.deepEqual(
       rows
@@ -318,25 +359,16 @@ test("record-cli's proxy never takes a request that has no target", async () => 
       FAKE_URL: announced,
     });
     const proxy = await proxyUrl(run, announced);
-    const socket = net.connect(Number(proxy.port), "127.0.0.1");
-    defer(() => socket.destroy());
+    const connection = await openToProxy(defer, proxy);
+    connection.socket.write("GET HTTP/1.1\r\n\r\n");
     await within(
-      once(socket, "connect"),
-      eventMs,
-      "the connection to the proxy did not open"
-    );
-    let reply = "";
-    socket.on("data", (chunk) => (reply += chunk));
-    const closed = once(socket, "close");
-    socket.write("GET HTTP/1.1\r\n\r\n");
-    await within(
-      closed,
+      connection.closed,
       eventMs,
       "the proxy did not close the connection after its answer"
     );
-    assert.match(reply, /^HTTP\/1\.1 400 /);
+    assert.match(connection.reply(), /^HTTP\/1\.1 400 /);
     run.child.stdin.end();
-    assert.equal(await run.exited(), 3, run.stderr());
+    assert.equal(await run.ended(), 3, run.stderr());
     assert.deepEqual(
       recording(recordings).filter((row) => row.kind.startsWith("http-")),
       []
@@ -351,7 +383,7 @@ test("record-cli ends with 127 and records the failure when the program cannot s
     assert.equal(existsSync(missing), false);
     const run = recordCli(defer, [recordings, missing]);
     run.child.stdin.end();
-    assert.equal(await run.exited(), 127, run.stderr());
+    assert.equal(await run.ended(), 127, run.stderr());
     const rows = recording(recordings);
     assert.deepEqual(
       rows.filter((row) => row.kind === "spawn-error").length,
