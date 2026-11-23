@@ -195,6 +195,10 @@ const workspace = {
     scripts: { "test:e2e": "playwright test" },
   }),
   "apps/web/src/main.tsx": "export {};\n",
+  // exports가 가리키는 파일. 입구는 대상 파일까지 있어야 쓸 수 있다.
+  "packages/process/src/index.ts": "export {};\n",
+  "packages/process/src/remove-folder.ts": "export {};\n",
+  "packages/process/src/fixtures/lifeline.ts": "export {};\n",
 };
 
 test("passes package specifiers whose workspace entry is exported or whose package is declared", async () => {
@@ -226,6 +230,42 @@ test("fails a package specifier whose entry is not exported, whose workspace pac
       `${area}:5: 없는 패키지 \`@babojubot/launch\` — workspace 패키지가 아니고 어느 package.json에도 의존성으로 없음`,
       `${area}:5: 없는 패키지 입구 \`@babojubot/web/src/gone.tsx\` — apps/web/package.json에 exports가 없고 apps/web/src/gone.tsx 파일도 없음`,
       `${area}:5: 없는 패키지 \`@vitest/ui\` — workspace 패키지가 아니고 어느 package.json에도 의존성으로 없음`,
+    ]
+  );
+});
+
+// 입구 이름만 exports에 있어도 Node가 풀지 못하는 입구는 쓸 수 없다: null로 막은 입구, 대상 파일이 없는 입구, 와일드카드가 가리키는
+// 파일이 없는 입구(#286 항목 24). Node의 exports 해석(조건 node·import·default)으로 대상을 풀어 그 파일이 있는지 본다.
+test("fails a package entry Node cannot resolve to a file: blocked with null, a missing target or a wildcard without its file", async () => {
+  const process = {
+    name: "@babojubot/process",
+    exports: {
+      ".": { types: "./src/index.d.ts", import: "./src/index.ts" },
+      "./remove-folder": "./src/remove-folder.ts",
+      "./internal/*": null,
+      "./testing": null,
+      "./gone": "./src/gone.ts",
+      "./fixtures/*": "./src/fixtures/*.ts",
+      "./browser": { browser: "./src/browser.ts" },
+    },
+  };
+  assert.deepEqual(
+    await problemsOf({
+      ...workspace,
+      "packages/process/package.json": JSON.stringify(process),
+      "packages/process/src/internal/secret.ts": "export {};\n",
+      [area]: table([
+        "공용 실행",
+        "`@babojubot/process`·`@babojubot/process/remove-folder`·`@babojubot/process/fixtures/lifeline`·`@babojubot/process/testing`·`@babojubot/process/internal/secret`·`@babojubot/process/gone`·`@babojubot/process/fixtures/missing`·`@babojubot/process/browser`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/testing\` — packages/process/package.json exports가 막은 입구(null): ./testing`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/internal/secret\` — packages/process/package.json exports가 막은 입구(null): ./internal/secret`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/gone\` — packages/process/package.json exports의 ./gone 대상 packages/process/src/gone.ts 파일이 없음`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/fixtures/missing\` — packages/process/package.json exports의 ./fixtures/missing 대상 packages/process/src/fixtures/missing.ts 파일이 없음`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/browser\` — packages/process/package.json exports에서 node·import·default 조건으로 풀리는 대상이 없는 입구: ./browser`,
     ]
   );
 });
@@ -309,6 +349,37 @@ test("reads dotted names as paths of classes, interfaces, object constants, type
     `${area}:5: 없는 이름 \`hub.publish\` — 이 줄이 가리키는 파일: apps/server/src/dispatcher.ts`,
     `${area}:5: 없는 이름 \`RunDispatcher.kick\` — 이 줄이 가리키는 파일: apps/server/src/dispatcher.ts`,
   ]);
+});
+
+// 괄호를 붙인 표기는 부를 수 있는 것을 가리킨다. 함수를 지워도 같은 이름의 이벤트명·로그 문자열이나 값 속성이 남으면, 괄호를 떼고 문자열과
+// 같은 판정에 넣는 검사는 지도를 통과시킨다(#286 항목 22).
+test("checks a notation with call parentheses against what can be called, not strings or value properties", async () => {
+  const selection = [
+    'export const selectionEvent = "watchSelection";',
+    "export const settings = { pollSelection: 1, readSelection: () => 1 };",
+    "export interface Viewer { zoom: number; pan(by: number): void; tilt: (by: number) => void }",
+    "export enum Mode { resetSelection }",
+    "export function keepSelection() {}",
+    "export const dropSelection = function () {};",
+    "export class Selector { stop() {} }",
+    "export const pickSelection = (id: string) => id;",
+  ].join("\n");
+  assert.deepEqual(
+    await problemsOf({
+      "apps/web/src/selection.ts": selection,
+      [area]: table([
+        "선택",
+        "web/selection.ts `watchSelection()`·`pollSelection()`·`zoom()`·`resetSelection()`·`readSelection()`·`pan(by)`·`tilt(by)`·`keepSelection()`·`dropSelection()`·`Selector()`·`stop()`·`Selector.stop()`·`pickSelection(id)`·`watchSelection`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 부를 수 있는 정의가 없는 호출 표기 \`watchSelection()\` — 이 줄이 가리키는 파일: apps/web/src/selection.ts`,
+      `${area}:5: 부를 수 있는 정의가 없는 호출 표기 \`pollSelection()\` — 이 줄이 가리키는 파일: apps/web/src/selection.ts`,
+      `${area}:5: 부를 수 있는 정의가 없는 호출 표기 \`zoom()\` — 이 줄이 가리키는 파일: apps/web/src/selection.ts`,
+      `${area}:5: 부를 수 있는 정의가 없는 호출 표기 \`resetSelection()\` — 이 줄이 가리키는 파일: apps/web/src/selection.ts`,
+    ]
+  );
 });
 
 test("fails a name whose definition is gone though a comment or another word still holds it", async () => {
@@ -787,6 +858,31 @@ test("reads blocks by the parser: reference links point to files, block quotes a
     [
       `${area}:5: 없는 이름 \`planRunGone\` — 이 줄이 가리키는 파일: packages/core/src/run.ts`,
       `${area}:7: 없는 이름 \`planRunQuoted\` — 저장소 소스 코드 전체에서 찾음`,
+    ]
+  );
+});
+
+// CommonMark(§4.7)는 같은 이름의 참조 정의가 둘이면 첫 정의를 쓴다. 마지막 정의로 풀면 렌더러가 가리키지 않는 파일에서 이름을 찾아
+// 통과한다(#286 항목 23).
+test("resolves a reference link by its first definition, as CommonMark renders it", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      ...core,
+      "packages/core/src/other.ts": "export function otherOnly() {}\n",
+      [area]: [
+        "# 영역",
+        "",
+        "| 작업·증상 | 진입점 | 테스트 |",
+        "| --- | --- | --- |",
+        "| 실행 | [core][run] `planRunStart`·`otherOnly` | |",
+        "",
+        "[run]: ../../../packages/core/src/run.ts",
+        "[RUN]: ../../../packages/core/src/other.ts",
+        "",
+      ].join("\n"),
+    }),
+    [
+      `${area}:5: 없는 이름 \`otherOnly\` — 이 줄이 가리키는 파일: packages/core/src/run.ts`,
     ]
   );
 });
