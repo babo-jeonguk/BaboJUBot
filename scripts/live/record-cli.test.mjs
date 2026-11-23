@@ -33,14 +33,23 @@ const environment = {
 };
 
 // 가짜 상위 프로그램: FAKE_URL이 있으면 OpenCode `serve --stdio`처럼 그 주소를 JSON 한 줄로 알리고, 받은 줄마다 `echo:`를 붙여
-// 돌려준 뒤, 입력이 끝나면 종료 코드 3으로 끝난다.
+// 돌려준 뒤, 입력이 끝나면 종료 코드 3으로 끝난다. FAKE_BULK가 있으면 입력을 읽기 전에 그 수만큼의 줄을 쓴다.
 const fakeProgram = `import { createInterface } from "node:readline";
+if (process.env.FAKE_BULK)
+  process.stdout.write(bulkLines(Number(process.env.FAKE_BULK)));
 if (process.env.FAKE_URL)
   console.log(JSON.stringify({ type: "server.listening", url: process.env.FAKE_URL }));
 process.stderr.write("fake stderr\\n");
 for await (const line of createInterface({ input: process.stdin })) console.log("echo:" + line);
 process.exitCode = 3;
+function bulkLines(count) {
+  return Array.from({ length: count }, (_, i) => "line " + i + "\\n").join("");
+}
 `;
+
+/** 가짜 프로그램이 FAKE_BULK=`count`일 때 쓰는 줄들(가짜 안의 `bulkLines`와 같다). */
+const bulkLines = (count) =>
+  Array.from({ length: count }, (_, i) => `line ${i}\n`).join("");
 
 /** 녹화 폴더와 가짜 프로그램. 시험이 끝나면 지운다. */
 function folders(defer) {
@@ -228,6 +237,27 @@ test("record-cli passes a program's input, output and exit code through and reco
     assert.deepEqual(
       rows.filter((row) => row.kind === "exit").map(({ code }) => code),
       [3]
+    );
+  });
+});
+
+// 중계는 프로그램의 출력을 자기 표준 출력(파이프)으로 넘긴다. POSIX의 파이프 쓰기는 비동기라 `process.exit()`가 아직 넘기지 못한
+// 출력을 버린다(Node 문서 process `A note on process I/O`·`process.exit()`). 또 프로그램이 끝난 뒤에도 그 출력의 마지막 조각은 늦게
+// 닿을 수 있다(child_process `'exit'`). 파이프 버퍼보다 훨씬 큰 출력도 빠짐없이 넘기고 끝나는지 본다.
+test("record-cli passes all of a program's output through, however large, before it ends", async () => {
+  await withCleanup(async (defer) => {
+    const { recordings, program } = folders(defer);
+    const count = 400_000;
+    const run = recordCli(defer, [recordings, process.execPath, program], {
+      FAKE_BULK: String(count),
+    });
+    run.child.stdin.end("last\n");
+    assert.equal(await run.ended(), 3, run.stderr());
+    const expected = `${bulkLines(count)}echo:last\n`;
+    assert.equal(run.stdout().length, expected.length);
+    assert.ok(
+      run.stdout() === expected,
+      "the output was not passed as written"
     );
   });
 });
