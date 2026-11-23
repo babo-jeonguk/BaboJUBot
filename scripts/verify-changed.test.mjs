@@ -37,8 +37,11 @@ const typecheck = (name, kind = "") =>
   `pnpm --filter ${name} run typecheck${kind ? `:${kind}` : ""}`;
 /** 문서 검사는 늘 돈다. 나머지 묶음은 그 묶음의 시험이 보는 파일이 바뀌었을 때만 돈다. */
 const docs = "pnpm check:docs";
-/** JS 타입 검사. 코드 파일이나 tsconfig가 바뀌면(지운 것 포함) 돈다. */
-const javaScript = "pnpm typecheck:js";
+/**
+ * 패키지 밖 코드의 타입 검사: TypeScript(agent 도구·스크립트의 .ts, 엄격)와 JS. 코드 파일이나 tsconfig가 바뀌면(지운 것 포함) 돈다.
+ * 둘 다 패키지의 TypeScript를 가져오므로 어느 패키지가 바뀌어도 돈다.
+ */
+const outsidePackages = ["pnpm typecheck:tools", "pnpm typecheck:js"];
 const rules = "pnpm check:rules";
 const agents = "pnpm check:agents";
 const scripts = "pnpm check:scripts";
@@ -55,7 +58,7 @@ test("type-checks only the test side when only tests changed", () => {
   assert.deepEqual(plan(["apps/server/test/a.test.ts"], graph), [
     lint("apps/server/test/a.test.ts"),
     typecheck("@babojubot/server", "test"),
-    javaScript,
+    ...outsidePackages,
     docs,
   ]);
 });
@@ -65,7 +68,7 @@ test("type-checks the changed package and every package that uses it when produc
     lint("packages/core/src/policy.ts"),
     typecheck("@babojubot/core"),
     typecheck("@babojubot/server"),
-    javaScript,
+    ...outsidePackages,
     docs,
   ]);
 });
@@ -78,7 +81,7 @@ test("follows users of users", () => {
     typecheck("@babojubot/runtime"),
     typecheck("@babojubot/server"),
     typecheck("@babojubot/web"),
-    javaScript,
+    ...outsidePackages,
     docs,
     rules,
     agents,
@@ -92,7 +95,7 @@ test("type-checks the test side of users when a shared test helper changed", () 
     typecheck("@babojubot/runtime", "test"),
     typecheck("@babojubot/server", "test"),
     typecheck("@babojubot/web", "test"),
-    javaScript,
+    ...outsidePackages,
     docs,
     rules,
     agents,
@@ -108,7 +111,7 @@ test("a full type check wins over a test-side one for the same package", () => {
       typecheck("@babojubot/runtime"),
       typecheck("@babojubot/server"),
       typecheck("@babojubot/web"),
-      javaScript,
+      ...outsidePackages,
       docs,
       rules,
       agents,
@@ -125,7 +128,7 @@ test("treats package settings outside src as product changes", () => {
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
       typecheck("@babojubot/web"),
-      javaScript,
+      ...outsidePackages,
       docs,
     ]
   );
@@ -153,10 +156,10 @@ for (const file of [
 
 test("lints scripts outside packages without type-checking a package", () => {
   assert.deepEqual(
-    plan(["scripts/ci-changes.mjs", ".agents/scripts/run-worker.mjs"], graph),
+    plan(["scripts/ci-changes.mjs", ".agents/scripts/run-worker.ts"], graph),
     [
-      lint(".agents/scripts/run-worker.mjs", "scripts/ci-changes.mjs"),
-      javaScript,
+      lint(".agents/scripts/run-worker.ts", "scripts/ci-changes.mjs"),
+      ...outsidePackages,
       docs,
       agents,
       scripts,
@@ -182,7 +185,7 @@ test("runs the lint rule tests when a lint rule or its test changed", () => {
   ])
     assert.deepEqual(
       plan([file], graph),
-      [lint(file), javaScript, docs, rules],
+      [lint(file), ...outsidePackages, docs, rules],
       file
     );
 });
@@ -205,7 +208,7 @@ test("runs the script tests when a script or the CI workflow changed", () => {
   ]);
   assert.deepEqual(plan(["scripts/live/check-server.mjs"], graph), [
     lint("scripts/live/check-server.mjs"),
-    javaScript,
+    ...outsidePackages,
     docs,
     scripts,
   ]);
@@ -218,7 +221,7 @@ test("runs the rule, worker and script tests when a package the root uses change
     typecheck("@babojubot/runtime"),
     typecheck("@babojubot/server"),
     typecheck("@babojubot/web"),
-    javaScript,
+    ...outsidePackages,
     docs,
     rules,
     agents,
@@ -255,7 +258,7 @@ test("with tests, runs the tests of the changed packages and the packages that u
       lint("packages/core/src/policy.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
-      javaScript,
+      ...outsidePackages,
       docs,
       "pnpm --filter @babojubot/core --filter @babojubot/server run test",
     ]
@@ -268,7 +271,7 @@ test("with tests, runs the tests of the changed packages and the packages that u
       typecheck("@babojubot/runtime", "test"),
       typecheck("@babojubot/server", "test"),
       typecheck("@babojubot/web", "test"),
-      javaScript,
+      ...outsidePackages,
       docs,
       rules,
       agents,
@@ -288,7 +291,7 @@ test("with tests, runs the root tests when a root test or its script changed", (
   ])
     assert.deepEqual(
       plan([file], graph, { tests: true }),
-      [lint(file), javaScript, docs, scripts, "pnpm test:root"],
+      [lint(file), ...outsidePackages, docs, scripts, "pnpm test:root"],
       file
     );
 });
@@ -325,7 +328,7 @@ test("does not lint deleted files but still type-checks their package", () => {
       lint("packages/core/src/new.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
-      javaScript,
+      ...outsidePackages,
       docs,
     ]
   );
@@ -345,7 +348,7 @@ test("lints each file once, in path order", () => {
       lint("packages/core/src/a.ts", "packages/core/src/b.ts"),
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
-      javaScript,
+      ...outsidePackages,
       docs,
     ]
   );
@@ -358,19 +361,19 @@ test("type-checks the JS files when a code file or a tsconfig changed, also when
     [
       typecheck("@babojubot/core"),
       typecheck("@babojubot/server"),
-      javaScript,
+      ...outsidePackages,
       docs,
     ]
   );
   assert.deepEqual(plan(["packages/core/tsconfig.js.json"], graph), [
     typecheck("@babojubot/core"),
     typecheck("@babojubot/server"),
-    javaScript,
+    ...outsidePackages,
     docs,
   ]);
   assert.deepEqual(
     plan(["scripts/fixtures/test-exit-code/tsconfig.json"], graph),
-    [javaScript, docs, scripts]
+    [...outsidePackages, docs, scripts]
   );
 });
 
@@ -453,8 +456,16 @@ function repository(t) {
   write(cwd, "apps/c/package.json", '{ "name": "@x/c" }\n');
   write(cwd, "packages/a/src/a.ts", "export const a = 1;\n");
   write(cwd, "packages/a/src/gone.ts", "export const gone = 1;\n");
+  write(cwd, "scripts/old.mjs", "export const old = 1;\n");
+  write(cwd, "scripts/kept.mjs", "export const kept = 1;\n");
   git(cwd, "init", "-q");
-  git(cwd, "add", ".");
+  commit(cwd, "base");
+  return { cwd, base: git(cwd, "rev-parse", "HEAD") };
+}
+
+/** 작업 폴더의 모든 변경을 커밋한다. */
+function commit(cwd, message) {
+  git(cwd, "add", "--all");
   git(
     cwd,
     "-c",
@@ -465,9 +476,8 @@ function repository(t) {
     "core.hooksPath=/dev/null",
     "commit",
     "-qm",
-    "base"
+    message
   );
-  return { cwd, base: git(cwd, "rev-parse", "HEAD") };
 }
 
 function run(cwd, args) {
@@ -498,6 +508,7 @@ test("prints the plan for uncommitted, untracked and deleted files against the b
     "pnpm exec eslint --no-warn-ignored packages/a/src/a.ts packages/a/src/new.ts",
     "pnpm --filter @x/a run typecheck",
     "pnpm --filter @x/b run typecheck",
+    "pnpm typecheck:tools",
     "pnpm typecheck:js",
     "pnpm check:docs",
   ]);
@@ -514,6 +525,7 @@ test("adds the tests of the changed packages with --tests", (t) => {
     "pnpm exec eslint --no-warn-ignored packages/a/src/a.ts",
     "pnpm --filter @x/a run typecheck",
     "pnpm --filter @x/b run typecheck",
+    "pnpm typecheck:tools",
     "pnpm typecheck:js",
     "pnpm check:docs",
     "pnpm --filter @x/a --filter @x/b run test",
@@ -526,3 +538,91 @@ test("rejects an unknown option", (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /--bogus/);
 });
+
+// 새 JS 파일은 받지 않는다(#270 PR 3b-1, scripts/javascript-files.ts). 기준과의 merge-base에서 새로 더한 JS를 커밋한 것과 아직 커밋하지
+// 않은 것 모두 이름을 알리고 실패한다. 검사 계획만 출력할 때도 같다.
+test("refuses new JavaScript files, committed or not, naming each", (t) => {
+  const { cwd, base } = repository(t);
+  write(cwd, "scripts/committed.mjs", "export const a = 1;\n");
+  commit(cwd, "add a script");
+  write(cwd, "scripts/untracked.cjs", "exports.a = 1;\n");
+
+  for (const args of [
+    ["--dry-run", "--base", base],
+    ["--base", base],
+  ]) {
+    const result = run(cwd, args);
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /scripts\/committed\.mjs/);
+    assert.match(result.stderr, /scripts\/untracked\.cjs/);
+    assert.match(result.stderr, /TypeScript/);
+    assert.equal(result.stdout, "", "ran checks after refusing");
+  }
+});
+
+test("takes JavaScript moved to TypeScript and edited JavaScript", (t) => {
+  const { cwd, base } = repository(t);
+  fs.renameSync(
+    path.join(cwd, "scripts/old.mjs"),
+    path.join(cwd, "scripts/old.ts")
+  );
+  commit(cwd, "move to TypeScript");
+  write(cwd, "scripts/kept.mjs", "export const kept = 2;\n");
+
+  const result = run(cwd, ["--dry-run", "--base", base]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /pnpm typecheck:tools/);
+});
+
+// Git은 줄바꿈·따옴표·탭이 든 이름을 줄 단위 출력에서 따옴표로 감싸 이스케이프한다(core.quotePath를 꺼도). 그런 이름을 줄 단위로 읽으면
+// 확장자가 `.mjs"`가 되어 새 JS를 놓치고, 검사 계획에 없는 경로를 넣는다. 경로 목록은 NUL 구분(-z)으로 읽는다(#285 리뷰 STD-1).
+// Windows는 이런 이름을 만들 수 없다.
+const quotedNames =
+  process.platform === "win32"
+    ? "Windows file names cannot hold these characters"
+    : false;
+
+test(
+  "refuses new JavaScript whose name Git would quote, committed or not",
+  { skip: quotedNames },
+  (t) => {
+    const { cwd, base } = repository(t);
+    write(cwd, 'scripts/quote"d.mjs', "export const a = 1;\n");
+    commit(cwd, "add a script");
+    write(cwd, "scripts/new\nline.mjs", "export const b = 1;\n");
+
+    const result = run(cwd, ["--dry-run", "--base", base]);
+    assert.equal(result.status, 1, result.stdout);
+    assert.ok(
+      result.stderr.includes('scripts/quote"d.mjs: a new JavaScript file'),
+      result.stderr
+    );
+    assert.ok(
+      result.stderr.includes("scripts/new\nline.mjs: a new JavaScript file"),
+      result.stderr
+    );
+  }
+);
+
+test(
+  "plans the checks of a changed file whose name Git would quote by its real name",
+  { skip: quotedNames },
+  (t) => {
+    const { cwd } = repository(t);
+    write(cwd, "packages/a/src/tab\tname.ts", "export const c = 1;\n");
+    commit(cwd, "add a file");
+    const base = git(cwd, "rev-parse", "HEAD");
+    write(cwd, "packages/a/src/tab\tname.ts", "export const c = 2;\n");
+
+    const result = run(cwd, ["--dry-run", "--base", base]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      result.stdout.split("\n")[0],
+      "pnpm exec eslint --no-warn-ignored 'packages/a/src/tab\tname.ts'"
+    );
+    assert.ok(
+      result.stdout.split("\n").includes("pnpm --filter @x/a run typecheck"),
+      result.stdout
+    );
+  }
+);

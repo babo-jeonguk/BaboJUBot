@@ -3,12 +3,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
 
 const script = fileURLToPath(
-  new URL("./check-worker-change.mjs", import.meta.url)
+  new URL("./check-worker-change.ts", import.meta.url)
 );
 const limitMs = 30_000;
 const passing = `"${process.execPath}" -e "console.log('noisy output')"`;
@@ -35,7 +35,7 @@ const env = Object.fromEntries(
   Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_"))
 );
 
-function git(cwd, ...args) {
+function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, {
     cwd,
     env,
@@ -44,7 +44,7 @@ function git(cwd, ...args) {
   }).trim();
 }
 
-function commit(cwd, message) {
+function commit(cwd: string, message: string) {
   git(cwd, "add", ".");
   git(
     cwd,
@@ -60,12 +60,12 @@ function commit(cwd, message) {
   );
 }
 
-function write(cwd, file, content) {
+function write(cwd: string, file: string, content: string) {
   fs.mkdirSync(path.dirname(path.join(cwd, file)), { recursive: true });
   fs.writeFileSync(path.join(cwd, file), content);
 }
 
-function repository(t, definition = workerDefinition) {
+function repository(t: TestContext, definition = workerDefinition) {
   const cwd = fs.mkdtempSync(
     path.join(os.tmpdir(), "babojubot-worker-change-")
   );
@@ -82,7 +82,7 @@ function repository(t, definition = workerDefinition) {
   return { cwd, base: git(cwd, "rev-parse", "HEAD") };
 }
 
-function run(cwd, args) {
+function run(cwd: string, args: string[]) {
   const result = spawnSync(process.execPath, [script, ...args], {
     cwd,
     env,
@@ -93,8 +93,12 @@ function run(cwd, args) {
 }
 
 function check(
-  { cwd, base },
-  { allow = ["src/*"], reported = ["src/a.ts"], tests = [passing] } = {}
+  { cwd, base }: { cwd: string; base: string },
+  {
+    allow = ["src/*"],
+    reported = ["src/a.ts"],
+    tests = [passing],
+  }: { allow?: string[]; reported?: string[]; tests?: string[] } = {}
 ) {
   return run(cwd, [
     "--base",
@@ -105,7 +109,10 @@ function check(
   ]);
 }
 
-function assertProblem(result, reason) {
+function assertProblem(
+  result: { status: number | null; output: string },
+  reason: RegExp
+) {
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, reason);
 }
@@ -209,6 +216,24 @@ test("shows the output of a failing test command", (t) => {
   assertProblem(result, /test command failed \(exit 3\)/);
   assertProblem(result, /why it failed/);
 });
+
+// 신호로 끝난 시험 명령은 종료 코드가 없다. "exit null"로 접지 않고 끝낸 신호를 알린다. 셸이 자기 자신을 끝내는 명령이라 POSIX만이다
+// (check:agents는 Linux에서 돈다).
+test(
+  "names the signal that ended a test command",
+  {
+    skip:
+      process.platform === "win32"
+        ? "Windows has no signal a shell sends itself"
+        : false,
+  },
+  (t) => {
+    const repo = repository(t);
+    write(repo.cwd, "src/a.ts", "export const a = 2;\n");
+    const result = check(repo, { tests: ["kill -KILL $$"] });
+    assertProblem(result, /test command failed \(SIGKILL\): kill -KILL \$\$/);
+  }
+);
 
 test("does not run test commands once a problem is found", (t) => {
   const repo = repository(t);

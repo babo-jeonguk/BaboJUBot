@@ -1,6 +1,6 @@
 // 바뀐 파일을 보고 돌릴 검사 명령을 정해 실행한다. `pnpm verify:changed -- --dry-run`은 명령만 출력한다.
 // 공용 설정이 바뀌면 전체 lint·typecheck·check를, 패키지 파일이 바뀌면 그 패키지와 그 패키지를 쓰는 패키지의
-// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를, 코드 파일이나 tsconfig가 바뀌면 JS 타입 검사(pnpm typecheck:js)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고(코드 지도 검사가
+// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를, 코드 파일이나 tsconfig가 바뀌면 패키지 밖 코드의 타입 검사(pnpm typecheck:tools·typecheck:js)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고(코드 지도 검사가
 // 코드의 파일·이름 변경도 보므로 코드만 바뀌어도 돈다) 나머지 묶음은 그 묶음의 시험이 보는 파일이나 저장소 뿌리(scripts·.agents)가 쓰는 패키지가 바뀌었을 때만 돌린다.
 // `--tests`는 완료 검사용으로, 같은 범위의 패키지 시험과 (뿌리에 닿으면) 뿌리 시험(pnpm test:root)을 더한다.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
+import { addedJavaScript, isJavaScript, refusal } from "./javascript-files.ts";
 import {
   codeFormatNames,
   codeFormatPattern,
@@ -149,8 +150,8 @@ export function plan(
       commands.push(
         `pnpm --filter ${name} run ${full.has(name) ? "typecheck" : "typecheck:test"}`
       );
-  // JS 타입 검사(pnpm typecheck:js)는 JS 파일과 그 JS가 가져오는 TypeScript의 타입을 본다. 코드 파일이나 tsconfig가 바뀌면(지운 것
-  // 포함) 돈다. 어느 JS가 바뀐 TypeScript를 가져오는지는 고르지 않는다.
+  // 패키지 밖 코드의 타입 검사: TypeScript(agent 도구·스크립트의 .ts, 엄격, pnpm typecheck:tools)와 JS(pnpm typecheck:js). 둘 다
+  // 패키지의 TypeScript를 가져오므로 코드 파일이나 tsconfig가 바뀌면(지운 것 포함) 돈다. 무엇이 바뀐 파일을 가져오는지는 고르지 않는다.
   if (
     changed.some(
       (file) =>
@@ -158,7 +159,7 @@ export function plan(
         /(^|\/)tsconfig[^/]*\.json$/.test(file)
     )
   )
-    commands.push("pnpm typecheck:js");
+    commands.push("pnpm typecheck:tools", "pnpm typecheck:js");
   commands.push("pnpm check:docs");
   // 묶음마다 한 파일은 앞 묶음이 가져가 두 번 세지 않는다(lint 규칙 파일은 scripts 묶음을 부르지 않는다).
   const owner = (file) => checkGroups.find((group) => group.owns(file));
@@ -291,12 +292,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       timeout: 60_000,
       killSignal: "SIGKILL",
     });
-  const lines = (output) =>
-    output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-
   let comparison;
   try {
     comparison = git("merge-base", "HEAD", base).trim();
@@ -306,10 +301,28 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     );
   }
 
+  // 경로 목록은 NUL 구분(-z)으로 읽는다. 줄 단위 출력은 줄바꿈·따옴표·탭이 든 이름을 따옴표로 감싸 이스케이프한다.
+  const paths = (output) => output.split("\0").filter(Boolean);
+  const untracked = paths(
+    git("ls-files", "-z", "--others", "--exclude-standard")
+  );
+  // 새 JS 파일은 받지 않는다(scripts/javascript-files.ts). CI의 changes job과 같은 기준(merge-base, 이름 바꾸기 포함)에 아직 git이
+  // 추적하지 않는 파일을 더한다. 검사를 돌리기 전에 알리고 끝난다.
+  const added = [
+    ...addedJavaScript(
+      git("diff", "-z", "--name-status", "--find-renames", comparison)
+    ),
+    ...untracked.filter(isJavaScript),
+  ];
+  if (added.length) {
+    for (const file of added) console.error(refusal(file));
+    process.exit(1);
+  }
+
   const files = [
     ...new Set([
-      ...lines(git("diff", "--name-only", "--no-renames", comparison)),
-      ...lines(git("ls-files", "--others", "--exclude-standard")),
+      ...paths(git("diff", "-z", "--name-only", "--no-renames", comparison)),
+      ...untracked,
     ]),
   ];
   const exists = (file) => fs.existsSync(path.join(root, file));

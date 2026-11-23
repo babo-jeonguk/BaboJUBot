@@ -65,11 +65,20 @@ test("runs everything when there is nothing to compare with", () => {
   assert.equal(run("", ["--full"]), "code=true\nfiles=true\n");
 });
 
+// 바뀐 파일은 `git diff -z --name-only`의 NUL 구분 목록으로 받는다. 줄 단위로 받으면 Git이 따옴표로 감싸 이스케이프한 이름(줄바꿈·
+// 따옴표가 든 파일)이 다른 경로가 되거나 둘로 갈라진다(#285 리뷰 STD-1).
 test("reads the changed files from standard input as GitHub outputs", () => {
-  assert.equal(run("README.md\r\n"), "code=false\nfiles=false\n");
+  assert.equal(run("README.md\0"), "code=false\nfiles=false\n");
   assert.equal(
-    run("apps/web/src/App.tsx\napps/server/src/workspace.ts\n"),
+    run("apps/web/src/App.tsx\0apps/server/src/workspace.ts\0"),
     "code=true\nfiles=true\n"
   );
   assert.equal(run(""), "code=false\nfiles=false\n");
+  // 이름에 줄바꿈이 든 파일 하나다. 줄 단위로 나누면 경계 밖 경로 둘이 된다.
+  assert.equal(
+    run("apps/server/src/workspace\nreader.ts\0"),
+    "code=true\nfiles=true\n"
+  );
+  // 이름에 줄바꿈이 든 Markdown 하나는 문서뿐인 변경이다.
+  assert.equal(run("docs/a\nb.md\0"), "code=false\nfiles=false\n");
 });

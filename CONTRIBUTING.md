@@ -15,14 +15,15 @@ pnpm test:e2e     # Playwright E2E(대시보드는 프로덕션 빌드로 띄움
 pnpm typecheck
 pnpm typecheck:src  # 제품 코드만 타입 검사
 pnpm typecheck:test # 시험 코드를 시작점으로 타입 검사(가져다 쓰는 제품 코드도 함께 검사)
-pnpm typecheck:js   # JS(스크립트·agent 도구·가짜 프로그램·시험의 JS) 타입 검사. pnpm typecheck에 들어 있어 CI(ci / typecheck)와 verify:changed도 돌림
+pnpm typecheck:tools # 패키지 밖 TypeScript(agent 도구, 스크립트의 .ts)를 엄격 설정으로 타입 검사(tsconfig.tools.json). pnpm typecheck에 들어 있음
+pnpm typecheck:js   # 남은 JS(스크립트·가짜 프로그램·시험의 JS) 타입 검사. pnpm typecheck에 들어 있어 CI(ci / typecheck)와 verify:changed도 돌림
 pnpm lint         # 시험 코드에는 시험 전용 규칙(폴더 지우기는 removeFolder로)을, 제품 코드에는 제품 규칙(바깥 데이터는 확인 뒤 사용, JSON·응답 본문을 읽자마자 타입 단정 금지, 비동기 실패 방치 금지, 폐기 예정 기능 금지, runtime의 프로그램 실행은 정해진 파일에서만)을 더 겁니다. 주석은 lint 규칙을 바꾸지 못합니다(`eslint-disable`·`/* eslint … */`·`/* global */` 모두 효과가 없고 오류입니다). 예외가 정말 필요하면 `eslint.config.js`에 파일·규칙을 좁혀 이유와 함께 둡니다.
 pnpm check        # 아래 네 묶음을 차례로 돈다. node:test 묶음은 `scripts/run-node-tests.mjs`로 돌려 CI에서 묶음마다 실행·통과 수를 판정합니다. 회귀 검사는 추가 Bash 없이 Node로 실행합니다.
 pnpm check:docs   # Markdown 로컬 링크·Git 무시 경로·필수 파일·worker 설정 검사(scripts/check-project.mjs)와 코드 지도의 파일 표기·이름·시험 이름·패키지 입구·pnpm 스크립트 검사(scripts/check-code-map.mjs)
 pnpm check:rules  # lint 규칙 회귀(scripts/*lint-rules.test.mjs, scripts/eslint-imports.test.mjs)와 접근 모양 생성기 시험(scripts/lint-access-shapes.test.mjs). 확인할 규칙만 켜고 그 규칙이 쓸 때만 타입 정보를 만듭니다(scripts/lint-rule-testing.mjs).
-pnpm check:agents # worker 실행 시간 한도·끄기, 시도·멈춤 판정, 변경 인수 검사(.agents/scripts/*.test.mjs)
+pnpm check:agents # worker 실행 시간 한도·끄기, 시도·멈춤 판정, 변경 인수 검사(.agents/scripts/*.test.ts)
 pnpm check:scripts # CI·보고 회귀 검사(테스트 집계, 실패 이유 분류, 내려받기 재시도, 실행 판정, 파일 경계 결과표, E2E 결과 판정, 묶음의 실행·통과 수 판정, 바뀐 파일 검사 범위, 게시문 검사)와 실제 프로바이더·장애 검사 도구 시험(scripts/live/*.test.mjs)
-pnpm verify:changed  # 바뀐 파일 기준으로 lint·타입 검사할 범위와 pnpm check 묶음(문서 검사는 늘)을 정해 돌림. --tests는 바뀐 패키지와 그 패키지를 쓰는 패키지의 시험을 더함. 공용 설정이 바뀌면 전체. --dry-run은 명령만 출력
+pnpm verify:changed  # 새 JS 파일이 있으면 이름을 알리고 실패(새 스크립트·시험은 TypeScript로, scripts/javascript-files.ts). 바뀐 파일 기준으로 lint·타입 검사할 범위와 pnpm check 묶음(문서 검사는 늘)을 정해 돌림. --tests는 바뀐 패키지와 그 패키지를 쓰는 패키지의 시험을 더함. 공용 설정이 바뀌면 전체. --dry-run은 명령만 출력
 ```
 
 ### 개발용 실행과 장시간 연구 실행

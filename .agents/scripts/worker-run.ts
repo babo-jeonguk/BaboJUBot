@@ -1,6 +1,6 @@
-// The attempts of one worker call and how it ends, for run-worker.mjs. Launching opencode is passed in as a function that
+// The attempts of one worker call and how it ends, for run-worker.ts. Launching opencode is passed in as a function that
 // returns the launched tree with its own stop (the product's shared launch, @babojubot/process), so the rules here are
-// tested with stand-ins on every system (worker-run.test.mjs).
+// tested with stand-ins on every system (worker-run.test.ts).
 //
 // - A call makes at most two attempts: an attempt that never starts a session is launched once more.
 // - --limit is one deadline for the whole call, retries included.
@@ -14,38 +14,74 @@
 //   (`delivered`). An attempt that ends otherwise (the stop failed, the start failed) ends the write where it stands
 //   (`abandonBrief`), and its stop or start failure stays first.
 
+import type { TreeExit, TreeStart } from "@babojubot/process";
+
 /**
  * `delivered` settles with why the brief could not be sent to this worker (an error code), or undefined once it was sent. It
  * settles on its own once nothing can read the brief any more (the tree is confirmed stopped). `abandonBrief` ends a write
  * still going (the runner closes its end of the worker's input) and returns at once how the send stands: why it failed,
  * that it was not all written yet, or undefined when it was sent.
- * @typedef {{
- *   started: Promise<{ kind: string, reason?: string }>,
- *   exited: Promise<{ code: number | null, signal: string | null }>,
- *   stop: () => Promise<void>,
- *   delivered?: Promise<string | undefined>,
- *   abandonBrief?: () => string | undefined,
- * }} WorkerTree
  */
+export interface WorkerTree {
+  started: Promise<TreeStart>;
+  exited: Promise<TreeExit>;
+  stop: () => Promise<void>;
+  delivered: Promise<string | undefined>;
+  abandonBrief: () => string | undefined;
+}
 
-/**
- * @param {{
- *   launch: () => WorkerTree,
- *   hasSession: () => boolean,
- *   startCheckMs: number,
- *   limitMs: number,
- * }} options
- */
-export function createWorkerRun({ launch, hasSession, startCheckMs, limitMs }) {
+/** A signal to the runner that stops the whole call. */
+export type StopSignal = "SIGHUP" | "SIGINT" | "SIGTERM";
+
+const signalNumbers: Record<StopSignal, number> = {
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGTERM: 15,
+};
+
+const isStopSignal = (reason: string | undefined): reason is StopSignal =>
+  reason === "SIGHUP" || reason === "SIGINT" || reason === "SIGTERM";
+
+/** Why an attempt was being stopped: the start check, --limit, its worker ending on its own, or a signal to the runner. */
+export type StopReason = "start-check" | "limit" | "exit" | StopSignal;
+
+/** How one attempt ended. */
+export interface AttemptResult {
+  /** What the attempt was being stopped for; absent when its worker ended on its own and the stop went through. */
+  stopped?: StopReason;
+  /** The worker's leader exit, if it was seen. */
+  exit?: TreeExit;
+  /** Why the tree could not be confirmed stopped. */
+  stopFailure?: unknown;
+  /** Why the worker could not start (refused or failed to start). */
+  spawnError?: string;
+  /** Why the brief did not all reach the worker. */
+  sendFailure?: string;
+}
+
+/** A launched attempt, or why the launch was refused. */
+type Launched = { tree: WorkerTree } | { refused: string };
+
+export function createWorkerRun({
+  launch,
+  hasSession,
+  startCheckMs,
+  limitMs,
+}: {
+  launch: () => WorkerTree;
+  hasSession: () => boolean;
+  startCheckMs: number;
+  limitMs: number;
+}) {
   /** What asked the whole call to stop (a signal name), if anything. */
-  let requested;
+  let requested: StopSignal | undefined;
   /** Stops the running attempt, if one is running. */
-  let stopCurrent;
+  let stopCurrent: ((reason: StopReason) => void) | undefined;
 
   /** Launches one attempt. A launch that throws (refused, could not start) is the attempt's start failure. */
-  function start() {
+  function start(): Launched {
     try {
-      return launch();
+      return { tree: launch() };
     } catch (error) {
       return {
         refused: error instanceof Error ? error.message : String(error),
@@ -53,38 +89,38 @@ export function createWorkerRun({ launch, hasSession, startCheckMs, limitMs }) {
     }
   }
 
-  function attempt(tree, deadlineAt) {
-    if (tree.refused) return Promise.resolve({ spawnError: tree.refused });
-    return new Promise((done) => {
-      let stopping;
-      let exit;
+  function attempt(launched: Launched, deadlineAt: number) {
+    if ("refused" in launched)
+      return Promise.resolve<AttemptResult>({ spawnError: launched.refused });
+    const { tree } = launched;
+    return new Promise<AttemptResult>((done) => {
+      let stopping: StopReason | undefined;
+      let exit: TreeExit | undefined;
       let finished = false;
-      const timers = [];
+      const timers: ReturnType<typeof setTimeout>[] = [];
       // The attempt's result also says whether its brief reached the worker. A tree confirmed stopped has no reader left, so
       // its write ends (sent, or failed because the worker's input closed) and the attempt waits for that. A failed stop or
       // start leaves that unknown: a live worker that never reads would hold the write forever, so the attempt ends it now.
-      const finish = (result) => {
+      const finish = (result: AttemptResult) => {
         if (finished) return;
         finished = true;
         for (const timer of timers) clearTimeout(timer);
         stopCurrent = undefined;
-        const withSend = (sendFailure) =>
+        const withSend = (sendFailure: string | undefined) =>
           sendFailure === undefined ? result : { ...result, sendFailure };
         if (result.stopFailure || result.spawnError)
-          done(withSend(tree.abandonBrief?.()));
-        else
-          void Promise.resolve(tree.delivered).then((sent) =>
-            done(withSend(sent))
-          );
+          done(withSend(tree.abandonBrief()));
+        else void tree.delivered.then((sent) => done(withSend(sent)));
       };
       // From here on the attempt waits for the stop only: its leader may end long before the rest of its tree.
-      const stopFor = (reason) => {
+      const stopFor = (reason: StopReason) => {
         if (stopping || finished) return;
         stopping = reason;
         for (const timer of timers) clearTimeout(timer);
         tree.stop().then(
           () => finish({ stopped: reason, exit }),
-          (error) => finish({ stopped: reason, exit, stopFailure: error })
+          (error: unknown) =>
+            finish({ stopped: reason, exit, stopFailure: error })
         );
       };
       stopCurrent = stopFor;
@@ -106,7 +142,8 @@ export function createWorkerRun({ launch, hasSession, startCheckMs, limitMs }) {
         for (const timer of timers) clearTimeout(timer);
         tree.stop().then(
           () => finish({ exit }),
-          (error) => finish({ stopped: "exit", exit, stopFailure: error })
+          (error: unknown) =>
+            finish({ stopped: "exit", exit, stopFailure: error })
         );
       });
       if (requested) stopFor(requested);
@@ -115,7 +152,7 @@ export function createWorkerRun({ launch, hasSession, startCheckMs, limitMs }) {
 
   return {
     /** Ask the call to stop (a signal to the runner): the running attempt is stopped and no new one starts. */
-    requestStop(signal) {
+    requestStop(signal: StopSignal) {
       requested ??= signal;
       stopCurrent?.(signal);
     },
@@ -123,7 +160,7 @@ export function createWorkerRun({ launch, hasSession, startCheckMs, limitMs }) {
     async run() {
       const deadlineAt = Date.now() + limitMs;
       let attempts = 0;
-      let result;
+      let result: AttemptResult;
       do {
         attempts += 1;
         result = await attempt(start(), deadlineAt);
@@ -141,7 +178,13 @@ export function createWorkerRun({ launch, hasSession, startCheckMs, limitMs }) {
   };
 }
 
-const signalNumbers = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
+/** The message of a failed stop: its cause when it has one (the supervisor's reason), else its own. */
+function stopReasonOf(failure: unknown) {
+  if (!(failure instanceof Error)) return String(failure);
+  return failure.cause instanceof Error
+    ? failure.cause.message
+    : failure.message;
+}
 
 /**
  * The status line and exit code of a finished call. Exit codes: 0 finished; 2 error event; 3 no session started;
@@ -157,19 +200,25 @@ export function outcome({
   session,
   errors,
   now = Date.now(),
-}) {
+}: {
+  result: AttemptResult;
+  requested?: StopSignal | undefined;
+  deadlineAt: number;
+  limitMs: number;
+  session: string;
+  errors: string[];
+  now?: number;
+}): [status: string, exitCode: number] {
   if (result.spawnError) return [`spawn failed: ${result.spawnError}`, 4];
   if (result.stopFailure) {
-    const why = result.stopFailure.cause?.message ?? result.stopFailure.message;
     const when = result.stopped === "exit" ? "after it ended" : result.stopped;
     return [
-      `could not confirm the worker process tree stopped (${when}): ${why}`,
+      `could not confirm the worker process tree stopped (${when}): ${stopReasonOf(result.stopFailure)}`,
       4,
     ];
   }
   const signal =
-    requested ??
-    (Object.hasOwn(signalNumbers, result.stopped) ? result.stopped : undefined);
+    requested ?? (isStopSignal(result.stopped) ? result.stopped : undefined);
   if (signal) return [`stopped by ${signal}`, 128 + signalNumbers[signal]];
   if (result.sendFailure)
     return [`could not send the brief: ${result.sendFailure}`, 4];

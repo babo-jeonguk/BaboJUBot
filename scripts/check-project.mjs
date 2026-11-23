@@ -70,12 +70,12 @@ for (const relative of repositoryFiles) {
 
 // 두 worker 실행 경로(스크립트·Paseo)가 같은 agent 계약으로 돌게 한다.
 const runWorker = fs.readFileSync(
-  path.join(root, ".agents/scripts/run-worker.mjs"),
+  path.join(root, ".agents/scripts/run-worker.ts"),
   "utf8"
 );
 assert(
   /"--agent",\s*"dev-worker"/.test(runWorker),
-  "run-worker.mjs must pass --agent dev-worker"
+  "run-worker.ts must pass --agent dev-worker"
 );
 const devWorker = fs.readFileSync(
   path.join(root, ".opencode/agents/dev-worker.md"),
