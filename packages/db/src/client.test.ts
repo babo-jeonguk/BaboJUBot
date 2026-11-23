@@ -26,7 +26,13 @@ import {
   processAlive,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
-import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
+import {
+  attemptAll,
+  attemptEach,
+  combinedFailure,
+  hasErrorCode,
+  orIfMissing,
+} from "@babojubot/contracts";
 import { within } from "@babojubot/process/test-support";
 
 /**
@@ -273,7 +279,7 @@ describe("embedded Postgres lifetime", () => {
       let pid = 0;
       const cluster = folderCleanup(() => removeCluster(dataDir));
       onTestFinished(cluster.cleanUp);
-      cluster.own(() => killPostgres(pid));
+      cluster.own(() => killPostgres(postmasterToStop(pid, dataDir)));
       const child = spawn(
         process.execPath,
         ["--input-type=module", "-e", script],
@@ -347,7 +353,9 @@ describe("embedded Postgres lifetime", () => {
       let backend = 0;
       const cluster = folderCleanup(() => removeCluster(dataDir));
       onTestFinished(cluster.cleanUp);
-      cluster.own(() => killPostgres(backend, postmaster));
+      cluster.own(() =>
+        killPostgres(backend, postmasterToStop(postmaster, dataDir))
+      );
       const child = spawn(
         process.execPath,
         ["--input-type=module", "-e", script],
@@ -424,7 +432,7 @@ describe("a Postgres left by a killed process", () => {
     let postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
     const { child } = await holdDatabase(`
       const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
       await handle.db.$client.query("create table kept (value int); insert into kept values (7)");
@@ -457,7 +465,7 @@ describe("a Postgres left by a killed process", () => {
     let postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
     const { child } = await holdDatabase(`
       await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
       console.log("ready");
@@ -484,7 +492,7 @@ describe("a Postgres left by a killed process", () => {
     const postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
     await expect(
       holdDatabase(`
         await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
@@ -506,7 +514,7 @@ describe("a Postgres left by a killed process", () => {
     let postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
     const unrelated = spawn(
       process.execPath,
       ["-e", "setInterval(() => {}, 1000)"],
@@ -653,7 +661,7 @@ describe("a Postgres left by a killed process", () => {
     let postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
     const held = await holdDatabase(`
         const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         console.log(new URL(handle.url).port);
@@ -694,13 +702,33 @@ describe("a Postgres left by a killed process", () => {
   }, 60_000);
 
   it("is stopped and removed by the next temporary cluster when it was temporary", async () => {
+    // 자식과 이 시험의 임시 폴더를 이 시험 소유 폴더로 둔다. 자식은 임시 cluster의 자리를 준비 줄로 알리므로, 그 줄 전에 실패해도
+    // 정리가 이 폴더 안의 임시 cluster마다 켜진 Postgres를 찾아 끈다(#288 리뷰 2회차 STD-2와 같은 모양).
+    const base = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "babojubot-ephemeral-")
+    );
+    for (const name of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(name, base);
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
     let postmaster = 0;
     let dataDir = "";
-    const cluster = folderCleanup(async () => {
-      if (dataDir) await removeCluster(dataDir);
-    });
+    const cluster = folderCleanup(() => removeFolder(base));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() =>
+      attemptAll(
+        fs
+          .readdirSync(base)
+          .filter((name) => name.startsWith("babojubot-pg-"))
+          .map((name) => path.join(base, name))
+          .map(
+            (folder) => () =>
+              stopPostgres(
+                postmasterToStop(folder === dataDir ? postmaster : 0, folder)
+              )
+          )
+      )
+    );
     const held = await holdDatabase(`
       const options = await db.ephemeralCluster();
       await db.openDatabase({ embedded: options });
@@ -754,7 +782,7 @@ describe("a Postgres left by a killed process", () => {
     let postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
     cluster.own(() =>
       attemptAll(children.map((child) => () => killHard(child)))
     );
@@ -799,7 +827,7 @@ describe("a Postgres left by a killed process", () => {
     let postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmaster));
+    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
     cluster.own(() => killHard(unrelated));
     cluster.own(() => killHard(child));
     const lines = lineReader(child);
@@ -931,6 +959,16 @@ function readPostmaster(dataDir: string) {
   return Number(
     fs.readFileSync(path.join(dataDir, "postmaster.pid"), "utf8").split("\n")[0]
   );
+}
+
+/**
+ * 정리가 끌 Postgres 번호(#288 리뷰 2회차 STD-2와 같은 모양). 시험이 받은 번호(`known`)가 있으면 그것이고, 아직 받지 못했으면 그 폴더의
+ * 잠금 파일에서 읽는다: 자식이 Postgres를 띄운 뒤 준비 줄 전에 실패해도 정리가 그 Postgres를 찾는다. 잠금 파일은 Postgres가 켜지자마자
+ * 쓰는 자기 기록이다. 없으면(ENOENT) 켜진 Postgres가 없다(0). 잠금 파일을 바꾸는 시험은 번호를 받은 뒤에만 바꾸므로 받은 번호가 먼저다.
+ */
+function postmasterToStop(known: number, dataDir: string) {
+  if (known) return known;
+  return orIfMissing(() => readPostmaster(dataDir), hasErrorCode("ENOENT"), 0);
 }
 
 // 남은 Postgres를 끄는 정리는 한 대상의 조회·신호가 실패해도 다른 대상에 신호를 보내고 끝나기를 기다린 뒤, 그 실패를 함께
