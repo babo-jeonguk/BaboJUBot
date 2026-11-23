@@ -248,12 +248,18 @@ test("a Playwright fixture may take its dependencies as an empty pattern in test
     );
 });
 
-test("a regex may hold a control character only in the file that holds the NUL-free pattern", async () => {
-  const code = "export const nulFree = /^[^\\x00]*$/;\n";
+// NUL을 일부러 담는 정규식은 도구 정의의 pattern으로 나가는 nulFree 하나다. 그 파일 전체에서 no-control-regex를 끄면 같은 파일에 더한
+// 다른 제어 문자 정규식도 짚지 않는다(#286 항목 25). 그 파일은 그 선언 하나만 담을 수 있어 예외가 그 정규식 하나만 덮는다.
+const controlRegexRules = ["no-control-regex", "product/nul-free-file-shape"];
+const nulFreeDeclaration = "export const nulFree = /^[^\\x00]*$/;\n";
+
+test("a regex may hold a control character only as the NUL-free pattern itself", async () => {
   assert.deepEqual(
-    await lint(code, "packages/contracts/src/nul-free.ts", [
-      "no-control-regex",
-    ]),
+    await lint(
+      nulFreeDeclaration,
+      "packages/contracts/src/nul-free.ts",
+      controlRegexRules
+    ),
     []
   );
   for (const place of [
@@ -262,9 +268,30 @@ test("a regex may hold a control character only in the file that holds the NUL-f
     ...testPlaces,
   ])
     assert.equal(
-      (await lint(code, place, ["no-control-regex"])).length,
+      (await lint(nulFreeDeclaration, place, controlRegexRules)).length,
       1,
       place
+    );
+});
+
+test("the file of the NUL-free pattern reports anything beside the pattern, any other control-character regex included", async () => {
+  for (const extra of [
+    "export const plain = /a/;\n",
+    "export const unitSeparator = /\\x1f/;\n",
+    "const nulFree2 = /^[^\\x00]*$/;\n",
+    'export const fromText = new RegExp("\\\\x00");\n',
+    "export const flagged = /^[^\\x00]*$/u;\n",
+  ])
+    assert.equal(
+      (
+        await lint(
+          nulFreeDeclaration + extra,
+          "packages/contracts/src/nul-free.ts",
+          controlRegexRules
+        )
+      ).length,
+      1,
+      extra
     );
 });
 
