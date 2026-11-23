@@ -2018,6 +2018,20 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}const later = awaitedLater(p);\nexport async function run() {\n  return 1;\n  await later;\n}\n`,
       /기다리지 않습니다/,
     ],
+    // 다른 Promise가 먼저 이행할 수 있는 race·any는 표시한 Promise가 정해지기 전에 끝나, 그 뒤의 거절을 기다리지 않고 지나간다.
+    // 시한은 거절로 설계한다(공용 within, @babojubot/process/test-support).
+    "a Promise.race with a promise that may settle first": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.race([later, Promise.resolve()]);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a Promise.any with a promise that may fulfil first": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.any([p, later]);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a local timeout helper that fulfils when the time runs out": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst within = async (value, ms) =>\n  Promise.race([value, new Promise((resolve) => setTimeout(() => resolve(undefined), ms))]);\nawait within(later, 1000);\n`,
+      /기다리지 않습니다/,
+    ],
   };
   for (const [shape, [code, kind]] of Object.entries(found))
     for (const place of testPlaces) {
@@ -2029,6 +2043,10 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
     }
 });
 
+/** 거절만 할 수 있는 Promise(시한). race·any에서 표시한 Promise보다 먼저 이행할 수 없다. */
+const rejectsLate =
+  'new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))';
+
 test("a promise marked with awaitedLater may be awaited, collected, expected, returned or read back from its property", async () => {
   const allowed = [
     `const later = awaitedLater(p);\nawait later;\n`,
@@ -2038,15 +2056,17 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     `export function start() {\n  const later = awaitedLater(p);\n  return later;\n}\n`,
     `const later = awaitedLater(p);\nexport const read = () => later;\n`,
     // 속성은 같은 파일의 다른 함수에서 읽어 기다려도 된다.
-    `child.exited = awaitedLater(p);\nexport async function wait() {\n  return await Promise.race([child.exited, p]);\n}\n`,
+    `child.exited = awaitedLater(p);\nexport async function wait() {\n  return await Promise.race([child.exited, ${rejectsLate}]);\n}\n`,
     `child.exited = awaitedLater(p);\nawait child.exited;\n`,
     // 같은 이름으로 넘겨받은 객체, 깊은 경로, this.
-    `child.exited = awaitedLater(p);\nexport const wait = (child) => Promise.race([child.exited, p]);\n`,
+    `child.exited = awaitedLater(p);\nexport const wait = (child) => Promise.race([child.exited, ${rejectsLate}]);\n`,
     `child.run = {};\nchild.run.exited = awaitedLater(p);\nawait child.run.exited;\n`,
     `export class Server {\n  start() {\n    this.exited = awaitedLater(p);\n  }\n  async stop() {\n    await this.exited;\n  }\n}\n`,
     // 같은 파일의 함수는 받은 인자를 기다리는지 따라가고, 가져온 함수(시한 도움 등)는 따라갈 수 없어 기다림으로 본다.
     `const later = awaitedLater(p);\nconst wait = async (value) => {\n  await value;\n};\nawait wait(later);\n`,
-    `const later = awaitedLater(p);\nfunction race(value) {\n  return Promise.race([value, p]);\n}\nawait race(later);\n`,
+    `const later = awaitedLater(p);\nfunction race(value) {\n  return Promise.race([value, ${rejectsLate}]);\n}\nawait race(later);\n`,
+    // race·any는 다른 쪽이 거절만 할 수 있을 때(시한) 표시한 Promise의 결과를 받는다.
+    `const later = awaitedLater(p);\nawait Promise.any([later, ${rejectsLate}]);\n`,
     // 함수 안의 기다림은 그 함수를 부르거나 내보내거나 콜백으로 넘기면 된다.
     `const later = awaitedLater(p);\nconst run = async () => {\n  await later;\n};\nawait run();\n`,
     `const later = awaitedLater(p);\nexport async function run() {\n  await later;\n}\n`,
