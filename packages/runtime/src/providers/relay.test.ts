@@ -459,6 +459,54 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(await viaProxy()).toBe(200);
   });
 
+  // 목적지가 요청을 받고 답하기 전에 끊은 것은 목적지 장애다. 중계가 정책 변경으로 그 연결을 거둔 것과 같은 오류 코드(ECONNRESET)여도
+  // 원인을 남긴다(#286 항목 4와 같은 모양).
+  it("answers 502 and leaves why when a plain HTTP destination resets before answering", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const server = http.createServer((req) => req.socket.resetAndDestroy());
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          server.closeAllConnections();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    const { relays } = hub();
+    const relay = relays.open({
+      identity,
+      required: [
+        destination({
+          host: "localhost",
+          port,
+          addresses: ["127.0.0.1", "::1"],
+        }),
+      ],
+    });
+    await relay.ready;
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        socketPath: path.join(relay.directory, "egress.sock"),
+        path: `http://localhost:${port}/page`,
+        agent: false,
+      });
+      req.on("response", (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(status).toBe(502);
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the relay could not forward a request to an allowed destination; it answered 502 (ECONNRESET)",
+    ]);
+  });
+
   it("answers 502 and leaves why when it cannot connect to an allowed destination", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());

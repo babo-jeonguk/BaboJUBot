@@ -1800,6 +1800,9 @@ describe.skipIf(process.platform === "win32")(
         expect(checkpointed).toBe(true);
         expect(result.stopReason).toBe("failed");
         expect(result.error).toContain("로그인 기록");
+        expect(warned).toHaveBeenCalledWith(
+          "[provider] the OpenCode login store changed while it was copied; it counts as a remaining login"
+        );
         expect(await t.env.calls()).toEqual([]);
         expect(t.network.urls).toHaveLength(0);
       } finally {

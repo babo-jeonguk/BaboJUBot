@@ -1,4 +1,11 @@
-import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -243,6 +250,53 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     // 쓰다 만 임시 파일을 남기지 않는다.
     expect(await readdir(path.dirname(place))).toEqual(["token"]);
   });
+
+  // 격리를 끈 실행은 조직 자리의 자리 표시를 지우고 연결의 로그인 링크를 둔다. 자리 표시인지 확인한 뒤 그 이름에 그 조직의
+  // 컨테이너가 다른 파일을 두면, 그 파일은 확인한 것이 아니므로 지우지 않는다(#286 항목 8과 같은 모양). 링크를 둘 때 그 자리의
+  // 보통 파일은 연결 폴더의 set-aside로 옮겨진다.
+  it.skipIf(windows)(
+    "does not remove a file put in place of the stand-in after it was checked, when a host run links the login",
+    async () => {
+      const root = await folders.make("babojubot-file-login-");
+      let hostRun = false;
+      let swapped = false;
+      const login = fileLogin(root, "nested", {
+        ...nested,
+        isStandIn: async (file) => {
+          const real = await nested.isStandIn(file);
+          if (hostRun && real && !swapped) {
+            swapped = true;
+            const saving = path.join(path.dirname(file), ".agent-save");
+            await writeFile(saving, "agent file");
+            await rename(saving, file);
+          }
+          return real;
+        },
+      });
+      const original = path.join(root, "providers", "nested", "login", "token");
+      await mkdir(path.dirname(original), { recursive: true });
+      await writeFile(original, "REAL LOGIN");
+      const isolated = await login.prepare(organizationId, true);
+      if (isolated.refusal !== undefined || !isolated.attemptLogin)
+        throw new Error(`no isolated login: ${isolated.refusal}`);
+      await isolated.attemptLogin(
+        await folders.make("babojubot-attempt-"),
+        "grant"
+      );
+
+      hostRun = true;
+      await login.prepare(organizationId, false);
+      expect(swapped).toBe(true);
+      const setAside = path.join(root, "providers", "nested", "set-aside");
+      const kept = await Promise.all(
+        (await readdir(setAside)).map((name) =>
+          readFile(path.join(setAside, name), "utf8")
+        )
+      );
+      expect(kept).toEqual(["agent file"]);
+      expect(await readFile(original, "utf8")).toBe("REAL LOGIN");
+    }
+  );
 
   // 자리 표시를 쓰다 실패해도 조직 폴더에 임시 파일을 남기지 않는다(#280 리뷰 2회차 STD-2).
   it("leaves no temporary file in the organization folder when writing the stand-in fails", async () => {
