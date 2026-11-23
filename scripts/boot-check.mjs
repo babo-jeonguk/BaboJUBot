@@ -18,6 +18,7 @@ import {
 } from "@babojubot/contracts";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import { createStop, runBootCheckFlow } from "./boot-check-flow.mjs";
+import { overviewFields } from "./boot-check-overview.ts";
 
 // main.ts가 서버를 띄운 뒤 내는 완전한 한 줄. 내장 DB로 띄운 서버만 받는다.
 // 예: `BaboJUBot server on http://127.0.0.1:PORT (embedded Postgres …, product folder …)`
@@ -150,13 +151,13 @@ async function serveAndKill(label) {
               `${label}: server exited before /api/overview answered (code ${exitInfo?.code}, signal ${exitInfo?.signal})${outputTail(stdoutTail, stderrTail)}`
             );
           // 아직 듣지 않았거나 응답이 늦으면 답이 없는 것이다. 그 원인을 남기고 시한 안에서 다시 본다.
-          const overview = await continueAfterFailure(
+          const text = await continueAfterFailure(
             async () => {
               const response = await fetch(`${readyUrl}/api/overview`, {
                 signal: AbortSignal.timeout(fetchTimeoutMs),
               });
               lastAttempt = `HTTP ${response.status}`;
-              return response.ok ? await response.json() : undefined;
+              return response.ok ? await response.text() : undefined;
             },
             (error) => {
               lastAttempt = failureCode(
@@ -166,17 +167,15 @@ async function serveAndKill(label) {
               );
             }
           );
-          if (overview === undefined) {
+          const fields =
+            text === undefined ? undefined : overviewFields(label, text);
+          if (fields === undefined) {
+            if (text !== undefined) lastAttempt = "HTTP 200, body not JSON";
             await delay(250);
             continue;
           }
-          // 답은 화면이 읽는 개요 객체다. 다른 JSON 값(null, 숫자, 문자열)이면 서버가 준비된 것이 아니다.
-          if (typeof overview !== "object" || overview === null)
-            throw new Error(
-              `${label}: /api/overview answered ${JSON.stringify(overview)}, not an object`
-            );
           console.log(
-            `${label}: server ready on ${process.platform}: ${Object.keys(overview).length} overview fields`
+            `${label}: server ready on ${process.platform}: ${fields} overview fields`
           );
           break;
         }
