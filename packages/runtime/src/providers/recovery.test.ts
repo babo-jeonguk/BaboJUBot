@@ -3,11 +3,8 @@ import { once } from "node:events";
 import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
-import {
-  processStartedAt,
-  recordProcess,
-  recoverProviderProcesses,
-} from "./recovery.ts";
+import { launchTree } from "@babojubot/process";
+import { recordProcess, recoverProviderProcesses } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "@babojubot/process/recovery";
 import { readyLine } from "@babojubot/process/testing";
 import { testFolders } from "./test-folders.ts";
@@ -18,26 +15,54 @@ import {
 } from "@babojubot/process/test-cleanup";
 import { attemptAll } from "@babojubot/contracts";
 
-// Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
-// 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
-const testStart = () => String(processStartTicks(process.pid) ?? 1);
+/**
+ * 실행의 시작: 이 시험 프로세스의 시작 시각을 감독 실행기가 쓰는 단위로 나타낸 것. 기록의 시작 시각은 정리 요청의 실행 시작(`since`)으로도
+ * 쓰이므로, 실제 기록처럼 과거의 값이어야 그 전부터 있던 이 컴퓨터의 숨은 프로그램(gpg-agent, macOS에서 정보가 막힌 로그인 때
+ * 프로세스 등)을 "확인하지 못함"으로 세지 않고, 그 뒤에 생긴 것은 판정에 그대로 든다. 단위는 시스템마다 정해 고른다: Linux는
+ * `/proc`의 부팅 뒤 clock tick(읽지 못하면 던진다. 다른 단위의 값으로 대신하면 실행 시작이 미래가 되어 판정이 꺼진다), macOS는
+ * epoch 뒤 마이크로초, Windows는 100나노초 FILETIME.
+ */
+function testStart(): string {
+  switch (process.platform) {
+    case "linux": {
+      const ticks = processStartTicks(process.pid);
+      if (ticks === undefined)
+        throw new Error(
+          "this test process's start could not be read from /proc"
+        );
+      return String(ticks);
+    }
+    case "darwin":
+      return String(Math.floor(performance.timeOrigin * 1000));
+    case "win32":
+      // 1601년부터의 100나노초. 2^53을 넘으므로 BigInt로 센다.
+      return String(
+        (BigInt(Math.floor(performance.timeOrigin)) + 11_644_473_600_000n) *
+          10_000n
+      );
+    default:
+      throw new Error(`no start unit is known on ${process.platform}`);
+  }
+}
 
-// 표식 조회 실패를 주입한다.
+// 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다.
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
+  /** 실행기에 청한 정리 요청 전부. */
+  requests: [] as { recorded?: unknown }[],
 }));
 vi.mock("@babojubot/process/recovery", async (original) => {
   const real = await original<typeof import("@babojubot/process/recovery")>();
   return {
     ...real,
-    stopLeaseHolders: async (
-      value: string,
-      options?: Parameters<typeof real.stopLeaseHolders>[1]
+    cleanThroughSupervisor: async (
+      request: Parameters<typeof real.cleanThroughSupervisor>[0]
     ) => {
-      lease.stopped.push(value);
-      if (lease.fails) throw new Error("ps failed");
-      return real.stopLeaseHolders(value, options);
+      lease.requests.push(request);
+      if (request.lease !== undefined) lease.stopped.push(request.lease);
+      if (lease.fails) throw new Error("the supervisor's cleanup failed");
+      return real.cleanThroughSupervisor(request);
     },
   };
 });
@@ -49,6 +74,7 @@ const groups: number[] = [];
 afterEach(() => {
   lease.fails = false;
   lease.stopped = [];
+  lease.requests = [];
   // 그룹마다 끄고 끝나기를 기다린다. 한 그룹이 실패해도 나머지 그룹을 정리한다.
   return attemptAll(
     groups.splice(0).map((group) => async () => {
@@ -79,7 +105,7 @@ it("skips a record that cannot be read and still handles the others", async () =
     path.join(directory, `${finished}.json`),
     JSON.stringify({
       pid: finished,
-      start: "1",
+      start: testStart(),
       group: finished,
       boot: "another-boot",
       lease: "x",
@@ -153,110 +179,63 @@ const longRunning = () =>
   });
 const gone = (pid: number) => !processAlive(pid);
 
-it("stops a leftover process on systems without /proc", async () => {
-  const { root, directory } = await records();
-  const child = folders.ownChild(longRunning());
-  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
-  await once(child, "spawn");
-
-  await writeFile(
-    path.join(directory, `${child.pid}.json`),
-    JSON.stringify({
-      pid: child.pid,
-      lease: "lease",
-      started: processStartedAt(child.pid!, withoutProc),
-    })
-  );
-  const closed = new Promise((resolve) => child.on("close", resolve));
-  await recoverProviderProcesses(root, { platform: withoutProc });
-  await closed;
-  expect(gone(child.pid!)).toBe(true);
-  expect(await readdir(directory)).toEqual([]);
-}, 30_000);
-
-// 시작 시각을 묻지 못하면 우리 것으로 보지 않고(끄지 않음) 그 원인을 남긴다. 실패하는 명령은 PATH 앞에 둔 가짜 ps가 맡는다.
-// 그사이 끝난 프로세스는 물을 것이 없으므로(답이다) 원인을 남기지 않는다.
-it.skipIf(process.platform === "win32")(
-  "leaves why it could not ask a running process's start time, but not for one that ended",
-  async () => {
-    const fake = await folders.make("babojubot-fake-ps-");
-    await writeFile(
-      path.join(fake, "ps"),
-      `#!${process.execPath}\nprocess.exit(1);\n`,
-      { mode: 0o755 }
-    );
-    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.stubEnv("PATH", `${fake}${path.delimiter}${process.env.PATH}`);
-    try {
-      expect(processStartedAt(process.pid, withoutProc)).toBeUndefined();
-      expect(warned).toHaveBeenCalledWith(
-        expect.stringContaining(`start time of process ${process.pid}`)
-      );
-      warned.mockClear();
-      const ended = spawnSync(process.execPath, ["-e", ""]).pid;
-      expect(processStartedAt(ended, withoutProc)).toBeUndefined();
-      expect(warned).not.toHaveBeenCalled();
-    } finally {
-      vi.unstubAllEnvs();
-      warned.mockRestore();
-    }
-  }
-);
-
-// 시작 시각을 묻는 명령이 답하지 않아도 복구는 정해진 상한 안에 다음으로 넘어간다. 우리 것인지 모르는 프로세스와 그 기록은
-// 그대로 둔다. 답하지 않는 명령은 PATH 앞에 둔 가짜 ps가 맡는다(60초 뒤에야 다른 시작 시각을 답한다).
-// Windows는 PowerShell에 묻는데, 답하지 않는 PowerShell을 시험이 대신 둘 수 없다. 그 호출의 상한은 lint가 강제한다.
-it.skipIf(process.platform === "win32")(
-  "moves on and keeps the record when the start time query does not answer",
-  async () => {
-    const { root, directory } = await records();
-    const child = folders.ownChild(longRunning());
-    // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
-    await once(child, "spawn");
-    const file = `${child.pid}.json`;
-    await writeFile(
-      path.join(directory, file),
-      JSON.stringify({
-        pid: child.pid,
-        started: processStartedAt(child.pid!, withoutProc),
-      })
-    );
-    const fake = await folders.make("babojubot-fake-ps-");
-    await writeFile(
-      path.join(fake, "ps"),
-      `#!${process.execPath}\nsetTimeout(() => console.log("Mon Jan  1 00:00:00 2024"), 60_000);\n`,
-      { mode: 0o755 }
-    );
-    vi.stubEnv("PATH", `${fake}${path.delimiter}${process.env.PATH}`);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      await recoverProviderProcesses(root, { platform: withoutProc });
-    } finally {
-      vi.unstubAllEnvs();
-      warn.mockRestore();
-    }
-    expect(gone(child.pid!)).toBe(false);
-    expect(await readdir(directory)).toEqual([file]);
-  },
-  120_000
-);
-
-// 번호가 같아도 시작 시각이 다르면 남이다. 시작 시각은 언제 물어도 같으므로 여유를 두지 않는다.
+// 번호가 같아도 시작 시각이 다르면 남이다. 기록의 시작 시각(감독 실행기가 알린 값)과 같은 프로세스만 실행기가 끈다. 시작 시각은 언제
+// 물어도 같으므로 여유를 두지 않는다.
 it("leaves a process whose start differs from the recorded one", async () => {
   const { root, directory } = await records();
   const child = folders.ownChild(longRunning());
   // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
   await once(child, "spawn");
 
-  const started = processStartedAt(child.pid!, withoutProc)!;
   await writeFile(
     path.join(directory, `${child.pid}.json`),
-    JSON.stringify({ pid: child.pid, lease: "lease", started: started - 1 })
+    // 다른 시작 시각: 이 시험 프로세스의 것(자식은 그 뒤에 시작했다). 실제 기록처럼 과거의 값이다.
+    JSON.stringify({
+      pid: child.pid,
+      lease: "lease",
+      start: testStart(),
+    })
   );
   await recoverProviderProcesses(root, { platform: withoutProc });
   expect(gone(child.pid!)).toBe(false);
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
+
+// #283 외부 리뷰 2회차 SPEC-3: 초 단위로만 남은 예전 기록(`ps -o lstart`)은 그 정보만으로 신원을 확정하지 않는다. 같은 초 안에 번호가
+// 다시 주어진 관계없는 프로그램일 수 있으므로, 그 번호의 프로세스를 정리 요청에 넣지 않고(신호 없음) 기록을 남겨 경고한다.
+it.skipIf(process.platform === "win32")(
+  "does not take a recorded start kept only to the second as the process's identity",
+  async () => {
+    const { root, directory } = await records();
+    const child = folders.ownChild(longRunning());
+    // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
+    await once(child, "spawn");
+    const file = `${child.pid}.json`;
+    // 예전 서버가 남긴 그대로: ps가 초 단위로 알린 시작 시각을 밀리초로.
+    const lstart = spawnSync("ps", ["-o", "lstart=", "-p", String(child.pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 10_000,
+    }).stdout;
+    await writeFile(
+      path.join(directory, file),
+      JSON.stringify({
+        pid: child.pid,
+        lease: crypto.randomUUID(),
+        started: Date.parse(lstart.trim()),
+      })
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    warn.mockRestore();
+    expect(lease.requests.map((request) => request.recorded)).toEqual([
+      undefined,
+    ]);
+    expect(gone(child.pid!)).toBe(false);
+    expect(await readdir(directory)).toEqual([file]);
+  },
+  60_000
+);
 
 // 시작 시각을 남기기 전에 서버가 죽은 기록이다. 우리 것인지 모르니 건드리지 않고 남긴다.
 it("keeps a record without a start and leaves the process alone", async () => {
@@ -276,25 +255,40 @@ it("keeps a record without a start and leaves the process alone", async () => {
 }, 30_000);
 
 // 이 시스템의 실제 경로: 기록을 남기면 다음 시작 때 그 프로세스를 찾아 끝낸다.
+// 이 시스템의 실제 경로: 감독 실행기 아래 트리를 기록하면(실행기가 알린 시작 시각과 함께) 다음 시작의 복구가 실행기에 정리를 청해
+// 그 실행기(기록한 프로세스)와 표식을 가진 프로그램을 끈다. Windows는 실행기를 끄면 그 묶음이 닫혀 트리가 끝난다.
 it("stops a process it recorded itself", async () => {
   const { root } = await records();
   const home = path.join(root, "providers/claude");
-  const child = folders.ownChild(longRunning());
-  // 띄워졌다(exec가 끝났다)는 신호를 기다린다. 고정 시간으로 기다리지 않는다(#215).
-  await once(child, "spawn");
-  const file = path.join(home, "processes", `${child.pid}.json`);
-
-  recordProcess(home, child.pid!, "lease");
+  const tree = launchTree({
+    command: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+    args: [],
+    cwd: process.cwd(),
+    env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  onTestFinished(async () => {
+    if (tree.pid !== undefined && !gone(tree.pid)) await tree.stop();
+  });
+  expect((await tree.started).kind).toBe("running");
+  const file = path.join(home, "processes", `${tree.pid}.json`);
+  recordProcess(home, {
+    pid: tree.pid!,
+    lease: tree.lease,
+    supervisorStart: tree.supervisorStart,
+  });
   await vi.waitFor(
-    async () => expect(await readFile(file, "utf8")).toMatch(/"start(ed)?"/),
+    async () => expect(await readFile(file, "utf8")).toMatch(/"start"/),
     { timeout: 20_000, interval: 50 }
   );
-  const closed = new Promise((resolve) => child.on("close", resolve));
   await recoverProviderProcesses(root);
-  await closed;
-  expect(gone(child.pid!)).toBe(true);
+  await tree.exited;
+  await vi.waitFor(() => expect(gone(tree.pid!)).toBe(true), {
+    timeout: 20_000,
+    interval: 50,
+  });
   expect(await readdir(path.dirname(file))).toEqual([]);
-}, 30_000);
+}, 60_000);
 
 // 기록은 서버 밖의 프로그램도 고칠 수 있다. 이름과 맞지 않거나 번호가 아닌 기록으로는 아무것도 끝내지 않는다.
 it("does not act on a record that does not match its name", async () => {
@@ -363,7 +357,9 @@ it("keeps the record of a live process whose start cannot be read", async () => 
     defer(() => vi.unstubAllEnvs());
     await writeFile(
       path.join(directory, file),
-      JSON.stringify({ pid: child.pid, lease: "lease", started: 1 })
+      // 시작 시각은 이 시험의 뜻과 상관없다. 지금 시각으로 두어, 정리를 청받은 실행기가 그 뒤에 생긴 이 컴퓨터의 다른 프로그램을
+      // "확인하지 못함"으로 세지 않게 한다(1970년이면 거의 모든 프로그램이 그 뒤에 생겼다).
+      JSON.stringify({ pid: child.pid, lease: "lease", started: Date.now() })
     );
     vi.stubEnv("PATH", "");
     await recoverProviderProcesses(root, { platform: withoutProc });
@@ -525,7 +521,8 @@ it.each([
 it.skipIf(process.platform === "win32")(
   "still recovers the record shapes it has written before",
   async () => {
-    for (const fields of [{}, { started: 1 }]) {
+    // 시작 시각은 지금 시각으로 둔다(위 시험과 같은 까닭).
+    for (const fields of [{}, { started: Date.now() }]) {
       const { root, directory } = await records();
       const finished = spawnSync(process.execPath, ["-e", ""]).pid;
       const value = crypto.randomUUID();

@@ -33,7 +33,7 @@ Surface ⇄ Control Plane ⇄ Agent Runtime(프로바이더·job runner adapter)
 | `packages/db` | Drizzle 스키마와 migration | Control Plane |
 | `packages/runtime` | 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter, 실행 시도 기록과 서버 재시작 복구 | Agent Runtime, Surface |
 | `packages/files` | 다른 쪽이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 열기: 파일 하나(`openRegularFile`: 링크·FIFO·바꿔치기 거절, 열지 못한 자리의 분류), 폴더 안으로 한 칸씩 확인하며 들어가기(`inFolder`: 서버 안, Linux는 폴더 handle), 작업 폴더로 폴더 붙들기(`enterFolder`: 별도 프로세스), 파일 식별 대조(`sameEntry`), 파일 하나를 한 번에 바꾸기(`publishFile`: 임시 이름에 쓴 뒤 rename, 실패 정리). 서버 표식·산출물 읽기, runtime 로그인 파일·조직 제품 폴더 읽기, Antigravity 설정 정리가 씀(#242·#278) | 모든 module의 바탕 |
-| `packages/process` | 프로그램 띄우기·끄기의 바탕: 공용 실행(`launchTree`·`runTree`, 띄우기와 그 트리의 끄기 `stop()`을 한 쌍으로), 짧은 명령의 끝 보장(`runCommand`), `ps` 한 칸 조회의 "대상 없음" 계약(`psField`), 세 OS의 실행 시도별 감독 실행기(Rust, `packages/process/supervisor`), 그룹 끄기·표식 정리, 시계. 모든 패키지가 쓰는 시험 정리 도움 | 모든 module의 바탕 |
+| `packages/process` | 프로그램 띄우기·끄기의 바탕: 공용 실행(`launchTree`·`runTree`, 띄우기와 그 트리의 끄기 `stop()`을 한 쌍으로), 짧은 명령의 끝 보장(`runCommand`), `ps` 한 칸 조회의 "대상 없음" 계약(`psField`), 세 OS의 실행 시도별 감독 실행기(Rust, `packages/process/supervisor`), 감독 실행기를 통한 재시작 복구의 정리, 시계. 모든 패키지가 쓰는 시험 정리 도움 | 모든 module의 바탕 |
 | `harness/` | Role·Soul·Skill·연구 흐름 템플릿·연구 철학 내용물 | Research Harness |
 
 Memory port의 첫 판은 core interface·db 단순 구현입니다.
@@ -56,7 +56,7 @@ contracts ← files ← runtime, server
 | `/remove-folder` | 폴더 지우기(Windows의 일시적인 잠김만 다시 시도) | 제품 코드·개발 스크립트·시험 |
 | `/test-cleanup` | 시험의 프로세스·폴더 정리(`withCleanup`·`killUnlessGone`·`awaitedLater` 등) | 개발 스크립트·시험 |
 | `/lifelines`·`/testing`·`/test-support`·`/launcher-setup` | 연결로 본 프로세스 종료, vitest 시험 도움(`testFolders`·`killAndWait` 등), vitest 없이 쓰는 바깥 환경 확인·시험 시계(`probeEnvironment`·`permissionDenial`·`commandFailure`·`manualClock`), 시험 파일마다의 감독 실행기 준비 | 시험 |
-| `/recovery` | 그룹 끄기·표식 정리와 기록한 프로세스의 신원 확인 | runtime의 재시작 복구(`providers/recovery.ts`)와 시험만 |
+| `/recovery` | 감독 실행기를 통한 정리(`cleanThroughSupervisor`: 표식을 가진 프로그램과 기록한 프로세스), 기록한 프로세스와 그 그룹의 신원·생존 확인(신호 없음) | runtime의 재시작 복구(`providers/recovery.ts`)와 시험만 |
 
 그 밖의 곳은 띄울 때 받은 `stop()`으로 끕니다. runtime의 패키지 입구는 `@babojubot/runtime`(과 시험의 `/testing`·`/runtime-contract`)뿐이고, db는 시험까지 runtime을 가져오지 않습니다.
 

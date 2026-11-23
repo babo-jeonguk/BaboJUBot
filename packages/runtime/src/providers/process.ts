@@ -278,7 +278,11 @@ export function startProcess(options: {
   let forget = () => {};
   if (options.stateDir && tree.pid)
     try {
-      forget = recordProcess(options.stateDir, tree.pid, tree.lease);
+      forget = recordProcess(options.stateDir, {
+        pid: tree.pid,
+        lease: tree.lease,
+        supervisorStart: tree.supervisorStart,
+      });
     } catch (error) {
       console.error(
         `[provider] the process record could not be saved; stopping the program (${failureCode(error)})`

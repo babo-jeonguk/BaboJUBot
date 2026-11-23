@@ -68,7 +68,7 @@ pub fn wait_until_empty(
             return left;
         }
         failures.note(between());
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(crate::protocol::POLL);
     }
 }
 

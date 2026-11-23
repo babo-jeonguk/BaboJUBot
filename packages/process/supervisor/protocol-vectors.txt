@@ -4,6 +4,10 @@
 #   ok <message hex, or - when empty> <encoded hex>   the message encodes to these bytes and reads back from them
 #   bad <encoded hex>                                 a reader refuses these bytes (leading zero, missing ":" or ",",
 #                                                     a length that is not digits, or over the 1 MiB limit)
+#   hello <start or -> <message hex>                 the supervisor's first message for that start (`protocol::hello`), and the
+#                                                     server reads it as this protocol with that start (`readSupervisorLine`)
+#   old-hello <message hex>                           a first message without the start field (protocol 4 before #283 review 2):
+#                                                     the supervisor never writes it, and the server refuses it as a build to redo
 ok - 303a2c
 ok 7374617274 353a73746172742c
 ok 68656c6c6f20776f726c6421 31323a68656c6c6f20776f726c64212c
@@ -18,3 +22,6 @@ bad 3a68656c6c6f2c
 bad 2d313a782c
 bad 323030303030303a
 bad 31613a782c
+hello - 6261626f6a75626f742d73757065727669736f722034202d
+hello 1700000000123456 6261626f6a75626f742d73757065727669736f7220342031373030303030303030313233343536
+old-hello 6261626f6a75626f742d73757065727669736f722034

@@ -16,9 +16,9 @@ use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND,
-    GetHandleInformation, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-    SetHandleInformation, WAIT_OBJECT_0,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER,
+    ERROR_PATH_NOT_FOUND, FILETIME, GetHandleInformation, GetLastError, HANDLE,
+    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows_sys::Win32::System::Console::{
@@ -34,11 +34,12 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-    GetExitCodeProcess, GetStartupInfoW, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION, STARTF_USESHOWWINDOW,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, Sleep, TerminateProcess,
-    UpdateProcThreadAttribute, WaitForSingleObject,
+    GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, GetStartupInfoW,
+    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROCESS_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, Sleep,
+    TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 const STANDARD: [STD_HANDLE; 3] = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
@@ -386,7 +387,10 @@ impl Job {
         }
         let mut code = 1;
         // SAFETY: valid handle and pointer.
-        unsafe { GetExitCodeProcess(self.process, &mut code) };
+        if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 {
+            // The end could not be read: it is not taken as a code (a stop then answers that the end is unknown).
+            return None;
+        }
         Some(Exit::Code(code as i32))
     }
 
@@ -472,6 +476,106 @@ fn end_job(reach: &impl JobReach, limit: Duration) -> StopResult {
         }
         attempt::Left::Unknown(why) => Err(failures.reason("unknown", &why)),
     }
+}
+
+/// The process a run's record kept (its supervisor; before the supervisor, its job launcher), held by a handle so that what is checked
+/// and what is ended is that very process (#268 PR 2). Ending it closes the job it holds, and the job ends the run's tree.
+struct Recorded {
+    process: HANDLE,
+}
+
+impl Recorded {
+    /// The process with this id, or `None` when there is none.
+    fn open(pid: i32) -> Result<Option<Recorded>, String> {
+        let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+        // SAFETY: OpenProcess takes integers and returns a new handle or null.
+        let process = unsafe { OpenProcess(access, 0, pid as u32) };
+        if process.is_null() {
+            let error = last_error();
+            if error == ERROR_INVALID_PARAMETER {
+                return Ok(None);
+            }
+            return Err(format!("process {pid} could not be opened: error {error}"));
+        }
+        Ok(Some(Recorded { process }))
+    }
+}
+
+impl Drop for Recorded {
+    fn drop(&mut self) {
+        // SAFETY: the handle is this value's own.
+        unsafe { CloseHandle(self.process) };
+    }
+}
+
+/// A process's creation time in 100-nanosecond intervals since 1601 (the finest Windows gives), or `None` when it cannot be read.
+fn creation_time(process: HANDLE) -> Option<u64> {
+    // SAFETY: zeroed FILETIMEs are valid; GetProcessTimes fills them.
+    let mut times: [FILETIME; 4] = unsafe { zeroed() };
+    let [creation, exit, kernel, user] = &mut times;
+    // SAFETY: valid handle and pointers.
+    if unsafe { GetProcessTimes(process, creation, exit, kernel, user) } == 0 {
+        return None;
+    }
+    Some((u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime))
+}
+
+/// This supervisor's own creation time, reported in its first message for the restart recovery's record.
+fn own_start() -> Option<u64> {
+    // SAFETY: GetCurrentProcess returns a pseudo handle that needs no closing.
+    creation_time(unsafe { GetCurrentProcess() })
+}
+
+/// The system calls that end a recorded process, kept apart from their order (`end_recorded`) so that order can be tested.
+trait RecordedReach {
+    /// When the process was created, in 100-nanosecond intervals since 1601 (what the supervisor reported and the record keeps).
+    fn created(&self) -> Result<u64, String>;
+    /// Whether it has ended, waiting at most `limit`.
+    fn ended_within(&self, limit: Duration) -> bool;
+    fn terminate(&self) -> Result<(), String>;
+}
+
+impl RecordedReach for Recorded {
+    fn created(&self) -> Result<u64, String> {
+        creation_time(self.process).ok_or_else(|| {
+            format!(
+                "the recorded process's creation time could not be read: error {}",
+                last_error()
+            )
+        })
+    }
+
+    fn ended_within(&self, limit: Duration) -> bool {
+        let limit = u32::try_from(limit.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: valid handle.
+        let waited = unsafe { WaitForSingleObject(self.process, limit) };
+        waited == WAIT_OBJECT_0
+    }
+
+    fn terminate(&self) -> Result<(), String> {
+        // SAFETY: valid handle.
+        if unsafe { TerminateProcess(self.process, 1) } == 0 {
+            return Err(format!(
+                "the recorded process could not be ended: error {}",
+                last_error()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Ends the recorded process when it is still the one created at `start`, and checks within `limit` that it ended. Another process
+/// with its id now, or one that already ended, is left alone. A failed end does not skip the check.
+fn end_recorded(reach: &impl RecordedReach, start: u64, limit: Duration) -> StopResult {
+    if reach.created()? != start || reach.ended_within(Duration::ZERO) {
+        return Ok(());
+    }
+    let mut failures = attempt::Failures::default();
+    failures.note(reach.terminate());
+    if reach.ended_within(limit) {
+        return Ok(());
+    }
+    Err(failures.reason("1", "the recorded process did not end"))
 }
 
 impl Tree for Job {
@@ -590,9 +694,28 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    control.write_message(&protocol::hello());
+    control.write_message(&protocol::hello(own_start()));
     let start_request = match protocol::read_start(&mut control, &NoTermination) {
         protocol::StartRequest::Start(start) => start,
+        protocol::StartRequest::Clean(clean) => {
+            // Windows ends a run with its job object; no marker search runs here.
+            if clean.marker.is_some() {
+                control.write_message(
+                    "failed: Windows has no marker cleanup; the job object ends the tree",
+                );
+                return 1;
+            }
+            let result = match clean.recorded {
+                Some((pid, start)) => match Recorded::open(pid) {
+                    Ok(Some(recorded)) => end_recorded(&recorded, start, protocol::END_LIMIT),
+                    Ok(None) => Ok(()),
+                    Err(why) => Err(format!("unknown ({why})")),
+                },
+                None => Ok(()),
+            };
+            control.write_message(&protocol::end_message(&result));
+            return 0;
+        }
         protocol::StartRequest::Ended => return 1,
         protocol::StartRequest::Refused(why) => {
             control.write_message(&format!("failed: {why}"));
@@ -719,6 +842,72 @@ mod stop_tests {
         let left = stop(&job).expect_err("the end could not be read");
         assert!(
             left.starts_with("unknown (the job object could not be read"),
+            "{left}"
+        );
+    }
+}
+
+/// The order of ending a recorded process (#268 PR 2): only the process created at the recorded time is ended, and its end is checked.
+#[cfg(test)]
+mod recorded_tests {
+    use super::{RecordedReach, end_recorded};
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    struct Fake {
+        created: u64,
+        ended: Cell<bool>,
+        ends_when_terminated: bool,
+        terminated: Cell<bool>,
+    }
+
+    impl RecordedReach for Fake {
+        fn created(&self) -> Result<u64, String> {
+            Ok(self.created)
+        }
+
+        fn ended_within(&self, _limit: Duration) -> bool {
+            self.ended.get()
+        }
+
+        fn terminate(&self) -> Result<(), String> {
+            self.terminated.set(true);
+            if self.ends_when_terminated {
+                self.ended.set(true);
+            }
+            Ok(())
+        }
+    }
+
+    fn fake(created: u64, ends_when_terminated: bool) -> Fake {
+        Fake {
+            created,
+            ended: Cell::new(false),
+            ends_when_terminated,
+            terminated: Cell::new(false),
+        }
+    }
+
+    #[test]
+    fn the_recorded_process_is_ended_and_its_end_checked() {
+        let recorded = fake(1_000, true);
+        assert_eq!(end_recorded(&recorded, 1_000, Duration::ZERO), Ok(()));
+        assert!(recorded.terminated.get());
+    }
+
+    #[test]
+    fn another_process_with_the_same_id_is_left_alone() {
+        let other = fake(2_000, true);
+        assert_eq!(end_recorded(&other, 1_000, Duration::ZERO), Ok(()));
+        assert!(!other.terminated.get());
+    }
+
+    #[test]
+    fn a_recorded_process_that_does_not_end_is_reported() {
+        let stuck = fake(1_000, false);
+        let left = end_recorded(&stuck, 1_000, Duration::ZERO).expect_err("it still runs");
+        assert!(
+            left.starts_with("1 (the recorded process did not end"),
             "{left}"
         );
     }

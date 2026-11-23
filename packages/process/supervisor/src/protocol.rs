@@ -7,7 +7,11 @@
 //! The supervisor writes:
 //!
 //! ```text
-//! babojubot-supervisor <protocol>     first, before anything runs: the protocol this supervisor speaks
+//! babojubot-supervisor <protocol> <start>
+//!                                     first, before anything runs: the protocol this supervisor speaks and its own start in the
+//!                                     system's finest measure (Linux: clock ticks after boot; macOS: microseconds since the epoch;
+//!                                     Windows: the creation time in 100-nanosecond intervals since 1601), or `-` when it cannot be
+//!                                     read. The restart recovery keeps it to tell this supervisor from another process later
 //! ok <pid>                            the program runs; <pid> is its process id
 //! failed: <why>                       the supervisor could not set up, so the program did not run; nothing follows
 //! not-started <code>: <why>           the program could not start (<code> is the errno name, ENOENT and so on); nothing follows
@@ -16,9 +20,18 @@
 //!                                     what was still running and why. The supervisor exits right after
 //! ```
 //!
-//! Before the program runs, the server writes `env <NAME>=<VALUE>` messages (the run's marker: the program gets them on top of the
-//! supervisor's own environment, and the supervisor itself does not carry them, so marker cleanup never reaches the supervisor) and
-//! then `start`. The supervisor starts the program only after `start`; the end of the channel before it ends the supervisor.
+//! Before the program runs, the server writes `env <NAME>=<VALUE>` messages (the run's markers: the program gets them on top of the
+//! supervisor's own environment, and the supervisor itself does not carry them, so marker cleanup never reaches the supervisor),
+//! `marker <VALUE>` (this run's own marker: a stop also ends the programs that carry it, wherever they run; protocol 4) and then
+//! `start`. The supervisor starts the program only after `start`; the end of the channel before it ends the supervisor.
+//!
+//! Instead of `start`, the server may write `clean` (protocol 4): the restart recovery's request when the run's server and supervisor
+//! both died. No program runs; the supervisor ends the programs that carry `marker`, answers `ended` or `left: <what>` and exits.
+//! `since <N>` before it says when that run began (Linux: clock ticks after boot; macOS: microseconds since the epoch), so a program
+//! of this user that started after it and whose environment cannot be read is reported as unverified instead of passed over.
+//! `recorded <PID> <START>` names the process the run's record kept (the run's supervisor) with the start it reported in its first
+//! message: it is ended too when it is still that process (the start is compared exactly). A clean needs a marker, a recorded process,
+//! or both.
 //!
 //! Then the server writes `stop <grace ms>` (end the tree, report, exit), `kill-leader` (end the program only, as a crash would)
 //! and `interrupt` (SIGINT to the program's process group; nothing on Windows). The end of the channel means the server is gone and
@@ -27,7 +40,7 @@
 
 use std::time::Duration;
 
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 4;
 /// The grace after SIGTERM when the channel ends without a stop (the server is gone).
 pub const DEFAULT_GRACE: Duration = Duration::from_millis(2000);
 /// How long a stop waits, after the last signal, until nothing of the tree runs.
@@ -37,8 +50,9 @@ pub const POLL: Duration = Duration::from_millis(20);
 /// The longest message either side accepts.
 pub const MESSAGE_LIMIT: usize = 1024 * 1024;
 
-pub fn hello() -> String {
-    format!("babojubot-supervisor {PROTOCOL}")
+pub fn hello(start: Option<u64>) -> String {
+    let start = start.map_or("-".to_owned(), |start| start.to_string());
+    format!("babojubot-supervisor {PROTOCOL} {start}")
 }
 
 /// One message as a netstring.
@@ -151,16 +165,30 @@ fn parse(message: &str) -> Option<Command> {
     Some(Command::Stop(Duration::from_millis(grace)))
 }
 
-/// What the server asked for before the start: the environment entries for the program, and what arrived after `start`.
+/// What the server asked for before the start: the environment entries for the program, this run's own marker, and what arrived
+/// after `start`.
 pub struct Start {
     pub env: Vec<(String, String)>,
+    /// Windows ends a run with its job object and has no marker search.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub marker: Option<String>,
     pub rest: Messages,
     pub waiting: Vec<String>,
+}
+
+/// The restart recovery's request: end what carries `marker` and the `recorded` process (its id and start time); `since` is when that
+/// run began. Windows refuses it.
+#[cfg_attr(windows, allow(dead_code))]
+pub struct Clean {
+    pub marker: Option<String>,
+    pub since: Option<u64>,
+    pub recorded: Option<(i32, u64)>,
 }
 
 /// How reading the start request ended.
 pub enum StartRequest {
     Start(Start),
+    Clean(#[cfg_attr(windows, allow(dead_code))] Clean),
     /// The channel ended or termination was requested first: nothing ran.
     Ended,
     /// The server sent something the supervisor must not use (a malformed message, an environment entry that cannot be one).
@@ -178,10 +206,21 @@ fn environment_entry(entry: &str) -> Result<(String, String), String> {
     Ok((name.to_owned(), value.to_owned()))
 }
 
-/// Reads the server's `env` messages until `start`.
+/// A marker the supervisor can compare: not empty, without NUL.
+fn marker_value(value: &str) -> Result<String, String> {
+    if value.is_empty() || value.contains('\0') {
+        return Err("the run's marker is empty or has a NUL byte".to_owned());
+    }
+    Ok(value.to_owned())
+}
+
+/// Reads the server's `env`, `marker` and `since` messages until `start` or `clean`.
 pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) -> StartRequest {
     let mut messages = Messages::default();
     let mut env = Vec::new();
+    let mut marker = None;
+    let mut since = None;
+    let mut recorded = None;
     loop {
         if termination.requested() {
             return StartRequest::Ended;
@@ -200,14 +239,56 @@ pub fn read_start(channel: &mut impl Channel, termination: &impl Termination) ->
             if message == "start" {
                 return StartRequest::Start(Start {
                     env,
+                    marker,
                     rest: messages,
                     waiting: complete.collect(),
+                });
+            }
+            if message == "clean" {
+                if marker.is_none() && recorded.is_none() {
+                    return StartRequest::Refused(
+                        "clean came without the run's marker or a recorded process".to_owned(),
+                    );
+                }
+                return StartRequest::Clean(Clean {
+                    marker,
+                    since,
+                    recorded,
                 });
             }
             if let Some(entry) = message.strip_prefix("env ") {
                 match environment_entry(entry) {
                     Ok(pair) => env.push(pair),
                     Err(why) => return StartRequest::Refused(why),
+                }
+            } else if let Some(value) = message.strip_prefix("marker ") {
+                match marker_value(value) {
+                    Ok(value) => marker = Some(value),
+                    Err(why) => return StartRequest::Refused(why),
+                }
+            } else if let Some(value) = message.strip_prefix("recorded ") {
+                let parsed = value
+                    .split_once(' ')
+                    .and_then(|(pid, start)| {
+                        Some((pid.parse::<i32>().ok()?, start.parse::<u64>().ok()?))
+                    })
+                    .filter(|&(pid, _)| pid > 1);
+                match parsed {
+                    Some(pair) => recorded = Some(pair),
+                    None => {
+                        return StartRequest::Refused(format!(
+                            "\"recorded {value}\" is not a process id above 1 and a start time"
+                        ));
+                    }
+                }
+            } else if let Some(value) = message.strip_prefix("since ") {
+                match value.parse::<u64>() {
+                    Ok(value) => since = Some(value),
+                    Err(_) => {
+                        return StartRequest::Refused(format!(
+                            "\"since {value}\" is not a start time"
+                        ));
+                    }
                 }
             }
         }
@@ -359,6 +440,17 @@ mod tests {
                     let error = Messages::default().push(&bytes(row[1])).unwrap_err();
                     assert!(error.contains("malformed control message"), "{error}");
                 }
+                // The first message (#283 review 4, SPEC-4): the same rows as the server's reader.
+                "hello" => {
+                    let start = (row[1] != "-").then(|| row[1].parse::<u64>().unwrap());
+                    let line = String::from_utf8(bytes(row[2])).unwrap();
+                    assert_eq!(hello(start), line);
+                }
+                "old-hello" => {
+                    let line = String::from_utf8(bytes(row[1])).unwrap();
+                    assert_ne!(hello(None), line);
+                    assert_ne!(hello(Some(1)), line);
+                }
                 other => panic!("unknown vector kind {other}"),
             }
         }
@@ -472,6 +564,7 @@ mod tests {
         };
         let start = Start {
             env: Vec::new(),
+            marker: None,
             rest: Messages::default(),
             waiting: Vec::new(),
         };
@@ -544,6 +637,52 @@ mod tests {
                 assert_eq!(start.waiting, vec!["stop 5".to_owned()]);
             }
             _ => panic!("the start request was not read"),
+        }
+    }
+
+    #[test]
+    fn the_restart_recovery_asks_for_a_clean_with_the_run_s_marker() {
+        let read = |messages: &[&str]| {
+            let mut bytes = Vec::new();
+            for message in messages {
+                bytes.extend(frame(message));
+            }
+            let mut channel = Script {
+                reads: VecDeque::from([Read::Bytes(bytes)]),
+                written: Vec::new(),
+            };
+            read_start(&mut channel, &Never)
+        };
+        match read(&["marker abc", "since 12", "clean"]) {
+            StartRequest::Clean(clean) => {
+                assert_eq!(clean.marker.as_deref(), Some("abc"));
+                assert_eq!(clean.since, Some(12));
+                assert_eq!(clean.recorded, None);
+            }
+            _ => panic!("the clean request was not read"),
+        }
+        match read(&["recorded 4242 77", "clean"]) {
+            StartRequest::Clean(clean) => {
+                assert_eq!(clean.marker, None);
+                assert_eq!(clean.recorded, Some((4242, 77)));
+            }
+            _ => panic!("the clean request was not read"),
+        }
+        match read(&["env BABOJUBOT_PROCESS_LEASE=abc", "marker abc", "start"]) {
+            StartRequest::Start(start) => assert_eq!(start.marker.as_deref(), Some("abc")),
+            _ => panic!("the start request was not read"),
+        }
+        for refused in [
+            &["clean"][..],
+            &["marker ", "clean"],
+            &["since soon", "marker abc", "clean"],
+            &["recorded 1 5", "clean"],
+            &["recorded 42", "clean"],
+        ] {
+            assert!(
+                matches!(read(refused), StartRequest::Refused(_)),
+                "{refused:?}"
+            );
         }
     }
 }

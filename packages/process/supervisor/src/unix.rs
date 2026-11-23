@@ -8,6 +8,7 @@
 //! the supervisor points its own 0–2 at /dev/null, so the program's output closes when the program's tree closes it.
 
 use crate::attempt;
+use crate::marked::{self, Holder};
 use crate::protocol::{self, Channel, Exit, Read, StopResult, Termination, Tree};
 use std::ffi::OsString;
 use std::io;
@@ -190,9 +191,67 @@ fn exit_of(code: libc::c_int, status: libc::c_int) -> Option<Exit> {
     }
 }
 
-/// The program, which is also its process group's leader, and its group.
+/// The program, which is also its process group's leader, and its group. `marked` finds the programs that carry this run's marker.
 struct Leader {
     pid: libc::pid_t,
+    marked: Marked,
+}
+
+/// The programs that carry this run's marker, as a stop sees them. One a later look no longer finds (a dying process shows no
+/// environment) still counts until what holds it says it ended (#283 review 1): not finding it again is not its end.
+struct Marked<H = marked::Held> {
+    search: Option<marked::Search>,
+    seen: std::cell::RefCell<Vec<std::rc::Rc<H>>>,
+}
+
+impl<H: Holder> Default for Marked<H> {
+    fn default() -> Self {
+        Marked::new(None)
+    }
+}
+
+impl<H: Holder> Marked<H> {
+    fn new(search: Option<marked::Search>) -> Self {
+        Marked {
+            search,
+            seen: Default::default(),
+        }
+    }
+
+    /// This look's programs, and those held before that still run as `runs` tells (`marked::still_runs`). One whose state cannot be
+    /// told is unverified and stays held; one is let go only when it was told to have ended.
+    fn keep(
+        &self,
+        found: marked::Found<H>,
+        runs: impl Fn(&H) -> marked::Running,
+    ) -> marked::Found<std::rc::Rc<H>> {
+        let mut holders: Vec<std::rc::Rc<H>> =
+            found.holders.into_iter().map(std::rc::Rc::new).collect();
+        let mut unverified = found.unverified;
+        let mut untold = Vec::new();
+        for held in self.seen.borrow_mut().drain(..) {
+            if holders.iter().any(|each| each.pid() == held.pid()) {
+                continue;
+            }
+            match runs(&held) {
+                marked::Running::Yes => holders.push(held),
+                marked::Running::Ended => {}
+                // It could not be told: no signal, unverified, and still held for the next look, which may neither find it nor
+                // read it (#283 review 3, STD-3). Only an end that was told lets it go.
+                marked::Running::Unknown => {
+                    if !unverified.contains(&held.pid()) {
+                        unverified.push(held.pid());
+                    }
+                    untold.push(held);
+                }
+            }
+        }
+        *self.seen.borrow_mut() = holders.iter().cloned().chain(untold).collect();
+        marked::Found {
+            holders,
+            unverified,
+        }
+    }
 }
 
 impl Leader {
@@ -251,16 +310,56 @@ impl Leader {
     }
 }
 
-/// The system calls a stop makes on the tree: the program's group and, on Linux, the orphans outside it that this supervisor took
-/// in. Kept apart from the stop's order (`end_tree`) so that order can be tested without real processes.
+/// The system calls a stop makes on the tree: the program's group, on Linux the orphans outside it that this supervisor took in, and
+/// the programs outside the group that carry this run's marker (`marked.rs`). Kept apart from the stop's order (`end_tree`) so that
+/// order can be tested without real processes.
 trait Reach {
+    /// A program found by the marker, held so that its signal reaches that very process.
+    type Held: Holder;
     fn group_live(&self) -> Result<usize, String>;
     fn orphans(&self) -> Result<Vec<libc::pid_t>, String>;
+    /// The programs outside the group that carry this run's marker, and those that may be ours but could not be read.
+    fn marked(&self) -> Result<marked::Found<Self::Held>, String>;
     fn signal_group(&self, signal: libc::c_int) -> Result<(), String>;
     fn signal_orphan(&self, orphan: libc::pid_t, signal: libc::c_int) -> Result<(), String>;
+    fn signal_marked(&self, held: &Self::Held, signal: libc::c_int) -> Result<(), String>;
+}
+
+/// The programs that carry `search`'s marker, leaving out the members of `group` (the group signals reach them).
+fn marked_outside(
+    search: Option<&marked::Search>,
+    group: Option<libc::pid_t>,
+) -> Result<marked::Found<marked::Held>, String> {
+    let Some(search) = search else {
+        return Ok(marked::Found {
+            holders: Vec::new(),
+            unverified: Vec::new(),
+        });
+    };
+    let mut found = marked::find(search)?;
+    if let Some(group) = group {
+        // SAFETY: getpgid has no memory effects.
+        found
+            .holders
+            .retain(|held| unsafe { libc::getpgid(held.pid()) } != group);
+    }
+    Ok(found)
 }
 
 impl Reach for Leader {
+    type Held = std::rc::Rc<marked::Held>;
+
+    fn marked(&self) -> Result<marked::Found<Self::Held>, String> {
+        Ok(self.marked.keep(
+            marked_outside(self.marked.search.as_ref(), Some(self.pid))?,
+            marked::still_runs,
+        ))
+    }
+
+    fn signal_marked(&self, held: &Self::Held, signal: libc::c_int) -> Result<(), String> {
+        marked::signal(held, signal)
+    }
+
     fn group_live(&self) -> Result<usize, String> {
         live_group_members(self.pid)
             .map_err(|error| format!("the process group could not be listed: {error}"))
@@ -296,14 +395,79 @@ impl Reach for Leader {
     }
 }
 
-/// What still runs of the tree. The count needs both lists, so either failing leaves it unknown.
-fn live_members(reach: &impl Reach) -> Result<usize, String> {
-    Ok(reach.group_live()? + reach.orphans()?.len())
+/// The restart recovery's request when the run's server and supervisor both died: no program and no group, only what carries the
+/// run's marker and the process the run's record kept, when it is still that process (`clean`).
+struct Stray {
+    marked: Marked,
+    recorded: Option<(libc::pid_t, u64)>,
 }
 
-/// The group and the orphans are separate targets: each gets the signal whatever the other answers.
+impl Reach for Stray {
+    type Held = std::rc::Rc<marked::Held>;
+
+    fn group_live(&self) -> Result<usize, String> {
+        Ok(0)
+    }
+
+    fn orphans(&self) -> Result<Vec<libc::pid_t>, String> {
+        Ok(Vec::new())
+    }
+
+    fn marked(&self) -> Result<marked::Found<Self::Held>, String> {
+        let mut found = marked_outside(self.marked.search.as_ref(), None)?;
+        if let Some((pid, start)) = self.recorded
+            && !found.holders.iter().any(|held| held.pid() == pid)
+            && let Some(held) = marked::hold(pid, start)?
+        {
+            found.holders.push(held);
+        }
+        Ok(self.marked.keep(found, marked::still_runs))
+    }
+
+    fn signal_group(&self, _signal: libc::c_int) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn signal_orphan(&self, _orphan: libc::pid_t, _signal: libc::c_int) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn signal_marked(&self, held: &Self::Held, signal: libc::c_int) -> Result<(), String> {
+        marked::signal(held, signal)
+    }
+}
+
+/// What still runs of the tree: the group, the orphans, and the marked programs that are neither. The count needs every list, so
+/// any failing leaves it unknown.
+fn live_members(reach: &impl Reach) -> Result<usize, String> {
+    let orphans = reach.orphans()?;
+    let marked = reach.marked()?;
+    let outside = marked
+        .holders
+        .iter()
+        .filter(|held| !orphans.contains(&held.pid()))
+        .count();
+    Ok(reach.group_live()? + orphans.len() + outside)
+}
+
+/// The group, every orphan and every marked program are separate targets: each gets the signal whatever the others answer.
 fn signal_tree(reach: &impl Reach, signal: libc::c_int) -> Result<(), String> {
-    attempt::all_of([reach.signal_group(signal), signal_orphans(reach, signal)])
+    attempt::all_of([
+        reach.signal_group(signal),
+        signal_orphans(reach, signal),
+        signal_marked(reach, signal),
+    ])
+}
+
+/// Every marked program found now gets the signal whatever the others answer, through what holds it (`Reach::signal_marked`).
+fn signal_marked(reach: &impl Reach, signal: libc::c_int) -> Result<(), String> {
+    let found = reach.marked()?;
+    attempt::all_of(
+        found
+            .holders
+            .iter()
+            .map(|held| reach.signal_marked(held, signal)),
+    )
 }
 
 /// Every orphan gets the signal whatever the others answer. Without their list there is nothing to signal.
@@ -337,16 +501,54 @@ fn end_tree(reach: &impl Reach, grace: Duration, limit: Duration) -> StopResult 
         left = attempt::wait_until_empty(
             limit,
             look,
-            || signal_orphans(reach, libc::SIGKILL),
+            || {
+                attempt::all_of([
+                    signal_orphans(reach, libc::SIGKILL),
+                    signal_marked(reach, libc::SIGKILL),
+                ])
+            },
             &mut failures,
         );
     }
     match left {
-        attempt::Left::Count(0) => Ok(()),
+        attempt::Left::Count(0) => settle_unverified(reach, &mut failures),
         attempt::Left::Count(left) => {
             Err(failures.reason(&left.to_string(), "the tree did not end"))
         }
         attempt::Left::Unknown(why) => Err(failures.reason("unknown", &why)),
+    }
+}
+
+/// After the tree ended: a program that may carry the run's marker but could not be read gets no signal. It is looked at again for
+/// the default grace, as short-lived programs that hide their environment (`ssh`) come and go; one that becomes readable and
+/// carries the marker gets SIGKILL. What is still unverified (or marked) then makes the stop not clean.
+fn settle_unverified(reach: &impl Reach, failures: &mut attempt::Failures) -> StopResult {
+    let deadline = std::time::Instant::now() + protocol::DEFAULT_GRACE;
+    loop {
+        let found = reach
+            .marked()
+            .map_err(|why| failures.reason("unknown", &why))?;
+        if found.unverified.is_empty() && found.holders.is_empty() {
+            return Ok(());
+        }
+        failures.note(attempt::all_of(
+            found
+                .holders
+                .iter()
+                .map(|held| reach.signal_marked(held, libc::SIGKILL)),
+        ));
+        if std::time::Instant::now() >= deadline {
+            let pids: Vec<String> = found.unverified.iter().map(ToString::to_string).collect();
+            let left = found.unverified.len() + found.holders.len();
+            return Err(failures.reason(
+                &left.to_string(),
+                &format!(
+                    "programs of this user that may carry the run's marker could not be checked, so they got no signal: {}",
+                    pids.join(", ")
+                ),
+            ));
+        }
+        std::thread::sleep(protocol::POLL);
     }
 }
 
@@ -423,20 +625,16 @@ fn live_group_members(group: libc::pid_t) -> io::Result<usize> {
 /// once the last thread is gone. So a zombie still runs while it counts more than one thread.
 #[cfg(target_os = "linux")]
 fn group_member_runs(stat: &str, group: libc::pid_t) -> bool {
-    // The fields after the command name, which ends with the last ") ": state, parent, process group, ..., thread count (the 18th).
-    let Some((_, rest)) = stat.rsplit_once(") ") else {
-        return false;
-    };
-    let fields: Vec<&str> = rest.split(' ').collect();
-    let state = fields.first().copied().unwrap_or("");
-    let pgrp = fields
-        .get(2)
+    // The fields after the command name, which ends with the last ") ": state, parent, process group, ...
+    let pgrp = stat
+        .rsplit_once(") ")
+        .and_then(|(_, rest)| rest.split(' ').nth(2))
         .and_then(|field| field.parse::<libc::pid_t>().ok());
-    let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
-    if pgrp != Some(group) || state == "X" {
-        return false;
-    }
-    state != "Z" || threads.is_none_or(|threads| threads > 1)
+    pgrp == Some(group)
+        && match marked::life_in_stat(stat) {
+            marked::Life::Runs | marked::Life::ThreadsRun | marked::Life::Unknown => true,
+            marked::Life::Ended => false,
+        }
 }
 
 #[cfg(target_os = "macos")]
@@ -470,22 +668,11 @@ fn live_group_members(group: libc::pid_t) -> io::Result<usize> {
         if pid == 0 {
             continue;
         }
-        // SAFETY: a zeroed proc_bsdinfo is valid; proc_pidinfo fills it.
-        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-        let info_size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-        // SAFETY: the buffer is valid for `info_size`.
-        let got = unsafe {
-            libc::proc_pidinfo(
-                pid,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                (&mut info as *mut libc::proc_bsdinfo).cast(),
-                info_size,
-            )
-        };
-        // A process that ended in the meantime has no information any more: it is not live.
-        if got == info_size && info.pbi_pgid == group as u32 && info.pbi_status != libc::SZOMB {
-            count += 1;
+        // The kernel's record is given for every process, also a set-id member whose `proc_pidinfo` is refused, so a member that still
+        // runs is not missed (#283 review 2). One that ended in the meantime has none; one that cannot be read fails the look.
+        match marked::record(pid)? {
+            Some(seen) if seen.group == group && !seen.zombie => count += 1,
+            Some(_) | None => {}
         }
     }
     Ok(count)
@@ -561,8 +748,13 @@ fn children() -> io::Result<Vec<libc::pid_t>> {
         else {
             continue;
         };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
+        // A process that ended meanwhile is not a child; one whose state cannot be read leaves the children unknown.
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+                continue;
+            }
+            Err(error) => return Err(error),
         };
         let parent = stat
             .rsplit_once(") ")
@@ -668,7 +860,10 @@ fn start(arguments: &[OsString], env: &[(String, String)]) -> Result<Leader, Sta
                 .map_err(|_| StartFailure::Failed("the program's id is out of range".to_owned()))?;
             // The child handle neither waits nor kills on drop; the supervisor reaps the program itself after the last signal.
             drop(child);
-            Ok(Leader { pid })
+            Ok(Leader {
+                pid,
+                marked: Marked::default(),
+            })
         }
         Err(error) => Err(StartFailure::NotStarted(
             errno_name(error.raw_os_error()),
@@ -703,7 +898,7 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    control.write_message(&protocol::hello());
+    control.write_message(&protocol::hello(marked::start_of_self()));
     if let Err(error) = catch_termination() {
         control.write_message(&format!(
             "failed: the supervisor could not catch termination signals: {error}"
@@ -712,6 +907,18 @@ pub fn run() -> i32 {
     }
     let start_request = match protocol::read_start(&mut control, &Signals) {
         protocol::StartRequest::Start(start) => start,
+        protocol::StartRequest::Clean(clean) => {
+            let stray = Stray {
+                marked: Marked::new(clean.marker.map(|marker| marked::Search {
+                    marker,
+                    since: clean.since,
+                })),
+                recorded: clean.recorded,
+            };
+            let result = end_tree(&stray, protocol::DEFAULT_GRACE, protocol::END_LIMIT);
+            control.write_message(&protocol::end_message(&result));
+            return 0;
+        }
         protocol::StartRequest::Ended => return 1,
         protocol::StartRequest::Refused(why) => {
             control.write_message(&format!("failed: {why}"));
@@ -730,6 +937,12 @@ pub fn run() -> i32 {
             return 1;
         }
     };
+    // Programs of this user that started after this supervisor and cannot be read may be the run's (`marked.rs`).
+    // Without its own start, the widest beginning: every unreadable program of this user may then be ours.
+    leader.marked = Marked::new(start_request.marker.clone().map(|marker| marked::Search {
+        marker,
+        since: Some(marked::start_of_self().unwrap_or(0)),
+    }));
     control.write_message(&format!("ok {}", leader.pid));
     release_standard_streams();
     protocol::supervise(&mut control, &mut leader, &Signals, start_request)
@@ -768,6 +981,7 @@ mod tests {
 #[cfg(test)]
 mod stop_tests {
     use super::{Reach, end_tree};
+    use crate::marked::{Found, Holder};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeSet;
     use std::time::Duration;
@@ -777,9 +991,22 @@ mod stop_tests {
     struct Fake {
         group: Cell<usize>,
         orphans: RefCell<BTreeSet<libc::pid_t>>,
+        /// Programs outside the tree that carry the run's marker; they end on SIGKILL too.
+        marked: RefCell<BTreeSet<libc::pid_t>>,
+        /// Programs of this user that may carry the marker but cannot be read, and for how many looks they are still there.
+        unverified: Vec<libc::pid_t>,
+        unverified_for: Cell<usize>,
         refuses: Vec<(libc::pid_t, libc::c_int)>,
         failed_looks: Cell<usize>,
         sent: RefCell<Vec<(libc::pid_t, libc::c_int)>>,
+    }
+
+    struct FakeHeld(libc::pid_t);
+
+    impl Holder for FakeHeld {
+        fn pid(&self) -> libc::pid_t {
+            self.0
+        }
     }
 
     impl Fake {
@@ -791,6 +1018,9 @@ mod stop_tests {
             Fake {
                 group: Cell::new(group),
                 orphans: RefCell::new(orphans.iter().copied().collect()),
+                marked: RefCell::new(BTreeSet::new()),
+                unverified: Vec::new(),
+                unverified_for: Cell::new(usize::MAX),
                 refuses: refuses.to_vec(),
                 failed_looks: Cell::new(0),
                 sent: RefCell::new(Vec::new()),
@@ -813,6 +1043,7 @@ mod stop_tests {
                     self.group.set(0);
                 } else {
                     self.orphans.borrow_mut().remove(&target);
+                    self.marked.borrow_mut().remove(&target);
                 }
             }
             Ok(())
@@ -820,6 +1051,25 @@ mod stop_tests {
     }
 
     impl Reach for Fake {
+        type Held = FakeHeld;
+
+        fn marked(&self) -> Result<Found<FakeHeld>, String> {
+            let left = self.unverified_for.get();
+            self.unverified_for.set(left.saturating_sub(1));
+            Ok(Found {
+                holders: self.marked.borrow().iter().copied().map(FakeHeld).collect(),
+                unverified: if left > 0 {
+                    self.unverified.clone()
+                } else {
+                    Vec::new()
+                },
+            })
+        }
+
+        fn signal_marked(&self, held: &FakeHeld, signal: libc::c_int) -> Result<(), String> {
+            self.deliver(held.0, signal)
+        }
+
         fn group_live(&self) -> Result<usize, String> {
             Ok(self.group.get())
         }
@@ -881,5 +1131,107 @@ mod stop_tests {
         tree.failed_looks.set(1);
         assert_eq!(stop(&tree), Ok(()));
         assert!(tree.got(12, libc::SIGKILL));
+    }
+
+    #[test]
+    fn marked_programs_outside_the_tree_get_the_signals_and_are_waited_for() {
+        let tree = Fake::new(1, &[], &[]);
+        tree.marked.borrow_mut().extend([31, 32]);
+        assert_eq!(stop(&tree), Ok(()));
+        for target in [31, 32] {
+            assert!(tree.got(target, libc::SIGTERM));
+            assert!(tree.got(target, libc::SIGKILL));
+        }
+    }
+
+    #[test]
+    fn a_marked_program_that_refuses_its_signals_does_not_keep_the_tree_from_theirs() {
+        let tree = Fake::new(1, &[12], &[(31, libc::SIGTERM), (31, libc::SIGKILL)]);
+        tree.marked.borrow_mut().insert(31);
+        let left = stop(&tree).expect_err("program 31 still runs");
+        assert!(tree.got(0, libc::SIGKILL));
+        assert!(tree.got(12, libc::SIGKILL));
+        assert!(left.starts_with("1 ("), "{left}");
+        assert!(left.contains("31 could not be signalled"), "{left}");
+    }
+
+    #[test]
+    fn a_program_that_could_not_be_checked_gets_no_signal_and_the_stop_is_not_clean() {
+        let mut tree = Fake::new(1, &[], &[]);
+        tree.unverified = vec![41];
+        let left = stop(&tree).expect_err("program 41 could not be checked");
+        assert!(tree.sent.borrow().iter().all(|&(target, _)| target != 41));
+        assert!(left.starts_with("1 ("), "{left}");
+        assert!(
+            left.contains("could not be checked") && left.contains("41"),
+            "{left}"
+        );
+    }
+
+    #[test]
+    fn a_short_lived_program_that_could_not_be_checked_does_not_make_the_stop_unclean() {
+        let mut tree = Fake::new(1, &[], &[]);
+        tree.unverified = vec![41];
+        tree.unverified_for.set(6);
+        assert_eq!(stop(&tree), Ok(()));
+        assert!(tree.sent.borrow().iter().all(|&(target, _)| target != 41));
+    }
+
+    /// #283 review 3, STD-3: a held program whose state cannot be told keeps being held, unverified and without a signal, until
+    /// what holds it says it ended. Forgetting it would let a later look that neither finds it again nor reads it answer that
+    /// nothing is left; in a clean request for a record kept without a start (no beginning), the search itself does not count an
+    /// unreadable program as unverified.
+    #[test]
+    fn a_held_program_whose_state_cannot_be_told_stays_held_until_it_has_ended() {
+        use super::Marked;
+        use crate::marked::{Running, Search};
+        let marked: Marked<FakeHeld> = Marked::new(Some(Search {
+            marker: "6f1c2a3e-1111-4222-8333-944455556666".to_owned(),
+            since: None,
+        }));
+        let nothing = || Found {
+            holders: Vec::new(),
+            unverified: Vec::new(),
+        };
+        let state = Cell::new(Running::Yes);
+        let runs = |_: &FakeHeld| state.get();
+        let pids = |found: &Found<std::rc::Rc<FakeHeld>>| {
+            (
+                found
+                    .holders
+                    .iter()
+                    .map(|held| held.pid())
+                    .collect::<Vec<_>>(),
+                found.unverified.clone(),
+            )
+        };
+        let found = marked.keep(
+            Found {
+                holders: vec![FakeHeld(7)],
+                unverified: Vec::new(),
+            },
+            runs,
+        );
+        assert_eq!(pids(&found), (vec![7], vec![]));
+        state.set(Running::Unknown);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![7]));
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![7]));
+        // Unverified once, also when the search counts it too.
+        assert_eq!(
+            pids(&marked.keep(
+                Found {
+                    holders: Vec::new(),
+                    unverified: vec![7],
+                },
+                runs
+            )),
+            (vec![], vec![7])
+        );
+        state.set(Running::Yes);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![7], vec![]));
+        state.set(Running::Ended);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![]));
+        state.set(Running::Yes);
+        assert_eq!(pids(&marked.keep(nothing(), runs)), (vec![], vec![]));
     }
 }

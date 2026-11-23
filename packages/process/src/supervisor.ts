@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import {
   resolvedCommand,
   superviseTree,
+  supervisorStopLimitMs,
   windowsLaunch,
   type SupervisorCommand,
 } from "./supervised.ts";
@@ -69,6 +70,49 @@ export function supervisorProblem() {
   if (!supervisor)
     return "the supervisor was not prepared in this process (prepareSupervisor)";
   return supervisor.ok ? undefined : supervisor.reason;
+}
+
+/** 정리만 청한 실행기의 유예: 서버가 사라져 통로가 끊길 때와 같은 기본 유예(`protocol.rs` `DEFAULT_GRACE`)다. */
+const cleanGraceMs = 2000;
+
+/**
+ * 재시작 복구(#268 PR 2): 실행 시도의 서버와 실행기가 함께 죽었으면, 그 실행 시도의 표식(`lease`)을 가진 프로그램과 기록한
+ * 프로세스(`recorded`: 그 실행 시도의 실행기, 감독 실행기 전의 기록은 프로그램 대표)를 실행기로 찾아 끈다. 실행기는 프로그램을 띄우지
+ * 않고 정리만 하고 답한다(`clean`). 신호는 표식이나 시작 시각을 확인한 바로 그 프로세스에만 간다(Linux는 프로세스 핸들, macOS는
+ * 신호 직전 시작 시각 재확인). `since`(그 실행 시도가 시작한 때)부터 생긴 이 사용자의 프로그램 가운데 환경을 읽을 수 없는 것은 신호
+ * 없이 남고 실패로 알린다. 시각은 그 실행기가 첫 메시지로 알린 자기 시작 시각(`LaunchedTree.supervisorStart`, 시스템이 주는 가장
+ * 정밀한 값)이고 실행기가 정확히 견준다. Windows는 묶음이 트리를 끄므로 표식 정리가 없고 기록한 프로세스만 끈다(그 프로세스가 쥔
+ * 묶음이 닫혀 트리가 끝난다).
+ * 남은 것이 있거나 실행기를 준비하지 못했으면 던진다.
+ */
+export async function cleanThroughSupervisor({
+  lease,
+  since,
+  recorded,
+}: {
+  lease?: string;
+  since?: string;
+  recorded?: { pid: number; start: string };
+}) {
+  if (windows() && lease !== undefined)
+    throw new Error(
+      "Windows has no marker cleanup; the job object ends a run's tree"
+    );
+  if (!supervisor?.ok)
+    throw new Error(`the supervisor cannot clean up: ${supervisorProblem()}`);
+  const { answered } = superviseTree(
+    { file: supervisor.file, args: [], options: {} },
+    {
+      command: [supervisor.file],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      stdio: ["ignore", "ignore", "ignore"],
+    },
+    lease ?? "",
+    { inherited: {}, clean: { since, recorded } }
+  );
+  await answered(cleanGraceMs + supervisorStopLimitMs);
 }
 
 /** 프로그램을 실행기로 띄우는 방법. */

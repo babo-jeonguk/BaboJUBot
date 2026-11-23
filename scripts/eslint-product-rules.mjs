@@ -595,7 +595,7 @@ const noCleanupChain = {
 const groupSignalers = new Set(["kill", "killUnlessGone", "processAlive"]);
 
 /**
- * 프로세스 그룹(음수 pid)에 신호를 보내는 일은 packages/process/src/group.ts만 한다. 그룹 끄기는 생존 확인·SIGTERM·유예·
+ * 프로세스 그룹(음수 pid)에 신호를 보내는 일은 하지 않는다(그룹을 끄는 일은 감독 실행기가, 그룹 생존 확인은 packages/process/src/group.ts가 한다). 그룹 끄기는 생존 확인·SIGTERM·유예·
  * SIGKILL·상한 있는 확인이 한 벌이어야 하고, 손으로 짠 복사본은 신호만 보내고 확인 없이 떠나는 빈틈을 되풀이했다(#255 리뷰 SPEC-3·4).
  * `process.kill(-x, …)`, `killUnlessGone(-x, …)`, `processAlive(-x)`처럼 첫 인수가 음수 부호 식인 호출을 짚는다. 음수 값을 변수에 담아
  * 넘기는 호출은 따라가지 않으며 리뷰가 본다.
@@ -611,7 +611,7 @@ const noProcessGroupSignal = {
     schema: [],
     messages: {
       group:
-        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹 끄기는 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인을 한곳(packages/process/src/group.ts)이 맡아, 신호만 보내고 확인 없이 떠나는 끄기가 생기지 않게 합니다. 프로그램은 launchTree(@babojubot/process)로 띄우고 그 stop()으로 끄세요. 트리 전체가 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
+        "프로세스 그룹(음수 pid)에 직접 신호를 보냅니다. 그룹을 끄는 일은 감독 실행기(packages/process/supervisor)가 그룹을 쥔 채 생존 확인·SIGTERM·유예·SIGKILL·상한 있는 확인까지 합니다. 그룹이 살아 있는지 보는 일(신호 0)은 packages/process/src/group.ts 한곳이 합니다. 프로그램은 launchTree(@babojubot/process)로 띄우고 그 stop()으로 끄세요. 트리 전체가 끝난 것을 확인하지 못하면 던지므로 그 실패를 결과로 다루세요. CODING_STANDARDS.md#제품-코드",
     },
   },
   create(context) {
@@ -627,6 +627,156 @@ const noProcessGroupSignal = {
           target.operator === "-"
         )
           context.report({ node, messageId: "group" });
+      },
+    };
+  },
+};
+
+/** 번호로 프로세스를 끄는 명령(경로를 떼고 소문자로, `.exe` 없이). */
+const killCommands = new Set(["kill", "pkill", "killall", "taskkill"]);
+/**
+ * 프로세스 패키지(@babojubot/process)의 입구들이 내보내는 함수 가운데 프로그램을 띄우는 것과 그 명령을 받는 자리: `first`는 첫 인수,
+ * `option`은 첫 인수 객체의 `command` 튜플 첫 원소. 패키지의 어느 입구든 함수를 새로 내보내면 이 표나 `processNonLaunchers`에 넣어야
+ * 한다(scripts/script-lint-rules.test.mjs가 package.json `exports`의 모든 입구가 내보내는 함수를 견주고, 표에 남은 낡은 이름도
+ * 잡는다). 그래야 새 실행 입구가 번호 신호 판정에서 빠지지 않는다.
+ */
+export const processLaunchers = new Map([
+  ["launchTree", "option"],
+  ["runTree", "option"],
+  ["runCommand", "first"],
+  // 시험 도움(`/test-support`): 확인 명령을 띄운다.
+  ["commandFailure", "first"],
+]);
+/**
+ * 프로세스 패키지가 내보내지만 프로그램을 띄우지 않는 함수: 준비·조회(실행기 준비, 띄운 자식 받기, 그룹·표식·시작 시각 조회, 실행기에
+ * 청하는 정리), 폴더 지우기, 시험 도움(정리·기다림·시계·환경 확인, 띄운 자식의 끝 기다리기와 끄기).
+ */
+export const processNonLaunchers = [
+  "prepareSupervisor",
+  "requireSupervisor",
+  "TreeLaunchRefused",
+  "boundChild",
+  "psField",
+  "groupAlive",
+  "identity",
+  "members",
+  "holdsLease",
+  "processStartTicks",
+  "cleanThroughSupervisor",
+  "removeFolder",
+  "folderCleanup",
+  "withCleanup",
+  "processAlive",
+  "killUnlessGone",
+  "awaitedLater",
+  "openLifelines",
+  "testFolders",
+  "exited",
+  "killAndWait",
+  "readyLine",
+  "untilExited",
+  "within",
+  "manualClock",
+  "permissionDenial",
+  "probeEnvironment",
+];
+/** child_process·cross-spawn에서 프로그램을 띄우는 함수와 그 명령을 받는 자리(`line`은 명령줄 문자열 하나). */
+const nodeLaunchers = new Map([
+  ["module:child_process:spawn", "first"],
+  ["module:child_process:spawnSync", "first"],
+  ["module:child_process:execFile", "first"],
+  ["module:child_process:execFileSync", "first"],
+  ["module:child_process:fork", "first"],
+  ["module:child_process:exec", "line"],
+  ["module:child_process:execSync", "line"],
+  ["module:cross-spawn:", "first"],
+  ["module:cross-spawn:spawn", "first"],
+  ["module:cross-spawn:sync", "first"],
+]);
+/** 식이 문자열 리터럴(또는 바꿀 자리 없는 템플릿)이면 그 값. */
+const stringOf = (node) =>
+  node?.type === "Literal" && typeof node.value === "string"
+    ? node.value
+    : node?.type === "TemplateLiteral" && node.expressions.length === 0
+      ? node.quasis[0].value.cooked
+      : undefined;
+/** 실행 파일 이름: 경로를 떼고 소문자로, Windows의 `.exe`를 뗀다(`/bin/kill`, `C:\\…\\taskkill.exe`). */
+const commandName = (file) =>
+  file
+    .split(/[\\/]/)
+    .at(-1)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+/** 실행 입구 호출이 받는 명령의 실행 파일(문자열로 적힌 것만). */
+function launchedCommand(kind, args) {
+  if (kind === "first") return stringOf(args[0]);
+  if (kind === "line") return stringOf(args[0])?.trim().split(/\s+/)[0];
+  const options = args[0];
+  if (options?.type !== "ObjectExpression") return undefined;
+  const command = options.properties.find(
+    (property) =>
+      property.type === "Property" &&
+      !property.computed &&
+      ((property.key.type === "Identifier" &&
+        property.key.name === "command") ||
+        stringOf(property.key) === "command")
+  );
+  return command?.value.type === "ArrayExpression"
+    ? stringOf(command.value.elements[0])
+    : undefined;
+}
+/** 호출이 실행 입구면 그 명령을 받는 자리(출처로 판정: 별칭·이름을 바꾼 가져오기·모듈 객체도 같다). */
+function launcherKind(context, callee) {
+  const origin = originOf(context.sourceCode.getScope(callee), callee);
+  if (!origin || origin.global !== undefined) return undefined;
+  const name = `module:${origin.module}:${origin.path.join(".")}`;
+  if (nodeLaunchers.has(name)) return nodeLaunchers.get(name);
+  // 프로세스 패키지의 실행 입구: 다른 패키지는 패키지 이름으로, 패키지 안은 정의한 파일(상대 경로)로 가져온다.
+  const target = targetOf(context.filename, origin.module);
+  if (
+    target?.package?.name !== "@babojubot/process" ||
+    origin.path.length !== 1
+  )
+    return undefined;
+  return processLaunchers.get(origin.path[0]);
+}
+/**
+ * 번호(pid)로 신호를 보내는 일은 감독 실행기(Rust, packages/process/supervisor)만 한다(#268 PR 2). 실행기는 표식이나 시작 시각을
+ * 확인한 바로 그 프로세스에만 신호한다(Linux pidfd, Windows 프로세스 핸들, macOS 신호 직전 시작 시각 재확인). 서버가 찾은 번호에
+ * 나중에 신호하면 그 사이 번호가 다른 프로그램에 다시 주어질 수 있다(재시작 복구의 그룹 끄기·`taskkill /PID`, 서버 쪽 표식 정리가
+ * 그랬다). 제품 코드에서 `process.kill(번호, 신호)`(신호를 빼면 SIGTERM, 별칭으로 불러도 출처로 본다)와, 실행 입구(child_process·
+ * cross-spawn, 프로세스 패키지의 `processLaunchers`)에 번호로 끄는 명령(`kill`·`pkill`·`killall`·`taskkill`, 경로·`.exe`를 떼고 본다)을
+ * 넘기는 호출을 짚는다. 신호 0(살아 있는지 보기)과 자식 객체의 `kill()`(번호가 아니라 그 자식의 핸들)은 짚지 않는다. 명령 이름을
+ * 변수에 담아 넘기는 호출은 따라가지 않으며 리뷰가 본다(#283 외부 리뷰 1회차 STD-1).
+ */
+const noNumberSignal = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "leave signalling a process by its number to the supervisor, which holds the process it checked",
+    },
+    schema: [],
+    messages: {
+      signal:
+        "번호(pid)로 프로세스에 신호를 보냅니다. 찾은 번호에 나중에 신호하면 그 사이 번호가 다른 프로그램에 다시 주어질 수 있습니다. 번호로 끄는 일은 감독 실행기가 표식이나 시작 시각을 확인한 바로 그 프로세스에만 합니다(Linux pidfd, Windows 프로세스 핸들). 띄운 트리는 launchTree(@babojubot/process)가 돌려준 stop()으로, 서버와 실행기가 함께 죽은 뒤의 남은 프로그램은 재시작 복구의 cleanThroughSupervisor(@babojubot/process/recovery)로 끄세요. 살아 있는지만 볼 때는 신호 0을 씁니다. CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    return {
+      CallExpression(node) {
+        const { callee, arguments: args } = node;
+        if (originName(context.sourceCode, callee) === "global:process.kill") {
+          const signal = args[1];
+          const probe = signal?.type === "Literal" && signal.value === 0;
+          if (!probe) context.report({ node, messageId: "signal" });
+          return;
+        }
+        const kind = launcherKind(context, callee);
+        const command = kind && launchedCommand(kind, args);
+        if (command !== undefined && killCommands.has(commandName(command)))
+          context.report({ node, messageId: "signal" });
       },
     };
   },
@@ -910,7 +1060,7 @@ const packageImportScope = {
      * 범위 안 패키지의 입구를 가리키면 그 패키지와 입구(패키지 이름 경로), 아니면 undefined. 경로 철자가 아니라 대상으로 본다
      * (공용 판정의 `targetOf`, #266 리뷰 SPEC-6): 자기 패키지 이름·상대 경로·확장자 없는 철자가 같은 입구 파일이면 같은 판정이고,
      * 자기 패키지 안이어도 그렇다. 입구가 아닌 안쪽 파일(입구가 다시 내보내는 모듈 포함)은 이 규칙이 보지 않는다(다른 패키지
-     * 안쪽은 package-entry-only가, 그룹 끄기 이름은 no-group-stop-import가 본다).
+     * 안쪽은 package-entry-only가 본다).
      */
     const target = (source) => {
       const found = targetOf(context.filename, source);
@@ -1316,64 +1466,6 @@ const noFailureCollecting = {
   },
 };
 
-const groupStoppers = new Set(["stopProcessGroup"]);
-/** 그룹 끄기를 담은 파일: 그룹 끄기 자체와 그것을 다시 내보내는 복구 입구(확장자를 뗀 저장소 기준 경로). */
-const groupFiles = new Set([
-  "packages/process/src/group",
-  "packages/process/src/recovery",
-]);
-
-/**
- * 그룹 끄기의 반쪽(`stopProcessGroup`)만 가져다 쓰지 못하게 한다. 그룹 끄기는 그룹으로 띄운 트리에만 맞고,
- * 띄운 방법을 모르는 쪽이 빌려 쓰면 Windows에서 아무것도 끄지 않고 성공하거나 새 세션으로 나간 자식을 놓친다(#262).
- * 설정이 이 규칙을 빼는 파일(그룹 끄기 group.ts와 복구 입구 recovery.ts, runtime의 재시작 복구) 밖에서
- * - 어디서든 그 두 이름을 가져오거나 다시 내보내는 것,
- * - 그룹 끄기를 담은 파일(group.ts·복구 입구)의 모듈 객체를 통째로 받거나 다시 내보내는 것(`export *`·`import * as`·통째로 받은 `require`)
- * 을 막는다. 파일은 경로 철자가 아니라 대상으로 판정한다(공용 판정의 `targetOf`): 상대 경로·자기 패키지 이름(`@babojubot/process/recovery`)·
- * 확장자 없는 철자가 같은 파일이면 같다(#266 리뷰 SPEC-3). 가져온 이름은 공용 판정(`importSites`)이 정한다.
- */
-const noGroupStopImport = {
-  meta: {
-    /** @type {"problem"} */
-    type: "problem",
-    docs: {
-      description:
-        "keep the process group stop inside the shared launch and the restart recovery",
-    },
-    schema: [],
-    messages: {
-      half: "{{name}}만 가져다 쓰면 띄운 방법과 맞지 않는 끄기가 됩니다(Windows에서 아무것도 끄지 않고 성공, 새 세션으로 나간 자식을 놓침). 띄울 때 launchTree(@babojubot/process)가 돌려준 stop()·interrupt()를 쓰세요. 그룹 끄기는 공용 실행(@babojubot/process의 launch.ts)과 runtime의 재시작 복구(providers/recovery.ts)만 씁니다. CODING_STANDARDS.md#제품-코드",
-    },
-  },
-  create(context) {
-    return importSites(context, (site) => {
-      if (site.kind === "resolve") return;
-      const target = targetOf(context.filename, site.source);
-      const holdsGroupStop = groupFiles.has(target?.file);
-      for (const name of site.names) {
-        // 모듈 객체를 통째로 받거나 다시 내보내면 그 안의 그룹 끄기도 함께 나간다.
-        if (name.imported === "*" && holdsGroupStop)
-          context.report({
-            node: name.node,
-            messageId: "half",
-            data: {
-              name:
-                site.kind === "export"
-                  ? `${site.source}의 export *`
-                  : `${site.source}의 모듈 객체`,
-            },
-          });
-        else if (groupStoppers.has(name.imported))
-          context.report({
-            node: name.node,
-            messageId: "half",
-            data: { name: name.imported },
-          });
-      }
-    });
-  },
-};
-
 const builtins = new Set(builtinModules);
 
 /** 가져온 이름의 패키지 이름. 상대·절대 경로, `#` 별칭, Node 기본 모듈은 패키지가 아니다(`undefined`). */
@@ -1710,7 +1802,7 @@ export default {
     "package-import-scope": packageImportScope,
     "package-entry-only": packageEntryOnly,
     "no-failure-collecting": noFailureCollecting,
-    "no-group-stop-import": noGroupStopImport,
+    "no-number-signal": noNumberSignal,
     "no-check-then-reopen": noCheckThenReopen,
     "no-own-untrusted-open": noOwnUntrustedOpen,
   },

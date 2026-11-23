@@ -1,6 +1,7 @@
-import { ChildProcess, spawnSync } from "node:child_process";
+import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { attemptAll } from "@babojubot/contracts";
+import { readFileSync } from "node:fs";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,7 +21,6 @@ import {
   runTree,
   type LaunchedTree,
 } from "./launch.ts";
-import { leaseHolders } from "./lease.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { supervisorProtocol } from "./supervisor.ts";
 import { killUnlessGone } from "./test-cleanup.ts";
@@ -59,6 +59,19 @@ const ignoreTerm = 'process.on("SIGTERM", () => {});';
 /** 자식 하나를 띄우는 코드. 자식은 연결 `name`을 쥐고 돈다. */
 const child = (name: string, options: string, body = "") =>
   `process.getBuiltinModule("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold(name)} ${body} ${keep}`)}], ${options});`;
+/** 프로세스의 환경 항목. Linux는 `/proc`, macOS는 `ps -E`(실행 인자 뒤에 환경이 붙는다)로 읽는다. */
+function environmentOf(pid: number): string[] {
+  if (process.platform === "linux")
+    return readFileSync(`/proc/${pid}/environ`, "latin1").split("\0");
+  const listing = spawnSync(
+    "ps",
+    ["-E", "-ww", "-o", "command=", "-p", String(pid)],
+    { encoding: "utf8", timeout: 10_000 }
+  );
+  if (listing.status !== 0)
+    throw new Error(`ps could not read process ${pid}: ${listing.stderr}`);
+  return listing.stdout.trim().split(/\s+/);
+}
 let count = 0;
 /** 시험마다 겹치지 않는 연결 이름. */
 const unique = (label: string) => `${label}-${++count}`;
@@ -199,8 +212,8 @@ describe("launchTree", () => {
   });
 
   // 서버가 강제로 끝나면 제어 통로가 끊기고, 감독 실행기가 자기 트리(대표와 같은 그룹의 자손, Windows는 묶음 전체)를 끄고 끝을
-  // 확인한다(#268). 다음 시작의 복구에 맡기지 않는다. Linux는 그룹 밖으로 나간 고아도 실행기가 끈다. macOS의 새 세션 자손은 아직
-  // 다음 시작의 표식 정리가 맡는다.
+  // 확인한다(#268). 다음 시작의 복구에 맡기지 않는다. Linux는 그룹 밖으로 나간 고아도, 두 OS 모두 표식을 가진 프로그램도 실행기가
+  // 끈다(아래 시험).
   // 서버는 이 시험이 띄운 트리의 대표이고, killLeader로 서버만 강제로 끝낸다.
   it("stops the tree when the process that launched it is killed", async () => {
     const leader = unique("leader");
@@ -236,17 +249,81 @@ describe("launchTree", () => {
     await lifelines.closed(stubborn);
   }, 60_000);
 
+  // #268 PR 2: 서버가 죽으면 서버 쪽 정리는 돌지 못한다. 트리 밖(다른 subreaper 아래, systemd-run 등)으로 나가 이 실행 시도의
+  // 표식만 지닌 프로그램도 감독 실행기가 표식으로 찾아 끈다. 시험은 대표가 알린 자기 표식을 지닌 프로그램을 트리 밖에 띄운다.
+  it.skipIf(windows)(
+    "stops what carries the run's marker outside the tree when the process that launched it is killed",
+    async () => {
+      const leader = unique("leader");
+      const outside = unique("outside");
+      const markerFile = path.join(dataDir, `${leader}.marker`);
+      const script = path.join(dataDir, `${leader}.mjs`);
+      // 대표의 표식 가운데 번호가 가장 큰 것이 이 실행 시도의 것이다(앞 번호는 바깥 트리, 여기서는 서버를 띄운 트리의 것).
+      const writeOwnMarker = `{ const marks = Object.entries(process.env).filter(([name]) => /^BABOJUBOT_PROCESS_LEASE(_\\d+)?$/.test(name)).sort(([a], [b]) => Number(a.split("_").at(-1)) - Number(b.split("_").at(-1)) || a.length - b.length); process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(markerFile)}, marks.at(-1)[1]); }`;
+      await writeFile(
+        script,
+        `import { launchTree, prepareSupervisor } from ${launchModule};
+         const supervisor = await prepareSupervisor();
+         if (!supervisor.ok) throw new Error(supervisor.reason);
+         launchTree({
+           command: [process.execPath, "-e", ${JSON.stringify(`${writeOwnMarker} ${lifelines.hold(leader)} ${keep}`)}],
+           args: [],
+           cwd: process.cwd(),
+           env: { PATH: process.env.PATH },
+           stdio: ["ignore", "ignore", "ignore"],
+         });
+         setInterval(() => {}, 1000);`
+      );
+      const server = launchTree({
+        command: [process.execPath, script],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stdio: ["ignore", "ignore", 2],
+      });
+      trees.push(server);
+      await lifelines.connected(leader, 30_000);
+      const marker = await readFile(markerFile, "utf8");
+      const stray = spawn(
+        process.execPath,
+        ["-e", `${lifelines.hold(outside)} ${ignoreTerm} ${keep}`],
+        {
+          detached: true,
+          stdio: "ignore",
+          env: { PATH: process.env.PATH, BABOJUBOT_PROCESS_LEASE: marker },
+        }
+      );
+      onTestFinished(() => {
+        killUnlessGone(stray.pid!);
+      });
+      await lifelines.connected(outside);
+      server.killLeader();
+      await server.exited;
+      await lifelines.closed(leader);
+      await lifelines.closed(outside, 30_000);
+    },
+    90_000
+  );
+
   // 감독 실행기는 트리의 관리자다. 실행 시도의 표식은 실행기가 띄우는 프로그램에만 주고 실행기 자신은 지니지 않는다. 그래야 표식
   // 정리가 트리를 끄는 중인 실행기에 신호를 보내지 않는다(#274 외부 리뷰 1회차 STD-1/SPEC-1). Windows는 표식 정리가 없다.
   it.skipIf(windows)(
     "keeps the run's marker off its supervisor",
     async () => {
       const leader = unique("leader");
-      const tree = launch(`${lifelines.hold(leader)} ${keep}`);
+      const pidFile = path.join(dataDir, `${leader}.pid`);
+      const tree = launch(
+        `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(leader)} ${keep}`
+      );
       await lifelines.connected(leader);
-      const { holders } = await leaseHolders(tree.lease);
-      expect(holders.length).toBeGreaterThan(0);
-      expect(holders).not.toContain(tree.pid);
+      const marked = (pid: number) =>
+        environmentOf(pid).some(
+          (entry) =>
+            /^BABOJUBOT_PROCESS_LEASE(_\d+)?=/.test(entry) &&
+            entry.endsWith(`=${tree.lease}`)
+        );
+      expect(marked(Number(await readFile(pidFile, "utf8")))).toBe(true);
+      expect(marked(tree.pid!)).toBe(false);
     },
     60_000
   );
@@ -357,7 +434,7 @@ describe("launchTree without a supervisor", () => {
     async () => {
       const file = await fakeSupervisor(
         "mimic-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\n${say("exit 7")}\nwhile read line <&3; do case "$line" in *stop*) ${say("ended")}; exit 0;; esac; done\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\n${say("exit 7")}\nwhile read line <&3; do case "$line" in *stop*) ${say("ended")}; exit 0;; esac; done\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -378,7 +455,7 @@ describe("launchTree without a supervisor", () => {
       }, "the child that holds the control channel");
       const file = await fakeSupervisor(
         "leaky-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -401,7 +478,7 @@ describe("launchTree without a supervisor", () => {
       }, "the stuck supervisor and its child");
       const file = await fakeSupervisor(
         "stuck-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol}`)}\nsleep 600 &\necho $! >> ${JSON.stringify(pidFile)}\necho $$ >> ${JSON.stringify(pidFile)}\nexec sleep 600\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! >> ${JSON.stringify(pidFile)}\necho $$ >> ${JSON.stringify(pidFile)}\nexec sleep 600\n`
       );
       vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(() => true);
       onTestFinished(async () => {
@@ -452,6 +529,33 @@ describe("launchTree without a supervisor", () => {
         reason: expect.stringContaining("speaks protocol 99"),
       });
       expect(launched).toMatch(/speaks protocol 99/);
+    }
+  );
+
+  // #283 외부 리뷰 4회차 SPEC-4: 같은 판 4라도 첫 메시지에 시작 시각 칸이 없는 실행기(그 칸을 더하기 전에 빌드한 것)는 쓰지 않는다.
+  // 기록이 시작 시각 없이 남지 않게, 준비에서 다시 빌드하라는 이유로 거절한다.
+  it.skipIf(windows)(
+    "refuses a protocol 4 supervisor whose first message has no start",
+    async () => {
+      const old = path.join(dataDir, "old-supervisor");
+      const hello = `babojubot-supervisor ${supervisorProtocol}`;
+      await writeFile(
+        old,
+        `#!/bin/sh\nprintf '%s' ${JSON.stringify(`${Buffer.byteLength(hello)}:${hello},`)} >&3\nexec cat <&3 >/dev/null\n`
+      );
+      await chmod(old, 0o755);
+      const [prepared, launched] = separately(
+        `import { launchTree, prepareSupervisor } from ${launchModule};
+         console.log(JSON.stringify(await prepareSupervisor({ file: ${JSON.stringify(old)} })));
+         ${tryLaunch}`
+      );
+      expect(JSON.parse(prepared!)).toEqual({
+        ok: false,
+        reason: expect.stringMatching(
+          /does not report its start.*build it again/
+        ),
+      });
+      expect(launched).toMatch(/does not report its start/);
     }
   );
 });

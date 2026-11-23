@@ -3,6 +3,8 @@
 //! to it over the control channel (`protocol.rs`); what differs between systems is only how the tree is held and ended.
 
 mod attempt;
+#[cfg(unix)]
+mod marked;
 mod protocol;
 #[cfg(unix)]
 mod unix;

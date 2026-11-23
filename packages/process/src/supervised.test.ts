@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { encodeMessage, MessageReader, nextPhase } from "./supervised.ts";
+import {
+  encodeMessage,
+  MessageReader,
+  nextPhase,
+  readSupervisorLine,
+  supervisorProtocol,
+} from "./supervised.ts";
 
 // 제어 통로의 틀과 순서(#274 외부 리뷰 2회차 SPEC-3·SPEC-4). 실행기의 Rust 시험과 같은 자료(`supervisor/protocol-*.txt`)를 읽어,
 // 두 쪽이 같은 인코딩과 같은 전이 표를 지키는지 본다.
@@ -35,6 +41,28 @@ describe("control channel framing", () => {
         /malformed control message/
       );
     });
+
+  // 실행기의 첫 메시지(#283 외부 리뷰 4회차 SPEC-4): 실행기의 Rust 시험과 같은 줄을 읽는다. 시작 시각 칸은 반드시 있다(값 또는 -).
+  for (const [, start, line] of vectors.filter(([kind]) => kind === "hello")) {
+    const text = bytes(line!).toString("utf8");
+    it(`reads the first message ${JSON.stringify(text)}`, () => {
+      expect(readSupervisorLine(text)).toEqual({
+        kind: "hello",
+        protocol: supervisorProtocol,
+        ...(start !== "-" && { start }),
+      });
+    });
+  }
+  for (const [, line] of vectors.filter(([kind]) => kind === "old-hello")) {
+    const text = bytes(line!).toString("utf8");
+    it(`reads ${JSON.stringify(text)} as a first message without its start`, () => {
+      expect(readSupervisorLine(text)).toEqual({
+        kind: "hello",
+        protocol: supervisorProtocol,
+        withoutStart: true,
+      });
+    });
+  }
 
   it("reads several messages that arrive together", () => {
     const together = Buffer.concat([

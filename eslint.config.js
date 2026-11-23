@@ -511,7 +511,7 @@ export default defineConfig([
     rules: { "product/no-cleanup-chain": "error" },
   },
   {
-    // 프로세스 그룹(음수 pid)에 신호를 보내는 일은 제품의 그룹 끄기(@babojubot/process의 group.ts)만 한다(CODING_STANDARDS.md#제품-코드).
+    // 프로세스 그룹(음수 pid)에 신호를 보내지 않는다. 그룹을 끄는 일은 감독 실행기가, 생존 확인(신호 0)은 group.ts가 한다(CODING_STANDARDS.md#제품-코드).
     // 시험 코드는 이 범위에 아직 넣지 않았다.
     files: [...productFiles, ...scriptFiles],
     ignores: [...scriptIgnores, "packages/process/src/group.ts"],
@@ -637,17 +637,12 @@ export default defineConfig([
     rules: { "product/bounded-command": "error" },
   },
   {
-    // 그룹 끄기의 반쪽만 빌려 쓰지 않는다. 그룹 끄기·복구 입구와 runtime의 재시작 복구만 그 이름과 그 파일을
-    // 가져온다. 파일은 경로 철자가 아니라 대상으로 판정한다(자기 패키지 이름·상대 경로 모두).
-    files: [...productFiles, ...scriptFiles],
-    ignores: [
-      ...scriptIgnores,
-      "packages/process/src/group.ts",
-      "packages/process/src/recovery.ts",
-      "packages/runtime/src/providers/recovery.ts",
-    ],
+    // 번호(pid)로 신호를 보내는 일은 감독 실행기만 한다(CODING_STANDARDS.md#제품-코드, #268 PR 2). 실행기는 표식이나 시작 시각을
+    // 확인한 그 프로세스에만 신호한다. 신호 0(생존 확인)은 짚지 않는다. 시험 코드와 개발 스크립트(실사용 시험 도구 포함)는 범위 밖이다.
+    files: productFiles,
+    ignores: testFiles,
     plugins: { product: productRules },
-    rules: { "product/no-group-stop-import": "error" },
+    rules: { "product/no-number-signal": "error" },
   },
   // runtime과 프로세스 패키지는 정해진 파일에서만 프로그램을 띄운다(위 launchBoundary).
   launchBoundary(

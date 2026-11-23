@@ -1,5 +1,5 @@
-// Linux `/proc/<pid>/stat`을 읽는 한 곳(#274). 재시작 복구의 그룹 확인(`group.ts`), 표식 정리(`lease.ts`), 시험 도움
-// (`process-test-support.ts`)이 같은 판정을 쓴다. 감독 실행기의 그룹원 세기(`supervisor/src/unix.rs` `group_member_runs`)도 같은 규칙이다.
+// Linux `/proc/<pid>/stat`을 읽는 한 곳(#274). 재시작 복구의 그룹 확인(`group.ts`)과 시험 도움(`process-test-support.ts`)이 같은
+// 판정을 쓴다. 감독 실행기의 그룹원 세기(`supervisor/src/unix.rs` `group_member_runs`)와 표식 정리(`supervisor/src/marked.rs`)도 같은 규칙이다.
 
 /** 명령 이름 뒤의 칸들: 0 상태, 1 부모, 2 프로세스 그룹, …, 17 스레드 수, 19 시작 시각(부팅 뒤 clock tick). 명령 이름에 `) `가 들어 있어도 마지막 것 뒤를 읽는다. */
 export function statFields(stat: string): string[] {
