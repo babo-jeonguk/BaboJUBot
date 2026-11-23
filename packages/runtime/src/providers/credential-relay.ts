@@ -429,6 +429,8 @@ export function createCredentialRelay(options: {
         // 중계가 스스로 상류 요청을 끊었는지. 프로그램이 떠남·실행 취소·권한 회수로 끊은 것은 답이고,
         // 상류에서 시작된 실패는 같은 오류 코드(ECONNRESET 등)여도 원인을 남긴다.
         let cutByRelay = false;
+        // 상류가 답을 시작했는지. 그 뒤의 상류 오류는 답 흐름(`incoming`)이 맡는다.
+        let answered = false;
         const inflight = {
           destroy: () => {
             cutByRelay = true;
@@ -444,17 +446,17 @@ export function createCredentialRelay(options: {
           outgoing.destroy();
         });
         outgoing.on("error", (error) => {
-          // 답이 시작되기 전의 오류는 상류에 닿지 못한 것이다. 답이 시작된 뒤의 오류는 그 답이 끊긴 것이므로 아래 답 처리와 같은 문구로 남긴다.
+          // 답이 시작된 뒤의 오류는 `incoming`이 남기고 끊는다. 여기서는 답 전의 실패만 남긴다.
+          if (answered) return;
           if (!cutByRelay)
             console.warn(
-              res.headersSent
-                ? `[provider] an upstream answer broke off in the credential relay (${failureCode(error)})`
-                : `[provider] the credential relay could not reach the upstream; it answered 502 (${failureCode(error)})`
+              `[provider] the credential relay could not reach the upstream; it answered 502 (${failureCode(error)})`
             );
           done();
           deny(res, 502, "relay_upstream_failed");
         });
         outgoing.on("response", (incoming) => {
+          answered = true;
           const status = incoming.statusCode ?? 502;
           if (redirects.has(status)) {
             incoming.resume();
