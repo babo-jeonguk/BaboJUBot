@@ -1,6 +1,6 @@
 // 바뀐 파일을 보고 돌릴 검사 명령을 정해 실행한다. `pnpm verify:changed -- --dry-run`은 명령만 출력한다.
 // 공용 설정이 바뀌면 전체 lint·typecheck·check를, 패키지 파일이 바뀌면 그 패키지와 그 패키지를 쓰는 패키지의
-// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를, 코드 파일이나 tsconfig가 바뀌면 패키지 밖 코드의 타입 검사(pnpm typecheck:tools·typecheck:js)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고(코드 지도 검사가
+// typecheck(제품 코드는 전체, 시험 코드는 시험 쪽)를, 코드 파일이나 JS 검사기가 읽는 설정이 바뀌면 패키지 밖 코드의 타입 검사(pnpm typecheck:tools·typecheck:js)를 고른다. pnpm check는 묶음으로 나눠, 문서 검사는 늘 돌리고(코드 지도 검사가
 // 코드의 파일·이름 변경도 보므로 코드만 바뀌어도 돈다) 나머지 묶음은 그 묶음의 시험이 보는 파일이나 저장소 뿌리(scripts·.agents)가 쓰는 패키지가 바뀌었을 때만 돌린다.
 // `--tests`는 완료 검사용으로, 같은 범위의 패키지 시험과 (뿌리에 닿으면) 뿌리 시험(pnpm test:root)을 더한다.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
 import { addedJavaScript, isJavaScript, refusal } from "./javascript-files.ts";
+import { configInputs, isTypeScriptConfig } from "./typecheck-js.mjs";
 import {
   codeFormatNames,
   codeFormatPattern,
@@ -22,6 +23,9 @@ const sharedSettings = new Set([
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "scripts/test-files.mjs",
+  // 시험 묶음 정의와 Vitest 묶음 설정: 모든 패키지의 Vitest 설정과 CI 판정이 읽는다.
+  "scripts/test-suites.ts",
+  "vitest.reports.ts",
   "scripts/eslint-test-rules.mjs",
   "scripts/eslint-product-rules.mjs",
   "scripts/tsconfig.json",
@@ -69,12 +73,13 @@ const checkGroups = [
 /**
  * @param {string[]} files 바뀐 파일(저장소 기준 경로)
  * @param {Record<string, { dir: string, deps: string[] }>} graph workspace 패키지와 그 의존성
- * @param {{ exists?: (file: string) => boolean, tests?: boolean }} [options]
+ * @param {{ exists?: (file: string) => boolean, tests?: boolean, configInputs?: Set<string> }} [options]
+ *   configInputs: JS 검사기가 읽는 설정 파일(scripts/typecheck-js.mjs `configInputs`). 이름이 설정이 아닌 `extends` 대상도 든다.
  */
 export function plan(
   files,
   graph,
-  { exists = () => true, tests = false } = {}
+  { exists = () => true, tests = false, configInputs = new Set() } = {}
 ) {
   const changed = [...new Set(files)].sort();
 
@@ -151,12 +156,14 @@ export function plan(
         `pnpm --filter ${name} run ${full.has(name) ? "typecheck" : "typecheck:test"}`
       );
   // 패키지 밖 코드의 타입 검사: TypeScript(agent 도구·스크립트의 .ts, 엄격, pnpm typecheck:tools)와 JS(pnpm typecheck:js). 둘 다
-  // 패키지의 TypeScript를 가져오므로 코드 파일이나 tsconfig가 바뀌면(지운 것 포함) 돈다. 무엇이 바뀐 파일을 가져오는지는 고르지 않는다.
+  // 패키지의 TypeScript를 가져오므로 코드 파일이나 설정이 바뀌면(지운 것 포함) 돈다. 무엇이 바뀐 파일을 가져오는지는 고르지 않는다.
+  // 설정은 JS 검사기와 같은 판정(isTypeScriptConfig)과 그 검사기가 읽는 `extends` 대상(configInputs)이다.
   if (
     changed.some(
       (file) =>
         lintExtensions.has(path.extname(file)) ||
-        /(^|\/)tsconfig[^/]*\.json$/.test(file)
+        isTypeScriptConfig(file) ||
+        configInputs.has(file)
     )
   )
     commands.push("pnpm typecheck:tools", "pnpm typecheck:js");
@@ -326,7 +333,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     ]),
   ];
   const exists = (file) => fs.existsSync(path.join(root, file));
-  const commands = plan(files, readGraph(root), { exists, tests });
+  const commands = plan(files, readGraph(root), {
+    exists,
+    tests,
+    configInputs: configInputs(root),
+  });
 
   if (dryRun) {
     for (const command of commands) console.log(command);

@@ -17,6 +17,11 @@
 import { builtinModules } from "node:module";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import {
+  exportKeys,
+  repositoryRelative,
+  resolvePackageEntries,
+} from "./package-exports.ts";
 import { codeFormatPattern } from "./test-files.mjs";
 
 /**
@@ -583,9 +588,51 @@ const codeExtension = new RegExp(`\\.${codeFormatPattern}$`);
 const withoutExtension = (file) => file.replace(codeExtension, "");
 
 /**
- * 저장소의 workspace 패키지(apps·packages 아래 package.json): 폴더, 이름, 내보낸 입구(`exports`의 키)와 그 입구가 가리키는 파일
- * (확장자를 뗀 저장소 기준 경로).
+ * workspace 패키지 하나: 폴더, 이름, 입구 이름(`exports`의 키, 메시지용)과 무늬 없는 입구가 Node 자신의 해석기
+ * (scripts/package-exports.ts)로 가리키는 파일(확장자를 뗀 저장소 기준 경로, 상대 경로 가져오기의 입구 찾기용).
+ * @param {string} folder 저장소 기준 패키지 폴더
+ * @param {{ name: string, exports?: unknown }} manifest 그 package.json
+ * @param {string} [root] 패키지 폴더가 있는 저장소 뿌리
  */
+export function workspacePackage(
+  folder,
+  { name, exports = {} },
+  root = repositoryRoot
+) {
+  const entries = exportKeys(exports);
+  const pkg = { folder, name, root, entries, files: {} };
+  pkg.files = Object.fromEntries(
+    entries.flatMap((entry) => {
+      if (entry.includes("*")) return [];
+      const file = packageEntry(pkg, entry).file;
+      return file === undefined ? [] : [[entry, file]];
+    })
+  );
+  return pkg;
+}
+
+/**
+ * 패키지 이름으로 적은 입구(`.`·`./recovery`)를 Node 자신의 해석기로 푼다. exported: 그 입구로 가져올 수 있는가(Node가 거부하면 아님),
+ * file: 대상 파일(확장자를 뗀 저장소 기준 경로, 가져올 수 없으면 undefined).
+ * @param {{ folder: string, name: string, root: string }} pkg
+ * @param {string} entry
+ * @returns {{ exported: boolean, file: string | undefined }}
+ */
+export function packageEntry(pkg, entry) {
+  const resolved = resolvePackageEntries(
+    path.join(pkg.root, pkg.folder),
+    pkg.name,
+    [entry]
+  ).get(entry);
+  if (!resolved || "refused" in resolved)
+    return { exported: false, file: undefined };
+  return {
+    exported: true,
+    file: withoutExtension(repositoryRelative(pkg.root, resolved.file)),
+  };
+}
+
+/** 저장소의 workspace 패키지(apps·packages 아래 package.json). */
 export const workspacePackages = ["apps", "packages"].flatMap((group) =>
   readdirSync(path.join(repositoryRoot, group), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
@@ -593,15 +640,9 @@ export const workspacePackages = ["apps", "packages"].flatMap((group) =>
       const folder = `${group}/${entry.name}`;
       const manifest = path.join(repositoryRoot, folder, "package.json");
       if (!existsSync(manifest)) return [];
-      const { name, exports = {} } = JSON.parse(readFileSync(manifest, "utf8"));
-      const files = Object.fromEntries(
-        Object.entries(exports).flatMap(([entry, target]) =>
-          typeof target === "string"
-            ? [[entry, withoutExtension(path.posix.join(folder, target))]]
-            : []
-        )
-      );
-      return [{ folder, name, entries: Object.keys(exports), files }];
+      return [
+        workspacePackage(folder, JSON.parse(readFileSync(manifest, "utf8"))),
+      ];
     })
 );
 
@@ -645,12 +686,5 @@ export function targetOf(filename, source) {
   );
   if (!pkg) return undefined;
   const entry = source === pkg.name ? "." : `.${source.slice(pkg.name.length)}`;
-  const exported = pkg.entries.includes(entry);
-  return {
-    package: pkg,
-    entry,
-    exported,
-    file: exported ? pkg.files[entry] : undefined,
-    relative: false,
-  };
+  return { package: pkg, entry, ...packageEntry(pkg, entry), relative: false };
 }
