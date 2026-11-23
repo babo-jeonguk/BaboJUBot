@@ -217,6 +217,24 @@ test("shows the output of a failing test command", (t) => {
   assertProblem(result, /why it failed/);
 });
 
+// 신호로 끝난 시험 명령은 종료 코드가 없다. "exit null"로 접지 않고 끝낸 신호를 알린다. 셸이 자기 자신을 끝내는 명령이라 POSIX만이다
+// (check:agents는 Linux에서 돈다).
+test(
+  "names the signal that ended a test command",
+  {
+    skip:
+      process.platform === "win32"
+        ? "Windows has no signal a shell sends itself"
+        : false,
+  },
+  (t) => {
+    const repo = repository(t);
+    write(repo.cwd, "src/a.ts", "export const a = 2;\n");
+    const result = check(repo, { tests: ["kill -KILL $$"] });
+    assertProblem(result, /test command failed \(SIGKILL\): kill -KILL \$\$/);
+  }
+);
+
 test("does not run test commands once a problem is found", (t) => {
   const repo = repository(t);
   write(repo.cwd, "src/a.test.ts", "// weakened\n");

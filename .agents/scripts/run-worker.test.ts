@@ -323,7 +323,8 @@ test("a runner sends a multi-line brief on the worker's standard input, not as a
 });
 
 // 요약은 worker가 남긴 이벤트(opencode의 JSON 줄)에서 읽는다: 세션, 고친 파일(작업 폴더 기준), 거부된 도구 호출, 단계·토큰 수,
-// 오류 이벤트, 마지막 글. 모르는 모양의 필드와 JSON이 아닌 줄은 없는 것으로 본다. 오류 이벤트가 있으면 다음 모델로 넘기는 종료 코드 2다.
+// 오류 이벤트, 마지막 글. 모양이 틀린 줄·이벤트는 0이나 빈 값으로 접지 않고 그런 것이 있었다고 요약에 남긴다: 토큰 수를 읽지 못한
+// 단계는 합에서 빼고 그 수를 토큰 줄에, 나머지는 unreadable 줄에 적는다. 요약 정보일 뿐이라 종료 코드는 오류 이벤트대로 2다.
 test("a runner summarizes the session, written files, denials, tokens, errors and the final report from the worker's events", async () => {
   const events = [
     { type: "step_start", sessionID: "ses_summary" },
@@ -366,10 +367,13 @@ test("a runner summarizes the session, written files, denials, tokens, errors an
       },
     },
     { type: "step_finish", part: { tokens: { input: "1", output: 1 } } },
+    { type: "tool_use", part: { tool: "edit" } },
     { type: "error", error: { message: "rate limited" } },
     { type: "error", error: { name: "Unknown" } },
+    { type: "error" },
     { type: "text", part: { text: "first" } },
     { type: "text", part: { text: "final report" } },
+    { type: "text", part: {} },
   ].map((event) => JSON.stringify(event));
   await withCleanup(async (defer) => {
     const f = await fixture(defer, {
@@ -384,12 +388,14 @@ test("a runner summarizes the session, written files, denials, tokens, errors an
       "status: error",
       "session: ses_summary",
       "attempts: 1",
-      "steps: 2  tokens: in 10 out 6 reasoning 2 cache-read 7",
+      "steps: 2  tokens: in 10 out 5 reasoning 2 cache-read 7 (unreadable in 1 step)",
       "written: src/a.ts, src/b.ts",
       "denied: bash: rm -rf x",
-      'errors: rate limited | {"name":"Unknown"}',
+      'errors: rate limited | {"name":"Unknown"} | (no error body)',
+      "unreadable: 2 lines not a JSON object, 1 tool_use without a tool and its state, 1 text without text, 1 error without its error",
     ])
       assert.ok(summary.split("\n").includes(line), `${line}\n${run.output()}`);
+    // 글이 없는 마지막 text 이벤트는 보고가 아니다. 글이 있는 마지막 이벤트가 보고다.
     assert.match(run.output(), /--- final report ---\nfinal report\n?$/);
   });
 });
@@ -423,6 +429,14 @@ test("a runner whose first attempt could not take the brief finishes when the se
     assert.match(run.output(), /^status: finished$/m);
     assert.match(run.output(), /^attempts: 2$/m);
     assert.match(run.output(), /^errors: -$/m);
+    assert.match(run.output(), /^unreadable: -$/m);
+    assert.ok(
+      run
+        .output()
+        .split("\n")
+        .includes("steps: 0  tokens: in 0 out 0 reasoning 0 cache-read 0"),
+      run.output()
+    );
     const calls = readFileSync(f.calls, "utf8")
       .split("\n")
       .filter(Boolean)
