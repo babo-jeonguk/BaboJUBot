@@ -19,6 +19,7 @@ import {
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import { createStop, runBootCheckFlow } from "./boot-check-flow.mjs";
 import { overviewFields } from "./boot-check-overview.ts";
+import { afterOutput } from "./exit-after-output.ts";
 
 // main.ts가 서버를 띄운 뒤 내는 완전한 한 줄. 내장 DB로 띄운 서버만 받는다.
 // 예: `BaboJUBot server on http://127.0.0.1:PORT (embedded Postgres …, product folder …)`
@@ -333,7 +334,7 @@ async function killServerAndExit() {
       console.log(
         `a server tree could not be confirmed stopped and may remain: ${result.reason instanceof Error ? result.reason.message : result.reason}`
       );
-  process.exit(1);
+  process.exit(await afterOutput(1));
 }
 
 setTimeout(

@@ -16,6 +16,7 @@ import {
 import { launchTree, prepareSupervisor } from "@babojubot/process";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
 import { sharedVariables } from "@babojubot/runtime";
+import { afterOutput } from "../exit-after-output.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -439,7 +440,7 @@ async function runChild(configFile) {
           () => handle.close(),
           report("closing the database")
         );
-        process.exit(failed ? 1 : 0);
+        process.exit(await afterOutput(failed ? 1 : 0));
       })();
     });
   writeSecretFile(
@@ -459,10 +460,10 @@ if (import.meta.main) {
   const configFile = process.argv[2];
   if (!configFile) {
     console.error("Usage: node scripts/live/chaos-server.mjs <config file>");
-    process.exit(2);
+    process.exit(await afterOutput(2));
   }
-  await runChild(configFile).catch((error) => {
+  await runChild(configFile).catch(async (error) => {
     console.error("[chaos-server] start failed", error?.message ?? error);
-    process.exit(1);
+    process.exit(await afterOutput(1));
   });
 }

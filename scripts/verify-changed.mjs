@@ -15,6 +15,7 @@ import {
   codeFormatPattern,
   isTestFile,
 } from "./test-files.mjs";
+import { afterOutput } from "./exit-after-output.ts";
 
 const sharedSettings = new Set([
   "eslint.config.js",
@@ -246,11 +247,11 @@ function workspaceDeps(packageJson) {
 
 /**
  * @param {string} message
- * @returns {never}
+ * @returns {Promise<number>} 끝낼 코드(출력이 다 닿은 뒤). 부르는 쪽은 `process.exit(await failure(…))`로 끝낸다.
  */
-function fail(message) {
+async function failure(message) {
   console.error(message);
-  process.exit(2);
+  return afterOutput(2);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
@@ -270,12 +271,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     }
     if (argument === "--base") {
       const value = process.argv[index + 1];
-      if (value === undefined) fail("--base requires a value");
+      if (value === undefined)
+        process.exit(await failure("--base requires a value"));
       base = value;
       index += 1;
       continue;
     }
-    fail(`unknown option: ${argument}`);
+    process.exit(await failure(`unknown option: ${argument}`));
   }
 
   let root;
@@ -287,8 +289,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       killSignal: "SIGKILL",
     }).trim();
   } catch (error) {
-    fail(
-      `not inside a Git repository (${error instanceof Error ? error.message : String(error)})`
+    process.exit(
+      await failure(
+        `not inside a Git repository (${error instanceof Error ? error.message : String(error)})`
+      )
     );
   }
 
@@ -303,8 +307,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     comparison = git("merge-base", "HEAD", base).trim();
   } catch (error) {
-    fail(
-      `cannot compare HEAD with ${base} (${error instanceof Error ? error.message : String(error)})`
+    process.exit(
+      await failure(
+        `cannot compare HEAD with ${base} (${error instanceof Error ? error.message : String(error)})`
+      )
     );
   }
 
@@ -323,7 +329,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   ];
   if (added.length) {
     for (const file of added) console.error(refusal(file));
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
 
   const files = [
@@ -341,7 +347,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
 
   if (dryRun) {
     for (const command of commands) console.log(command);
-    process.exit(0);
+    process.exit(await afterOutput(0));
   }
 
   console.log(`바뀐 파일 ${files.length}개 → 검사 ${commands.length}개`);

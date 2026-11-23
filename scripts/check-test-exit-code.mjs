@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { afterOutput } from "./exit-after-output.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixtures = path.join(root, "scripts/fixtures/test-exit-code");
@@ -66,7 +67,7 @@ for (const { name, workspace, args, expected } of cases) {
     `실패: ${name}. 실패 코드와 ${expected}가 함께 나와야 합니다. 종료 코드 ${status}, 신호 ${signal}, 오류 ${error?.message}\n${output}`
   );
 }
-if (failed) process.exit(1);
+if (failed) process.exit(await afterOutput(1));
 console.log(
   `시험 실패가 실패 종료로 이어지는 것을 ${cases.length}가지로 확인했습니다.`
 );
