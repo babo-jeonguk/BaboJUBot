@@ -8,16 +8,23 @@
 //   ended. Once an attempt is being stopped (start check, --limit, a signal to the runner), it ends with that stop, not with its
 //   leader's exit; a worker that ends on its own is stopped too, for what it left running. A failed stop ends the call: no new
 //   attempt, and the reason is kept in the result.
-// - An attempt also ends with whether its brief reached the worker (`delivered`): a brief that could not be sent is that
-//   attempt's run failure, kept in its own result, so a later attempt that sends it is not marked by it.
+// - An attempt also ends with whether its brief reached the worker: a brief that could not be sent is that attempt's run
+//   failure, kept in its own result, so a later attempt that sends it is not marked by it. The attempt's end never hangs on
+//   the write: only a tree confirmed stopped leaves no reader, so only then does the attempt wait for the write's end
+//   (`delivered`). An attempt that ends otherwise (the stop failed, the start failed) ends the write where it stands
+//   (`abandonBrief`), and its stop or start failure stays first.
 
 /**
- * `delivered` settles with why the brief could not be sent to this worker (an error code), or undefined once it was sent.
+ * `delivered` settles with why the brief could not be sent to this worker (an error code), or undefined once it was sent. It
+ * settles on its own once nothing can read the brief any more (the tree is confirmed stopped). `abandonBrief` ends a write
+ * still going (the runner closes its end of the worker's input) and returns at once how the send stands: why it failed,
+ * that it was not all written yet, or undefined when it was sent.
  * @typedef {{
  *   started: Promise<{ kind: string, reason?: string }>,
  *   exited: Promise<{ code: number | null, signal: string | null }>,
  *   stop: () => Promise<void>,
  *   delivered?: Promise<string | undefined>,
+ *   abandonBrief?: () => string | undefined,
  * }} WorkerTree
  */
 
@@ -53,16 +60,22 @@ export function createWorkerRun({ launch, hasSession, startCheckMs, limitMs }) {
       let exit;
       let finished = false;
       const timers = [];
-      // The attempt's result also says whether its brief reached the worker. By the time the attempt ends its tree is stopped,
-      // so the write has ended too (sent, or failed because the worker's input closed).
+      // The attempt's result also says whether its brief reached the worker. A tree confirmed stopped has no reader left, so
+      // its write ends (sent, or failed because the worker's input closed) and the attempt waits for that. A failed stop or
+      // start leaves that unknown: a live worker that never reads would hold the write forever, so the attempt ends it now.
       const finish = (result) => {
         if (finished) return;
         finished = true;
         for (const timer of timers) clearTimeout(timer);
         stopCurrent = undefined;
-        void Promise.resolve(tree.delivered).then((sendFailure) =>
-          done(sendFailure === undefined ? result : { ...result, sendFailure })
-        );
+        const withSend = (sendFailure) =>
+          sendFailure === undefined ? result : { ...result, sendFailure };
+        if (result.stopFailure || result.spawnError)
+          done(withSend(tree.abandonBrief?.()));
+        else
+          void Promise.resolve(tree.delivered).then((sent) =>
+            done(withSend(sent))
+          );
       };
       // From here on the attempt waits for the stop only: its leader may end long before the rest of its tree.
       const stopFor = (reason) => {

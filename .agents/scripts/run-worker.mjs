@@ -117,20 +117,46 @@ const args = [
 ];
 if (opts.session) args.push("-s", opts.session);
 
+/** The send result of a brief the runner stopped writing before it was all written (`abandonBrief`). */
+const unfinished = "not all written when the attempt ended";
+
 /**
- * Writes the brief to one worker's standard input and closes it, so opencode reads the whole brief and knows it ended. Settles
- * with why it could not be sent (an error code, e.g. EPIPE when the worker ended without reading), or undefined once sent. The
- * result belongs to that worker's attempt (worker-run.mjs `delivered`).
+ * Writes the brief to one worker's standard input and closes it, so opencode reads the whole brief and knows it ended. The
+ * result belongs to that worker's attempt (worker-run.mjs `delivered`, `abandonBrief`): `delivered` settles with why it could
+ * not be sent (an error code, e.g. EPIPE when the worker ended without reading), or undefined once sent. `abandonBrief` ends a
+ * write still going by closing the runner's end of the input (a live worker that never reads holds it otherwise), and returns
+ * how the send stands.
  */
 function sendBrief(stdin) {
-  if (!stdin) return Promise.resolve("no standard input");
-  return new Promise((resolve) => {
-    // The end callback also gets the write's error; the listener keeps a later error from being unhandled.
-    stdin.on("error", (error) => resolve(failureCode(error)));
-    stdin.end(message, (error) =>
-      resolve(error ? failureCode(error) : undefined)
-    );
-  });
+  if (!stdin)
+    return {
+      delivered: Promise.resolve("no standard input"),
+      abandonBrief: () => "no standard input",
+    };
+  /** @type {PromiseWithResolvers<string | undefined>} */
+  const send = Promise.withResolvers();
+  let sending = true;
+  /** @type {string | undefined} */
+  let failure;
+  const settle = (/** @type {string | undefined} */ result) => {
+    if (!sending) return;
+    sending = false;
+    failure = result;
+    send.resolve(result);
+  };
+  // The end callback also gets the write's error; the listener keeps a later error from being unhandled.
+  stdin.on("error", (error) => settle(failureCode(error)));
+  stdin.end(message, (error) => settle(error ? failureCode(error) : undefined));
+  return {
+    delivered: send.promise,
+    abandonBrief: () => {
+      if (sending) {
+        settle(unfinished);
+        stdin.destroy();
+      }
+      return failure;
+    },
+  };
 }
 
 // Events written so far. No output file yet means no events; a line that is not JSON (a partly written last line) is skipped.
@@ -168,7 +194,7 @@ function launch() {
       started: tree.started,
       exited: tree.exited,
       stop: () => tree.stop(),
-      delivered: sendBrief(tree.stdin),
+      ...sendBrief(tree.stdin),
     };
   } finally {
     // opencode holds its own copies. A file that cannot be closed only stays open until the runner ends.
