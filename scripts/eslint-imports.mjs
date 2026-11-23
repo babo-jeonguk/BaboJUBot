@@ -17,6 +17,7 @@
 import { builtinModules } from "node:module";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { exportsMap, resolveExport } from "./package-exports.ts";
 import { codeFormatPattern } from "./test-files.mjs";
 
 /**
@@ -583,30 +584,40 @@ const codeExtension = new RegExp(`\\.${codeFormatPattern}$`);
 const withoutExtension = (file) => file.replace(codeExtension, "");
 
 /**
- * workspace 패키지 하나: 폴더, 이름, 내보낸 입구(`exports`의 키)와 그 입구가 가리키는 파일(확장자를 뗀 저장소 기준 경로).
+ * workspace 패키지 하나: 폴더, 이름, `exports`, 입구 이름(`exports`의 키, 메시지용)과 무늬 없는 입구가 Node 해석
+ * (scripts/package-exports.ts)으로 가리키는 파일(확장자를 뗀 저장소 기준 경로, 상대 경로 가져오기의 입구 찾기용).
  * @param {string} folder 저장소 기준 패키지 폴더
- * @param {{ name: string, exports?: Record<string, unknown> }} manifest 그 package.json
+ * @param {{ name: string, exports?: unknown }} manifest 그 package.json
  */
 export function workspacePackage(folder, { name, exports = {} }) {
+  const entries = [...exportsMap(exports).keys()];
   const files = Object.fromEntries(
-    Object.entries(exports).flatMap(([entry, target]) =>
-      typeof target === "string"
-        ? [[entry, withoutExtension(path.posix.join(folder, target))]]
-        : []
-    )
+    entries.flatMap((entry) => {
+      if (entry.includes("*")) return [];
+      const file = packageFile(folder, exports, entry);
+      return file === undefined ? [] : [[entry, file]];
+    })
   );
-  return { folder, name, entries: Object.keys(exports), files };
+  return { folder, name, exports, entries, files };
+}
+
+/** 입구를 Node 해석으로 푼 대상 파일(확장자를 뗀 저장소 기준 경로). 막혔거나 풀리지 않으면 undefined. */
+function packageFile(folder, exports, entry) {
+  const resolved = resolveExport(exports, entry);
+  return resolved.listed && typeof resolved.target === "string"
+    ? withoutExtension(path.posix.join(folder, resolved.target))
+    : undefined;
 }
 
 /**
- * 패키지 이름으로 적은 입구(`.`·`./recovery`)를 그 패키지에서 푼다. exported: 그 입구로 가져올 수 있는가, file: 대상 파일(확장자를 뗀
- * 저장소 기준 경로, 가져올 수 없으면 undefined).
+ * 패키지 이름으로 적은 입구(`.`·`./recovery`)를 그 패키지에서 Node처럼 푼다. exported: 그 입구로 가져올 수 있는가(null로 막았거나
+ * 이 저장소의 조건으로 풀리지 않으면 아님), file: 대상 파일(확장자를 뗀 저장소 기준 경로, 가져올 수 없으면 undefined).
  * @param {ReturnType<typeof workspacePackage>} pkg
  * @param {string} entry
  */
 export function packageEntry(pkg, entry) {
-  const exported = pkg.entries.includes(entry);
-  return { exported, file: exported ? pkg.files[entry] : undefined };
+  const file = packageFile(pkg.folder, pkg.exports, entry);
+  return { exported: file !== undefined, file };
 }
 
 /** 저장소의 workspace 패키지(apps·packages 아래 package.json). */
