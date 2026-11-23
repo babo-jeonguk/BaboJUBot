@@ -23,7 +23,7 @@
 
 ## Consequences
 
-- checkout 개발과 CI는 Rust 도구(rustup)가 필요하다. CI는 프로그램을 띄우는 job마다 실행기를 빌드하고, Rust 형식·clippy를 세 OS 대상으로 검사한다.
+- checkout 개발과 CI는 Rust 도구(rustup)와, 의존 crate의 빌드 스크립트를 링크할 시스템 링커(Linux `cc`, macOS Xcode Command Line Tools, Windows MSVC 빌드 도구)가 필요하다. 실행기 자체는 Linux에서 Rust에 딸린 링커(rust-lld)로 정적 musl 링크해 빌드 기기의 glibc에 매이지 않는다. CI는 프로그램을 띄우는 job마다 실행기를 빌드하고, Rust 형식·clippy를 세 OS 대상으로 검사한다.
 - Windows 서버는 더 이상 시작 때 C# 컴파일러로 실행기를 만들지 않는다.
 - 서버만 죽으면 실행기가 정리하므로, 다음 시작의 번호 기반 복구가 필요한 경우가 줄어든다. 실행기도 함께 죽은 경우의 보수적 복구와 대시보드 안내는 #268의 후속 PR이 정한다.
 - Linux는 실행기가 그룹 밖으로 나간 고아(새 세션 자손)도 맡아 트리와 함께 끈다(subreaper). 표식을 가진 프로그램(트리 밖으로 나간 것 포함)도 실행기가 찾아 끄고, 서버와 실행기가 함께 죽은 뒤의 재시작 복구도 실행기에 정리만 청한다(#268 PR 2). 번호 신호를 실행기 밖에서 막는 lint는 #268 PR 2의 마지막 단계다.

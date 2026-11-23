@@ -1,5 +1,6 @@
-# Linux builds are static musl binaries linked by the linker that ships with Rust, so building needs no C toolchain and the
-# binary does not depend on the glibc of the build machine.
+# Linux builds are static musl binaries linked by the linker that ships with Rust, so the binary does not depend on the glibc of
+# the build machine. Building still needs the host's C linker (`cc`): cargo links the build scripts of dependencies (libc's) as
+# host programs, and a host program cannot be linked by rust-lld without the host's C runtime (CONTRIBUTING.md).
 [target.x86_64-unknown-linux-musl]
 linker = "rust-lld"
 
