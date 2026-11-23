@@ -915,9 +915,9 @@ fn environment(buffer: &[u8]) -> impl Iterator<Item = &[u8]> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Candidate, Confirmed, Reading, Running, Seen, candidate, confirm, environment,
-        is_marker_entry, procargs_reading, running_from, running_from_handle, same_start,
-        seen_in_record,
+        Candidate, Confirmed, Reading, Running, Seen, candidate, confirm, environ_reading,
+        environment, is_marker_entry, procargs_reading, running_from, running_from_handle,
+        same_start, seen_in_record,
     };
 
     #[test]
@@ -1194,6 +1194,49 @@ mod tests {
     fn a_recorded_start_is_compared_exactly() {
         assert!(same_start(1_700_000_000_123_456, 1_700_000_000_123_456));
         assert!(!same_start(1_700_000_000_123_456, 1_700_000_000_654_321));
+    }
+
+    /// #283 review 2 (follow-up check): an empty `/proc/<id>/environ` is a read that found no marker only when the process has memory
+    /// of its own. A process whose main thread is a zombie while other threads still run gives an empty read too, and it still runs
+    /// user code and can fork: it may be ours. One that ended or is ending is gone, and a state that cannot be read leaves it unread.
+    #[test]
+    fn an_empty_linux_environment_is_judged_by_the_process_state() {
+        let marker = "6f1c2a3e-1111-4222-8333-944455556666";
+        let stat = |state: &'static str, threads: u32| {
+            move || {
+                Ok(format!(
+                    "9 (x) {state} 1 9 9 0 -1 0 0 0 0 0 0 0 0 0 20 0 {threads} 0 5"
+                ))
+            }
+        };
+        let failed = |code| {
+            move || -> std::io::Result<String> { Err(std::io::Error::from_raw_os_error(code)) }
+        };
+        let empty = || Ok(Vec::new());
+        let read = |stat| environ_reading(empty(), marker, stat).ok();
+        assert_eq!(read(stat("Z", 3)), Some(Reading::Unreadable));
+        assert_eq!(read(stat("Z", 1)), Some(Reading::Gone));
+        assert_eq!(read(stat("X", 1)), Some(Reading::Gone));
+        assert_eq!(read(stat("S", 1)), Some(Reading::Clear));
+        assert_eq!(read(stat("R", 4)), Some(Reading::Clear));
+        assert_eq!(
+            environ_reading(empty(), marker, failed(libc::ENOENT)).ok(),
+            Some(Reading::Gone)
+        );
+        assert_eq!(
+            environ_reading(empty(), marker, failed(libc::EACCES)).ok(),
+            Some(Reading::Unreadable)
+        );
+        assert_eq!(
+            environ_reading(empty(), marker, || Ok("garbage".to_string())).ok(),
+            Some(Reading::Unreadable)
+        );
+        // The read after the handle is open judges an empty read the same way.
+        assert_eq!(
+            confirm(empty(), marker, stat("Z", 3)),
+            Ok(Confirmed::Unverified)
+        );
+        assert_eq!(confirm(empty(), marker, stat("Z", 1)), Ok(Confirmed::Pass));
     }
 
     /// #283 review 1, SPEC-2: the read made after the handle is open decides. One that cannot be read is not a read that found no
