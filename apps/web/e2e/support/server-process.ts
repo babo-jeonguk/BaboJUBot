@@ -318,11 +318,15 @@ function waitForReadyLine(
 /**
  * 멈춤 메시지로 정리를 맡기고 시한 안에 끝나기를 기다린다. 시한은 요청을 보내는 일부터 덮는다. 넘기면 강제로 끝내고 실패로 알린다.
  */
-async function stopChild(
+export async function stopChild(
   child: ChildProcess,
   exited: Promise<Exit>,
   label: string,
-  output: () => string
+  output: () => string,
+  limits: { exitWaitMs: number; killWaitMs: number } = {
+    exitWaitMs,
+    killWaitMs,
+  }
 ) {
   // 서버는 멈추라고 할 때까지 살아 있어야 한다. 그 전에 끝났으면 종료 코드가 0이어도 이상이다.
   if (child.exitCode !== null || child.signalCode !== null)
@@ -340,15 +344,19 @@ async function stopChild(
   try {
     stopped = await within(
       Promise.race([exited.then(() => "exited" as const), sendFailed]),
-      exitWaitMs,
+      limits.exitWaitMs,
       `${label} did not end after the stop request`
     );
   } catch (error) {
     // 시한 안에 끝나지 않았다. 강제로 끝내고 그 끝을 확인한 뒤 실패로 알린다.
     child.kill("SIGKILL");
-    await within(exited, killWaitMs, `${label} did not end after SIGKILL`);
+    await within(
+      exited,
+      limits.killWaitMs,
+      `${label} did not end after SIGKILL`
+    );
     throw new Error(
-      `${label}가 멈춤 요청 뒤 ${exitWaitMs}ms 안에 끝나지 않아 강제로 끝냈다: ${output()}`,
+      `${label}가 멈춤 요청 뒤 ${limits.exitWaitMs}ms 안에 끝나지 않아 강제로 끝냈다: ${output()}`,
       { cause: error }
     );
   }
@@ -358,7 +366,7 @@ async function stopChild(
     try {
       early = await within(
         exited,
-        killWaitMs,
+        limits.killWaitMs,
         `${label} did not end after the stop request could not be sent`
       );
     } catch (error) {
