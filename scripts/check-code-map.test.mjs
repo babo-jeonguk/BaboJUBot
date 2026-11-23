@@ -226,7 +226,7 @@ test("fails a package specifier whose entry is not exported, whose workspace pac
       ]),
     }),
     [
-      `${area}:5: 없는 패키지 입구 \`@babojubot/process/test-cleanup\` — packages/process/package.json의 exports: ., ./remove-folder, ./fixtures/*`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/test-cleanup\` — Node가 packages/process/package.json의 exports로 풀지 못함(ERR_PACKAGE_PATH_NOT_EXPORTED); exports: ., ./remove-folder, ./fixtures/*`,
       `${area}:5: 없는 패키지 \`@babojubot/launch\` — workspace 패키지가 아니고 어느 package.json에도 의존성으로 없음`,
       `${area}:5: 없는 패키지 입구 \`@babojubot/web/src/gone.tsx\` — apps/web/package.json에 exports가 없고 apps/web/src/gone.tsx 파일도 없음`,
       `${area}:5: 없는 패키지 \`@vitest/ui\` — workspace 패키지가 아니고 어느 package.json에도 의존성으로 없음`,
@@ -235,7 +235,7 @@ test("fails a package specifier whose entry is not exported, whose workspace pac
 });
 
 // 입구 이름만 exports에 있어도 Node가 풀지 못하는 입구는 쓸 수 없다: null로 막은 입구, 대상 파일이 없는 입구, 와일드카드가 가리키는
-// 파일이 없는 입구(#286 항목 24). Node의 exports 해석(조건 node·import·default)으로 대상을 풀어 그 파일이 있는지 본다.
+// 파일이 없는 입구(#286 항목 24). Node 자신의 해석기로 대상을 풀어 그 파일이 있는지 본다.
 test("fails a package entry Node cannot resolve to a file: blocked with null, a missing target or a wildcard without its file", async () => {
   const process = {
     name: "@babojubot/process",
@@ -261,11 +261,11 @@ test("fails a package entry Node cannot resolve to a file: blocked with null, a 
       ]),
     }),
     [
-      `${area}:5: 없는 패키지 입구 \`@babojubot/process/testing\` — packages/process/package.json exports가 막은 입구(null): ./testing`,
-      `${area}:5: 없는 패키지 입구 \`@babojubot/process/internal/secret\` — packages/process/package.json exports가 막은 입구(null): ./internal/secret`,
-      `${area}:5: 없는 패키지 입구 \`@babojubot/process/gone\` — packages/process/package.json exports의 ./gone 대상 packages/process/src/gone.ts 파일이 없음`,
-      `${area}:5: 없는 패키지 입구 \`@babojubot/process/fixtures/missing\` — packages/process/package.json exports의 ./fixtures/missing 대상 packages/process/src/fixtures/missing.ts 파일이 없음`,
-      `${area}:5: 없는 패키지 입구 \`@babojubot/process/browser\` — packages/process/package.json exports에서 node·import·default 조건으로 풀리는 대상이 없는 입구: ./browser`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/testing\` — Node가 packages/process/package.json의 exports로 풀지 못함(ERR_PACKAGE_PATH_NOT_EXPORTED); exports: ., ./remove-folder, ./internal/*, ./testing, ./gone, ./fixtures/*, ./browser`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/internal/secret\` — Node가 packages/process/package.json의 exports로 풀지 못함(ERR_PACKAGE_PATH_NOT_EXPORTED); exports: ., ./remove-folder, ./internal/*, ./testing, ./gone, ./fixtures/*, ./browser`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/gone\` — packages/process/package.json exports가 푼 packages/process/src/gone.ts 파일이 없음`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/fixtures/missing\` — packages/process/package.json exports가 푼 packages/process/src/fixtures/missing.ts 파일이 없음`,
+      `${area}:5: 없는 패키지 입구 \`@babojubot/process/browser\` — Node가 packages/process/package.json의 exports로 풀지 못함(ERR_PACKAGE_PATH_NOT_EXPORTED); exports: ., ./remove-folder, ./internal/*, ./testing, ./gone, ./fixtures/*, ./browser`,
     ]
   );
 });

@@ -10,8 +10,8 @@
 //   맞는 파일이 없거나 둘 이상이면 실패한다. Markdown 파일은 있는지만 보고 이름을 찾는 곳에 넣지 않는다.
 // - 폴더 표기: `/`로 끝나는 경로(`scripts/`). 그 경로 아래에 추적 파일이 있어야 한다.
 // - 패키지: `@범위/이름[/입구]`, 또는 어느 package.json이 의존성으로 적은 이름(`typescript`). workspace 패키지(뿌리·`packages/*`·
-//   `apps/*`)면 그 입구를 Node의 exports 해석(조건 node·import·default, `*` 무늬 포함)으로 푼 대상 파일이 있어야 하고(null로 막은
-//   입구·대상 없는 입구는 실패, `exports`가 없으면 그 경로의 파일), 아니면 의존성으로 적혀 있어야 한다.
+//   `apps/*`)면 그 입구를 Node 자신의 해석기(scripts/package-exports.ts)로 푼 대상 파일이 있어야 하고(Node가 거부한 입구는 그 오류
+//   코드와 함께 실패, `exports`가 없으면 그 경로의 파일), 아니면 의존성으로 적혀 있어야 한다.
 // - pnpm 명령(`pnpm check:docs`, `pnpm --filter <패키지> run <스크립트>`): 돌리는 스크립트가 대상 package.json(`--filter`가 없으면
 //   뿌리)의 `scripts`에 있어야 한다. pnpm 자체 명령(`pnpm install`, `pnpm exec …`)과 모든 패키지에 도는 `-r`은 보지 않는다.
 // - 이름: 식별자 모양(영문·숫자·`_`·`$`, `-`로 이은 낱말, `.`로 이은 조각, 앞의 `#`, 뒤의 호출 괄호)의 코드 표기. 그 줄이 가리키는
@@ -36,9 +36,9 @@ import { parseAllDocuments } from "yaml";
 import { parseMarkdown, SKIP, visit } from "./markdown.mjs";
 import { codeFormatNames, isTestFile } from "./test-files.mjs";
 import {
-  exportConditions,
-  exportsMap,
-  resolveExport,
+  exportKeys,
+  repositoryRelative,
+  resolvePackageEntry,
 } from "./package-exports.ts";
 
 const segment = "[A-Za-z_$#][\\w$]*(?:-[\\w$]+)*";
@@ -560,19 +560,17 @@ export function findCodeMapProblems({ root, files }) {
       return `없는 패키지 입구 \`${specifier}\` — ${manifest.file}에 exports가 없고 ${file} 파일도 없음`;
     }
     const entry = subpath === undefined ? "." : `./${subpath}`;
-    const resolved = resolveExport(manifest.json.exports, entry);
-    if (!resolved.listed)
-      return `없는 패키지 입구 \`${specifier}\` — ${manifest.file}의 exports: ${[...exportsMap(manifest.json.exports).keys()].join(", ")}`;
-    if (resolved.target === null)
-      return `없는 패키지 입구 \`${specifier}\` — ${manifest.file} exports가 막은 입구(null): ${entry}`;
-    if (resolved.target === undefined)
-      return `없는 패키지 입구 \`${specifier}\` — ${manifest.file} exports에서 ${[...exportConditions].join("·")} 조건으로 풀리는 대상이 없는 입구: ${entry}`;
-    const file = path.posix.join(
-      path.posix.dirname(manifest.file),
-      resolved.target
+    // 입구는 Node 자신의 해석기로 푼다(scripts/package-exports.ts). Node는 대상 파일이 있는지 보지 않으므로 그것은 여기서 본다.
+    const resolved = resolvePackageEntry(
+      path.join(root, path.dirname(manifest.file)),
+      manifest.json.name,
+      entry
     );
+    if ("refused" in resolved)
+      return `없는 패키지 입구 \`${specifier}\` — Node가 ${manifest.file}의 exports로 풀지 못함(${resolved.refused}); exports: ${exportKeys(manifest.json.exports).join(", ")}`;
+    const file = repositoryRelative(root, resolved.file);
     if (presentFiles.has(file)) return undefined;
-    return `없는 패키지 입구 \`${specifier}\` — ${manifest.file} exports의 ${entry} 대상 ${file} 파일이 없음`;
+    return `없는 패키지 입구 \`${specifier}\` — ${manifest.file} exports가 푼 ${file} 파일이 없음`;
   };
   const commandProblem = (command) => {
     const words = command.split(/\s+/).slice(1);

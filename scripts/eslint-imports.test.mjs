@@ -373,15 +373,26 @@ test("does not take a local function named like require, createRequire or getBui
 // 다른 패키지의 입구는 Node가 푸는 대로 판정한다(scripts/package-exports.ts). exports 키만 보면 null로 막은 입구도 가져올 수 있는 것으로,
 // 조건 객체·`*` 무늬 입구는 대상 파일이 없는 것으로 읽어, 막힌 입구를 쓰는 가져오기를 놓치고 무늬 입구를 쓰는 가져오기를 막는다
 // (#286 항목 24와 같은 모양).
-test("resolves a workspace package entry as Node does: blocked, conditional and wildcard entries", () => {
-  const pkg = workspacePackage("packages/sample", {
-    name: "@babojubot/sample",
-    exports: {
-      ".": { types: "./src/index.d.ts", import: "./src/index.ts" },
-      "./testing": null,
-      "./fixtures/*": "./src/fixtures/*.ts",
-      "./browser": { browser: "./src/browser.ts" },
-    },
+/** 임시 저장소에 둔 표본 workspace 패키지(packages/sample). 입구는 Node가 그 폴더에서 푼다. */
+function samplePackage(context, exports) {
+  const root = mkdtempSync(path.join(tmpdir(), "eslint-imports-package-"));
+  context.after(() => removeFolder(root));
+  const folder = "packages/sample";
+  const manifest = { name: "@babojubot/sample", exports };
+  mkdirSync(path.join(root, folder), { recursive: true });
+  writeFileSync(
+    path.join(root, folder, "package.json"),
+    JSON.stringify(manifest)
+  );
+  return workspacePackage(folder, manifest, root);
+}
+
+test("resolves a workspace package entry as Node does: blocked, conditional and wildcard entries", (context) => {
+  const pkg = samplePackage(context, {
+    ".": { types: "./src/index.d.ts", import: "./src/index.ts" },
+    "./testing": null,
+    "./fixtures/*": "./src/fixtures/*.ts",
+    "./browser": { browser: "./src/browser.ts" },
   });
   assert.deepEqual(
     [".", "./testing", "./fixtures/lifeline", "./browser", "./gone"].map(
@@ -404,28 +415,16 @@ test("resolves a workspace package entry as Node does: blocked, conditional and 
 // 긴 키가 이긴다(선언 순서와 무관).
 test("resolves workspace package entries with Node's own resolver: invalid targets and wildcard key order", (context) => {
   for (const order of ["short first", "long first"]) {
-    const root = mkdtempSync(path.join(tmpdir(), "eslint-imports-package-"));
-    context.after(() => removeFolder(root));
-    const folder = "packages/sample";
     const wildcards =
       order === "short first"
         ? { "./a/*": "./src/a/*.ts", "./a/*.js": "./src/aj/*.ts" }
         : { "./a/*.js": "./src/aj/*.ts", "./a/*": "./src/a/*.ts" };
-    const manifest = {
-      name: "@babojubot/sample",
-      exports: {
-        ".": "./src/index.ts",
-        "./up": "./../outside.ts",
-        "./nm": "./node_modules/x.ts",
-        ...wildcards,
-      },
-    };
-    mkdirSync(path.join(root, folder), { recursive: true });
-    writeFileSync(
-      path.join(root, folder, "package.json"),
-      JSON.stringify(manifest)
-    );
-    const pkg = workspacePackage(folder, manifest, root);
+    const pkg = samplePackage(context, {
+      ".": "./src/index.ts",
+      "./up": "./../outside.ts",
+      "./nm": "./node_modules/x.ts",
+      ...wildcards,
+    });
     assert.deepEqual(
       ["./up", "./nm", "./a/x.js"].map((entry) => [
         entry,
