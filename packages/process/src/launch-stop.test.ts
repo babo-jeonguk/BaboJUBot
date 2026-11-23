@@ -173,7 +173,13 @@ describe.skipIf(process.platform === "win32")(
       });
       await lifelines.connected(leader.name);
       await lifelines.connected(moved.name);
-      await expect(tree.stop()).rejects.toThrow(/process group did not end/);
+      // 진단은 문구가 아니라 원인 코드와 실행기의 답(그대로)으로 남는다(#286, failureCode).
+      await expect(tree.stop()).rejects.toMatchObject({
+        name: "TreeStopFailure",
+        code: "TREE_LEFT",
+        left: "1 (the process group did not end)",
+        message: expect.stringMatching(/process group did not end/),
+      });
       expect(lifelines.open(moved.name)).toBe(true);
       expect(lifelines.open(leader.name)).toBe(true);
     }, 60_000);
@@ -213,7 +219,12 @@ describe.skipIf(process.platform === "win32")(
         stdio: ["ignore", "ignore", "ignore"],
       });
       await lifelines.connected(leader.name);
-      await expect(tree.stop()).rejects.toThrow(/broke the protocol/);
+      await expect(tree.stop()).rejects.toMatchObject({
+        name: "TreeStopFailure",
+        code: "TREE_END_UNCONFIRMED",
+        protocolFailure: expect.stringContaining("broke the protocol"),
+        message: expect.stringMatching(/broke the protocol/),
+      });
     }, 60_000);
 
     // #274 외부 리뷰 2회차 SPEC-4: 실행기가 프로그램의 끝을 알리지 않고 끝나면, 프로그램의 끝은 모르는 것이다. 실행기 자신의 종료
@@ -250,7 +261,10 @@ describe.skipIf(process.platform === "win32")(
           maxOutputBytes: 1024,
           overflow: "stop",
         })
-      ).rejects.toThrow(/process group did not end/);
+      ).rejects.toMatchObject({
+        code: "TREE_LEFT",
+        message: expect.stringMatching(/process group did not end/),
+      });
     }, 60_000);
   }
 );

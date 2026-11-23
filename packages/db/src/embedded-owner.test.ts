@@ -275,7 +275,7 @@ describe.runIf(posix)(
         privateFolder(base),
         privateFolder("/tmp"),
       ]);
-      expect(refused).toBeInstanceOf(Error);
+      expect(refused).toMatchObject({ code: "EMBEDDED_NO_OWNER_FOLDER" });
       const cause = (refused as Error).cause;
       // 듣기 실패는 그 자리를 이름에 담는다(Node의 listen 오류도 그렇다). 후보마다 그 실패가 그대로 남는다.
       expect(cause).toBeInstanceOf(AggregateError);

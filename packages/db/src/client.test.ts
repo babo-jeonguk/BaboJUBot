@@ -468,7 +468,12 @@ describe("a Postgres left by a killed process", () => {
       openDatabase({
         embedded: { dataDir, persistent: true },
       })
-    ).rejects.toThrow(`in use by a running process (pid ${child.pid})`);
+    ).rejects.toMatchObject({
+      code: "EMBEDDED_IN_USE",
+      message: expect.stringContaining(
+        `in use by a running process (pid ${child.pid})`
+      ),
+    });
     expect(isAlive(postmaster)).toBe(true);
   }, 60_000);
 
@@ -508,7 +513,12 @@ describe("a Postgres left by a killed process", () => {
     // 주인이 살아 있는 동안은 그 기록으로 거부된다.
     await expect(
       openDatabase({ embedded: { dataDir, persistent: true } })
-    ).rejects.toThrow(`in use by a running process (pid ${owner.pid})`);
+    ).rejects.toMatchObject({
+      code: "EMBEDDED_IN_USE",
+      message: expect.stringContaining(
+        `in use by a running process (pid ${owner.pid})`
+      ),
+    });
 
     // 주인이 죽어 연결이 닫히고, 기록한 번호는 다른 프로그램에 다시 주어졌다(번호 재사용은 OS가 정해 시험이 일으킬 수 없어, 같은
     // 기록의 번호만 지금 도는 무관한 프로그램의 번호로 바꾼다). 주인 연결의 자리는 제품이 쓴 그대로다.
@@ -565,11 +575,16 @@ describe("a Postgres left by a killed process", () => {
     {
       owner: "a dead process",
       message: "could not be confirmed as its server",
+      code: "EMBEDDED_POSTGRES_UNCONFIRMED",
     },
-    { owner: "no record", message: "has no record of starting it" },
+    {
+      owner: "no record",
+      message: "has no record of starting it",
+      code: "EMBEDDED_POSTGRES_UNKNOWN",
+    },
   ])(
     "does not stop a process it cannot confirm as its Postgres ($owner)",
-    async ({ owner, message }) => {
+    async ({ owner, message, code }) => {
       const dataDir = await fsp.mkdtemp(
         path.join(os.tmpdir(), "babojubot-pg-")
       );
@@ -603,7 +618,10 @@ describe("a Postgres left by a killed process", () => {
         openDatabase({
           embedded: { dataDir, persistent: true },
         })
-      ).rejects.toThrow(message);
+      ).rejects.toMatchObject({
+        code,
+        message: expect.stringContaining(message),
+      });
       expect(isAlive(unrelated.pid!)).toBe(true);
     },
     60_000
@@ -646,9 +664,12 @@ describe("a Postgres left by a killed process", () => {
       openDatabase({
         embedded: { dataDir, persistent: true },
       })
-    ).rejects.toThrow(
-      /did not stop in 10s\. Stop it with: .*pg_ctl.* stop -D /
-    );
+    ).rejects.toMatchObject({
+      code: "EMBEDDED_STOP_TIMEOUT",
+      message: expect.stringMatching(
+        /did not stop in 10s\. Stop it with: .*pg_ctl.* stop -D /
+      ),
+    });
     expect(isAlive(postmaster)).toBe(true);
   }, 60_000);
 
