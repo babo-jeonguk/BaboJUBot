@@ -2264,6 +2264,28 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
       return runs(owner, next);
     });
   };
+  /**
+   * race·any에서 표시한 Promise와 함께 넘긴 다른 값이 거절만 할 수 있는 Promise인가(`new Promise((_, reject) => …)`, 이행 함수를
+   * 받지 않거나 쓰지 않음). 그래야 표시한 Promise가 정해질 때까지 조합이 끝나지 않는다. 시한은 거절로 끝내는 모양이다(공용 within).
+   */
+  const onlyRejects = (node) => {
+    if (
+      node?.type !== "NewExpression" ||
+      !comesFrom(sourceCode, node.callee, "global:Promise")
+    )
+      return false;
+    const executor = node.arguments[0];
+    if (!executor || !functionTypes.has(executor.type)) return false;
+    const resolve = executor.params[0];
+    if (!resolve) return true;
+    if (resolve.type !== "Identifier") return false;
+    return (
+      sourceCode
+        .getDeclaredVariables(executor)
+        .find((variable) => variable.name === resolve.name)?.references
+        .length === 0
+    );
+  };
   /** 같은 파일에 정의한 함수(함수 선언, const로 받은 함수 식). */
   const functionOf = (variable) => {
     const def = variable.defs[0];
@@ -2285,7 +2307,7 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
    * `expect`는 첫 인자(둘째는 문구), 가져온 시험 도움은 첫 인자(저장소의 기다림 도움 `within`·`settled`는 Promise를 첫 인자로
    * 받는다), 같은 파일의 함수는 그 위치의 매개변수가 기다려질 때다.
    */
-  const callPasses = (call, index, isArray, seen) => {
+  const callPasses = (call, index, isArray, seen, element) => {
     const callee = call.callee;
     // 출처가 확인된 받는 자리(Promise 조합·expect·저장소 시험 도움)를 부르는 모양과 무관하게 먼저 본다(이름 바꾼 가져오기·별칭·
     // 이름공간 속성·구조 분해, #266 리뷰 SPEC-8·9). 저장소 도움은 그 함수 자체여야 한다(호출 결과 `()`는 무엇인지 모른다).
@@ -2295,8 +2317,24 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
         callee,
         ...[...promiseCombinators].map((name) => `global:Promise.${name}`)
       )
-    )
-      return index === 0 && isArray ? "always" : "never";
+    ) {
+      if (index !== 0 || !isArray) return "never";
+      // race·any는 먼저 끝나는 쪽에서 끝난다. 다른 값이 먼저 이행할 수 있으면 표시한 Promise의 거절은 기다리지 않고 지나간다.
+      if (
+        comesFrom(
+          sourceCode,
+          callee,
+          "global:Promise.race",
+          "global:Promise.any"
+        )
+      )
+        return call.arguments[0].elements.every(
+          (other) => other === element || onlyRejects(other)
+        )
+          ? "always"
+          : "never";
+      return "always";
+    }
     if (isExpect(sourceCode, callee))
       return !isArray &&
         index === 0 &&
@@ -2335,6 +2373,8 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
     let conditional = false;
     // 배열 안에 있는가. 배열은 그것을 받는 호출(Promise.all 등)을 거쳐야 기다림에 닿는다.
     let inArray = false;
+    // 배열 안이면 그 배열의 원소 중 이 값을 담은 것.
+    let element;
     for (let parent = child.parent; parent; parent = child.parent) {
       if (
         parent.type === "AwaitExpression" ||
@@ -2352,6 +2392,7 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
       }
       if (parent.type === "ArrayExpression") {
         inArray = true;
+        element = child;
         child = parent;
         continue;
       }
@@ -2386,7 +2427,8 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
           parent,
           parent.arguments.indexOf(child),
           child.type === "ArrayExpression",
-          seen
+          seen,
+          element
         );
         if (passed === "never") return undefined;
         if (passed === "branch") conditional = true;
@@ -2461,7 +2503,8 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
  * 속성을 다른 파일에서 읽어 기다리는 것은 따라가지 않아 짚는다. 루트는 이름으로 맞추므로 같은 이름으로 넘겨받은 객체(다른 함수의
  * 매개변수 `child`)는 같은 경로다. 실행되지 않는 기다림은 세지 않는다(#286 항목 21): 도달할 수 없는 코드(조기 `return`·`throw` 뒤)와,
  * 아무도 부르지 않거나 그런 함수만 부르는 이름 있는 함수 안(내보낸 함수, 콜백으로 넘긴 이름 없는 함수, 메서드는 실행된다고 본다).
- * 다른 값이 먼저 이행할 수 있는 `Promise.race`·`any`도 기다림으로 센다(승자에 따른 분기까지 따라가지 않는다).
+ * `Promise.race`·`any` 안의 기다림은 다른 값이 모두 거절만 할 수 있을 때(시한을 거절로 끝내는 공용 within의 모양)만 센다. 다른 값이
+ * 먼저 이행할 수 있으면 표시한 Promise가 정해지기 전에 끝나, 그 뒤의 거절을 기다리지 않는다.
  */
 const noUnawaitedLater = {
   meta: {
