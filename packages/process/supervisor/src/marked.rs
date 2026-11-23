@@ -125,11 +125,63 @@ pub enum Running {
     Unknown,
 }
 
-/// What reading a process's information now gave (macOS `proc_pidinfo`): its start and whether it is a zombie.
+/// What reading a process's information now gave (macOS `proc_pidinfo`): its start, whether it is a zombie, and its real user.
 #[derive(Debug, Clone, Copy)]
 pub struct Seen {
     pub start: u64,
     pub zombie: bool,
+    pub user: libc::uid_t,
+}
+
+/// What a macOS candidate was decided to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Candidate {
+    /// Hold it: it carries the marker, read along with this start.
+    Hold {
+        start: u64,
+    },
+    Pass,
+    /// It may be ours but could not be read: no signal, and the stop is not clean while it stays.
+    Unverified,
+}
+
+/// Decides on a process of this user's list (macOS) from its information read before and after its environment. The environment
+/// read in between is the process's only when the start read again is the same. A process refused to this credential is passed
+/// over, and another failure is a failed look.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn candidate(
+    first: std::io::Result<Option<Seen>>,
+    user: libc::uid_t,
+    since: Option<u64>,
+    reading: impl FnOnce() -> Reading,
+    second: impl FnOnce() -> std::io::Result<Option<Seen>>,
+) -> std::io::Result<Candidate> {
+    let refused =
+        |error: &std::io::Error| matches!(error.raw_os_error(), Some(libc::EPERM | libc::EACCES));
+    let before = match first {
+        Ok(Some(before)) => before,
+        Ok(None) => return Ok(Candidate::Pass),
+        Err(error) if refused(&error) => return Ok(Candidate::Pass),
+        Err(error) => return Err(error),
+    };
+    if before.user != user || before.zombie {
+        return Ok(Candidate::Pass);
+    }
+    let reading = reading();
+    let same = match second() {
+        Ok(None) => return Ok(Candidate::Pass),
+        Ok(Some(after)) => after.start == before.start,
+        Err(error) if refused(&error) => return Ok(Candidate::Unverified),
+        Err(error) => return Err(error),
+    };
+    let after_run = same && since.is_some_and(|since| before.start >= since);
+    Ok(match reading {
+        Reading::Carries if same => Candidate::Hold {
+            start: before.start,
+        },
+        Reading::Unreadable if after_run => Candidate::Unverified,
+        Reading::Carries | Reading::Unreadable | Reading::Clear | Reading::Gone => Candidate::Pass,
+    })
 }
 
 /// Whether the recorded start and the start read now are the same process's. Both are in the system's finest measure (the supervisor
@@ -513,7 +565,8 @@ pub use macos::{Held, find, hold, signal, start_of_self, still_runs};
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{
-        Found, Reading, Running, Search, Seen, procargs_reading, running_from, same_start,
+        Candidate, Found, Reading, Running, Search, Seen, candidate, procargs_reading,
+        running_from, same_start,
     };
     use std::io;
 
@@ -585,6 +638,17 @@ mod macos {
     /// Microseconds since the epoch.
     fn start_of(info: &libc::proc_bsdinfo) -> u64 {
         info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec
+    }
+
+    /// The process's information as what was seen, or `None` when it ended.
+    fn seen(pid: libc::pid_t) -> io::Result<Option<Seen>> {
+        info(pid).map(|now| {
+            now.map(|now| Seen {
+                start: start_of(&now),
+                zombie: now.pbi_status == libc::SZOMB,
+                user: now.pbi_ruid,
+            })
+        })
     }
 
     /// When this supervisor started (microseconds since the epoch).
@@ -673,37 +737,24 @@ mod macos {
             // either (the pinned libc has no `kinfo_proc` for `sysctl(KERN_PROC_PID)`), so it cannot be told from one that ran before
             // this run: taking it as unverified failed every stop on macOS CI (a login-time process of this user). It is passed over;
             // the gap is written in the PR (#283 review 2, STD-2).
-            let read = |pid| match info(pid) {
-                Ok(Some(now)) => Ok(Some(Some(now))),
-                Ok(None) => Ok(None),
-                Err(error) if unreadable(&error) => Ok(Some(None)),
-                Err(error) => Err(format!("process {pid} could not be read: {error}")),
-            };
-            let before = match read(pid)? {
-                None | Some(None) => continue,
-                Some(Some(before)) => before,
-            };
-            if before.pbi_ruid != uid || before.pbi_status == libc::SZOMB {
-                continue;
-            }
-            let start = start_of(&before);
-            let reading = arguments(pid)
-                .map(|arguments| procargs_reading(&arguments, &search.marker, || restricted(pid)))
-                .unwrap_or(Reading::Unreadable);
-            // The start time read again says the arguments read in between were this process's.
-            let same = match read(pid)? {
-                None => continue,
-                Some(None) => {
-                    found.unverified.push(pid);
-                    continue;
-                }
-                Some(Some(after)) => start_of(&after) == start,
-            };
-            let may_be_ours = same && search.since.is_some_and(|since| start >= since);
-            match reading {
-                Reading::Carries if same => found.holders.push(Held { pid, start }),
-                Reading::Unreadable if may_be_ours => found.unverified.push(pid),
-                Reading::Carries | Reading::Unreadable | Reading::Clear | Reading::Gone => {}
+            let decided = candidate(
+                seen(pid),
+                uid,
+                search.since,
+                || {
+                    arguments(pid)
+                        .map(|arguments| {
+                            procargs_reading(&arguments, &search.marker, || restricted(pid))
+                        })
+                        .unwrap_or(Reading::Unreadable)
+                },
+                || seen(pid),
+            )
+            .map_err(|error| format!("process {pid} could not be read: {error}"))?;
+            match decided {
+                Candidate::Hold { start } => found.holders.push(Held { pid, start }),
+                Candidate::Unverified => found.unverified.push(pid),
+                Candidate::Pass => {}
             }
         }
         Ok(found)
@@ -728,15 +779,7 @@ mod macos {
 
     /// Whether a held program still runs: the same start time, and not a zombie. Another user's process with its number now is not it.
     pub fn still_runs(held: &Held) -> Running {
-        running_from(
-            info(held.pid).map(|now| {
-                now.map(|now| Seen {
-                    start: start_of(&now),
-                    zombie: now.pbi_status == libc::SZOMB,
-                })
-            }),
-            held.start,
-        )
+        running_from(seen(held.pid), held.start)
     }
 
     pub fn signal(held: &Held, signal: libc::c_int) -> Result<(), String> {
@@ -880,7 +923,13 @@ mod tests {
         fn error<T>(code: i32) -> std::io::Result<T> {
             Err(std::io::Error::from_raw_os_error(code))
         }
-        let seen = |start, zombie| Ok(Some(Seen { start, zombie }));
+        let seen = |start, zombie| {
+            Ok(Some(Seen {
+                start,
+                zombie,
+                user: 501,
+            }))
+        };
         assert_eq!(running_from(seen(7, false), 7), Running::Yes);
         assert_eq!(running_from(seen(7, true), 7), Running::Ended);
         assert_eq!(running_from(seen(8, false), 7), Running::Ended);
