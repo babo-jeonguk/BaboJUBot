@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -57,6 +57,20 @@ export async function runPlaywright(options: {
       stdio: ["ignore", "pipe", "pipe"],
     }
   );
+  return runToEnd(child, {
+    timeoutMs,
+    what: "안쪽 Playwright 실행",
+  });
+}
+
+/**
+ * 띄운 자식(stdout·stderr가 파이프)을 끝까지 돌려 종료 코드와 출력(stdout·stderr를 받은 차례대로)을 돌려준다. 끝은 종료와 출력의
+ * 끝을 함께 본다. `timeoutMs` 안에 끝나지 않으면 자식을 끄고 `what`을 밝혀 실패한다.
+ */
+export async function runToEnd(
+  child: ChildProcess,
+  { timeoutMs, what }: { timeoutMs: number; what: string }
+) {
   let output = "";
   child.stdout!.on("data", (chunk) => (output += chunk));
   child.stderr!.on("data", (chunk) => (output += chunk));
@@ -82,17 +96,15 @@ export async function runPlaywright(options: {
         within(
           ended,
           10_000,
-          "the stopped inner Playwright run did not exit and end its output"
+          `${what}: the stopped child did not exit and end its output`
         ),
     ]);
     throw combinedFailure(
       [
-        new Error(
-          `안쪽 Playwright 실행이 ${timeoutMs}ms 안에 끝나지 않았다: ${output}`
-        ),
+        new Error(`${what}이 ${timeoutMs}ms 안에 끝나지 않았다: ${output}`),
         ...failures,
       ],
-      "안쪽 Playwright 실행이 시한 안에 끝나지 않았다"
+      `${what}이 시한 안에 끝나지 않았다`
     );
   }
   const [[code]] = finished;
