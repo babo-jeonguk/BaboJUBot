@@ -1302,6 +1302,107 @@ mod tests {
         assert_eq!(confirm(empty, marker, stat("Z", 1)), Ok(Confirmed::Pass));
     }
 
+    /// Answers in order, one per call, and counts the calls; a call past the last answer fails the test.
+    fn in_order<T: Clone>(
+        answers: Vec<T>,
+    ) -> (impl Fn() -> T, std::rc::Rc<std::cell::Cell<usize>>) {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let counted = calls.clone();
+        let answer = move || {
+            let call = counted.get();
+            counted.set(call + 1);
+            answers
+                .get(call)
+                .cloned()
+                .unwrap_or_else(|| panic!("asked {} times", call + 1))
+        };
+        (answer, calls)
+    }
+
+    /// #283 review 4, SPEC-5: an empty Linux environment is judged on what the state said around the very read judged. After an
+    /// empty read, the state is read, the environment again, and the state again: the read is an empty environment only when both
+    /// states hold the same `env_end`, not 0 (an exec in between attaches new memory and changes it). A second read that is not
+    /// empty is judged as it is.
+    #[test]
+    fn an_empty_linux_environment_is_judged_by_the_state_around_the_read() {
+        let marker = "6f1c2a3e-1111-4222-8333-944455556666";
+        let line = |env_end: u64| -> std::io::Result<String> {
+            let mut fields = vec!["0".to_owned(); 50];
+            fields[0] = "S".to_owned();
+            fields[17] = "1".to_owned();
+            fields[48] = env_end.to_string();
+            Ok(format!("9 (x) {}", fields.join(" ")))
+        };
+        let empty = Vec::new;
+        let marked = || format!("BABOJUBOT_PROCESS_LEASE={marker}\0").into_bytes();
+        let (a, b) = (0x7ffd_1234_5000, 0x7ffc_9876_5000);
+        let judge = |reads: Vec<Vec<u8>>, stats: Vec<u64>| {
+            let (read, read_calls) = in_order(reads);
+            let (stat, stat_calls) = in_order(stats);
+            let reading = environ_reading(|| Ok(read()), marker, || line(stat())).ok();
+            (reading, read_calls.get(), stat_calls.get())
+        };
+        assert_eq!(
+            judge(vec![empty(), empty()], vec![a, a]),
+            (Some(Reading::Clear), 2, 2)
+        );
+        assert_eq!(
+            judge(vec![empty(), empty()], vec![a, b]).0,
+            Some(Reading::Unreadable)
+        );
+        assert_eq!(
+            judge(vec![empty(), empty()], vec![a, 0]).0,
+            Some(Reading::Unreadable)
+        );
+        assert_eq!(
+            judge(vec![empty(), empty()], vec![0, a]).0,
+            Some(Reading::Unreadable)
+        );
+        assert_eq!(
+            judge(vec![empty(), marked()], vec![a]).0,
+            Some(Reading::Carries)
+        );
+        // The read after the handle is open goes the same way.
+        let (read, _) = in_order(vec![Vec::new(), Vec::new()]);
+        let (stat, _) = in_order(vec![a, b]);
+        assert_eq!(
+            confirm(|| Ok(read()), marker, || line(stat())),
+            Ok(Confirmed::Unverified)
+        );
+    }
+
+    /// #283 review 4, SPEC-5 (the same shape on macOS): an exec swaps the image, and with it whether the kernel keeps the environment
+    /// from others, while the start stays. After a read with no environment entry, the restriction is checked, the buffer read
+    /// again, and the restriction checked again: no entry is an empty environment only when neither check says restricted.
+    #[test]
+    fn a_macos_empty_environment_is_judged_by_the_restriction_around_the_read() {
+        let marker = "6f1c2a3e-1111-4222-8333-944455556666";
+        let entry = format!("BABOJUBOT_PROCESS_LEASE={marker}");
+        let judge = |buffers: Vec<Vec<u8>>, restrictions: Vec<bool>| {
+            let (read, read_calls) = in_order(buffers);
+            let (restricted, checks) = in_order(restrictions);
+            let reading = procargs_reading(|| Ok(read()), marker, restricted);
+            (reading, read_calls.get(), checks.get())
+        };
+        let none = || procargs(&["tool"], &[]);
+        assert_eq!(
+            judge(vec![none(), none()], vec![false, false]),
+            (Reading::Clear, 2, 2)
+        );
+        assert_eq!(
+            judge(vec![none(), none()], vec![false, true]).0,
+            Reading::Unreadable
+        );
+        assert_eq!(
+            judge(vec![none(), none()], vec![true, false]).0,
+            Reading::Unreadable
+        );
+        assert_eq!(
+            judge(vec![none(), procargs(&["tool"], &[&entry])], vec![false]).0,
+            Reading::Carries
+        );
+    }
+
     /// #283 review 1, SPEC-2: the read made after the handle is open decides. One that cannot be read is not a read that found no
     /// marker; another failure is a failed look, not a pass.
     #[test]
