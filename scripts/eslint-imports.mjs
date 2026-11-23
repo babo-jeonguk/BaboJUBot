@@ -588,8 +588,13 @@ const withoutExtension = (file) => file.replace(codeExtension, "");
  * (scripts/package-exports.ts)으로 가리키는 파일(확장자를 뗀 저장소 기준 경로, 상대 경로 가져오기의 입구 찾기용).
  * @param {string} folder 저장소 기준 패키지 폴더
  * @param {{ name: string, exports?: unknown }} manifest 그 package.json
+ * @param {string} [_root] 패키지 폴더가 있는 저장소 뿌리
  */
-export function workspacePackage(folder, { name, exports = {} }) {
+export function workspacePackage(
+  folder,
+  { name, exports = {} },
+  _root = repositoryRoot
+) {
   const entries = [...exportsMap(exports).keys()];
   const files = Object.fromEntries(
     entries.flatMap((entry) => {

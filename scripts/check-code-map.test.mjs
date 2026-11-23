@@ -270,6 +270,74 @@ test("fails a package entry Node cannot resolve to a file: blocked with null, a 
   );
 });
 
+// 입구는 Node 자신의 해석기로 푼다(#289 외부 리뷰 SPEC-1·2). 손으로 다시 짠 해석기는 `..`·`node_modules` 대상을 받고, 접두사가 같은
+// 와일드카드 키 중 더 긴 키를 고르는 규칙(PATTERN_KEY_COMPARE)을 빠뜨렸다. 선언 순서를 뒤집어도 같아야 한다.
+test("resolves package entries as Node does: invalid targets and the longer of two wildcard keys", async () => {
+  for (const order of ["short first", "long first"]) {
+    const wildcards =
+      order === "short first"
+        ? { "./a/*": "./src/a/*.ts", "./a/*.js": "./src/aj/*.ts" }
+        : { "./a/*.js": "./src/aj/*.ts", "./a/*": "./src/a/*.ts" };
+    const problems = await problemsOf({
+      ...workspace,
+      "packages/process/package.json": JSON.stringify({
+        name: "@babojubot/process",
+        exports: {
+          ".": "./src/index.ts",
+          "./up": "./../outside.ts",
+          "./nm": "./node_modules/x.ts",
+          ...wildcards,
+        },
+      }),
+      "packages/outside.ts": "export {};\n",
+      "packages/process/node_modules/x.ts": "export {};\n",
+      "packages/process/src/aj/x.ts": "export {};\n",
+      [area]: table([
+        "공용 실행",
+        "`@babojubot/process/up`·`@babojubot/process/nm`·`@babojubot/process/a/x.js`",
+        "",
+      ]),
+    });
+    assert.deepEqual(
+      problems.map((problem) => problem.replace(/ — .*/, "")),
+      [
+        `${area}:5: 없는 패키지 입구 \`@babojubot/process/up\``,
+        `${area}:5: 없는 패키지 입구 \`@babojubot/process/nm\``,
+      ],
+      order
+    );
+    for (const problem of problems)
+      assert.match(problem, /ERR_INVALID_PACKAGE_TARGET/, order);
+  }
+});
+
+// 접근자(get·set)는 속성이라 부를 수 없다. 함수를 지우고 같은 이름의 getter만 남아도 호출 표기가 통과하면 안 된다(#289 외부 리뷰 SPEC-3).
+test("does not take accessors, constructors or signatures as callable definitions", async () => {
+  assert.deepEqual(
+    await problemsOf({
+      "apps/server/src/run.ts": [
+        "export class Run {",
+        "  get status() { return 1; }",
+        "  set limit(value: number) { void value; }",
+        "  constructor() {}",
+        "  start() {}",
+        "}",
+        "export interface Table { [key: string]: number; (input: string): void; new (input: string): Table }",
+      ].join("\n"),
+      [area]: table([
+        "실행",
+        "server/run.ts `status()`·`limit()`·`Run.status()`·`start()`·`Run.start()`·`Run()`",
+        "",
+      ]),
+    }),
+    [
+      `${area}:5: 부를 수 있는 정의가 없는 호출 표기 \`status()\` — 이 줄이 가리키는 파일: apps/server/src/run.ts`,
+      `${area}:5: 부를 수 있는 정의가 없는 호출 표기 \`limit()\` — 이 줄이 가리키는 파일: apps/server/src/run.ts`,
+      `${area}:5: 부를 수 있는 정의가 없는 호출 표기 \`Run.status()\` — 이 줄이 가리키는 파일: apps/server/src/run.ts`,
+    ]
+  );
+});
+
 test("resolves Markdown file notations to one file without searching names in them", async () => {
   assert.deepEqual(
     await problemsOf({

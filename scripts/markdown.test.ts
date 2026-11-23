@@ -44,3 +44,14 @@ test("gives the line of each HTML href", () => {
     [{ url: "second.md", line: 3 }]
   );
 });
+
+// raw text 요소(script·style·textarea·title)는 같은 이름의 닫는 태그에서 끝난다. 이름 뒤 경계(공백·`/`·`>`)를 보지 않으면
+// `</script-other>`에서 끝난 것으로 읽어 그 안의 글을 태그로 읽는다(#289 외부 리뷰 SPEC-4).
+test("ends a raw text element only at its own closing tag, not at a longer name", () => {
+  assert.deepEqual(
+    urls(
+      '<script>const x = "</script-other> <a href=\'inside.md\'>";</script>\n<a href="after.md">b</a>'
+    ),
+    ["after.md"]
+  );
+});
