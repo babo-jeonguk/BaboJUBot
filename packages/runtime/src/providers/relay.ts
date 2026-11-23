@@ -97,6 +97,8 @@ type Tunnel = {
   port: number;
   address: string;
   sockets: net.Socket[];
+  /** 중계가 스스로 이 연결을 끊었는지(정책 변경·중계 닫기). 목적지의 끊김과 구분한다. */
+  cut: boolean;
 };
 
 type Relay = {
@@ -242,6 +244,7 @@ export function createRelayHub(): RelayHub {
 
   /** 열린 연결 하나를 지금 규칙에 맞지 않아 회수한다. 소켓을 닫고 이유를 알린다. */
   const revoke = (relay: Relay, tunnel: Tunnel) => {
+    tunnel.cut = true;
     relay.tunnels.delete(tunnel);
     for (const socket of tunnel.sockets) socket.destroy();
     refuse(relay, tunnel.host, tunnel.port, "policy_changed");
@@ -290,6 +293,7 @@ export function createRelayHub(): RelayHub {
           port: target.port,
           address,
           sockets: [client, upstream],
+          cut: false,
         };
         relay.tunnels.add(tunnel);
         const end = () => {
@@ -309,6 +313,7 @@ export function createRelayHub(): RelayHub {
           );
           if (!relay.tunnels.has(tunnel)) return;
           if (!ok) {
+            tunnel.cut = true;
             relay.tunnels.delete(tunnel);
             refuse(relay, tunnel.host, tunnel.port, "policy_changed");
             upstream.destroy();
@@ -362,6 +367,7 @@ export function createRelayHub(): RelayHub {
           port,
           address: dialed.address,
           sockets: [req.socket, socket],
+          cut: false,
         };
         relay.tunnels.add(tunnel);
         const done = () => relay.tunnels.delete(tunnel);
@@ -378,6 +384,7 @@ export function createRelayHub(): RelayHub {
             return void badGateway();
           }
           if (!ok) {
+            tunnel.cut = true;
             relay.tunnels.delete(tunnel);
             refuse(relay, host, port, "policy_changed");
             socket.destroy();
@@ -412,7 +419,7 @@ export function createRelayHub(): RelayHub {
           }
         );
         outgoing.on("error", (error) => {
-          if (!isDisconnect(error))
+          if (!tunnel.cut)
             console.warn(
               `[provider] the relay could not forward a request to an allowed destination; it answered 502 (${failureCode(error)})`
             );
@@ -460,8 +467,10 @@ export function createRelayHub(): RelayHub {
         close: () =>
           (ended ??= (async () => {
             relays.delete(relay);
-            for (const tunnel of relay.tunnels)
+            for (const tunnel of relay.tunnels) {
+              tunnel.cut = true;
               for (const socket of tunnel.sockets) socket.destroy();
+            }
             relay.tunnels.clear();
             for (const socket of [...idle, ...loose]) socket.destroy();
             await attemptAll(
