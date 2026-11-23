@@ -16,12 +16,13 @@ const holder = fileURLToPath(
 export async function openLifelines() {
   const server = net.createServer();
   /** 이름 → 그 연결. 닫히면 `closed`가 이행한다. */
-  const lines = new Map<
-    string,
-    { open: boolean; closed: Promise<void>; socket: net.Socket }
-  >();
+  const lines = new Map<string, { open: boolean; closed: Promise<void> }>();
   const arrived = new Map<string, () => void>();
+  /** 받은 모든 연결. 이름(첫 줄)을 보내기 전에 멈춘 프로그램의 연결도 받은 즉시 정리 대상이다(`close`). */
+  const sockets = new Set<net.Socket>();
   server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
     let buffer = "";
     // 끝난 프로그램의 연결은 Windows에서 재설정(ECONNRESET)으로 끝난다. 닫힘으로 다루고 오류는 그 신호로만 본다.
     socket.on("error", () => socket.destroy());
@@ -33,7 +34,6 @@ export async function openLifelines() {
       const name = buffer.slice(0, newline);
       const line = {
         open: true,
-        socket,
         closed: new Promise<void>((resolve) =>
           socket.once("close", () => {
             line.open = false;
@@ -93,9 +93,9 @@ export async function openLifelines() {
     },
     /** 연결이 온 모든 이름. */
     names: () => [...lines.keys()],
-    /** 서버와 남은 연결을 닫는다. 남은 연결이 있으면 그 프로그램은 시험이 따로 끈다. */
+    /** 서버와 남은 연결(이름을 보내지 않은 연결 포함)을 닫는다. 남은 연결이 있으면 그 프로그램은 시험이 따로 끈다. */
     close: async () => {
-      for (const line of lines.values()) line.socket.destroy();
+      for (const socket of sockets) socket.destroy();
       await within(
         new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve()))

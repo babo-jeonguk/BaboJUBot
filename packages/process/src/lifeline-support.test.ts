@@ -1,17 +1,27 @@
 import { once } from "node:events";
 import net from "node:net";
+import { isDisconnect } from "@babojubot/contracts";
 import { expect, onTestFinished, test } from "vitest";
 import { openLifelines } from "./lifeline-support.ts";
 import { within } from "./test-support.ts";
 
-/** 시험이 끝나면 끊는, 연결 서버로의 연결. 서버가 끊어도 오류로 끝나지 않게 오류를 그 연결의 닫힘으로만 본다. */
+/**
+ * 시험이 끝나면 끊는, 연결 서버로의 연결. `closed`는 그 연결이 닫히면 이행한다. 서버가 끊어 생긴 끊김(재설정 등)은 닫힘이고,
+ * 그 밖의 오류로 끝나면 그 오류로 거절한다.
+ */
 async function connect(port: number) {
   const socket = net.connect(port, "127.0.0.1");
   onTestFinished(() => {
     socket.destroy();
   });
-  const closed = once(socket, "close");
-  socket.on("error", () => socket.destroy());
+  const closed = new Promise<void>((resolve, reject) => {
+    socket.once("close", () => resolve());
+    socket.on("error", (error) => {
+      if (!isDisconnect(error)) reject(error);
+    });
+  });
+  // 서버의 답(`ok`)을 읽어 둔다. 읽지 않은 데이터가 남으면 서버가 끊어도 이쪽의 끝(`end`)과 닫힘이 오지 않는다.
+  socket.resume();
   await within(
     once(socket, "connect"),
     10_000,
