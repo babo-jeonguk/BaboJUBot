@@ -46,15 +46,15 @@ pub enum Reading {
     Unreadable,
 }
 
-/// What one read of `/proc/<id>/environ` tells (Linux). An empty read is judged with the process's state (`stat`, read only
-/// then). An error other than an ended or unreadable process is passed on.
+/// What one read of `/proc/<id>/environ` (`read`) tells (Linux). An empty read is judged with the process's state (`stat`). An
+/// error other than an ended or unreadable process is passed on.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn environ_reading(
-    read: std::io::Result<Vec<u8>>,
+    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
     marker: &str,
-    stat: impl FnOnce() -> std::io::Result<String>,
+    stat: impl Fn() -> std::io::Result<String>,
 ) -> std::io::Result<Reading> {
-    match read {
+    match read() {
         Ok(environment) if environment.is_empty() => Ok(empty_environ(stat)),
         Ok(environment) => Ok(
             if environment
@@ -79,9 +79,18 @@ fn environ_reading(
 /// What a `KERN_PROCARGS2` buffer tells (macOS). macOS gives another process's environment only when that process is not code-signing
 /// restricted (psutil quotes XNU: empty "unless ... target process is not cs_restricted", with SIP on), and the empty answer looks like
 /// a process whose environment really is empty (this supervisor runs with none). So no environment entry is Clear only when
-/// `restricted` (asked only then) says the process is not restricted; otherwise it is Unreadable.
+/// `restricted` (asked only then) says the process is not restricted; otherwise it is Unreadable. A read that fails (`read`) is
+/// Unreadable.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn procargs_reading(buffer: &[u8], marker: &str, restricted: impl FnOnce() -> bool) -> Reading {
+fn procargs_reading(
+    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    marker: &str,
+    restricted: impl Fn() -> bool,
+) -> Reading {
+    let Ok(buffer) = read() else {
+        return Reading::Unreadable;
+    };
+    let buffer = buffer.as_slice();
     // A buffer without the shape is no environment read: XNU reads the argument count, their length and the stack top apart, and an
     // exec in progress may give stale or mismatched parts (`sysctl_procargsx`, bsd/kern/kern_sysctl.c) (#283 review 3).
     let Some(entries) = environment(buffer) else {
@@ -107,7 +116,7 @@ fn procargs_reading(buffer: &[u8], marker: &str, restricted: impl FnOnce() -> bo
 /// still run user code (and can fork). So an empty read is a read that found no marker only for a process that runs with its main
 /// thread (an environment that really is empty, `env -i`); one whose main thread is gone may carry the marker (#283 review 2).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn empty_environ(stat: impl FnOnce() -> std::io::Result<String>) -> Reading {
+fn empty_environ(stat: impl Fn() -> std::io::Result<String>) -> Reading {
     match stat() {
         Ok(stat) => match life_in_stat(&stat) {
             // A process in the middle of exec runs with its main thread before its environment is placed: the kernel wakes the
@@ -146,9 +155,9 @@ pub enum Confirmed {
 /// carried the marker a moment ago): it stays unverified, not passed over. Another failure is a failed look.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn confirm(
-    second: std::io::Result<Vec<u8>>,
+    second: impl FnOnce() -> std::io::Result<Vec<u8>>,
     marker: &str,
-    stat: impl FnOnce() -> std::io::Result<String>,
+    stat: impl Fn() -> std::io::Result<String>,
 ) -> Result<Confirmed, String> {
     match environ_reading(second, marker, stat) {
         Ok(Reading::Carries) => Ok(Confirmed::Hold),
@@ -509,7 +518,7 @@ mod linux {
                 continue;
             }
             // A first read only picks the candidates; the read that decides comes after the handle is open.
-            match environ_reading(environ(pid), &search.marker, || stat(pid)) {
+            match environ_reading(|| environ(pid), &search.marker, || stat(pid)) {
                 Ok(Reading::Clear | Reading::Gone) => continue,
                 Ok(Reading::Carries) => {}
                 Ok(Reading::Unreadable) => {
@@ -555,7 +564,7 @@ mod linux {
             };
             // What the handle says decides with the read: an ended process is passed over, one that cannot be told stays unverified.
             match (
-                confirm(environ(pid), &search.marker, || stat(pid))?,
+                confirm(|| environ(pid), &search.marker, || stat(pid))?,
                 handle_state(&handle),
             ) {
                 (Confirmed::Pass, _) | (_, Running::Ended) => {}
@@ -702,8 +711,8 @@ pub use macos::{Held, find, hold, record, signal, start_of_self, still_runs};
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{
-        Candidate, Found, KINFO_PROC_SIZE, Reading, Running, Search, Seen, candidate,
-        procargs_reading, running_from, same_start, seen_in_record,
+        Candidate, Found, KINFO_PROC_SIZE, Running, Search, Seen, candidate, procargs_reading,
+        running_from, same_start, seen_in_record,
     };
     use std::io;
 
@@ -860,13 +869,7 @@ mod macos {
                 record(pid),
                 uid,
                 search.since,
-                || {
-                    arguments(pid)
-                        .map(|arguments| {
-                            procargs_reading(&arguments, &search.marker, || restricted(pid))
-                        })
-                        .unwrap_or(Reading::Unreadable)
-                },
+                || procargs_reading(|| arguments(pid), &search.marker, || restricted(pid)),
                 || record(pid),
             );
             match decided {
@@ -1000,40 +1003,40 @@ mod tests {
         let not_restricted = || false;
         let never_asked = || -> bool { panic!("a process with an environment is not asked about") };
         assert_eq!(
-            procargs_reading(&procargs(&["tool"], &[&entry]), marker, never_asked),
+            procargs_reading(|| Ok(procargs(&["tool"], &[&entry])), marker, never_asked),
             Reading::Carries
         );
         assert_eq!(
-            procargs_reading(&procargs(&["tool"], &["A=1"]), marker, never_asked),
+            procargs_reading(|| Ok(procargs(&["tool"], &["A=1"])), marker, never_asked),
             Reading::Clear
         );
         assert_eq!(
-            procargs_reading(&procargs(&["tool"], &[]), marker, restricted),
+            procargs_reading(|| Ok(procargs(&["tool"], &[])), marker, restricted),
             Reading::Unreadable
         );
         assert_eq!(
-            procargs_reading(&procargs(&["tool", &entry], &[]), marker, restricted),
+            procargs_reading(|| Ok(procargs(&["tool", &entry], &[])), marker, restricted),
             Reading::Unreadable
         );
         assert_eq!(
-            procargs_reading(b"\x01", marker, restricted),
+            procargs_reading(|| Ok(b"\x01".to_vec()), marker, restricted),
             Reading::Unreadable
         );
         assert_eq!(
-            procargs_reading(&procargs(&["tool"], &[]), marker, not_restricted),
+            procargs_reading(|| Ok(procargs(&["tool"], &[])), marker, not_restricted),
             Reading::Clear
         );
         // #283 review 3 CI: a buffer that does not hold the shape (read while the process execs, when the kernel may give stale or
         // mismatched parts) is not an empty environment, restricted or not.
         let never_asked = || -> bool { panic!("a buffer without the shape is not asked about") };
         assert_eq!(
-            procargs_reading(b"\x01", marker, never_asked),
+            procargs_reading(|| Ok(b"\x01".to_vec()), marker, never_asked),
             Reading::Unreadable
         );
         let mut short = procargs(&["tool"], &[]);
         short[..4].copy_from_slice(&3i32.to_ne_bytes());
         assert_eq!(
-            procargs_reading(&short, marker, never_asked),
+            procargs_reading(|| Ok(short.clone()), marker, never_asked),
             Reading::Unreadable
         );
     }
@@ -1260,7 +1263,7 @@ mod tests {
             move || -> std::io::Result<String> { Err(std::io::Error::from_raw_os_error(code)) }
         };
         let empty = || Ok(Vec::new());
-        let read = |stat| environ_reading(empty(), marker, stat).ok();
+        let read = |stat| environ_reading(empty, marker, stat).ok();
         assert_eq!(read(stat("Z", 3)), Some(Reading::Unreadable));
         assert_eq!(read(stat("Z", 1)), Some(Reading::Gone));
         assert_eq!(read(stat("X", 1)), Some(Reading::Gone));
@@ -1269,34 +1272,34 @@ mod tests {
         // #283 review 3 CI: a process in the middle of exec runs with its main thread but has no environment yet (`env_end` 0): it
         // may carry the marker once exec ends. So does a stat line without `env_end`.
         assert_eq!(
-            environ_reading(empty(), marker, move || Ok(line("R", 1, 0))).ok(),
+            environ_reading(empty, marker, move || Ok(line("R", 1, 0))).ok(),
             Some(Reading::Unreadable)
         );
         assert_eq!(
-            environ_reading(empty(), marker, || Ok(
+            environ_reading(empty, marker, || Ok(
                 "9 (x) S 1 9 9 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5".to_owned()
             ))
             .ok(),
             Some(Reading::Unreadable)
         );
         assert_eq!(
-            environ_reading(empty(), marker, failed(libc::ENOENT)).ok(),
+            environ_reading(empty, marker, failed(libc::ENOENT)).ok(),
             Some(Reading::Gone)
         );
         assert_eq!(
-            environ_reading(empty(), marker, failed(libc::EACCES)).ok(),
+            environ_reading(empty, marker, failed(libc::EACCES)).ok(),
             Some(Reading::Unreadable)
         );
         assert_eq!(
-            environ_reading(empty(), marker, || Ok("garbage".to_string())).ok(),
+            environ_reading(empty, marker, || Ok("garbage".to_string())).ok(),
             Some(Reading::Unreadable)
         );
         // The read after the handle is open judges an empty read the same way.
         assert_eq!(
-            confirm(empty(), marker, stat("Z", 3)),
+            confirm(empty, marker, stat("Z", 3)),
             Ok(Confirmed::Unverified)
         );
-        assert_eq!(confirm(empty(), marker, stat("Z", 1)), Ok(Confirmed::Pass));
+        assert_eq!(confirm(empty, marker, stat("Z", 1)), Ok(Confirmed::Pass));
     }
 
     /// #283 review 1, SPEC-2: the read made after the handle is open decides. One that cannot be read is not a read that found no
@@ -1308,28 +1311,28 @@ mod tests {
         let marked = format!("A=1\0BABOJUBOT_PROCESS_LEASE={marker}\0").into_bytes();
         let never =
             || -> std::io::Result<String> { panic!("a read that is not empty needs no state") };
-        assert_eq!(confirm(Ok(marked), marker, never), Ok(Confirmed::Hold));
+        assert_eq!(confirm(|| Ok(marked), marker, never), Ok(Confirmed::Hold));
         assert_eq!(
-            confirm(Ok(b"A=1\0".to_vec()), marker, never),
+            confirm(|| Ok(b"A=1\0".to_vec()), marker, never),
             Ok(Confirmed::Pass)
         );
         assert_eq!(
-            confirm(error(libc::ENOENT), marker, never),
+            confirm(|| error(libc::ENOENT), marker, never),
             Ok(Confirmed::Pass)
         );
         assert_eq!(
-            confirm(error(libc::ESRCH), marker, never),
+            confirm(|| error(libc::ESRCH), marker, never),
             Ok(Confirmed::Pass)
         );
         assert_eq!(
-            confirm(error(libc::EACCES), marker, never),
+            confirm(|| error(libc::EACCES), marker, never),
             Ok(Confirmed::Unverified)
         );
         assert_eq!(
-            confirm(error(libc::EPERM), marker, never),
+            confirm(|| error(libc::EPERM), marker, never),
             Ok(Confirmed::Unverified)
         );
-        assert!(confirm(error(libc::EIO), marker, never).is_err());
+        assert!(confirm(|| error(libc::EIO), marker, never).is_err());
     }
 
     #[test]
