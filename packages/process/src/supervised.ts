@@ -138,7 +138,13 @@ export function windowsLaunch(
 
 /** 실행기가 제어 통로에 쓰는 한 줄. 모르는 줄이면 `undefined`다. */
 export type SupervisorMessage =
-  | { kind: "hello"; protocol: number; start?: string }
+  | {
+      kind: "hello";
+      protocol: number;
+      start?: string;
+      /** 시작 시각 칸이 없는 첫 메시지(그 칸을 더하기 전에 빌드한 판 4 실행기). 준비에서 거절한다. */
+      withoutStart?: true;
+    }
   | { kind: "ok"; pid: number }
   | { kind: "failed"; reason: string }
   | { kind: "not-started"; code: string; reason: string }
@@ -151,12 +157,16 @@ export function readSupervisorLine(
 ): SupervisorMessage | undefined {
   const line = text.trimEnd();
   let match: RegExpExecArray | null;
+  // 첫 메시지는 판과 시작 시각 칸(값 또는 -)이다(`supervisor/protocol-vectors.txt`의 hello 줄). 칸이 없는 것은 그 칸을 더하기
+  // 전의 실행기라 따로 알린다(#283 외부 리뷰 4회차 SPEC-4).
   if ((match = /^babojubot-supervisor (\d+)(?: (\d+|-))?$/.exec(line)))
-    return {
-      kind: "hello",
-      protocol: Number(match[1]),
-      ...(match[2] && match[2] !== "-" && { start: match[2] }),
-    };
+    return match[2] === undefined
+      ? { kind: "hello", protocol: Number(match[1]), withoutStart: true }
+      : {
+          kind: "hello",
+          protocol: Number(match[1]),
+          ...(match[2] !== "-" && { start: match[2] }),
+        };
   if ((match = /^ok (\d+)$/.exec(line)))
     return { kind: "ok", pid: Number(match[1]) };
   if ((match = /^failed: (.*)$/.exec(line)))
@@ -487,6 +497,13 @@ export function superviseTree(
       if (message.kind === "hello" && message.protocol !== supervisorProtocol) {
         breakProtocol(
           `the supervisor speaks protocol ${message.protocol}, this server needs ${supervisorProtocol}; build it again ("pnpm --filter @babojubot/process run build") or install the matching package`
+        );
+        return;
+      }
+      // 시작 시각을 알리지 않는 실행기를 쓰면 기록이 시작 시각 없이 남아 복구가 그 프로세스를 확인하지 못한다.
+      if (message.kind === "hello" && message.withoutStart) {
+        breakProtocol(
+          `the supervisor does not report its start, which this server records; build it again ("pnpm --filter @babojubot/process run build") or install the matching package`
         );
         return;
       }
