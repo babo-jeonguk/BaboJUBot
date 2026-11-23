@@ -50,12 +50,29 @@ pub enum Reading {
 /// error other than an ended or unreadable process is passed on.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn environ_reading(
-    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    read: impl Fn() -> std::io::Result<Vec<u8>>,
     marker: &str,
     stat: impl Fn() -> std::io::Result<String>,
 ) -> std::io::Result<Reading> {
     match read() {
-        Ok(environment) if environment.is_empty() => Ok(empty_environ(stat)),
+        // An empty read is judged on a read the state brackets: the state, the environment again, the state again. An exec between
+        // a read and a later look at the state would otherwise pass for an empty environment (#283 review 4, SPEC-5).
+        Ok(environment) if environment.is_empty() => {
+            let before = stat();
+            match read() {
+                Ok(environment) if environment.is_empty() => Ok(empty_environ(before, stat())),
+                second => environ_outcome(second, marker),
+            }
+        }
+        first => environ_outcome(first, marker),
+    }
+}
+
+/// What a read of `/proc/<id>/environ` that is not empty, or failed, tells (Linux). An empty one is judged with the state around it
+/// (`environ_reading`).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn environ_outcome(read: std::io::Result<Vec<u8>>, marker: &str) -> std::io::Result<Reading> {
+    match read {
         Ok(environment) => Ok(
             if environment
                 .split(|&byte| byte == 0)
@@ -79,45 +96,56 @@ fn environ_reading(
 /// What a `KERN_PROCARGS2` buffer tells (macOS). macOS gives another process's environment only when that process is not code-signing
 /// restricted (psutil quotes XNU: empty "unless ... target process is not cs_restricted", with SIP on), and the empty answer looks like
 /// a process whose environment really is empty (this supervisor runs with none). So no environment entry is Clear only when
-/// `restricted` (asked only then) says the process is not restricted; otherwise it is Unreadable. A read that fails (`read`) is
+/// `restricted`, asked before and after a second read, says the process is not restricted both times; otherwise it is Unreadable. A read that fails (`read`) is
 /// Unreadable.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn procargs_reading(
-    read: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    read: impl Fn() -> std::io::Result<Vec<u8>>,
     marker: &str,
     restricted: impl Fn() -> bool,
 ) -> Reading {
-    let Ok(buffer) = read() else {
-        return Reading::Unreadable;
-    };
-    let buffer = buffer.as_slice();
-    // A buffer without the shape is no environment read: XNU reads the argument count, their length and the stack top apart, and an
-    // exec in progress may give stale or mismatched parts (`sysctl_procargsx`, bsd/kern/kern_sysctl.c) (#283 review 3).
-    let Some(entries) = environment(buffer) else {
-        return Reading::Unreadable;
-    };
-    let mut entries = entries.peekable();
-    if entries.peek().is_none() {
-        return if restricted() {
-            Reading::Unreadable
-        } else {
-            Reading::Clear
-        };
-    }
-    if entries.any(|entry| is_marker_entry(entry, marker)) {
-        Reading::Carries
-    } else {
-        Reading::Clear
+    match procargs_entries(read(), marker) {
+        Some(reading) => reading,
+        // No environment entry is judged on a read the restriction brackets: an exec swaps the image, and with it the restriction,
+        // while the start stays (#283 review 4, SPEC-5).
+        None => {
+            let before = restricted();
+            match procargs_entries(read(), marker) {
+                Some(reading) => reading,
+                None if before || restricted() => Reading::Unreadable,
+                None => Reading::Clear,
+            }
+        }
     }
 }
 
-/// What an empty `/proc/<id>/environ` tells (Linux), given the process's state. The kernel reads the environment from the process's
+/// What one `KERN_PROCARGS2` read tells, or `None` when it holds the shape with no environment entry (that needs the restriction).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn procargs_entries(read: std::io::Result<Vec<u8>>, marker: &str) -> Option<Reading> {
+    let Ok(buffer) = read else {
+        return Some(Reading::Unreadable);
+    };
+    // A buffer without the shape is no environment read: XNU reads the argument count, their length and the stack top apart, and an
+    // exec in progress may give stale or mismatched parts (`sysctl_procargsx`, bsd/kern/kern_sysctl.c) (#283 review 3).
+    let Some(entries) = environment(&buffer) else {
+        return Some(Reading::Unreadable);
+    };
+    let mut entries = entries.peekable();
+    entries.peek()?;
+    Some(if entries.any(|entry| is_marker_entry(entry, marker)) {
+        Reading::Carries
+    } else {
+        Reading::Clear
+    })
+}
+
+/// What an empty `/proc/<id>/environ` tells (Linux), given the process's state read before and after it. The kernel reads the environment from the process's
 /// memory, and a task without memory reads empty too: one that is ending, and one whose main thread is a zombie while other threads
 /// still run user code (and can fork). So an empty read is a read that found no marker only for a process that runs with its main
 /// thread (an environment that really is empty, `env -i`); one whose main thread is gone may carry the marker (#283 review 2).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn empty_environ(stat: impl Fn() -> std::io::Result<String>) -> Reading {
-    match stat() {
+fn empty_environ(before: std::io::Result<String>, after: std::io::Result<String>) -> Reading {
+    match after {
         Ok(stat) => match life_in_stat(&stat) {
             // A process in the middle of exec runs with its main thread before its environment is placed: the kernel wakes the
             // spawning parent (`mm_exit_exec_release`, fs/exec.c) before it attaches the new memory and well before it sets
@@ -126,9 +154,14 @@ fn empty_environ(stat: impl Fn() -> std::io::Result<String>) -> Reading {
             // set `env_end` makes an empty read an empty environment (#283 review 3). The kernel shows `env_end` as 0 also to a
             // reader it does not permit (`if (mm && permitted)`, fs/proc/array.c, `permitted` from `ptrace_may_access`), which
             // could not read the environment either (`environ_open` asks the same access, fs/proc/base.c): unreadable as well.
-            Life::Runs => match env_end_in_stat(&stat) {
-                Some(env_end) if env_end != 0 => Reading::Clear,
-                Some(_) | None => Reading::Unreadable,
+            // Both looks around the read must show the same placed environment: an exec in between attaches new memory, and
+            // `env_end` moves (#283 review 4, SPEC-5).
+            Life::Runs => match (
+                before.ok().as_deref().and_then(env_end_in_stat),
+                env_end_in_stat(&stat),
+            ) {
+                (Some(before), Some(after)) if before != 0 && before == after => Reading::Clear,
+                _ => Reading::Unreadable,
             },
             Life::Ended => Reading::Gone,
             Life::ThreadsRun | Life::Unknown => Reading::Unreadable,
@@ -155,7 +188,7 @@ pub enum Confirmed {
 /// carried the marker a moment ago): it stays unverified, not passed over. Another failure is a failed look.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn confirm(
-    second: impl FnOnce() -> std::io::Result<Vec<u8>>,
+    second: impl Fn() -> std::io::Result<Vec<u8>>,
     marker: &str,
     stat: impl Fn() -> std::io::Result<String>,
 ) -> Result<Confirmed, String> {
@@ -1412,7 +1445,10 @@ mod tests {
         let marked = format!("A=1\0BABOJUBOT_PROCESS_LEASE={marker}\0").into_bytes();
         let never =
             || -> std::io::Result<String> { panic!("a read that is not empty needs no state") };
-        assert_eq!(confirm(|| Ok(marked), marker, never), Ok(Confirmed::Hold));
+        assert_eq!(
+            confirm(|| Ok(marked.clone()), marker, never),
+            Ok(Confirmed::Hold)
+        );
         assert_eq!(
             confirm(|| Ok(b"A=1\0".to_vec()), marker, never),
             Ok(Confirmed::Pass)
