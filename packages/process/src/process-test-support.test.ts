@@ -66,7 +66,7 @@ it.skipIf(process.platform === "win32")(
 it("still reads a ready line written just before the program exits", async () => {
   const child = spawn(
     process.execPath,
-    ["-e", `process.stdout.write("noise\\nready\\n"); process.exit(0)`],
+    ["-e", `process.stdout.write("noise\\nready\\n", () => process.exit(0))`],
     { stdio: ["ignore", "pipe", "ignore"] }
   );
   await expect(readyLine(child)).resolves.toBeUndefined();

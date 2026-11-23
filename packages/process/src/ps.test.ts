@@ -37,7 +37,7 @@ describe.skipIf(process.platform === "win32")("a ps field query", () => {
   it.each([
     [
       "exits 1 with an error message",
-      `process.stderr.write("ps: illegal option -- o"); process.exit(1);`,
+      `process.stderr.write("ps: illegal option -- o", () => process.exit(1));`,
       /4242.*exit 1.*illegal option/,
     ],
     ["exits with another code", "process.exit(2);", /4242.*exit 2/],

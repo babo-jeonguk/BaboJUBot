@@ -252,8 +252,8 @@ describe("embedded Postgres lifetime", () => {
         new URL("./client.ts", import.meta.url)
       );
       const finish = {
-        "uncaught error": `console.log("started"); throw new Error("boom");`,
-        "process.exit": `console.log("started"); process.exit(7);`,
+        "uncaught error": `process.stdout.write("started\\n", () => { throw new Error("boom"); });`,
+        "process.exit": `process.stdout.write("started\\n", () => process.exit(7));`,
         // 종료 신호는 프로그램(서버 진입점 등)이 받는다. 프로그램이 어떻게 끝나든 Postgres는 멈춘다.
         // 신호 handler를 먼저 설치한 뒤 알리므로, 준비를 본 쪽이 보내는 신호를 놓치지 않는다.
         "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); console.log("started"); setInterval(() => {}, 1000);`,
@@ -682,8 +682,7 @@ describe("a Postgres left by a killed process", () => {
       const handle = await db
         .openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } })
         .catch((error) => {
-          console.log("failed: " + error.message);
-          process.exit(0);
+          process.stdout.write("failed: " + error.message + "\\n", () => process.exit(0));
         });
       console.log("opened");
       process.stdin.once("data", async () => {

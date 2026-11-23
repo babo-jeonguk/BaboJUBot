@@ -34,7 +34,10 @@ const node = (script: string, limitMs: number) =>
 describe("runCommand", () => {
   it("returns what the program printed and its exit code", async () => {
     expect(
-      await node(`process.stdout.write("hello"); process.exit(3);`, 10_000)
+      await node(
+        `process.stdout.write("hello", () => process.exit(3));`,
+        10_000
+      )
     ).toMatchObject({ code: 3, killed: false, stdout: "hello" });
   });
 

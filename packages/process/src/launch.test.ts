@@ -575,7 +575,7 @@ describe("runTree", () => {
   it("returns the output and exit code, and stops what the program left", async () => {
     const left = unique("left");
     const result = await run(
-      `${child(left, '{ stdio: "ignore" }')} setTimeout(() => { process.stdout.write("done"); process.exit(4); }, 200);`
+      `${child(left, '{ stdio: "ignore" }')} setTimeout(() => { process.stdout.write("done", () => process.exit(4)); }, 200);`
     );
     expect(result).toMatchObject({ started: true, code: 4 });
     expect(result.started && result.stdout.toString()).toBe("done");
