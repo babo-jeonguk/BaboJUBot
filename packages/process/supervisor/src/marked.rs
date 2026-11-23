@@ -46,10 +46,16 @@ pub enum Reading {
     Unreadable,
 }
 
-/// What one read of `/proc/<id>/environ` tells (Linux). An error other than an ended or unreadable process is passed on.
+/// What one read of `/proc/<id>/environ` tells (Linux). An empty read is judged with the process's state (`stat`, read only
+/// then). An error other than an ended or unreadable process is passed on.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn environ_reading(read: std::io::Result<Vec<u8>>, marker: &str) -> std::io::Result<Reading> {
+fn environ_reading(
+    read: std::io::Result<Vec<u8>>,
+    marker: &str,
+    stat: impl FnOnce() -> std::io::Result<String>,
+) -> std::io::Result<Reading> {
     match read {
+        Ok(environment) if environment.is_empty() => Ok(empty_environ(stat)),
         Ok(environment) => Ok(
             if environment
                 .split(|&byte| byte == 0)
@@ -91,6 +97,12 @@ fn procargs_reading(buffer: &[u8], marker: &str, restricted: impl FnOnce() -> bo
     }
 }
 
+/// What an empty `/proc/<id>/environ` tells (Linux), given the process's state. For now it is a read that found no marker.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn empty_environ(_stat: impl FnOnce() -> std::io::Result<String>) -> Reading {
+    Reading::Clear
+}
+
 /// What the read made after the handle is open says about a candidate (Linux).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confirmed {
@@ -105,8 +117,12 @@ pub enum Confirmed {
 /// Decides on a candidate from the read made after its handle was opened. A candidate that cannot be read now may still be ours (it
 /// carried the marker a moment ago): it stays unverified, not passed over. Another failure is a failed look.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn confirm(second: std::io::Result<Vec<u8>>, marker: &str) -> Result<Confirmed, String> {
-    match environ_reading(second, marker) {
+fn confirm(
+    second: std::io::Result<Vec<u8>>,
+    marker: &str,
+    stat: impl FnOnce() -> std::io::Result<String>,
+) -> Result<Confirmed, String> {
+    match environ_reading(second, marker, stat) {
         Ok(Reading::Carries) => Ok(Confirmed::Hold),
         Ok(Reading::Clear | Reading::Gone) => Ok(Confirmed::Pass),
         Ok(Reading::Unreadable) => Ok(Confirmed::Unverified),
@@ -267,6 +283,36 @@ fn running_from(now: std::io::Result<Option<Seen>>, start: u64) -> Running {
     }
 }
 
+/// What a line of `/proc/<id>/stat` tells of a process's life (Linux). The state is the main thread's: a process of several threads
+/// (Node.js ended by a signal) shows its main thread as a zombie while its other threads still run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Life {
+    /// It runs, its main thread included.
+    Runs,
+    /// Its main thread is a zombie while other threads still run (or the thread count cannot be read): it still runs.
+    ThreadsRun,
+    /// It ended or is ending: dead, or a zombie of one thread.
+    Ended,
+    /// The line holds no state.
+    Unknown,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn life_in_stat(stat: &str) -> Life {
+    let fields = stat
+        .rsplit_once(") ")
+        .map(|(_, rest)| rest.split(' ').collect::<Vec<_>>())
+        .unwrap_or_default();
+    let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
+    match fields.first().copied() {
+        None | Some("") => Life::Unknown,
+        Some("X") => Life::Ended,
+        Some("Z") if threads.is_some_and(|threads| threads <= 1) => Life::Ended,
+        Some("Z") => Life::ThreadsRun,
+        Some(_) => Life::Runs,
+    }
+}
+
 /// Whether a held program still runs, from its handle's answer and its state (Linux). A process whose main thread is a zombie
 /// still runs while another thread does (Node.js ended by a signal).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -278,19 +324,11 @@ fn running_from_handle(handle: std::io::Result<()>, stat: std::io::Result<String
         Err(_) => return Running::Unknown,
     }
     match stat {
-        Ok(stat) => {
-            let fields = stat
-                .rsplit_once(") ")
-                .map(|(_, rest)| rest.split(' ').collect::<Vec<_>>())
-                .unwrap_or_default();
-            let state = fields.first().copied().unwrap_or("");
-            let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
-            if state != "X" && (state != "Z" || threads.is_none_or(|threads| threads > 1)) {
-                Running::Yes
-            } else {
-                Running::Ended
-            }
-        }
+        Ok(stat) => match life_in_stat(&stat) {
+            Life::Ended => Running::Ended,
+            // The handle says it runs; a state that cannot be read does not say otherwise.
+            Life::Runs | Life::ThreadsRun | Life::Unknown => Running::Yes,
+        },
         Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
             Running::Ended
         }
@@ -403,6 +441,10 @@ mod linux {
         std::fs::read(format!("/proc/{pid}/environ"))
     }
 
+    fn stat(pid: libc::pid_t) -> io::Result<String> {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+    }
+
     /// When this supervisor started (clock ticks after boot).
     pub fn start_of_self() -> Option<u64> {
         let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
@@ -433,7 +475,7 @@ mod linux {
                 continue;
             }
             // A first read only picks the candidates; the read that decides comes after the handle is open.
-            match environ_reading(environ(pid), &search.marker) {
+            match environ_reading(environ(pid), &search.marker, || stat(pid)) {
                 Ok(Reading::Clear | Reading::Gone) => continue,
                 Ok(Reading::Carries) => {}
                 Ok(Reading::Unreadable) => {
@@ -479,7 +521,7 @@ mod linux {
             };
             // What the handle says decides with the read: an ended process is passed over, one that cannot be told stays unverified.
             match (
-                confirm(environ(pid), &search.marker)?,
+                confirm(environ(pid), &search.marker, || stat(pid))?,
                 handle_state(&handle),
             ) {
                 (Confirmed::Pass, _) | (_, Running::Ended) => {}
@@ -531,10 +573,7 @@ mod linux {
     /// Whether a held program still runs. Its handle says whether it ended; a process whose main thread is a zombie still runs while
     /// another thread does (Node.js ended by a signal), and a state that cannot be read leaves it running.
     pub fn still_runs(held: &Held) -> Running {
-        running_from_handle(
-            send(&held.handle, 0),
-            std::fs::read_to_string(format!("/proc/{}/stat", held.pid)),
-        )
+        running_from_handle(send(&held.handle, 0), stat(held.pid))
     }
 
     /// Whether the handle still reaches a running process (for the tests).
@@ -1164,19 +1203,30 @@ mod tests {
         let marker = "6f1c2a3e-1111-4222-8333-944455556666";
         let error = |code| Err(std::io::Error::from_raw_os_error(code));
         let marked = format!("A=1\0BABOJUBOT_PROCESS_LEASE={marker}\0").into_bytes();
-        assert_eq!(confirm(Ok(marked), marker), Ok(Confirmed::Hold));
-        assert_eq!(confirm(Ok(b"A=1\0".to_vec()), marker), Ok(Confirmed::Pass));
-        assert_eq!(confirm(error(libc::ENOENT), marker), Ok(Confirmed::Pass));
-        assert_eq!(confirm(error(libc::ESRCH), marker), Ok(Confirmed::Pass));
+        let never =
+            || -> std::io::Result<String> { panic!("a read that is not empty needs no state") };
+        assert_eq!(confirm(Ok(marked), marker, never), Ok(Confirmed::Hold));
         assert_eq!(
-            confirm(error(libc::EACCES), marker),
+            confirm(Ok(b"A=1\0".to_vec()), marker, never),
+            Ok(Confirmed::Pass)
+        );
+        assert_eq!(
+            confirm(error(libc::ENOENT), marker, never),
+            Ok(Confirmed::Pass)
+        );
+        assert_eq!(
+            confirm(error(libc::ESRCH), marker, never),
+            Ok(Confirmed::Pass)
+        );
+        assert_eq!(
+            confirm(error(libc::EACCES), marker, never),
             Ok(Confirmed::Unverified)
         );
         assert_eq!(
-            confirm(error(libc::EPERM), marker),
+            confirm(error(libc::EPERM), marker, never),
             Ok(Confirmed::Unverified)
         );
-        assert!(confirm(error(libc::EIO), marker).is_err());
+        assert!(confirm(error(libc::EIO), marker, never).is_err());
     }
 
     #[test]
