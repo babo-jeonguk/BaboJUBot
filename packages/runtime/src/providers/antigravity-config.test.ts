@@ -7,7 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import {
   cleanupAntigravityWorkspaces,
   createAntigravityProvider as unownedAntigravityProvider,
@@ -214,8 +214,16 @@ it.each([
     const result = await execute();
     expect(result.stopReason).toBe("completed");
     expect(await readFile(config, "utf8")).toBe(content);
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
     await cleanupAntigravityWorkspaces(root);
     expect(await readFile(config, "utf8")).toBe(content);
+    // 지우지 않은 이유는 정리 스크립트가 남긴 문장으로 서버 기록에 보인다(옮긴 이름으로 남긴 파일의 위치도 같은 길로 보인다, #286).
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      expect.stringContaining(
+        "[config] mcp_config.json has no BaboJUBot mark; it is kept"
+      ),
+    ]);
   }
 );
 

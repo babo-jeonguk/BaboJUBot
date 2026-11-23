@@ -1197,37 +1197,52 @@ describe("the credential relay with runs that overlap (#148)", () => {
 });
 
 describe("login residue in an organization's product folder", () => {
-  it("counts a regular file or folder as residue, and a link as residue unless it is the known link to the connection's login", async () => {
+  // 남음·없음·확인하지 못함을 따로 돌려준다. 확인하지 못한 것을 "남은 로그인"으로 접으면 판정(격리 실행을 시작하지 않음)은
+  // 같아도 사용자가 보는 이유가 틀린다(#286).
+  it("tells a login left as a file, folder or foreign link from none, and from a place it cannot look into", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
     onTestFinished(() => removeFolder(root));
     const login = path.join(root, "connection/login/auth.json");
-    expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+    expect(await credentialResidue(root, ["auth.json"], login)).toEqual({
+      state: "none",
+    });
     // 연결의 로그인 원본을 가리키는 링크는 컨테이너 안에서 비어 있다.
     await symlink(login, path.join(root, "auth.json"));
-    expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+    expect(await credentialResidue(root, ["auth.json"], login)).toEqual({
+      state: "none",
+    });
     // 알려진 원본이 없는 프로그램에서는 어떤 링크도 안전하다고 볼 수 없다.
-    expect(await credentialResidue(root, ["auth.json"])).toBe(true);
+    expect(await credentialResidue(root, ["auth.json"])).toEqual({
+      state: "left",
+    });
     // 컨테이너 안에서 닿을 수 있는 다른 곳을 가리키는 링크는 남은 로그인이다.
     await mkdir(path.join(root, "copy"));
     await symlink(
       path.join(root, "copy/auth.json"),
       path.join(root, "other.json")
     );
-    expect(await credentialResidue(root, ["other.json"], login)).toBe(true);
+    expect(await credentialResidue(root, ["other.json"], login)).toEqual({
+      state: "left",
+    });
     await mkdir(path.join(root, "config"));
     await writeFile(path.join(root, "config/.credentials.json"), "{}");
     expect(
       await credentialResidue(root, ["auth.json", "config/.credentials.json"])
-    ).toBe(true);
-    // 상위 칸이 폴더가 아니면(파일·FIFO) 그 안을 확인할 수 없다. 없는 것과 달리 남은 로그인으로 본다(#280 리뷰 1회차 STD-1).
+    ).toEqual({ state: "left" });
+    // 상위 칸이 폴더가 아니면(파일·FIFO) 그 안을 확인할 수 없다. 없는 것도 남은 것도 아니다(#280 리뷰 1회차 STD-1).
     await writeFile(path.join(root, "file"), "");
-    expect(await credentialResidue(root, ["file/auth.json"], login)).toBe(true);
+    expect(await credentialResidue(root, ["file/auth.json"], login)).toEqual({
+      state: "unverified",
+      reason: "path_unverifiable",
+    });
   });
 
   // 폴더 권한으로 읽기를 막는다. root는 권한을 넘고, Windows는 POSIX 권한 비트로 읽기를 막지 않는다.
   it.skipIf(process.platform === "win32" || !permissionDenial())(
-    "counts a path it cannot inspect as residue",
+    "reports a path it cannot read as unverified, and leaves why",
     async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
       const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
       // 막은 권한을 되돌린 뒤에 폴더를 지운다.
       onTestFinished(async () => {
@@ -1236,26 +1251,10 @@ describe("login residue in an organization's product folder", () => {
       });
       await mkdir(path.join(root, "locked"));
       await chmod(path.join(root, "locked"), 0o000);
-      expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
-    }
-  );
-
-  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
-    "leaves why it could not inspect a path it counts as residue",
-    async () => {
-      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-      onTestFinished(() => warned.mockRestore());
-      const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
-      onTestFinished(async () => {
-        await chmod(path.join(root, "locked"), 0o700);
-        await removeFolder(root);
-      });
-      await mkdir(path.join(root, "locked"));
-      await chmod(path.join(root, "locked"), 0o000);
       const login = path.join(root, "connection/login/auth.json");
-      expect(await credentialResidue(root, ["locked/auth.json"], login)).toBe(
-        true
-      );
+      expect(
+        await credentialResidue(root, ["locked/auth.json"], login)
+      ).toEqual({ state: "unverified", reason: "unreadable" });
       expect(warned).toHaveBeenCalledWith(expect.stringContaining("(EACCES)"));
     }
   );

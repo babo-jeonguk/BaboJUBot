@@ -132,6 +132,28 @@ type Call = {
   relayOpen?: boolean;
 };
 const image = "babojubot-runner-test";
+/** 남은 로그인이 있어 시작하지 않은 실행 시도의 안내. */
+const leftLogin = "로그인 기록이 남아 있어";
+/**
+ * 남은 로그인을 확인하지 못해 시작하지 않은 실행 시도의 안내: 공통 문장과 이유마다 다른 부분. 확인하지 못한 것을 "남은 로그인"으로
+ * 접으면 판정은 같아도 사용자가 보는 이유가 틀린다(#286).
+ */
+const unverifiedLogin = "남은 로그인을 확인하지 못했습니다";
+const unverifiedBecause = {
+  path: "링크나 폴더가 아닌 것이 있어",
+  notRegular: "일반 파일이 아닌 것(링크·특수 파일)이 있어",
+  unreadable: "로그인 기록을 읽지 못해",
+  changed: "로그인 저장소가 확인 중에 바뀌어",
+} as const;
+/** 확인하지 못한 이유로 시작하지 않았는지 본다. 남은 로그인이라고 하지 않는다. */
+function expectUnverified(
+  error: string | null | undefined,
+  because: keyof typeof unverifiedBecause
+) {
+  expect(error).toContain(unverifiedLogin);
+  expect(error).toContain(unverifiedBecause[because]);
+  expect(error).not.toContain(leftLogin);
+}
 const fixture = (name: string) => path.resolve("test-fixtures", name);
 /** 임시 폴더 바로 아래 폴더의 실제 경로. 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) mount 원본은 실제 경로다. 폴더는 이미 지워졌을 수 있다. */
 const canonicalTemp = (folder: string) =>
@@ -841,7 +863,7 @@ describe.skipIf(process.platform === "win32")(
       );
       const refused = await provider.adapter.execute(env.isolated(), control());
       expect(refused.stopReason).toBe("failed");
-      expect(refused.error).toContain("로그인 기록");
+      expect(refused.error).toContain(leftLogin);
     }, 20000);
 
     it.each([
@@ -875,15 +897,16 @@ describe.skipIf(process.platform === "win32")(
           control()
         );
         expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("로그인 기록");
+        expect(result.error).toContain(leftLogin);
         expect(
           (await env.calls()).some((call) => call.args.includes("run"))
         ).toBe(false);
       }
     );
 
-    // 로그인 자리로 가는 폴더 칸이 폴더가 아니면 그 안을 확인할 수 없다. 남은 로그인으로 본다(#280 리뷰 1회차 STD-1).
-    it("does not start Antigravity over a file in place of a folder on the way to its login place", async () => {
+    // 로그인 자리로 가는 폴더 칸이 폴더가 아니면 그 안을 확인할 수 없다(#280 리뷰 1회차 STD-1). 시작하지 않되, 남은 로그인이 아니라
+    // 확인하지 못했다고 알린다(#286).
+    it("does not start Antigravity over a file in place of a folder on the way to its login place, saying it could not check", async () => {
       const env = await setup({});
       const organization = path.join(
         env.root,
@@ -903,7 +926,7 @@ describe.skipIf(process.platform === "win32")(
       });
       const result = await provider.adapter.execute(env.isolated(), control());
       expect(result.stopReason).toBe("failed");
-      expect(result.error).toContain("로그인 기록");
+      expectUnverified(result.error, "path");
       expect(
         (await env.calls()).some((call) => call.args.includes("run"))
       ).toBe(false);
@@ -1023,7 +1046,7 @@ describe.skipIf(process.platform === "win32")(
           control()
         );
         expect(refused.stopReason).toBe("failed");
-        expect(refused.error).toContain("로그인 기록");
+        expect(refused.error).toContain(leftLogin);
       }
     );
   }
@@ -1161,14 +1184,17 @@ describe.skipIf(process.platform === "win32")(
           await mkdir(config, { recursive: true });
           await writeFile(path.join(config, ".credentials.json"), "{}");
         },
+        undefined,
       ],
-      // 로그인 폴더 자리가 폴더가 아니면(일반 파일·FIFO) 그 안을 확인할 수 없다. 없는 것과 달리 남은 로그인으로 본다(#280 리뷰 1회차 STD-1).
+      // 로그인 폴더 자리가 폴더가 아니면(일반 파일·FIFO) 그 안을 확인할 수 없다(#280 리뷰 1회차 STD-1). 남은 로그인이 아니라
+      // 확인하지 못한 것이다(#286).
       [
         "a file in place of the organization's login folder",
         async (config: string) => {
           await mkdir(path.dirname(config), { recursive: true });
           await writeFile(config, "not a folder");
         },
+        "path",
       ],
       [
         "a FIFO in place of the organization's login folder",
@@ -1176,8 +1202,9 @@ describe.skipIf(process.platform === "win32")(
           await mkdir(path.dirname(config), { recursive: true });
           execFileSync("mkfifo", [config], { timeout: 10_000 });
         },
+        "path",
       ],
-    ])("does not start over %s", async (_case, leave) => {
+    ] as const)("does not start over %s", async (_case, leave, because) => {
       const env = await setup(relayProgram);
       await leave(
         path.join(env.root, "providers/claude/organizations", env.org, "config")
@@ -1189,7 +1216,8 @@ describe.skipIf(process.platform === "win32")(
       });
       const result = await provider.adapter.execute(env.isolated(), control());
       expect(result.stopReason).toBe("failed");
-      expect(result.error).toContain("로그인 기록");
+      if (because) expectUnverified(result.error, because);
+      else expect(result.error).toContain(leftLogin);
       expect(await env.calls()).toEqual([]);
     });
   }
@@ -1579,7 +1607,7 @@ describe.skipIf(process.platform === "win32")(
       );
       const result = await t.provider().adapter.execute(t.input(), control());
       expect(result.stopReason).toBe("failed");
-      expect(result.error).toContain("로그인 기록");
+      expect(result.error).toContain(leftLogin);
       expect(await t.env.calls()).toEqual([]);
       expect(t.network.urls).toHaveLength(0);
     });
@@ -1701,6 +1729,7 @@ describe.skipIf(process.platform === "win32")(
           storeLogins(data, [
             { integration: "opencode-go", value: { type: "key", key: "left" } },
           ]),
+        undefined,
       ],
       [
         "a legacy login file",
@@ -1708,9 +1737,22 @@ describe.skipIf(process.platform === "win32")(
           await mkdir(path.join(data, "opencode"), { recursive: true });
           await writeFile(path.join(data, "opencode", "auth.json"), "{}");
         },
+        undefined,
+      ],
+      // 읽을 수 없는 저장소(데이터베이스가 아닌 내용)는 행을 셀 수 없다. 남은 로그인이 아니라 확인하지 못한 것이다(#286).
+      [
+        "a store that is not a database",
+        async (data: string) => {
+          await mkdir(path.join(data, "opencode"), { recursive: true });
+          await writeFile(
+            path.join(data, "opencode", "opencode.db"),
+            "not a database"
+          );
+        },
+        "unreadable",
       ],
       // 조직 제품 폴더는 같은 조직의 컨테이너가 쓸 수 있다. 데이터베이스 자리의 FIFO를 경로로 열면 쓰는 쪽이 나타날 때까지
-      // 열기가 끝나지 않고, 데이터베이스 도구의 열기는 동기라 서버 전체가 멈춘다. 확인할 수 없는 것은 남은 로그인으로 본다.
+      // 열기가 끝나지 않고, 데이터베이스 도구의 열기는 동기라 서버 전체가 멈춘다. 확인할 수 없으므로 시작하지 않고 그 이유를 알린다.
       [
         "a FIFO in place of the organization's database",
         async (data: string) => {
@@ -1719,8 +1761,9 @@ describe.skipIf(process.platform === "win32")(
             timeout: 10_000,
           });
         },
+        "notRegular",
       ],
-      // 로그인 폴더 자리가 폴더가 아니면(FIFO·일반 파일) 그 안을 확인할 수 없다. 없는 것과 달리 남은 로그인으로 본다(#280 리뷰 1회차 SPEC-1).
+      // 로그인 폴더 자리가 폴더가 아니면(FIFO·일반 파일) 그 안을 확인할 수 없다(#280 리뷰 1회차 SPEC-1). 없는 것도 남은 것도 아니다(#286).
       [
         "a FIFO in place of the organization's login folder",
         async (data: string) => {
@@ -1729,6 +1772,7 @@ describe.skipIf(process.platform === "win32")(
             timeout: 10_000,
           });
         },
+        "path",
       ],
       [
         "a file in place of the organization's login folder",
@@ -1736,6 +1780,7 @@ describe.skipIf(process.platform === "win32")(
           await mkdir(data, { recursive: true });
           await writeFile(path.join(data, "opencode"), "not a folder");
         },
+        "path",
       ],
       // 로그인 폴더 자리의 링크를 따라가면 조직 폴더 밖(여기서는 로그인이 없는 데이터베이스)을 보고 통과시킨다.
       [
@@ -1749,10 +1794,11 @@ describe.skipIf(process.platform === "win32")(
             path.join(data, "opencode")
           );
         },
+        "path",
       ],
-    ])(
+    ] as const)(
       "does not start a container over %s left in the organization's product folder",
-      async (_case, leave) => {
+      async (_case, leave, because) => {
         const t = await openCodeSetup();
 
         await leave(path.join(t.organization, "data"));
@@ -1760,7 +1806,8 @@ describe.skipIf(process.platform === "win32")(
           .provider()
           .adapter.execute(t.input("opencode-go/glm-5.3"), control());
         expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("로그인 기록");
+        if (because) expectUnverified(result.error, because);
+        else expect(result.error).toContain(leftLogin);
         expect(await t.env.calls()).toEqual([]);
         expect(t.network.urls).toHaveLength(0);
       },
@@ -1769,7 +1816,8 @@ describe.skipIf(process.platform === "win32")(
 
     // 서버는 조직의 저장소를 경로로 열지 않고 DB와 WAL을 차례로 복사해 사본을 연다. 그 사이 원본의 체크포인트가 WAL에만 있던
     // 로그인 행을 DB로 옮기고 WAL을 비우면, 사본은 옛 DB와 빈 WAL이 되어 정상적으로 열리면서 행을 0개로 센다. 그런 사본은
-    // 원본의 어느 한 때와도 같지 않으므로 남은 로그인이 없다고 볼 근거가 되지 못한다(#286 항목 7).
+    // 원본의 어느 한 때와도 같지 않으므로 남은 로그인이 없다고 볼 근거가 되지 못한다(#286 항목 7). 시작하지 않되, 남은 로그인이
+    // 아니라 확인 중에 바뀌어 확인하지 못했다고 알린다.
     it("does not start a container when the organization's database moved a login from its log into the database while it was being copied", async () => {
       const t = await openCodeSetup();
       const store = path.join(t.organization, "data", "opencode");
@@ -1799,9 +1847,9 @@ describe.skipIf(process.platform === "win32")(
           .adapter.execute(t.input("opencode-go/glm-5.3"), control());
         expect(checkpointed).toBe(true);
         expect(result.stopReason).toBe("failed");
-        expect(result.error).toContain("로그인 기록");
+        expectUnverified(result.error, "changed");
         expect(warned).toHaveBeenCalledWith(
-          "[provider] the OpenCode login store changed while it was copied; it counts as a remaining login"
+          "[provider] the OpenCode login store changed while it was copied; the remaining login could not be checked"
         );
         expect(await t.env.calls()).toEqual([]);
         expect(t.network.urls).toHaveLength(0);
@@ -1921,7 +1969,7 @@ describe.skipIf(process.platform === "win32")(
       expect((await host).stopReason).toBe("completed");
       const refused = await isolated;
       expect(refused.stopReason).toBe("failed");
-      expect(refused.error).toContain("로그인 기록");
+      expect(refused.error).toContain(leftLogin);
       expect(t.network.urls).toHaveLength(0);
     }, 30_000);
 
@@ -3043,7 +3091,8 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
  * 실제 확인 스크립트를 이 컴퓨터에서 돌린다. 가짜 docker가 `node`를 이 프로그램으로 바꿔 띄우고, 먼저 읽히는 모듈이 컨테이너의
  * 네트워크를 대신한다: 네트워크 장치는 loopback뿐이고, 컨테이너 안 중계 포트(이미지의 relay.mjs가 잇는 127.0.0.1:39280·39281)는 이 확인이 연 실제 중계의 파일
  * 소켓으로 잇고, `HTTPS_PROXY`는 이미지의 시작 프로그램처럼 둔다. 직접 연결은 옆 파일 `direct.json`에 적은 주소만 정한 결과
- * (연결됨·연결 오류 코드·답 없음)를 내고, 그 밖은 이 컴퓨터에서 실제로 연결한다.
+ * (연결됨·연결 오류 코드·답 없음)를 내고, 그 밖은 이 컴퓨터에서 실제로 연결한다. 옆 파일 `answers.json`에 중계 포트의 답을 적으면
+ * 그 포트는 중계 대신 그 글자를 답하고 열어 둔다(HTTP가 아닌 것이 답한 경우).
  */
 const containerNetwork = `
 import { readFileSync } from "node:fs";
@@ -3057,10 +3106,33 @@ os.networkInterfaces = () => ({
 const mounts = JSON.parse(process.env.FAKE_DOCKER_MOUNTS);
 const relay = mounts.find((mount) => mount.target === "/run/babojubot").source;
 const outcomes = JSON.parse(readFileSync(new URL("./direct.json", import.meta.url), "utf8"));
+const answers = JSON.parse(readFileSync(new URL("./answers.json", import.meta.url), "utf8"));
 const relayed = { 39280: "egress.sock", 39281: "tools.sock" };
 process.env.HTTPS_PROXY = "http://127.0.0.1:39280";
 const real = net.connect;
+/** 연결되자마자 정한 글자를 답하고, 닫지 않는 상대. 열린 연결처럼 프로세스를 붙들고, 시한은 실제 타이머로 지난다. */
+const answering = (text) => {
+  const socket = new net.Socket();
+  let timer;
+  socket.write = () => true;
+  socket.setTimeout = (ms, callback) => {
+    if (callback) socket.once("timeout", callback);
+    timer = setTimeout(() => socket.emit("timeout"), ms);
+    return socket;
+  };
+  socket.destroy = () => {
+    clearTimeout(timer);
+    return socket;
+  };
+  setImmediate(() => {
+    socket.emit("connect");
+    socket.emit("data", Buffer.from(text));
+  });
+  return socket;
+};
 const connect = (options, ...rest) => {
+  if (typeof options === "object" && options.host === "127.0.0.1" && answers[options.port] !== undefined)
+    return answering(answers[options.port]);
   if (typeof options === "object" && options.host === "127.0.0.1" && relayed[options.port])
     return real({ path: path.join(relay, relayed[options.port]) }, ...rest);
   const outcome = typeof options === "object" ? outcomes[options.host + ":" + options.port] : undefined;
@@ -3080,12 +3152,19 @@ net.createConnection = connect;
 describe.skipIf(process.platform === "win32")(
   "the isolation probe script against its relay",
   () => {
-    /** 확인 스크립트를 돌릴 가짜 docker. `direct`는 직접 연결의 정한 결과(`host:port` → 결과)다. */
-    async function probeEnvironmentWith(direct: Record<string, string> = {}) {
+    /**
+     * 확인 스크립트를 돌릴 가짜 docker. `direct`는 직접 연결의 정한 결과(`host:port` → 결과), `answers`는 중계 포트 대신 답할
+     * 글자(포트 → 글자)다.
+     */
+    async function probeEnvironmentWith(
+      direct: Record<string, string> = {},
+      answers: Record<string, string> = {}
+    ) {
       const root = await folders.make("babojubot-probe-");
       const network = path.join(root, "container-network.mjs");
       await writeFile(network, containerNetwork);
       await writeFile(path.join(root, "direct.json"), JSON.stringify(direct));
+      await writeFile(path.join(root, "answers.json"), JSON.stringify(answers));
       return createDockerEnvironment({
         docker: [
           process.execPath,
@@ -3210,6 +3289,32 @@ describe.skipIf(process.platform === "win32")(
         )
       ).resolves.toMatchObject({ reached: [target], unverified: [] });
     });
+
+    // HTTP가 아닌 것이 답하면 닿았는지 막혔는지 알 수 없다. 받은 첫 줄을 원인으로 남기고 확인 불가로 넘긴다(#286).
+    it.each([
+      ["the organization tools", 39281, "tools"],
+      ["the relay", 39280, "proxied"],
+    ] as const)(
+      "reports %s check answered by something other than HTTP as unverified, with the first line it got",
+      async (_case, port, probe) => {
+        const target = { host: "127.0.0.1", port: await closedPort() };
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+        const environment = await probeEnvironmentWith(
+          {},
+          { [port]: "SSH-2.0-OpenSSH_9.9\r\n\r\n" }
+        );
+        const result = await environment.probe(
+          { blocked: [], forbidden: [target] },
+          AbortSignal.timeout(20_000)
+        );
+        expect(result.unverified).toEqual([probe]);
+        expect(result.proxied).toEqual([]);
+        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+          `[provider] the isolation probe's ${probe} check failed (answered "SSH-2.0-OpenSSH_9.9")`,
+        ]);
+      }
+    );
   }
 );
 
