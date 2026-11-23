@@ -228,6 +228,17 @@ export default defineConfig([
     },
   },
   {
+    // git 경로 목록은 -z로 읽는다(#286 항목 31). 제품 코드·스크립트·agent 도구·시험 어디서든 줄 단위 목록은 특별한 이름을 다른 경로로 읽는다.
+    files: [
+      ...productFiles,
+      ...scriptFiles,
+      ...testFiles,
+      `.agents/**/*.${codeFormats}`,
+    ],
+    plugins: { product: productRules },
+    rules: { "product/git-path-list-nul": "error" },
+  },
+  {
     // check-test-exit-code.mjs가 vitest를 --globals로 돌려 넣는 이름(일부러 실패하는 시험).
     files: ["scripts/fixtures/test-exit-code/**"],
     languageOptions: { globals: globals.vitest },
