@@ -40,7 +40,7 @@ node .agents/scripts/run-worker.mjs --model <provider/model> --title "pr-<N> <�
   --out <출력>.jsonl (--brief <지침 파일> | --message "<메시지>") [--session <sessionID>] [--limit <분>]
 ```
 
-출력 JSONL·stderr(`.err`)·brief는 Git 제외 로컬 폴더에 두고, 제품 런타임 데이터와 섞지 않습니다.
+출력 JSONL·stderr(`.err`)·brief는 Git 제외 로컬 폴더에 두고, 제품 런타임 데이터와 섞지 않습니다. 스크립트는 지침(`--brief` 파일 내용이나 `--message`)을 opencode의 명령 인수가 아니라 표준 입력으로 넘깁니다. Windows에서 `.cmd`로 깔린 opencode는 `cmd.exe`가 띄워 인수가 첫 줄바꿈에서 끊기므로, 여러 줄 지침도 그대로 닿게 합니다.
 
 **Paseo:** parent가 `worker-deepseek` profile 값을 옮겨 `create_agent`로 subagent를 띄웁니다. 옮기는 방법은 [개발 오케스트레이션 §3](dev-orchestration.md#3-agent-띄우기)을 봅니다.
 

@@ -7,6 +7,10 @@
 //          --out <file.jsonl> (--brief <file> | --message <text>)
 //          [--session <sessionID>] [--start-check <seconds>] [--limit <minutes>]
 //
+// The brief (the --brief file's text as read once, or --message) goes to opencode on its standard input, never as a command
+// argument: opencode run reads a message from standard input when none is given as an argument, and on Windows an
+// npm-installed opencode is a .cmd that cmd.exe starts, which cuts an argument at its first line break (#284).
+//
 // Exit codes: 0 finished without an error event; 2 error event (move to the next model);
 // 3 no session started twice (parent takes over); 4 opencode failed without an error event, could not start (also when
 // the supervisor is not available: the runner refuses to start a worker it could not stop), the call reached
@@ -18,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { launchTree, prepareSupervisor } from "@babojubot/process";
 import {
   continueAfterFailure,
+  failureCode,
   hasErrorCode,
   orIfMissing,
   orIfUnreadable,
@@ -110,7 +115,23 @@ const args = [
   opts.title,
 ];
 if (opts.session) args.push("-s", opts.session);
-args.push(message);
+
+/**
+ * Why the brief could not be sent to the last attempt, if it could not. A worker without its brief has nothing to do, so the
+ * reason becomes one of the call's errors.
+ */
+let briefFailure;
+/** Writes the brief to the worker's standard input and closes it, so opencode reads the whole brief and knows it ended. */
+function sendBrief(stdin) {
+  if (!stdin) {
+    briefFailure = "could not send the brief: the worker has no standard input";
+    return;
+  }
+  stdin.on("error", (error) => {
+    briefFailure = `could not send the brief (${failureCode(error)})`;
+  });
+  stdin.end(message);
+}
 
 // Events written so far. No output file yet means no events; a line that is not JSON (a partly written last line) is skipped.
 function readEvents() {
@@ -136,13 +157,15 @@ function launch() {
   const out = openSync(opts.out, "w");
   const err = openSync(errFile, "w");
   try {
-    return launchTree({
+    const tree = launchTree({
       command: ["opencode"],
       args,
       cwd: process.cwd(),
       env: { ...process.env, OPENCODE_CONFIG: config },
-      stdio: ["ignore", out, err],
+      stdio: ["pipe", out, err],
     });
+    sendBrief(tree.stdin);
+    return tree;
   } finally {
     // opencode holds its own copies. A file that cannot be closed only stays open until the runner ends.
     continueAfterFailure(
@@ -174,9 +197,12 @@ const { attempts, result, deadlineAt, requested } = await workerRun.run();
 const events = readEvents();
 
 const session = sessionOf(events);
-const errors = events
-  .filter((e) => e.type === "error")
-  .map((e) => e.error?.message ?? JSON.stringify(e.error));
+const errors = [
+  ...(briefFailure === undefined ? [] : [briefFailure]),
+  ...events
+    .filter((e) => e.type === "error")
+    .map((e) => e.error?.message ?? JSON.stringify(e.error)),
+];
 const tools = events
   .filter((e) => e.type === "tool_use")
   .map((e) => e.part ?? {});
