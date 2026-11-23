@@ -108,7 +108,10 @@ function runTest(root: string, command: string) {
     .split("\n")
     .slice(-OUTPUT_LINES)
     .join("\n");
-  const ending = result.error?.message ?? `exit ${result.status}`;
+  // A command that a signal ended has no exit code; name the signal instead.
+  const ending =
+    result.error?.message ??
+    (result.status === null ? result.signal : `exit ${result.status}`);
   fail([`test command failed (${ending}): ${command}\n${output}`]);
 }
 

@@ -26,8 +26,8 @@ export interface WorkerTree {
   started: Promise<TreeStart>;
   exited: Promise<TreeExit>;
   stop: () => Promise<void>;
-  delivered?: Promise<string | undefined>;
-  abandonBrief?: () => string | undefined;
+  delivered: Promise<string | undefined>;
+  abandonBrief: () => string | undefined;
 }
 
 /** A signal to the runner that stops the whole call. */
@@ -109,11 +109,8 @@ export function createWorkerRun({
         const withSend = (sendFailure: string | undefined) =>
           sendFailure === undefined ? result : { ...result, sendFailure };
         if (result.stopFailure || result.spawnError)
-          done(withSend(tree.abandonBrief?.()));
-        else
-          void Promise.resolve(tree.delivered).then((sent) =>
-            done(withSend(sent))
-          );
+          done(withSend(tree.abandonBrief()));
+        else void tree.delivered.then((sent) => done(withSend(sent)));
       };
       // From here on the attempt waits for the stop only: its leader may end long before the rest of its tree.
       const stopFor = (reason: StopReason) => {

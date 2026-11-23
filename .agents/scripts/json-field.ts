@@ -2,10 +2,16 @@
 // `unknown` until its shape is checked: a field is read only from an object, and only as the type it turns out to have.
 // run-worker.ts and the reference-first mock-llm.ts read through these.
 
-/** A field of a JSON object; undefined when the value is not an object (or is an array) or has no such field. */
+/** Is the value a JSON object (not null, not an array)? */
+export const isObject = (value: unknown): value is object =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * A field of a JSON object; undefined when the value is not an object or has no such field. undefined only says the field is
+ * not there as asked: the caller decides whether that is a missing optional field or a shape it must report.
+ */
 export function field(value: unknown, key: string): unknown {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    return undefined;
+  if (!isObject(value)) return undefined;
   for (const [name, item] of Object.entries(value))
     if (name === key) return item;
   return undefined;

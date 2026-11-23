@@ -1,58 +1,140 @@
 #!/usr/bin/env node
 // OpenAI-compatible stand-in for a self-hosted reference app, so its AI states render without a real key.
-// usage: node .agents/skills/reference-first/scripts/mock-llm.ts [--port 8787] [--rules rules.json] [--log requests.jsonl]
+// usage: node .agents/skills/reference-first/scripts/mock-llm.ts [--port <0-65535>] [--rules rules.json] [--log requests.jsonl]
 // Serves GET /v1/models and POST /v1/chat/completions (plain and stream: true). Point the app at
-// http://127.0.0.1:<port>/v1 with key sk-dummy.
+// http://127.0.0.1:<port>/v1 with key sk-dummy. The port is 8787 when not given; 0 takes a free one, and the line
+// "mock-llm on <address>" names the port it got.
 //
 // rules.json is an array; the first rule whose `match` regex (case-insensitive; anchor it, "hang" matches "change") hits
-// the last user message wins:
+// the last user message wins (a rule without `match` hits every message). Each rule answers with one of:
 //   { "match": "^shorter", "reply": "A shorter sentence." }        normal answer
 //   { "match": "^fail", "status": 500, "error": "upstream down" }   error status with an OpenAI-shaped error body
 //   { "match": "^slow", "delay": 8000, "reply": "late" }            answer after a delay
 //   { "match": "^empty", "reply": "" }                              empty content
 //   { "match": "^hang", "hang": true }                              never answers (client timeout / cancel)
 //   { "match": "^tool", "message": { "role": "assistant", "content": null, "tool_calls": [...] } }  raw message
-// Without a matching rule the reply is "mock reply".
+// Without a matching rule the reply is "mock reply". A wrong argument ends with exit code 2. A rule whose fields are not these
+// types answers 500 naming the rule; a request that is not a JSON object with a message list answers 400, as the API does.
 import { appendFileSync, readFileSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import {
-  field,
-  listField,
-  numberField,
-  textField,
-} from "../../../scripts/json-field.ts";
+import { orIfUnreadable } from "@babojubot/contracts";
+import { field, isObject, listField } from "../../../scripts/json-field.ts";
+
+const USAGE =
+  "usage: node .agents/skills/reference-first/scripts/mock-llm.ts [--port <0-65535>] [--rules rules.json] [--log requests.jsonl]";
 
 const args = process.argv.slice(2);
 if (args.includes("--help")) {
-  console.log(
-    readFileSync(new URL(import.meta.url), "utf8")
-      .split("\n")
-      .slice(1, 15)
-      .map((l) => l.replace(/^\/\/ ?/, ""))
-      .join("\n")
+  // The comment lines after the first line (#!) are the help.
+  const lines = readFileSync(new URL(import.meta.url), "utf8")
+    .split("\n")
+    .slice(1);
+  const header = lines.slice(
+    0,
+    lines.findIndex((l) => !l.startsWith("//"))
   );
+  console.log(header.map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
   process.exit(0);
 }
-const option = (name: string) => {
-  const i = args.indexOf(name);
-  return i < 0 ? undefined : args[i + 1];
-};
-const port = Number(option("--port") ?? 8787);
-const rulesPath = option("--rules");
-const logPath = option("--log");
+
+function badArgument(message: string): never {
+  console.error(`bad argument: ${message}\n${USAGE}`);
+  process.exit(2);
+}
+
+/** The options given, by name. A name without its value, an unknown name or a name given twice is refused. */
+const options = new Map<string, string>();
+for (let i = 0; i < args.length; i += 2) {
+  const name = args[i] ?? "";
+  const value = args[i + 1];
+  if (!["--port", "--rules", "--log"].includes(name)) badArgument(name);
+  if (value === undefined || value === "") badArgument(`${name} needs a value`);
+  if (options.has(name)) badArgument(`${name} given twice`);
+  options.set(name, value);
+}
+// 8787 is the documented port when none is given.
+const portText = options.get("--port") ?? "8787";
+const port = Number(portText);
+if (!/^\d+$/.test(portText) || port > 65_535)
+  badArgument(`--port ${portText} is not a port (0-65535)`);
+const rulesPath = options.get("--rules");
+const logPath = options.get("--log");
 const MODEL = "mock-model";
 
-/** The rules file: an array of rules, read as it is now. */
-function rules(): unknown[] {
+/** A rule of the rules file, its fields checked against the documented types. */
+interface Rule {
+  match: string;
+  reply?: string;
+  status?: number;
+  error?: string;
+  delay?: number;
+  hang?: boolean;
+  /** A raw answer message, and its tool calls if it has any. */
+  message?: { value: object; toolCalls: object[] | undefined };
+}
+
+/** Reads rule `index`. A field of another type, or a rule that does not say how to answer, is a broken rules file. */
+function readRule(rule: unknown, index: number): Rule {
+  const broken = (why: string) => new Error(`rule ${index} ${why}`);
+  if (!isObject(rule)) throw broken("is not an object");
+  const optional = <T>(
+    name: string,
+    kind: string,
+    isKind: (value: unknown) => value is T
+  ): T | undefined => {
+    const value = field(rule, name);
+    if (value === undefined) return undefined;
+    if (!isKind(value)) throw broken(`has a ${name} that is not ${kind}`);
+    return value;
+  };
+  const isText = (value: unknown) => typeof value === "string";
+  const isNumber = (value: unknown) => typeof value === "number";
+  const isFlag = (value: unknown) => typeof value === "boolean";
+  const read: Rule = {
+    // A rule without match hits every message (the empty pattern).
+    match: optional("match", "text", isText) ?? "",
+    reply: optional("reply", "text", isText),
+    status: optional("status", "a number", isNumber),
+    error: optional("error", "text", isText),
+    delay: optional("delay", "a number", isNumber),
+    hang: optional("hang", "true or false", isFlag),
+  };
+  const message = optional("message", "an object", isObject);
+  if (message) {
+    const calls = field(message, "tool_calls");
+    if (calls !== undefined && !(Array.isArray(calls) && calls.every(isObject)))
+      throw broken("has tool_calls that are not a list of objects");
+    const content = field(message, "content");
+    if (calls === undefined && typeof content !== "string")
+      throw broken(
+        "has a message without tool_calls whose content is not text"
+      );
+    read.message = {
+      value: message,
+      toolCalls: Array.isArray(calls) ? calls.filter(isObject) : undefined,
+    };
+  }
+  if (
+    read.reply === undefined &&
+    read.message === undefined &&
+    read.status === undefined &&
+    !read.hang
+  )
+    throw broken("does not answer (reply, message, status or hang)");
+  return read;
+}
+
+/** The rules file, read as it is now. No rules file means no rules: every message gets "mock reply". */
+function rules(): Rule[] {
   if (!rulesPath) return [];
   const parsed: unknown = JSON.parse(readFileSync(rulesPath, "utf8"));
   if (!Array.isArray(parsed))
     throw new Error(`the rules file is not an array: ${rulesPath}`);
-  return parsed;
+  return parsed.map(readRule);
 }
 const CORS = {
   "access-control-allow-origin": "*",
@@ -60,15 +142,21 @@ const CORS = {
   "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
-function lastUserText(body: unknown) {
-  const user = [...(listField(body, "messages") ?? [])]
-    .reverse()
-    .find((m) => textField(m, "role") === "user");
+/**
+ * The text of the last user message, or undefined when a user message's content is neither text nor a list of parts. Parts
+ * without text (an image) carry no words to match.
+ */
+function lastUserText(messages: unknown[]) {
+  const user = [...messages].reverse().find((m) => field(m, "role") === "user");
   if (!user) return "";
   const content = field(user, "content");
   if (typeof content === "string") return content;
-  return (Array.isArray(content) ? content : [])
-    .map((part) => textField(part, "text") ?? "")
+  if (!Array.isArray(content)) return undefined;
+  return content
+    .flatMap((part) => {
+      const text = field(part, "text");
+      return typeof text === "string" ? [text] : [];
+    })
     .join("\n");
 }
 
@@ -77,10 +165,14 @@ function json(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 
-/** The tool calls of an answer message, if it has any. */
-const toolCalls = (message: unknown) => listField(message, "tool_calls");
+/** A 400 with an OpenAI-shaped error body, as the API answers a malformed request. */
+const invalid = (res: ServerResponse, message: string) =>
+  json(res, 400, { error: { message, type: "invalid_request_error" } });
 
-function completion(message: unknown) {
+/** The answer message and its tool calls. */
+type Answer = { value: object; toolCalls: object[] | undefined };
+
+function completion(answer: Answer) {
   return {
     id: `chatcmpl-mock-${Date.now()}`,
     object: "chat.completion",
@@ -89,15 +181,15 @@ function completion(message: unknown) {
     choices: [
       {
         index: 0,
-        message,
-        finish_reason: toolCalls(message) ? "tool_calls" : "stop",
+        message: answer.value,
+        finish_reason: answer.toolCalls ? "tool_calls" : "stop",
       },
     ],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
   };
 }
 
-async function stream(res: ServerResponse, message: unknown) {
+async function stream(res: ServerResponse, answer: Answer) {
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
@@ -115,30 +207,30 @@ async function stream(res: ServerResponse, message: unknown) {
       `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
     );
   send({ role: "assistant" });
-  const calls = toolCalls(message);
-  if (calls) {
+  if (answer.toolCalls) {
     send({
-      tool_calls: calls.map((call, index) =>
-        typeof call === "object" && call !== null
-          ? { index, ...call }
-          : { index }
-      ),
+      tool_calls: answer.toolCalls.map((call, index) => ({ index, ...call })),
     });
   } else {
-    // Word-sized chunks with a small gap, so streaming UIs show their in-progress state.
-    const content = field(message, "content");
-    for (const piece of String(content ?? "").match(/\S+\s*/g) ?? []) {
+    // Word-sized chunks with a small gap, so streaming UIs show their in-progress state. A message without tool calls has
+    // text content (readRule).
+    const content = field(answer.value, "content");
+    for (const piece of (typeof content === "string" ? content : "").match(
+      /\S+\s*/g
+    ) ?? []) {
       send({ content: piece });
       await new Promise((r) => setTimeout(r, 40));
     }
   }
-  send({}, calls ? "tool_calls" : "stop");
+  send({}, answer.toolCalls ? "tool_calls" : "stop");
   res.end("data: [DONE]\n\n");
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse) {
   if (req.method === "OPTIONS") return res.writeHead(204, CORS).end();
-  const path = new URL(req.url ?? "/", "http://localhost").pathname.replace(
+  // A request the server received always has a path; without one there is nothing to serve.
+  if (req.url === undefined) return invalid(res, "the request has no path");
+  const path = new URL(req.url, "http://localhost").pathname.replace(
     /\/+$/,
     ""
   );
@@ -158,19 +250,27 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   }
   let raw = "";
   for await (const chunk of req) raw += String(chunk);
-  const body: unknown = JSON.parse(raw || "{}");
-  const text = lastUserText(body);
+  const body = orIfUnreadable((): unknown => JSON.parse(raw), undefined);
+  if (!isObject(body)) return invalid(res, "the body is not a JSON object");
+  const messages = listField(body, "messages");
+  if (!messages) return invalid(res, "messages is not a list");
+  const stream_ = field(body, "stream");
+  if (stream_ !== undefined && typeof stream_ !== "boolean")
+    return invalid(res, "stream is not true or false");
+  const text = lastUserText(messages);
+  if (text === undefined)
+    return invalid(
+      res,
+      "a user message's content is not text or a list of parts"
+    );
   // Read the rules once, so the rule that matched is the rule that answers even if the file changes meanwhile.
   const current = rules();
-  const index = current.findIndex((r) =>
-    new RegExp(textField(r, "match") ?? "", "i").test(text)
-  );
-  const rule: unknown = index < 0 ? { reply: "mock reply" } : current[index];
-  const streamed = Boolean(field(body, "stream"));
+  const index = current.findIndex((r) => new RegExp(r.match, "i").test(text));
+  const rule: Rule = current[index] ?? { match: "", reply: "mock reply" };
   console.log(
     [
       new Date().toISOString(),
-      streamed ? "stream" : "plain",
+      stream_ ? "stream" : "plain",
       `rule=${index}`,
       JSON.stringify(text.slice(0, 80)),
     ].join("\t")
@@ -181,28 +281,28 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       `${JSON.stringify({ at: new Date().toISOString(), rule: index, body })}\n`
     );
 
-  if (field(rule, "hang")) return; // the client's own timeout or cancel decides what happens next
-  const delay = numberField(rule, "delay");
+  if (rule.hang) return; // the client's own timeout or cancel decides what happens next
+  const { delay, status } = rule;
   if (delay) await new Promise((r) => setTimeout(r, delay));
-  const status = numberField(rule, "status");
-  if (status && status !== 200) {
+  if (status !== undefined && status !== 200) {
     return json(res, status, {
       error: {
-        message: textField(rule, "error") ?? "mock error",
+        // The rule's own error text, or this when it gives none.
+        message: rule.error ?? "mock error",
         type: "mock_error",
         code: status,
       },
     });
   }
-  const message = field(rule, "message") ?? {
-    role: "assistant",
-    content: textField(rule, "reply") ?? "",
+  const answer: Answer = rule.message ?? {
+    value: { role: "assistant", content: rule.reply ?? "" },
+    toolCalls: undefined,
   };
-  return streamed ? stream(res, message) : json(res, 200, completion(message));
+  return stream_ ? stream(res, answer) : json(res, 200, completion(answer));
 }
 
 // A broken request body or rules file answers 500 with the reason instead of leaving the client waiting.
-createServer((req, res) => {
+const server = createServer((req, res) => {
   handle(req, res).catch((error: unknown) => {
     const reason = error instanceof Error ? error.message : String(error);
     console.error(`mock-llm failed: ${reason}`);
@@ -216,6 +316,11 @@ createServer((req, res) => {
         },
       });
   });
-}).listen(port, "127.0.0.1", () =>
-  console.log(`mock-llm on http://127.0.0.1:${port}/v1`)
-);
+});
+server.listen(port, "127.0.0.1", () => {
+  // Listening on TCP gives an address with a port (a string is a pipe path). With port 0 it is the port the system picked.
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error(`mock-llm is not on a TCP port (${address})`);
+  console.log(`mock-llm on http://127.0.0.1:${address.port}/v1`);
+});

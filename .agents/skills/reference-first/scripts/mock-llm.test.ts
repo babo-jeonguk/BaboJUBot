@@ -45,6 +45,20 @@ test("refuses a missing, non-numeric or out-of-range port and unknown arguments 
   }
 });
 
+test("prints its header comment as help and does not listen", () => {
+  const result = spawnSync(process.execPath, [script, "--help"], {
+    encoding: "utf8",
+    timeout: 30_000,
+    killSignal: "SIGKILL",
+  });
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trimEnd().split("\n");
+  assert.match(lines[0] ?? "", /^OpenAI-compatible stand-in/);
+  assert.ok(lines.some((line) => line.startsWith("usage: node ")));
+  assert.ok(lines.every((line) => !line.startsWith("import ")));
+});
+
 /** 서버를 띄우고 알린 주소를 받는다. 포트 0은 운영체제가 고른 빈 포트이고, 서버는 실제로 들은 포트를 알린다. */
 async function serve(defer: (step: CleanupStep) => void, args: string[]) {
   const child = spawn(process.execPath, [script, "--port", "0", ...args], {

@@ -25,6 +25,9 @@ function fakeWorker(
     pid,
     started: Promise.resolve<TreeStart>({ kind: "running" }),
     exited: exit.promise,
+    // 지침은 보냈다. 보내기 실패·끝나지 않는 쓰기는 시험이 바꿔 넣는다.
+    delivered: Promise.resolve(undefined),
+    abandonBrief: () => undefined,
     end: (code, signal = null) => exit.resolve({ code, signal }),
     stop: () => stop(tree),
   };
