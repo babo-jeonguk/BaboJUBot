@@ -2,10 +2,30 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, openSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { hasErrorCode } from "@babojubot/contracts";
 import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
+
+/** 참이면 이름이 세션 기록 파일인 다음 열기 한 번이 "없음"으로 실패한다(그 자리는 그대로 있다: 여는 사이 바뀐 장면). */
+const opening = vi.hoisted(() => ({
+  missTranscript: undefined as string | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const open: typeof real.open = async (...args) => {
+    const name = opening.missTranscript;
+    if (name && String(args[0]).endsWith(name)) {
+      opening.missTranscript = undefined;
+      throw Object.assign(new Error("no such file"), { code: "ENOENT" });
+    }
+    return real.open(...args);
+  };
+  return { ...real, open, default: { ...real, open } };
+});
+afterEach(() => {
+  opening.missTranscript = undefined;
+});
 
 const folders = testFolders();
 const windows = process.platform === "win32";
@@ -41,6 +61,22 @@ describe.each(readers)(
       await mkdir(projects, { recursive: true });
       await writeFile(path.join(projects, `${session}.jsonl`), transcript);
       expect(await readTranscript(home, session)).toBeDefined();
+    });
+
+    // 기록을 여는 사이 자리가 바뀌었으면 읽지 못한 것이다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
+    it("skips a transcript that changed while it was opened, saying so", async () => {
+      const home = await folders.make("babojubot-transcript-");
+      const projects = path.join(home, "config", "projects", "project");
+      await mkdir(projects, { recursive: true });
+      await writeFile(path.join(projects, `${session}.jsonl`), transcript);
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      opening.missTranscript = `${session}.jsonl`;
+      expect(await readTranscript(home, session)).toBeUndefined();
+      expect(opening.missTranscript).toBeUndefined();
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] a Claude session transcript changed while it was opened",
+      ]);
     });
 
     // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하고, FIFO가 없다. 링크·FIFO 경우는 POSIX에서 본다.
