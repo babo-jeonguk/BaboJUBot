@@ -7,14 +7,46 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import {
   cleanupAntigravityWorkspaces,
   createAntigravityProvider as unownedAntigravityProvider,
 } from "./antigravity.ts";
-import { configScriptFile, ownerMark } from "./antigravity-config.ts";
+import {
+  clearOwnedConfig,
+  configScriptFile,
+  ownerMark,
+} from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
+
+/**
+ * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
+ * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
+ */
+const tree = vi.hoisted(() => ({
+  run: undefined as undefined | (() => unknown),
+}));
+vi.mock("@babojubot/process", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@babojubot/process")>();
+  return {
+    ...real,
+    runTree: (...args: Parameters<typeof real.runTree>) =>
+      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+  };
+});
+/** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
+const stoppedBySignal = () => ({
+  started: true,
+  code: null,
+  signal: "SIGKILL",
+  stdout: Buffer.alloc(0),
+  stderr: Buffer.alloc(0),
+  stopped: "limit",
+});
+afterEach(() => {
+  tree.run = undefined;
+});
 
 // 예전 판이 작업 폴더에 둔 설정의 남은 것만 서버 시작 때 지운다(#148부터 실행은 설정 파일을 쓰지 않는다). 우리 표시가 없는 파일은
 // 비어 있어도 건드리지 않는다. 지우기는 처음 확인한 .agents 폴더 안에서만 일어난다. 그 폴더를 다른 조직으로 바꿔치기해도 그곳에는 닿지 않는다.
@@ -97,7 +129,7 @@ const script = (
   plan: Record<string, unknown> = {},
   preload = interrupt
 ) =>
-  new Promise<number>((resolve) => {
+  new Promise<{ status: number; stderr: string }>((resolve) => {
     const child = execFile(
       process.execPath,
       [
@@ -115,8 +147,15 @@ const script = (
           PLAN: JSON.stringify(plan),
         },
       },
-      (error) =>
-        resolve(error ? (typeof error.code === "number" ? error.code : -1) : 0)
+      (error, _stdout, stderr) =>
+        resolve({
+          status: error
+            ? typeof error.code === "number"
+              ? error.code
+              : -1
+            : 0,
+          stderr: String(stderr),
+        })
     );
     // 계획에 따라 자식은 입력을 읽기 전에 끝날 수 있다. 그때의 쓰기 오류(EPIPE)는 예상된 것이며 결과는 종료 코드로 본다.
     child.stdin!.on("error", () => {});
@@ -149,7 +188,7 @@ it("never removes another organization's file when .agents is swapped at any mom
     const { cwd, agents, config, otherAgents, otherConfig } = await workspace();
     await writeFile(config, ownedLeftover);
     await writeFile(otherConfig, ownedLeftover);
-    const status = await script(cwd, {
+    const { status } = await script(cwd, {
       ...plan,
       from: agents,
       to: otherAgents,
@@ -184,17 +223,33 @@ const userSave = `{
 }
 `;
 
+/** 정리 스크립트가 지우지 못한 까닭을 남긴 줄(한 줄에 JSON 하나). 서버는 이 구조만 기록한다. */
+const reasons = (stderr: string) =>
+  stderr
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as unknown);
+
 // 정리는 우리 표시를 확인한 파일만 지운다. 확인한 뒤 같은 이름에 저장된 새 설정은 확인한 파일이 아니므로 지우지 않는다(#286 항목 8).
+// 지우기 전에 저장됐으면 옛 설정은 이미 사라졌고 지울 것은 옮긴 이름의 우리 파일이라 정리가 끝난 것이다. 옮기기 전에 저장됐으면
+// 옮긴 것이 사용자 설정이라 되돌리며, 옛 설정을 정리한 것이 아니므로 정리하지 못함(3)과 그 까닭을 남긴다(#286 리뷰 1회차 SPEC-1).
 it.each([
-  ["right before the removal", "removal"],
-  ["right before the name is first moved or removed", "name"],
+  ["right before the removal", "removal", 0, []],
+  [
+    "right before the name is first moved or removed",
+    "name",
+    3,
+    [{ reason: "restored", name: "mcp_config.json" }],
+  ],
 ])(
   "keeps a configuration the user saved under the same name %s",
-  async (_moment, at) => {
+  async (_moment, at, status, why) => {
     const { cwd, agents, config } = await workspace();
     await writeFile(config, ownedLeftover);
     const saved = '{"mcpServers":{"mine":{}}}';
-    await script(cwd, { at, content: saved }, userSave);
+    const ended = await script(cwd, { at, content: saved }, userSave);
+    expect(ended.status).toBe(status);
+    expect(reasons(ended.stderr)).toEqual(why);
     expect(await readFile(config, "utf8")).toBe(saved);
     // 정리가 옮겨 둔 것을 남기지 않는다.
     expect(await readdir(agents)).toEqual(["mcp_config.json"]);
@@ -219,10 +274,9 @@ it.each([
     await cleanupAntigravityWorkspaces(root);
     expect(await readFile(config, "utf8")).toBe(content);
     // 지우지 않은 이유는 정리 스크립트가 남긴 문장으로 서버 기록에 보인다(옮긴 이름으로 남긴 파일의 위치도 같은 길로 보인다, #286).
+    // 서버 기록에는 정해진 까닭과 직렬화한 이름만 남는다. 스크립트가 쓴 글을 그대로 옮기지 않는다(#286 리뷰 1회차 STD-1).
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
-      expect.stringContaining(
-        "[config] mcp_config.json has no BaboJUBot mark; it is kept"
-      ),
+      '[provider] the Antigravity configuration of organization one could not be cleared; unowned files are kept (unmarked "mcp_config.json")',
     ]);
   }
 );
@@ -236,4 +290,23 @@ it("clears only leftovers carrying our mark at server start", async () => {
     await cleanupAntigravityWorkspaces(root);
     expect(await readdir(agents)).toEqual([".babojubot-notes.tmp"]);
   }
+});
+
+it("names both why the configuration script was stopped and the signal that ended it", async () => {
+  const { cwd } = await workspace();
+  tree.run = stoppedBySignal;
+  await expect(clearOwnedConfig(cwd)).rejects.toThrow(
+    "the configuration script was stopped at its limit limit (signal SIGKILL)"
+  );
+});
+
+// 설정 자리가 일반 파일이 아니면(폴더·링크) 우리 것인지 확인하지 못한 것이다. "표시 없음"과 다른 까닭으로 남긴다(#286 리뷰 1회차 SPEC-2 같은 모양).
+it("keeps a configuration place that is not a regular file and says so", async () => {
+  const { cwd, config } = await workspace();
+  await mkdir(config);
+  const ended = await script(cwd);
+  expect(ended.status).toBe(3);
+  expect(reasons(ended.stderr)).toEqual([
+    { reason: "not_regular", name: "mcp_config.json" },
+  ]);
 });

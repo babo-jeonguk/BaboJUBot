@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { fileLogin, type FileLoginShape } from "./file-login.ts";
 import { readRegularFile } from "./regular-file.ts";
 import { testFolders } from "./test-folders.ts";
@@ -287,8 +287,14 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
       );
 
       hostRun = true;
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
       await login.prepare(organizationId, false);
       expect(swapped).toBe(true);
+      // 확인해 보니 자리 표시가 아니어서 되돌린 것은 지운 것이 아니다. 그 까닭을 남긴다(#286 리뷰 1회차 SPEC-1).
+      expect(warned.mock.calls.map(([line]) => String(line))).toContain(
+        "[provider] a file put in place of the Nested login stand-in after it was checked was put back; it is not removed"
+      );
       const setAside = path.join(root, "providers", "nested", "set-aside");
       const kept = await Promise.all(
         (await readdir(setAside)).map((name) =>

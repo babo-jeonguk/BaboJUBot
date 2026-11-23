@@ -43,6 +43,31 @@ import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
 
+/**
+ * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
+ * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
+ */
+const tree = vi.hoisted(() => ({
+  run: undefined as undefined | (() => unknown),
+}));
+vi.mock("@babojubot/process", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@babojubot/process")>();
+  return {
+    ...real,
+    runTree: (...args: Parameters<typeof real.runTree>) =>
+      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+  };
+});
+/** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
+const stoppedBySignal = () => ({
+  started: true,
+  code: null,
+  signal: "SIGKILL",
+  stdout: Buffer.alloc(0),
+  stderr: Buffer.alloc(0),
+  stopped: "limit",
+});
+
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
 
@@ -53,6 +78,8 @@ const locked = vi.hoisted(() => ({ folder: null as RegExp | null }));
 /** 이름이 `opencode.db-wal`인 파일을 열기 바로 전에 한 번 부른다. 비어 있으면 그냥 연다. */
 const opening = vi.hoisted(() => ({
   beforeWal: undefined as undefined | (() => void),
+  /** 참이면 이름이 `opencode.db`인 파일의 다음 열기 한 번이 "없음"으로 실패한다(그 자리는 그대로 있다). */
+  missMain: false,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -75,6 +102,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
           )
         : actual.symlink(...args),
     open: (...args: Parameters<typeof actual.open>) => {
+      if (opening.missMain && String(args[0]).endsWith("opencode.db")) {
+        opening.missMain = false;
+        return Promise.reject(
+          Object.assign(new Error("no such file"), { code: "ENOENT" })
+        );
+      }
       const before = opening.beforeWal;
       if (before && String(args[0]).endsWith("opencode.db-wal")) {
         opening.beforeWal = undefined;
@@ -123,6 +156,8 @@ afterEach(() => {
   locked.folder = null;
   policy.decide = undefined;
   opening.beforeWal = undefined;
+  opening.missMain = false;
+  tree.run = undefined;
   vi.unstubAllEnvs();
 });
 
@@ -1858,6 +1893,20 @@ describe.skipIf(process.platform === "win32")(
       }
     }, 20000);
 
+    // 저장소를 열 때는 없었는데 바로 뒤에는 있으면 그 사이 자리가 바뀐 것이다. 일반 파일이 아닌 것과 다른 까닭이다(#286 리뷰 1회차 SPEC-2).
+    it("does not start a container when the organization's database changed place while it was opened, saying it changed", async () => {
+      const t = await openCodeSetup();
+      await storeLogins(path.join(t.organization, "data"), []);
+      opening.missMain = true;
+      const result = await t
+        .provider()
+        .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+      expect(opening.missMain).toBe(false);
+      expect(result.stopReason).toBe("failed");
+      expectUnverified(result.error, "changed");
+      expect(await t.env.calls()).toEqual([]);
+    }, 20000);
+
     it("copies no connection login into the organization's product folder while an isolated run of the organization is still going, even after isolation is turned off (PR #171 SP-2)", async () => {
       const t = await openCodeSetup(true, true);
 
@@ -2863,6 +2912,20 @@ describe("docker failures during container cleanup", () => {
       );
     }
   );
+
+  it("keeps both why a docker command was stopped and the signal that ended it", async () => {
+    tree.run = stoppedBySignal;
+    await expect(runDocker(failing, ["ps"])).resolves.toMatchObject({
+      code: null,
+      stopped: "limit",
+      signal: "SIGKILL",
+    });
+    await expect(
+      createDockerEnvironment(failing).removeOrphans()
+    ).rejects.toThrow(
+      "leftover containers could not be listed (stopped: limit, signal SIGKILL)"
+    );
+  });
 
   it("fails leftover cleanup with the output limit as the cause when docker prints too much", async () => {
     const flooding = {
