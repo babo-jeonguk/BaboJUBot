@@ -1,7 +1,8 @@
 // 코드 지도(docs/agents/code-map.md와 docs/agents/code-map/의 절 파일)가 가리키는 파일·이름이 저장소에 있는지 확인한다(#250).
 // 링크가 열리는지는 check-project.mjs가 본다. 여기서는 링크 밖의 짧은 파일 표기와 코드 표기(백틱)를 본다.
 // Markdown은 CommonMark·GFM 구문 트리(scripts/markdown.mjs)로 읽는다. 판정 단위는 표의 행(머리 행 뺌)과 표 밖의 문단·제목이고,
-// 코드 블록·HTML 블록은 보지 않는다. 칸의 링크(참조식 링크는 그 정의), 링크 밖 글, 코드 스팬을 트리에서 얻고, 줄 번호는 노드의 위치다.
+// 코드 블록·HTML 블록은 보지 않는다. 칸의 링크(참조식 링크는 CommonMark처럼 같은 이름의 첫 정의), 링크 밖 글, 코드 스팬을 트리에서
+// 얻고, 줄 번호는 노드의 위치다.
 // 코드 표기는 아래 순서로 한 갈래에 넣고, 어느 갈래에도 맞지 않으면 실패한다. 표기마다 예외를 두지 않는다.
 // - 파일 표기: 마지막 조각이 `이름.확장자`인 경로. 확장자는 저장소가 추적하는 파일의 확장자와 이 검사가 읽을 줄 아는 확장자
 //   (languages)다. 백틱 밖 글에서도 같은 판정으로 찾는다. 저장소 경로, 또는 `packages/<이름>/`·`apps/<이름>/` 뒤의
@@ -9,7 +10,8 @@
 //   맞는 파일이 없거나 둘 이상이면 실패한다. Markdown 파일은 있는지만 보고 이름을 찾는 곳에 넣지 않는다.
 // - 폴더 표기: `/`로 끝나는 경로(`scripts/`). 그 경로 아래에 추적 파일이 있어야 한다.
 // - 패키지: `@범위/이름[/입구]`, 또는 어느 package.json이 의존성으로 적은 이름(`typescript`). workspace 패키지(뿌리·`packages/*`·
-//   `apps/*`)면 그 입구가 `exports`에 있어야 하고(`*` 무늬 포함, `exports`가 없으면 그 경로의 파일), 아니면 의존성으로 적혀 있어야 한다.
+//   `apps/*`)면 그 입구를 Node 자신의 해석기(scripts/package-exports.ts)로 푼 대상 파일이 있어야 하고(Node가 거부한 입구는 그 오류
+//   코드와 함께 실패, `exports`가 없으면 그 경로의 파일), 아니면 의존성으로 적혀 있어야 한다.
 // - pnpm 명령(`pnpm check:docs`, `pnpm --filter <패키지> run <스크립트>`): 돌리는 스크립트가 대상 package.json(`--filter`가 없으면
 //   뿌리)의 `scripts`에 있어야 한다. pnpm 자체 명령(`pnpm install`, `pnpm exec …`)과 모든 패키지에 도는 `-r`은 보지 않는다.
 // - 이름: 식별자 모양(영문·숫자·`_`·`$`, `-`로 이은 낱말, `.`로 이은 조각, 앞의 `#`, 뒤의 호출 괄호)의 코드 표기. 그 줄이 가리키는
@@ -17,6 +19,8 @@
 //   정의에서 찾는다. 설정·잠금·데이터 파일(JSON·YAML 등)의 이름은 그 파일을 같은 줄에서 가리킬 때만 받는다. 정의는 선언(함수·클래스·
 //   인터페이스·타입·변수·enum 멤버, export 여부 무관)과 객체·클래스·인터페이스·객체 타입의 속성·메서드, JSX 속성, 환경 변수를 읽는
 //   자리, 문자열 리터럴(상태 값·오류 코드, 모듈 경로 문자열은 뺌)이다. 주석, 다른 낱말의 일부, 가져오기·부르기만 한 이름은 아니다.
+//   호출 괄호를 붙인 표기(`stop()`)는 부를 수 있는 정의(함수·클래스 선언, 함수·클래스 값의 변수와 속성, 메서드, 함수 타입의 속성)만
+//   받는다. 같은 이름의 문자열이나 값 속성은 호출 표기를 통과시키지 않는다.
 //   `a.b`는 클래스·인터페이스·객체 상수·타입·enum의 경로(`RunDispatcher.handled`)이거나 글자 그대로의 문자열(`message.created`)이다.
 // - 시험 이름: 표의 `테스트` 열의 나머지 표기. 그 줄이 가리키는 시험 파일의 `describe`·`it`·`test` 제목과 같아야 하고(끝의 `…`는
 //   앞부분만 본다), 줄에 시험 파일이 없으면 저장소의 시험 파일 전체에서 찾는다. 이 열의 식별자 모양 표기는 시험 도움 이름도 적히므로
@@ -31,6 +35,11 @@ import ts from "typescript";
 import { parseAllDocuments } from "yaml";
 import { parseMarkdown, SKIP, visit } from "./markdown.mjs";
 import { codeFormatNames, isTestFile } from "./test-files.mjs";
+import {
+  exportKeys,
+  repositoryRelative,
+  resolvePackageEntry,
+} from "./package-exports.ts";
 
 const segment = "[A-Za-z_$#][\\w$]*(?:-[\\w$]+)*";
 const namePattern = new RegExp(
@@ -147,9 +156,50 @@ function calleeRoot(expression) {
   return ts.isIdentifier(current) ? current.text : undefined;
 }
 
+/** 부를 수 있는 값인 식(함수·화살표 함수·클래스). */
+function isCallableValue(expression) {
+  const value = unwrap(expression);
+  return Boolean(
+    value &&
+    (ts.isFunctionExpression(value) ||
+      ts.isArrowFunction(value) ||
+      ts.isClassExpression(value))
+  );
+}
+
+/**
+ * 이름으로 부를 수 있는 정의인가. 이 검사는 타입 checker 없이 구문 트리만 읽으므로, 부를 수 있는 선언 종류를 한곳에서 정한다:
+ * 이름 있는 함수·클래스(생성자로 부름), 메서드, 함수 타입의 속성, 함수·클래스 값을 담은 속성·변수. 함수처럼 생겼어도 이름으로 부를 수
+ * 없는 것(접근자 get·set은 속성, 생성자·인덱스·호출·생성 시그니처는 이름이 없음)은 아니다(#289 외부 리뷰 SPEC-3).
+ */
+function isCallableDefinition(node) {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isClassLike(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isMethodSignature(node)
+  )
+    return true;
+  if (
+    (ts.isPropertySignature(node) || ts.isPropertyDeclaration(node)) &&
+    node.type &&
+    ts.isFunctionTypeNode(node.type)
+  )
+    return true;
+  return (
+    (ts.isPropertyAssignment(node) ||
+      ts.isPropertyDeclaration(node) ||
+      ts.isVariableDeclaration(node)) &&
+    isCallableValue(node.initializer)
+  );
+}
+
 /**
  * 파일 하나가 정의하는 이름. names: 선언·멤버 이름과 환경 변수를 읽는 자리, paths: `컨테이너.멤버` 경로, strings: 문자열 리터럴,
- * titles: `describe`·`it`·`test` 제목. TS·JS·JSON은 TypeScript 구문 트리로, YAML은 yaml로 읽고, 그 밖의 파일은 주석을 지운 낱말이다.
+ * titles: `describe`·`it`·`test` 제목, callables·callablePaths: 그중 부를 수 있는 것(함수·클래스 선언, 함수·클래스 값의 변수와 속성,
+ * 메서드, 함수 타입의 속성)의 이름과 경로. TS·JS·JSON은 TypeScript 구문 트리로, YAML은 yaml로 읽고, 그 밖의 파일은 주석을 지운
+ * 낱말이다. 구문 트리로 읽지 않는 파일에는 부를 수 있는 것이 없다(무엇이 함수인지 알 수 없다).
  */
 export function definitionsOf(file, text) {
   const found = {
@@ -157,6 +207,8 @@ export function definitionsOf(file, text) {
     paths: new Set(),
     strings: new Set(),
     titles: new Set(),
+    callables: new Set(),
+    callablePaths: new Set(),
   };
   /** @type {Partial<Language>} */
   const language = languages.get(path.extname(file)) ?? {};
@@ -175,6 +227,10 @@ export function definitionsOf(file, text) {
       const full = prefix ? `${prefix}.${name}` : name;
       found.names.add(name);
       found.paths.add(full);
+      if (isCallableDefinition(member)) {
+        found.callables.add(name);
+        found.callablePaths.add(full);
+      }
       addMembers(full, membersOf(member));
     }
   };
@@ -229,7 +285,10 @@ export function definitionsOf(file, text) {
         !ts.isMethodSignature(node)
       ) {
         const name = textOf(node.name);
-        if (name !== undefined) found.names.add(name);
+        if (name !== undefined) {
+          found.names.add(name);
+          if (isCallableDefinition(node)) found.callables.add(name);
+        }
       }
       if (
         ts.isClassLike(node) ||
@@ -242,8 +301,10 @@ export function definitionsOf(file, text) {
         addMembers(name ?? "", membersOf(node));
       } else if (ts.isVariableDeclaration(node)) {
         addBindings(node.name);
-        if (ts.isIdentifier(node.name))
+        if (ts.isIdentifier(node.name)) {
+          if (isCallableDefinition(node)) found.callables.add(node.name.text);
           addMembers(node.name.text, membersOf(node));
+        }
       } else if (
         ts.isObjectLiteralExpression(node) ||
         ts.isTypeLiteralNode(node)
@@ -304,6 +365,13 @@ function defines(definitions, name) {
   );
 }
 
+/** 호출 괄호를 붙인 표기의 판정: 부를 수 있는 정의만 받는다. 같은 이름의 문자열·값 속성은 아니다. */
+function definesCallable(definitions, name) {
+  return name.includes(".")
+    ? definitions.callablePaths.has(name)
+    : definitions.callables.has(name);
+}
+
 /** 노드 안의 글자(글·코드 스팬)를 이어 붙인다. */
 function plainTextOf(node) {
   let text = "";
@@ -320,8 +388,10 @@ function plainTextOf(node) {
  */
 function unitsOf(tree) {
   const definitions = new Map();
+  // CommonMark(§4.7 Link reference definitions): 같은 이름(대소문자·공백을 맞춘 identifier)의 정의가 여럿이면 첫 정의를 쓴다.
   visit(tree, "definition", (node) => {
-    definitions.set(node.identifier, node.url);
+    if (!definitions.has(node.identifier))
+      definitions.set(node.identifier, node.url);
   });
   const units = [];
   visit(tree, (node) => {
@@ -406,24 +476,6 @@ function readManifests(present, read) {
     ),
     declared,
   };
-}
-
-/** package.json `exports`의 입구 이름(`.`, `./testing`, `./fixtures/*`). 조건만 적은 객체와 문자열은 `.` 하나다. */
-function exportEntries(exports) {
-  if (exports === null || typeof exports !== "object" || Array.isArray(exports))
-    return ["."];
-  const keys = Object.keys(exports);
-  return keys.some((key) => key.startsWith(".")) ? keys : ["."];
-}
-
-function matchesEntry(entry, key) {
-  if (!key.includes("*")) return entry === key;
-  const [prefix, suffix] = key.split("*");
-  return (
-    entry.length > prefix.length + suffix.length &&
-    entry.startsWith(prefix) &&
-    entry.endsWith(suffix)
-  );
 }
 
 /** 정규식 안에 글자 그대로 넣는다. */
@@ -517,10 +569,18 @@ export function findCodeMapProblems({ root, files }) {
       if (subpath === undefined || presentFiles.has(file)) return undefined;
       return `없는 패키지 입구 \`${specifier}\` — ${manifest.file}에 exports가 없고 ${file} 파일도 없음`;
     }
-    const entries = exportEntries(manifest.json.exports);
     const entry = subpath === undefined ? "." : `./${subpath}`;
-    if (entries.some((key) => matchesEntry(entry, key))) return undefined;
-    return `없는 패키지 입구 \`${specifier}\` — ${manifest.file}의 exports: ${entries.join(", ")}`;
+    // 입구는 Node 자신의 해석기로 푼다(scripts/package-exports.ts). Node는 대상 파일이 있는지 보지 않으므로 그것은 여기서 본다.
+    const resolved = resolvePackageEntry(
+      path.join(root, path.dirname(manifest.file)),
+      manifest.json.name,
+      entry
+    );
+    if ("refused" in resolved)
+      return `없는 패키지 입구 \`${specifier}\` — Node가 ${manifest.file}의 exports로 풀지 못함(${resolved.refused}); exports: ${exportKeys(manifest.json.exports).join(", ")}`;
+    const file = repositoryRelative(root, resolved.file);
+    if (presentFiles.has(file)) return undefined;
+    return `없는 패키지 입구 \`${specifier}\` — ${manifest.file} exports가 푼 ${file} 파일이 없음`;
   };
   const commandProblem = (command) => {
     const words = command.split(/\s+/).slice(1);
@@ -590,13 +650,13 @@ export function findCodeMapProblems({ root, files }) {
               );
           } else if (span === name && manifests.declared.has(span)) continue;
           else if (testColumn && name !== undefined)
-            titlesOrNames.push({ value: name, line });
+            titlesOrNames.push({ value: name, line, span });
           else if (
             testColumn &&
             [undefined, "문구"].includes(exclusionOf(span))
           )
             testNames.push({ value: span, line });
-          else if (name !== undefined) names.push({ value: name, line });
+          else if (name !== undefined) names.push({ value: name, line, span });
           else if (exclusionOf(span) === undefined)
             problems.push(
               `${at(line)}: 분류할 수 없는 코드 표기 \`${span}\` — 파일·폴더·패키지·pnpm 명령·이름·제외 규칙(문구, HTTP 경로, 무늬, 점·대시로 시작, 기호만) 어디에도 맞지 않음`
@@ -634,8 +694,15 @@ export function findCodeMapProblems({ root, files }) {
       const scopeText = pointed.size
         ? `이 줄이 가리키는 파일: ${nameScope.join(", ")}`
         : "저장소 소스 코드 전체에서 찾음";
-      const defined = (name) =>
-        nameScope.some((file) => defines(definitions(file), name));
+      // 호출 괄호가 붙은 표기(`stop()`)는 부를 수 있는 정의, 나머지는 선언·멤버·문자열이다.
+      const defined = ({ value: name, span }) =>
+        span === name
+          ? nameScope.some((file) => defines(definitions(file), name))
+          : nameScope.some((file) => definesCallable(definitions(file), name));
+      const missing = ({ value: name, line, span }, kind) =>
+        span === name
+          ? `${at(line)}: ${kind} \`${name}\` — ${scopeText}`
+          : `${at(line)}: 부를 수 있는 정의가 없는 호출 표기 \`${span}\` — ${scopeText}`;
       const titleScope = pointedTests.size ? [...pointedTests] : testFiles;
       const hasTitle = (testName) => {
         const start = testName.replace(/…$/, "");
@@ -645,14 +712,11 @@ export function findCodeMapProblems({ root, files }) {
           [...definitions(file).titles].some(titled)
         );
       };
-      for (const { value: name, line } of names)
-        if (!defined(name))
-          problems.push(`${at(line)}: 없는 이름 \`${name}\` — ${scopeText}`);
-      for (const { value: name, line } of titlesOrNames)
-        if (!hasTitle(name) && !defined(name))
-          problems.push(
-            `${at(line)}: 없는 시험 이름·이름 \`${name}\` — ${scopeText}`
-          );
+      for (const notation of names)
+        if (!defined(notation)) problems.push(missing(notation, "없는 이름"));
+      for (const notation of titlesOrNames)
+        if (!hasTitle(notation.value) && !defined(notation))
+          problems.push(missing(notation, "없는 시험 이름·이름"));
       for (const { value: testName, line } of testNames)
         if (!hasTitle(testName))
           problems.push(

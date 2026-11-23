@@ -1,8 +1,8 @@
 import { configDefaults, defineConfig } from "vitest/config";
-import { testReport } from "../../vitest.reports.ts";
+import { suiteTest } from "../../vitest.reports.ts";
 
 export default defineConfig({
   test: {
-    reporters: [...configDefaults.reporters, ...testReport("contracts")],
+    ...suiteTest("contracts", configDefaults),
   },
 });
