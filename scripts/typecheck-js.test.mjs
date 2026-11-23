@@ -62,7 +62,17 @@ test("a JS file added anywhere in a package or app is type-checked by exactly on
   const mirror = mkdtempSync(path.join(tmpdir(), "typecheck-js-places-"));
   context.after(() => removeFolder(mirror));
   git(mirror, "init", "-q");
-  for (const config of git(root, "ls-files", "-z", "--", "*tsconfig*.json")
+  // 검사기(javaScriptConfigs)처럼 아직 커밋하지 않은 설정도 옮긴다.
+  for (const config of git(
+    root,
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "-z",
+    "--",
+    "*tsconfig*.json"
+  )
     .split("\0")
     .filter(Boolean)) {
     mkdirSync(path.join(mirror, path.dirname(config)), { recursive: true });
@@ -82,11 +92,15 @@ test("a JS file added anywhere in a package or app is type-checked by exactly on
         (place) => `${folder}/${place}sample`
       )
     )
-    .flatMap((place) => formats.map((format) => `${place}.${format}`));
+    // TypeScript는 한 폴더에서 확장자만 다른 같은 이름을 하나만 넣으므로 형식마다 이름을 달리한다.
+    .flatMap((place) =>
+      formats.map((format) => `${place}-${format}.${format}`)
+    );
   for (const sample of samples) {
     mkdirSync(path.join(mirror, path.dirname(sample)), { recursive: true });
     writeFileSync(path.join(mirror, sample), "export const a = 1;\n");
   }
+  /** @type {Map<string, string[]>} 표본마다 그 표본을 고른 설정 */
   const owners = new Map(samples.map((sample) => [sample, []]));
   for (const { file, parsed } of javaScriptConfigs(mirror))
     for (const name of parsed.fileNames)

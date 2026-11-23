@@ -1,0 +1,9 @@
+// 이 패키지의 JS 파일을 pnpm typecheck:js가 타입 검사한다. 폴더를 고르지 않고 패키지 전체를 덮어 새 폴더의 JS도 빠지지 않는다
+// (packages/process/supervisor/build.mjs가 빠져 main이 깨졌다). JS를 .ts로 옮기기 전까지 암시적 any만 끈다(#270 PR 3a).
+// 같은 프로그램의 TypeScript 파일은 패키지 typecheck가 엄격 설정으로 검사한다.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "checkJs": true, "noImplicitAny": false },
+  "include": ["**/*"],
+  "exclude": ["node_modules"]
+}
