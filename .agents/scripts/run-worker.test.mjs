@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./run-worker.mjs", import.meta.url));
 const windows = process.platform === "win32";
@@ -160,12 +161,21 @@ function runner(defer, f, limitMinutes, brief) {
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
     if (child.pid !== undefined) killUnlessGone(child.pid);
-    await exited;
+    await within(exited, 10_000, "a killed runner did not exit");
   });
   return {
     child,
     output: () => output,
-    exited: exited.then(([code]) => code),
+    /**
+     * runner의 종료 코드. 한도·신호·끄기 확인(감독 실행기의 끄기 상한 30초 안팎)이 모두 그 안에 들도록 상한을 넉넉히 둔다. 넘기면
+     * 그렇게 알리고 실패한다.
+     */
+    exited: () =>
+      within(
+        exited.then(([code]) => code),
+        90_000,
+        "the runner did not exit"
+      ),
   };
 }
 
@@ -254,7 +264,7 @@ test("a runner sends a multi-line brief on the worker's standard input, not as a
       // 한도 6초. 가짜는 표준 입력의 끝까지 읽어 남긴 뒤 연결로 알린다.
       const run = runner(defer, f, 0.1, args);
       await f.lifelines.connected("recorded", 30_000);
-      assert.equal(await run.exited, 4, run.output());
+      assert.equal(await run.exited(), 4, run.output());
       const calls = readFileSync(f.calls, "utf8")
         .split("\n")
         .filter(Boolean)
@@ -295,7 +305,7 @@ test("a runner whose brief cannot be sent ends with exit code 4 and the reason, 
     const brief = path.join(f.dir, "brief.md");
     writeFileSync(brief, bigBrief);
     const run = runner(defer, f, 10, ["--brief", brief]);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     assert.match(run.output(), /^status: could not send the brief: \S+$/m);
     assert.match(run.output(), /^attempts: 2$/m);
     assert.match(run.output(), /^errors: -$/m);
@@ -310,7 +320,7 @@ test("a runner whose first attempt could not take the brief finishes when the se
     const brief = path.join(f.dir, "brief.md");
     writeFileSync(brief, bigBrief);
     const run = runner(defer, f, 10, ["--brief", brief]);
-    assert.equal(await run.exited, 0, run.output());
+    assert.equal(await run.exited(), 0, run.output());
     assert.match(run.output(), /^status: finished$/m);
     assert.match(run.output(), /^attempts: 2$/m);
     assert.match(run.output(), /^errors: -$/m);
@@ -333,7 +343,7 @@ test("a runner whose brief is still being written to a live worker at --limit en
     writeFileSync(brief, bigBrief);
     // 한도 1.2초.
     const run = runner(defer, f, 0.02, ["--brief", brief]);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     assert.match(run.output(), /^status: could not send the brief: \S+$/m);
     assert.match(run.output(), /^attempts: 1$/m);
     assert.equal(readFileSync(f.launches, "utf8"), "launch\n");
@@ -345,7 +355,7 @@ test("a worker that reaches --limit is not launched again and ends with exit cod
     const f = await fixture(defer);
     // 한도 1.2초.
     const run = runner(defer, f, 0.02);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     assert.match(
       run.output(),
       /^status: stopped after the 0\.02-minute limit$/m
@@ -361,7 +371,7 @@ test("a worker stopped at --limit leaves no command that ignores SIGTERM", async
     // 한도 6초. 명령이 그 전에 연결을 쥐었는지(무시를 설치했는지) 본다. 아니면 이 시험은 아무것도 보지 못한다.
     const run = runner(defer, f, 0.1);
     await f.lifelines.connected("stubborn", 6_000);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     await f.lifelines.closed("stubborn", 2_000);
   });
 });
@@ -371,7 +381,7 @@ test("a worker stopped at --limit leaves no command that moved to a new session"
     const f = await fixture(defer, { moved: true });
     const run = runner(defer, f, 0.1);
     await f.lifelines.connected("moved", 6_000);
-    assert.equal(await run.exited, 4, run.output());
+    assert.equal(await run.exited(), 4, run.output());
     await f.lifelines.closed("moved", 2_000);
   });
 });
@@ -387,7 +397,7 @@ test(
       const run = runner(defer, f, 10);
       await f.lifelines.connected("stubborn", 30_000);
       run.child.kill("SIGTERM");
-      assert.equal(await run.exited, 128 + 15, run.output());
+      assert.equal(await run.exited(), 128 + 15, run.output());
       await f.lifelines.closed("stubborn", 2_000);
     });
   }
@@ -401,7 +411,7 @@ test("a runner that is killed leaves no worker", async () => {
     const run = runner(defer, f, 10);
     await f.lifelines.connected("stubborn", 30_000);
     run.child.kill("SIGKILL");
-    await run.exited;
+    await run.exited();
     await f.lifelines.closed("stubborn", 15_000);
   });
 });

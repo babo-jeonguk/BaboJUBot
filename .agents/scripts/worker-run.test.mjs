@@ -3,6 +3,7 @@
 // run-worker.test.mjs.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { within } from "@babojubot/process/test-support";
 import { createWorkerRun, outcome } from "./worker-run.mjs";
 
 /**
@@ -38,8 +39,9 @@ function launcher(stop) {
 const treeStuck = () => Promise.reject(new Error("Process tree did not stop"));
 const treeGone = () => Promise.resolve();
 
+/** 호출을 끝까지 돌린다. 대역은 모두 메모리 안이라 곧 끝난다. 끝나지 않으면(시도가 무언가를 끝없이 기다리면) 그렇게 알리고 실패한다. */
 async function finish(run, options) {
-  const ended = await run.run();
+  const ended = await within(run.run(), 10_000, "the worker call did not end");
   return { ...ended, outcome: outcome({ ...ended, ...options }) };
 }
 
@@ -299,57 +301,49 @@ function unfinishedBrief(tree, abandoned) {
 
 // 끄기가 트리의 끝을 확인하지 못하면 지침을 읽을 쪽이 남았을 수 있어 쓰기는 끝나지 않을 수 있다. 시도는 그 쓰기를 기다리지 않고
 // 접어 끄기 실패와 그 원인으로 끝난다. 보내기 결과는 그 시도 결과에 남지만 끄기 실패를 가리지 않는다(#284 리뷰 2회차 SPEC-1).
-// 고치기 전에는 시도가 끝나지 않는 쓰기를 기다려 이 시험이 시한에 걸렸다.
-test(
-  "a stop that fails while the brief is still being written ends the call with the stop failure, without waiting for the write",
-  { timeout: 10_000 },
-  async () => {
-    const abandoned = [];
-    const { launch, launched } = launcher(treeStuck);
-    const run = createWorkerRun({
-      launch: () => unfinishedBrief(launch(), abandoned),
-      hasSession: () => false,
-      startCheckMs: 60_000,
-      limitMs: 20,
-    });
-    const ended = await finish(run, { limitMs: 20, session: "", errors: [] });
-    assert.equal(launched.length, 1);
-    assert.deepEqual(abandoned, [100]);
-    assert.equal(ended.result.sendFailure, "unfinished");
-    assert.deepEqual(ended.outcome, [
-      "could not confirm the worker process tree stopped (limit): Process tree did not stop",
-      4,
-    ]);
-  }
-);
+// 고치기 전에는 시도가 끝나지 않는 쓰기를 기다려 호출이 끝나지 않았다.
+test("a stop that fails while the brief is still being written ends the call with the stop failure, without waiting for the write", async () => {
+  const abandoned = [];
+  const { launch, launched } = launcher(treeStuck);
+  const run = createWorkerRun({
+    launch: () => unfinishedBrief(launch(), abandoned),
+    hasSession: () => false,
+    startCheckMs: 60_000,
+    limitMs: 20,
+  });
+  const ended = await finish(run, { limitMs: 20, session: "", errors: [] });
+  assert.equal(launched.length, 1);
+  assert.deepEqual(abandoned, [100]);
+  assert.equal(ended.result.sendFailure, "unfinished");
+  assert.deepEqual(ended.outcome, [
+    "could not confirm the worker process tree stopped (limit): Process tree did not stop",
+    4,
+  ]);
+});
 
 // 시작하지 못한 시도는 끄기를 거치지 않으므로 트리의 끝이 확인되지 않았다. 끝나지 않은 쓰기를 접고 시작 실패로 끝난다.
-test(
-  "an attempt that failed to start while the brief is still being written ends with the start failure",
-  { timeout: 10_000 },
-  async () => {
-    const abandoned = [];
-    const { launch } = launcher(treeGone);
-    const run = createWorkerRun({
-      launch: () => {
-        const tree = unfinishedBrief(launch(), abandoned);
-        tree.started = Promise.resolve({ kind: "failed", reason: "ENOENT" });
-        return tree;
-      },
-      hasSession: () => false,
-      startCheckMs: 60_000,
-      limitMs: 60_000,
-    });
-    const ended = await finish(run, {
-      limitMs: 60_000,
-      session: "",
-      errors: [],
-    });
-    assert.deepEqual(abandoned, [100]);
-    assert.equal(ended.attempts, 1);
-    assert.deepEqual(ended.outcome, ["spawn failed: ENOENT", 4]);
-  }
-);
+test("an attempt that failed to start while the brief is still being written ends with the start failure", async () => {
+  const abandoned = [];
+  const { launch } = launcher(treeGone);
+  const run = createWorkerRun({
+    launch: () => {
+      const tree = unfinishedBrief(launch(), abandoned);
+      tree.started = Promise.resolve({ kind: "failed", reason: "ENOENT" });
+      return tree;
+    },
+    hasSession: () => false,
+    startCheckMs: 60_000,
+    limitMs: 60_000,
+  });
+  const ended = await finish(run, {
+    limitMs: 60_000,
+    session: "",
+    errors: [],
+  });
+  assert.deepEqual(abandoned, [100]);
+  assert.equal(ended.attempts, 1);
+  assert.deepEqual(ended.outcome, ["spawn failed: ENOENT", 4]);
+});
 
 // 끄기가 트리의 끝을 확인한 시도는 읽을 쪽이 남지 않아 쓰기가 반드시 끝난다(보냄 또는 EPIPE). 그 결과를 기다려 남기고 쓰기를
 // 접지 않는다: 접으면 다 보낸 지침을 못 보낸 것으로 잘못 볼 수 있다.
