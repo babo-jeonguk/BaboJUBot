@@ -402,7 +402,11 @@ describe("Lead conversation", () => {
     await say(b.id, "B의 메시지");
     // B의 촉진 처리가 끝난 뒤에 본다. 자리가 없으면 실행 시도를 시작하지 않고 끝난다. 잘못 시작했다면 그 실행 시도가
     // 붙잡혀 이 대기가 시한을 넘기거나, 끝나서 아래 단언이 실패한다.
-    await within(t.kickHandled(b.lead.id), "handling B's kick");
+    await within(
+      t.kickHandled(b.lead.id),
+      10_000,
+      "handling B's kick did not finish"
+    );
     expect(executions).toEqual([a.lead.id]);
     gate.open();
     while ((await watchB.next(10_000)).type !== "run.finished") {

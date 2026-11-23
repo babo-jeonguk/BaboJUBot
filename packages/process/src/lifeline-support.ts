@@ -1,5 +1,6 @@
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { within } from "./test-support.ts";
 
 /** 시험 프로그램 안에서 연결을 쥐는 실제 파일. */
 const holder = fileURLToPath(
@@ -47,32 +48,19 @@ export async function openLifelines() {
     };
     socket.on("data", read);
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
+  await within(
+    new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    }),
+    10_000,
+    "the lifeline server did not start listening"
+  );
   const address = server.address();
   if (address === null || typeof address === "string")
     throw new Error("the lifeline server has no port");
   const { port } = address;
 
-  /** `promise`를 `ms` 안에 기다린다. 넘기면 무엇을 기다렸는지 밝혀 실패한다. */
-  const within = async (promise: Promise<void>, ms: number, what: string) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        promise,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`${what} within ${ms} ms`)),
-            ms
-          );
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-  };
   const connected = (name: string) =>
     lines.has(name)
       ? Promise.resolve()
@@ -108,8 +96,12 @@ export async function openLifelines() {
     /** 서버와 남은 연결을 닫는다. 남은 연결이 있으면 그 프로그램은 시험이 따로 끈다. */
     close: async () => {
       for (const line of lines.values()) line.socket.destroy();
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
+      await within(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        ),
+        10_000,
+        "the lifeline server did not close"
       );
     },
   };

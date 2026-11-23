@@ -17,6 +17,7 @@ import { existsSync } from "node:fs";
 import { prepareSupervisor, TreeLaunchRefused } from "@babojubot/process";
 import { startProcess } from "./process.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { within } from "@babojubot/process/test-support";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { attemptAll } from "@babojubot/contracts";
 
@@ -47,19 +48,6 @@ const temp = async (name: string) => {
   return root;
 };
 const record = (frame: unknown) => frame as Record<string, unknown>;
-/** 정리의 시한. 넘기면 무엇을 기다렸는지 남기고 실패한다. */
-function within<T>(promise: Promise<T>, ms: number, what: string) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`${what} did not happen within ${ms} ms`)),
-        ms
-      );
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
 /** 묶음 실행기 없이 지금처럼(cross-spawn) 띄운 결과. 인수 전달이 같은지 비교하는 기준이다. */
 const direct = (command: string, args: string[], cwd: string) =>
   JSON.parse(
@@ -209,7 +197,7 @@ describe.runIf(windows)("startProcess on Windows", () => {
         // 실행 시도를 마저 끝낸다. 실행기가 끝나며 묶음이 닫혀 그 안의 자손도 꺼진다.
         ...attempts.splice(0).map((attempt) => async () => {
           attempt.end();
-          await within(attempt.done, 30_000, "the end of a run");
+          await within(attempt.done, 30_000, "the end of a run did not happen");
         }),
         () => descendantsGone(descendants.splice(0)),
       ],

@@ -40,7 +40,7 @@
 - 알릴 수단이 없는 상태(남은 프로세스 등)는 다시 확인합니다. 첫 확인은 바로 하고 상한을 그 대기에 두며, 상한이 지나면 무엇을 기다리다 실패했는지(pid·폴더) 알립니다. 러너의 대기 도구(`vi.waitFor`·`vi.waitUntil`·`expect.poll`)가 없는 곳은 확인을 다시 부르는 타이머(`setTimeout(check, N)`)로 씁니다.
 - 화면 시험은 걸린 시간을 합격선과 비교하지 않습니다. 화면이 지켜야 할 상태를 프레임마다 기록해 모든 기록이 그 상태를 지키는지, 기록이 실제로 있는지 봅니다. 기록이 비어 있으면 초기값이 통과합니다(연구 지도 선택 지연, #243). 걸린 시간은 성능 측정 경로(`apps/web/e2e/research-map-perf.spec.ts`)가 잽니다.
 - 시한을 검사하는 시험은 준비(프로그램 시작·화면 첫 로드)가 끝난 것을 먼저 확인하고 그 시한만 잽니다. 타이머와 프로그램의 순서가 실제 시간 창에 달리면 시계를 주입해 순서를 상태로 정합니다(`@babojubot/process/test-support`의 `manualClock`).
-- 기다림의 상한은 그 대기에 명시하고 느린 실행기를 감당하게 잡습니다. 신호를 기다리는 대기는 공용 상한(`apps/web/e2e/support/organization.ts` `leadRun`, `apps/server/test/support.ts` `eventually`)을 쓰고, 화면 첫 로드 같은 공용 준비의 상한(`apps/web/e2e/support/live-events.ts` `pageLoad`)은 검사 대기와 따로 둡니다. 시험 전체의 기본 시한은 그대로 둡니다.
+- 기다림의 상한은 그 대기에 명시하고 느린 실행기를 감당하게 잡습니다. 상한을 넘기면 무엇을 기다렸는지 밝혀 실패하는 기다림은 `within(promise, ms, what)`(`@babojubot/process/test-support`, vitest·node:test·Playwright 공용)을 쓰고 시험 파일에 다시 만들지 않습니다. 신호를 기다리는 대기는 공용 상한(`apps/web/e2e/support/organization.ts` `leadRun`, `apps/server/test/support.ts` `eventually`)을 쓰고, 화면 첫 로드 같은 공용 준비의 상한(`apps/web/e2e/support/live-events.ts` `pageLoad`)은 검사 대기와 따로 둡니다. 시험 전체의 기본 시한은 그대로 둡니다.
 - "아무 일도 없었다"는 처리가 끝났다는 신호 뒤에 확인합니다. 백그라운드 작업이 남길 Event는 `kickHandled`나 `drain`으로 작업 끝을 먼저 기다리고, `expectNoEvents(since)`는 Event stream의 pong까지 받은 Event가 `since`개에서 늘지 않았는지 봅니다. 신호가 없으면 그 일을 부르는 타이머를 가짜 타이머로 시험이 돌리거나, 그 뒤에 보낸 요청이 끝난 것을 순서 신호로 씁니다. 그래도 없으면 제품이 관찰 가능한 신호(실행 활동의 진행 문구 등)를 내게 합니다.
 
 ## 순서

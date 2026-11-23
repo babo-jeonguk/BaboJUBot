@@ -59,7 +59,8 @@ async function organization() {
     ensure: () =>
       within(
         new Workspaces(root, database.db).ensure(org.id),
-        "preparing the organization folder"
+        10_000,
+        "preparing the organization folder did not finish"
       ),
   };
 }

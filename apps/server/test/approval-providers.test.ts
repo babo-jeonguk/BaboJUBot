@@ -678,14 +678,16 @@ describe("one worker request decided through the dashboard and the channel at on
               throw new Error("the decision did not wait on the model list");
             }),
           ]),
-          "the first decision reaching the model list"
+          10_000,
+          "the first decision reaching the model list did not finish"
         );
         won = await within(
           decideVia(winnerVia, s.org.id, approvalId, {
             decision: "reject",
             note: "지금은 아니요",
           }),
-          "the other decision while the first is held"
+          10_000,
+          "the other decision while the first is held did not finish"
         );
       } finally {
         gate.open();
@@ -693,7 +695,8 @@ describe("one worker request decided through the dashboard and the channel at on
       expect(won.status).toBe(200);
       const lost = await within(
         held,
-        "the held decision after the gate opened"
+        10_000,
+        "the held decision after the gate opened did not finish"
       );
       expect([lost.status, lost.body.error?.code]).toEqual([
         409,

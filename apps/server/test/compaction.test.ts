@@ -212,7 +212,11 @@ it("keeps a normal wake pending while compaction owns the session and uses the c
       ).status
     ).toBe(201);
     // 메시지의 촉진을 처리한 뒤에 본다. 압축 중이면 실행 시도를 시작하지 않고 처리가 끝난다.
-    await within(t!.kickHandled(leadOf(org)), "handling the message's kick");
+    await within(
+      t!.kickHandled(leadOf(org)),
+      10_000,
+      "handling the message's kick did not finish"
+    );
     expect(runs).toBe(1);
   });
   await t.drain();
@@ -293,7 +297,11 @@ it.each([
         })
       ).status
     ).toBe(201);
-    await within(t.kickHandled(leadOf(org)), "handling the message's kick");
+    await within(
+      t.kickHandled(leadOf(org)),
+      10_000,
+      "handling the message's kick did not finish"
+    );
     expect(runs).toBe(1);
     now = new Date("2026-01-01T01:08:59Z");
     // 시한 전 시각을 본 확인은 압축을 멈추지 않는다. 시한 판단은 확인 안에서 바로 하므로 확인을 돌린 직후에 본다.

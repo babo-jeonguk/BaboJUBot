@@ -15,6 +15,7 @@ import {
 } from "@babojubot/contracts";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { vi } from "vitest";
+import { within } from "@babojubot/process/test-support";
 import WebSocket from "ws";
 import {
   startServer,
@@ -301,8 +302,8 @@ export async function startTestServer({
                 socket.once("pong", () => ok());
                 socket.ping();
               }),
-              "the Event stream's pong",
-              eventuallyMs
+              eventuallyMs,
+              "the Event stream's pong did not finish"
             );
             if (events.length > since)
               throw new Error(
@@ -337,20 +338,5 @@ export async function startTestServer({
   };
 }
 
-/** 막힌 순서를 시한 안에 그 이름으로 알린다. 테스트 전체 시한까지 기다리지 않는다. */
-export async function within<T>(work: Promise<T>, what: string, ms = 10_000) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${what} did not finish in ${ms}ms`)),
-          ms
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+/** 막힌 순서를 시한 안에 그 이름으로 알린다. 테스트 전체 시한까지 기다리지 않는다. 공용 시험 도움을 그대로 내보낸다. */
+export { within };
