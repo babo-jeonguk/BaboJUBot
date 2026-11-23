@@ -37,8 +37,7 @@ const windows = process.platform === "win32";
 // - FAKE_SKIP_INPUT: 쉼표로 적은 몇 번째 띄움(1부터)에서는 표준 입력을 읽지 않고 곧바로 끝난다(지침을 읽기 전에 끝난 worker).
 // - FAKE_SESSION: 표준 입력을 끝까지 읽은 뒤 세션을 알리고 끝난다(일을 마친 worker).
 // - FAKE_IGNORE_INPUT: 표준 입력을 읽지 않은 채 멈춰 있다(지침을 받지 않고 살아 있는 worker).
-// - FAKE_EVENTS: 표준 입력을 끝까지 읽은 뒤 받은 줄들(JSON 배열)을 그대로 출력하고 끝난다. 줄 안의 {cwd}는 자기 작업 폴더다(JSON
-//   문자열 안에 넣으므로 이스케이프한다. Windows 경로의 역슬래시).
+// - FAKE_EVENTS: 표준 입력을 끝까지 읽은 뒤 받은 줄들(JSON 배열)을 그대로 출력하고 끝난다.
 const fakeOpencode = `import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
@@ -57,7 +56,7 @@ process.stdin.on("end", () => {
     process.exit(0);
   }
   if (process.env.FAKE_EVENTS) {
-    for (const line of JSON.parse(process.env.FAKE_EVENTS)) console.log(line.replaceAll("{cwd}", JSON.stringify(process.cwd()).slice(1, -1)));
+    for (const line of JSON.parse(process.env.FAKE_EVENTS)) console.log(line);
     process.exit(0);
   }
 });
@@ -327,13 +326,17 @@ test("a runner sends a multi-line brief on the worker's standard input, not as a
 // 오류 이벤트, 마지막 글. 모양이 틀린 줄·이벤트는 0이나 빈 값으로 접지 않고 그런 것이 있었다고 요약에 남긴다: 토큰 수를 읽지 못한
 // 단계는 합에서 빼고 그 수를 토큰 줄에, 나머지는 unreadable 줄에 적는다. 요약 정보일 뿐이라 종료 코드는 오류 이벤트대로 2다.
 test("a runner summarizes the session, written files, denials, tokens, errors and the final report from the worker's events", async () => {
+  const inside = path.join(process.cwd(), "src", "a.ts");
+  // 작업 폴더 밖(임시 폴더)의 파일은 알린 그대로 보인다.
+  const outside = path.join(tmpdir(), "babojubot-elsewhere", "c.ts");
   const events = [
     { type: "step_start", sessionID: "ses_summary" },
     {
       type: "tool_use",
       part: {
         tool: "edit",
-        state: { status: "completed", input: { filePath: "{cwd}/src/a.ts" } },
+        // opencode는 그 시스템의 경로로 알린다(Windows는 역슬래시). runner의 작업 폴더는 이 시험의 작업 폴더다.
+        state: { status: "completed", input: { filePath: inside } },
       },
     },
     {
@@ -341,6 +344,13 @@ test("a runner summarizes the session, written files, denials, tokens, errors an
       part: {
         tool: "write",
         state: { status: "completed", input: { path: "src/b.ts" } },
+      },
+    },
+    {
+      type: "tool_use",
+      part: {
+        tool: "write",
+        state: { status: "completed", input: { filePath: outside } },
       },
     },
     {
@@ -390,7 +400,7 @@ test("a runner summarizes the session, written files, denials, tokens, errors an
       "session: ses_summary",
       "attempts: 1",
       "steps: 2  tokens: in 10 out 5 reasoning 2 cache-read 7 (unreadable in 1 step)",
-      "written: src/a.ts, src/b.ts",
+      `written: src/a.ts, src/b.ts, ${outside}`,
       "denied: bash: rm -rf x",
       'errors: rate limited | {"name":"Unknown"} | (no error body)',
       "unreadable: 2 lines not a JSON object, 1 tool_use without a tool and its state, 1 text without text, 1 error without its error",
