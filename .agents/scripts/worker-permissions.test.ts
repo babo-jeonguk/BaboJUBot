@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { isTestFile, testFiles } from "../../scripts/test-files.mjs";
-import { editRules, isProtected } from "./worker-permissions.mjs";
+import { editRules, isProtected } from "./worker-permissions.ts";
 
 const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -16,6 +16,7 @@ const root = path.resolve(
 const rules = editRules(
   readFileSync(path.join(root, ".opencode/agents/dev-worker.md"), "utf8")
 );
+if (!rules) throw new Error("dev-worker.md has no frontmatter");
 const tracked = execFileSync("git", ["ls-files", "-z"], {
   cwd: root,
   encoding: "utf8",
@@ -24,7 +25,7 @@ const tracked = execFileSync("git", ["ls-files", "-z"], {
   .filter(Boolean);
 
 /** Brace expansion, innermost first (`{a,b}` → a, b). */
-function expand(pattern) {
+function expand(pattern: string): string[] {
   const group = /\{([^{}]*)\}/.exec(pattern);
   if (!group) return [pattern];
   return pattern
@@ -40,7 +41,7 @@ function expand(pattern) {
 }
 
 /** One concrete file for each shape a test scope pattern names: `**` becomes folders, `*` a name. */
-function samples(pattern) {
+function samples(pattern: string) {
   return expand(pattern).map((shape) =>
     shape
       .replace(/^\*\*\//, "packages/core/src/")

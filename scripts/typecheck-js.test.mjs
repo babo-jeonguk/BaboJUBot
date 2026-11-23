@@ -19,6 +19,7 @@ import {
   diagnosticsOf,
   isJavaScript,
   javaScriptConfigs,
+  readConfig,
 } from "./typecheck-js.mjs";
 import { codeFormatNames } from "./test-files.mjs";
 
@@ -38,9 +39,74 @@ test("pnpm typecheck runs the JS check after the package type checks", () => {
   );
   assert.deepEqual(scripts.typecheck.split(" && "), [
     "pnpm -r --if-present run typecheck",
+    "pnpm run typecheck:tools",
     "pnpm run typecheck:js",
   ]);
+  assert.equal(scripts["typecheck:tools"], "tsc -p tsconfig.tools.json");
   assert.equal(scripts["typecheck:js"], "node scripts/typecheck-js.mjs");
+});
+
+// TypeScript로 옮긴 영역(#270 PR 3b). 다시 JS로 돌아가지 못한다. 새 JS 파일은 어디서든 받지 않는다(scripts/javascript-files.ts).
+const typeScriptAreas = [".agents/"];
+
+test("an area moved to TypeScript has no JS file", () => {
+  const javaScript = git(
+    root,
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "-z"
+  )
+    .split("\0")
+    .filter((file) => file && isJavaScript(file));
+  assert.deepEqual(
+    javaScript.filter((file) =>
+      typeScriptAreas.some((area) => file.startsWith(area))
+    ),
+    []
+  );
+});
+
+// 패키지 밖의 TypeScript(agent 도구, 개발 스크립트의 .ts)는 패키지 typecheck가 보지 않는다. tsconfig.tools.json이 제품 코드와 같은
+// 엄격 설정으로 모두 검사한다(pnpm typecheck:tools). 각 폴더의 tsconfig.json은 lint가 타입 정보를 얻는 설정이다. 옮긴 영역의 설정은
+// 느슨하게 두지 않는다. 아직 옮기지 않은 scripts의 설정은 그 JS 때문에 느슨하므로, 그 안의 .ts는 tools 설정이 엄격하게 본다.
+test("every TypeScript file outside the packages is type-checked strictly", () => {
+  const tools = readConfig(path.join(root, "tsconfig.tools.json"));
+  assert.equal(tools.options.strict, true);
+  assert.notEqual(tools.options.noImplicitAny, false);
+  assert.notEqual(tools.options.checkJs, true);
+  const checked = new Set(
+    tools.fileNames.map((file) =>
+      path.relative(root, file).replaceAll("\\", "/")
+    )
+  );
+  // 그 폴더 설정(.agents/tsconfig.json, scripts/tsconfig.json)에 드는 TypeScript다. 자기 설정을 가진 시험 묶음(scripts/fixtures의
+  // 실패 확인용 vitest 전역)은 그 설정이 맡는다.
+  const typeScript = [
+    ...typeScriptAreas.map((area) => `${area}tsconfig.json`),
+    "scripts/tsconfig.json",
+  ]
+    .flatMap((config) =>
+      readConfig(path.join(root, config)).fileNames.map((file) =>
+        path.relative(root, file).replaceAll("\\", "/")
+      )
+    )
+    .filter((file) => /\.[cm]?tsx?$/.test(file));
+  assert.ok(
+    typeScript.some((file) => file.startsWith(".agents/")),
+    "no TypeScript in the agent tools"
+  );
+  assert.deepEqual(
+    typeScript.filter((file) => !checked.has(file)),
+    []
+  );
+  for (const area of typeScriptAreas) {
+    const config = readConfig(path.join(root, `${area}tsconfig.json`));
+    assert.equal(config.options.strict, true, area);
+    assert.notEqual(config.options.noImplicitAny, false, area);
+    assert.notEqual(config.options.checkJs, true, area);
+  }
 });
 
 test("every JS file in the repository is type-checked", () => {

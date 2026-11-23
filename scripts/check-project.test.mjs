@@ -49,7 +49,7 @@ function createFixture(defer) {
     "scripts/check-project.mjs",
     "scripts/ignored-dot-folders.mjs",
     "scripts/markdown.mjs",
-    ".agents/scripts/run-worker.mjs",
+    ".agents/scripts/run-worker.ts",
     ".opencode/agents/dev-worker.md",
   ])
     copyFromRepository(relative, path.join(fixture, relative));

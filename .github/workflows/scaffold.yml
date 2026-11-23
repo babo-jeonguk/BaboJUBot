@@ -42,16 +42,28 @@ jobs:
             exit 1
           fi
           echo "Verifying commit $SHA"
+      # 새 JS 검사(scripts/javascript-files.ts)는 TypeScript를 바로 돌리는 Node 24로 돈다.
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
       - id: diff
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -o pipefail
-          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            node scripts/ci-changes.mjs --full | tee -a "$GITHUB_OUTPUT"
+          if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            git diff -z --name-only "$BASE" HEAD | node scripts/ci-changes.mjs | tee -a "$GITHUB_OUTPUT"
+            javascript_base="$BASE"
           else
-            git diff --name-only "$BASE" HEAD | node scripts/ci-changes.mjs | tee -a "$GITHUB_OUTPUT"
+            node scripts/ci-changes.mjs --full | tee -a "$GITHUB_OUTPUT"
+            # 이벤트가 기준을 주지 않은 실행(수동 실행, 첫 push)도 새 JS를 본다: main과 비교한다. main이 없으면 판정할 수 없어 실패한다.
+            if ! javascript_base=$(git rev-parse --verify --quiet "origin/main^{commit}"); then
+              echo "::error::no base to check new JavaScript files against (origin/main is missing)"
+              exit 1
+            fi
           fi
+          # 새 JS 파일은 받지 않는다. 기준과의 merge-base에서 더한 JS를 이름과 함께 알리고 이 job을 실패시킨다(ci / test가 그 결과를 본다).
+          git diff -z --name-status --find-renames "$javascript_base"...HEAD | node scripts/javascript-files.ts
   check:
     name: ci / ${{ matrix.script }}
     needs: changes
@@ -458,7 +470,7 @@ jobs:
       # 본다(#262). macOS는 프로세스 그룹과 표식(ps), Windows는 묶음 실행기다.
       - name: Check worker runner on this system
         timeout-minutes: 3
-        run: node scripts/run-node-tests.mjs worker-runner .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
+        run: node scripts/run-node-tests.mjs worker-runner .agents/scripts/run-worker.test.ts .agents/scripts/worker-run.test.ts
       # 파일 경계 시험은 전체 검증이 돌지 않는 변경에서만 여기서 돈다(위 단계). 그때만 그 보고서를 기다린다.
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts
@@ -518,7 +530,7 @@ jobs:
       # 본다(#262). macOS는 프로세스 그룹과 표식(ps), Windows는 묶음 실행기다.
       - name: Check worker runner on this system
         timeout-minutes: 3
-        run: node scripts/run-node-tests.mjs worker-runner .agents/scripts/run-worker.test.mjs .agents/scripts/worker-run.test.mjs
+        run: node scripts/run-node-tests.mjs worker-runner .agents/scripts/run-worker.test.ts .agents/scripts/worker-run.test.ts
       # 파일 경계 시험은 전체 검증이 돌지 않는 변경에서만 여기서 돈다(위 단계). 그때만 그 보고서를 기다린다.
       # 묶음마다 실행·통과 수를 남기고, 통과한 시험이 없는 시험 파일과 빠진 보고서를 실패로 본다. 시험이 실패해도 수를 남긴다.
       - name: Check test counts

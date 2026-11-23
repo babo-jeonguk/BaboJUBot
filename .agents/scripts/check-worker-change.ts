@@ -3,33 +3,42 @@
 // not edit come from .opencode/agents/dev-worker.md, so the permission and this check cannot drift.
 // Contract: docs/agents/worker.md.
 //
-// usage: node .agents/scripts/check-worker-change.mjs --base <sha> --allow <pattern>...
+// usage: node .agents/scripts/check-worker-change.ts --base <sha> --allow <pattern>...
 //          --reported <file>... --test <command>...
 //
 // `*` in a pattern matches any characters, `/` included, as in OpenCode permissions.
 // Exit codes: 0 no problem found; 1 problem found; 2 usage.
 import { execFileSync, spawnSync } from "node:child_process";
-import { editRules, isProtected, matcher } from "./worker-permissions.mjs";
+import {
+  editRules,
+  isProtected,
+  matcher,
+  type EditRule,
+} from "./worker-permissions.ts";
 
 const USAGE =
-  "usage: check-worker-change.mjs --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
+  "usage: check-worker-change.ts --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
 const OUTPUT_LINES = 40;
 // A stuck test command must not hold the parent forever. The repository's full check fits well inside this.
 const TEST_LIMIT_MS = 30 * 60_000;
 
-function parseArgs(argv) {
-  /** @type {{ base: string, allow: string[], reported: string[], test: string[] }} */
-  const options = { base: "", allow: [], reported: [], test: [] };
+interface Options {
+  base: string;
+  allow: string[];
+  reported: string[];
+  test: string[];
+}
+
+function parseArgs(argv: string[]): Options {
+  const options: Options = { base: "", allow: [], reported: [], test: [] };
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index]?.replace(/^--/, "");
     const value = argv[index + 1];
-    if (
-      value === undefined ||
-      !["base", "allow", "reported", "test"].includes(name)
-    )
-      usage(`bad argument: ${argv[index]}`);
+    if (value === undefined) usage(`bad argument: ${argv[index]}`);
     if (name === "base") options.base = value;
-    else options[name].push(value);
+    else if (name === "allow" || name === "reported" || name === "test")
+      options[name].push(value);
+    else usage(`bad argument: ${argv[index]}`);
   }
   if (
     !options.base ||
@@ -41,17 +50,17 @@ function parseArgs(argv) {
   return options;
 }
 
-function usage(message) {
+function usage(message: string): never {
   console.error(`${message}\n${USAGE}`);
   process.exit(2);
 }
 
-function fail(reasons) {
+function fail(reasons: string[]): never {
   console.error(reasons.map((reason) => `problem: ${reason}`).join("\n"));
   process.exit(1);
 }
 
-function git(root, ...args) {
+function git(root: string, ...args: string[]) {
   return execFileSync("git", args, {
     cwd: root,
     encoding: "utf8",
@@ -61,8 +70,8 @@ function git(root, ...args) {
   });
 }
 
-function changedFiles(root, base) {
-  const list = (...args) =>
+function changedFiles(root: string, base: string) {
+  const list = (...args: string[]) =>
     git(root, ...args)
       .split("\0")
       .filter(Boolean);
@@ -76,7 +85,7 @@ function changedFiles(root, base) {
 }
 
 // Read from the base commit: the change under review must not decide what it may change.
-function baseEditRules(root, base) {
+function baseEditRules(root: string, base: string): EditRule[] {
   const rules = editRules(
     git(root, "show", `${base}:.opencode/agents/dev-worker.md`)
   );
@@ -84,7 +93,7 @@ function baseEditRules(root, base) {
   return rules;
 }
 
-function runTest(root, command) {
+function runTest(root: string, command: string) {
   const result = spawnSync(command, {
     cwd: root,
     shell: true,
@@ -99,11 +108,15 @@ function runTest(root, command) {
     .split("\n")
     .slice(-OUTPUT_LINES)
     .join("\n");
-  const ending = result.error?.message ?? `exit ${result.status}`;
+  // A command that a signal ended has no exit code; name the signal instead.
+  const ending =
+    result.error?.message ??
+    (result.status === null ? result.signal : `exit ${result.status}`);
   fail([`test command failed (${ending}): ${command}\n${output}`]);
 }
 
-const plural = (count, noun) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+const plural = (count: number, noun: string) =>
+  `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 const options = parseArgs(process.argv.slice(2));
 const root = git(process.cwd(), "rev-parse", "--show-toplevel").trim();
@@ -119,8 +132,7 @@ function checkChange() {
   const files = changedFiles(root, base);
   if (files.length === 0) fail(["no files changed"]);
   const reasons = files.flatMap((file) => {
-    /** @type {string[]} */
-    const found = [];
+    const found: string[] = [];
     if (isProtected(rules, file)) found.push(`protected file changed: ${file}`);
     else if (!allowed.some((pattern) => pattern.test(file)))
       found.push(`outside the brief: ${file}`);

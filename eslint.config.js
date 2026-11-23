@@ -7,7 +7,11 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 import productRules from "./scripts/eslint-product-rules.mjs";
 import testRules from "./scripts/eslint-test-rules.mjs";
-import { codeFormats, testFiles } from "./scripts/test-files.mjs";
+import {
+  codeFormats,
+  testFiles,
+  typeScriptFormatNames,
+} from "./scripts/test-files.mjs";
 
 // 도메인 규칙과 seam 계약은 프레임워크·DB·화면에 의존하지 않는다(docs/architecture.md 패키지 구성).
 const framework = [
@@ -429,7 +433,8 @@ export default defineConfig([
   },
   {
     // 개발 스크립트에도 제품 규칙 중 모양으로 판정하는 것과 타입 정보로 Promise를 보는 것을 건다(#255). 에이전트는 스크립트도
-    // 본보기로 삼는다. 타입 표기가 없는 JS는 값이 모두 any라 no-unsafe-*는 뜻이 없고, 단언 규칙은 JS에 단언 문법이 없어 걸지 않는다.
+    // 본보기로 삼는다. 타입 표기가 없는 JS는 값이 모두 any라 no-unsafe-*는 뜻이 없고, 단언 규칙은 JS에 단언 문법이 없어 JS에는 걸지
+    // 않는다(TypeScript로 옮긴 스크립트는 아래 설정이 건다).
     files: scriptFiles,
     ignores: scriptIgnores,
     plugins: { product: productRules },
@@ -454,6 +459,33 @@ export default defineConfig([
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-misused-promises": "error",
       "@typescript-eslint/no-deprecated": "error",
+    },
+  },
+  {
+    // TypeScript로 옮긴 스크립트(#270 PR 3b)는 제품 코드처럼 바깥 데이터를 unknown으로 받아 모양을 확인한 뒤 쓰고, 타입을 `as`로
+    // 우기지 않는다(위 제품 코드 설정과 같은 규칙).
+    files: scriptsOnDisk.filter((file) =>
+      typeScriptFormatNames.some((name) => file.endsWith(`.${name}`))
+    ),
+    ignores: scriptIgnores,
+    plugins: { product: productRules },
+    languageOptions: {
+      parserOptions: {
+        projectService,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      "product/no-assertion-on-parsed-data": "error",
+      "@typescript-eslint/no-unsafe-assignment": "error",
+      "@typescript-eslint/no-unsafe-member-access": "error",
+      "@typescript-eslint/no-unsafe-call": "error",
+      "@typescript-eslint/no-unsafe-return": "error",
+      "@typescript-eslint/no-unsafe-argument": "error",
+      "@typescript-eslint/consistent-type-assertions": [
+        "error",
+        { assertionStyle: "as", objectLiteralTypeAssertions: "never" },
+      ],
     },
   },
   {
