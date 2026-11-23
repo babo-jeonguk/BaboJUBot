@@ -124,3 +124,47 @@ test("the code worker may edit a product file named like a test helper or placed
     []
   );
 });
+
+// OpenCode의 `*`는 `/`도 넘는다(설치된 OpenCode의 판정: `*` → `.*`). 설정 파일 이름 패턴(`*vitest*config*`, `*tsconfig*.json`,
+// `*package.json` 등)이 폴더 경계를 넘으면, 이름에 그 글자가 든 폴더 안의 제품 파일까지 막는다(#286 항목 27과 같은 모양). 설정 파일은
+// 경로의 마지막 조각(파일 이름)으로 판정해야 한다.
+test("the code worker may edit product code in folders whose names hold a check setting's words", () => {
+  const product = [
+    "packages/core/src/vitest-tools/config.ts",
+    "packages/core/src/vitest.helpers/run.ts",
+    "packages/core/src/playwright-steps/config.ts",
+    "packages/core/src/eslint.config.d/rules.ts",
+    "packages/core/src/vite.config.parts/alias.ts",
+    "packages/core/src/tsconfig-tools/data.json",
+    "packages/core/src/prettierrc-rules/data.json",
+    "packages/core/src/mypackage.json",
+    "packages/core/src/release.github/notes.ts",
+    "packages/core/src/agents.agents/list.ts",
+  ];
+  assert.deepEqual(
+    product.filter((file) => isProtected(rules, file)),
+    []
+  );
+  // 같은 이름의 실제 설정 파일은 어느 폴더에 있든 막힌다.
+  const settings = [
+    "eslint.config.js",
+    "apps/web/playwright.config.ts",
+    "apps/web/vite.config.ts",
+    "packages/core/vitest.config.ts",
+    "packages/process/vitest.alone.config.ts",
+    "packages/core/tsconfig.test.json",
+    "alternate-tsconfig.json",
+    "packages/core/package.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    ".prettierrc.json",
+    "apps/web/.prettierrc",
+    ".github/workflows/scaffold.yml",
+    ".agents/scripts/run-worker.ts",
+    "packages/core/src/sample.test.ts",
+  ];
+  assert.deepEqual(
+    settings.filter((file) => !isProtected(rules, file)),
+    []
+  );
+});
