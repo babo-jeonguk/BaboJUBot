@@ -477,6 +477,26 @@ describe("a Postgres left by a killed process", () => {
     expect(isAlive(postmaster)).toBe(true);
   }, 60_000);
 
+  // #288 리뷰 2회차 STD-2와 같은 모양: 자식이 Postgres를 띄운 뒤 준비 줄 전에 죽으면(SIGKILL이라 종료 hook도 돌지 않음), 시험은 그
+  // Postgres의 번호를 받지 못한다. 정리는 그래도 그 Postgres를 끄고 나서 폴더를 지운다.
+  it("stops the Postgres a child started when the child dies before its ready line", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    const postmaster = 0;
+    const cluster = folderCleanup(() => removeCluster(dataDir));
+    onTestFinished(cluster.cleanUp);
+    cluster.own(() => stopPostgres(postmaster));
+    await expect(
+      holdDatabase(`
+        await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
+        process.kill(process.pid, "SIGKILL");
+      `)
+    ).rejects.toThrow(/child ended before its next line/);
+    const started = readPostmaster(dataDir);
+    expect(isAlive(started)).toBe(true);
+    await cluster.cleanUp();
+    expect(isAlive(started)).toBe(false);
+  }, 60_000);
+
   // 주인이 살아 있는지는 기록한 번호가 아니라 주인이 쥔 연결로 본다(#268). 번호는 주인이 죽은 뒤 다른 프로그램에 다시 주어지거나,
   // 거두지 않은 채(좀비) 남아 "살아 있음"으로 보일 수 있다. 연결은 주인이 죽으면 OS가 닫는다. 기록한 번호의 프로그램이 돌아도
   // 연결이 없으면 주인이 죽은 것이다. 주인 기록과 연결은 제품이 만든다(#286 항목 11): 그 기록으로 주인이 살아 있는 동안은 거부되고,
