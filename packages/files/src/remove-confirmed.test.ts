@@ -95,6 +95,10 @@ describe("removing a file in a place others can change, only the one confirmed",
     if (typeof result !== "object")
       throw new Error(`expected the moved file to be kept, got ${result}`);
     expect(await readFile(file, "utf8")).toBe("second save");
+    // 옮긴 이름은 같은 폴더의 `.<이름>.<UUID>.removing`이다(UUID만 무작위).
+    expect(path.relative(root, result.keptAs)).toMatch(
+      /^\.config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
+    );
     expect(await readFile(result.keptAs, "utf8")).toBe("first save");
   });
 
@@ -110,8 +114,11 @@ describe("removing a file in a place others can change, only the one confirmed",
     });
     if (typeof result !== "object")
       throw new Error(`expected the moved file to be kept, got ${result}`);
-    expect(path.dirname(result.keptAs)).toBe(root);
     expect(await readFile(file, "utf8")).toBe("second save");
+    // 옮긴 이름은 같은 폴더의 `.<이름>.<UUID>.removing`이다(UUID만 무작위).
+    expect(path.relative(root, result.keptAs)).toMatch(
+      /^\.config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
+    );
     expect(await readFile(result.keptAs, "utf8")).toBe("first save");
     expect((await readdir(root)).sort()).toEqual(
       ["config.json", path.basename(result.keptAs)].sort()

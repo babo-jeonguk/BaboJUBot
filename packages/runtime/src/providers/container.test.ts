@@ -2881,11 +2881,13 @@ describe("docker failures during container cleanup", () => {
       ...failing,
       docker: [process.execPath, "-e", "setInterval(() => {}, 1000);"] as const,
     };
-    await expect(runDocker(silent, ["ps"], 200)).resolves.toMatchObject({
-      code: null,
-      stopped: "limit",
-      stderr: "",
-    });
+    const result = await runDocker(silent, ["ps"], 200);
+    expect(result).toMatchObject({ code: null, stopped: "limit", stderr: "" });
+    // 끈 트리를 끝낸 신호도 남는다. 이 프로그램은 SIGTERM을 다루지 않아 끄기 순서의 첫 SIGTERM으로 끝난다
+    // (packages/process/supervisor/src/unix.rs `end_tree`). Windows는 신호 없이 끝난다(#286 리뷰 1회차 STD-2).
+    expect(result.signal).toBe(
+      process.platform === "win32" ? undefined : "SIGTERM"
+    );
   });
 
   // 바깥에서 받은 종료 신호로 끝난 docker 명령도 그 신호가 원인이다. "끝남 코드 없음"으로 접지 않는다(#286 항목 2).
@@ -2936,14 +2938,15 @@ describe("docker failures during container cleanup", () => {
         `process.stdout.write("x".repeat(2 * 1024 * 1024)); setInterval(() => {}, 1000);`,
       ] as const,
     };
-    // 끈 트리를 끝낸 신호도 남는다(#286 리뷰 1회차 STD-2). 어느 신호로 끝났는지는 공용 실행의 끄기 단계가 정하고, Windows에는
-    // 신호가 없다. 예전 기대는 신호를 버린 문구를 고정했다.
+    // 끈 트리를 끝낸 신호도 남는다(#286 리뷰 1회차 STD-2). 끄기 순서는 SIGTERM → 유예 → SIGKILL이고
+    // (packages/process/supervisor/src/unix.rs `end_tree`), 이 프로그램은 SIGTERM을 다루지 않아 SIGTERM이 닿는 순간 끝난다.
+    // Windows는 신호 없이 끝난다. 예전 기대는 신호를 버린 문구를 고정했다.
     await expect(
       createDockerEnvironment(flooding).removeOrphans()
     ).rejects.toThrow(
       process.platform === "win32"
-        ? /^leftover containers could not be listed \(stopped: output\)$/
-        : /^leftover containers could not be listed \(stopped: output, signal SIG[A-Z]+\)$/
+        ? "leftover containers could not be listed (stopped: output)"
+        : "leftover containers could not be listed (stopped: output, signal SIGTERM)"
     );
   });
 
