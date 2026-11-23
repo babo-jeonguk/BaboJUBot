@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { globSync, mkdtempSync, readFileSync } from "node:fs";
+import { globSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -553,7 +553,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const packageJson = (folder) =>
   JSON.parse(readFileSync(path.join(root, folder, "package.json"), "utf8"));
 const readRepositoryText = (file) =>
-  readFileSync(path.join(root, file), "utf8");
+  readFileSync(path.resolve(root, file), "utf8");
 /** Vitest 설정 파일이 남기는 보고서 이름(vitest.reports.ts의 testReport). 찾지 못하면 undefined. */
 function reportOf(config, readText = readRepositoryText) {
   return /testReport\("([\w-]+)"\)/.exec(readText(config))?.[1];
@@ -702,6 +702,52 @@ test("each job that runs test suites checks every suite's run and pass counts as
     "test-unit",
     "test-windows",
   ]);
+});
+
+// 보고서 이름을 설정 글자에서 찾으면 주석에만 남은 `testReport("web")`도 보고기로 센다(#286 항목 20). 설정이 실제로 만드는 보고기를 본다.
+test("does not take a report named only in a comment of a Vitest config", (context) => {
+  const folder = mkdtempSync(path.join(tmpdir(), "ci-gate-config-"));
+  context.after(() => removeFolder(folder));
+  const config = path.join(folder, "vitest.config.mjs");
+  writeFileSync(
+    config,
+    '// reporters: [...configDefaults.reporters, ...testReport("web")]\nexport default { test: { reporters: ["default"] } };\n'
+  );
+  assert.equal(reportOf(config), undefined);
+});
+
+// 시험 실행을 래퍼 스크립트로 옮기면 명령 모양으로 묶음을 찾는 판정은 그 job이 묶음을 돌리지 않는다고 본다(#286 항목 20). 판정을
+// 명령 글자에 기대지 않고, CI 전체에 보고서가 필수라고 알려 보고 폴더 없이 도는 묶음이 실행에서 실패하게 한다.
+test("refuses a workflow that does not require every suite run in CI to leave a report", () => {
+  const flow = structuredClone(workflow);
+  delete flow.env?.BABOJUBOT_REQUIRE_TEST_REPORTS;
+  assert.ok(
+    wiringProblems(flow).problems.some((problem) =>
+      problem.startsWith(
+        "the workflow env must set BABOJUBOT_REQUIRE_TEST_REPORTS"
+      )
+    ),
+    wiringProblems(flow).problems.join("\n")
+  );
+});
+
+// run 44670627223에서 고친 보고 폴더 누출은 workflow·job env만 보았다. 단계 env에 같은 변수를 두면 그 단계의 묶음이 판정하지 않는
+// 폴더에 보고서를 남기거나 다른 실행의 보고기를 가로챈다(#286 항목 20).
+test("refuses a report folder given in a step's env", () => {
+  const flow = structuredClone(workflow);
+  const run = flow.jobs["files-linux"].steps.find((each) =>
+    /file-boundary-run/.test(each.run ?? "")
+  );
+  run.env = {
+    ...run.env,
+    BABOJUBOT_TEST_REPORTS: "${{ github.workspace }}/test-reports",
+  };
+  assert.ok(
+    wiringProblems(flow).problems.includes(
+      "files-linux: a step's env sets BABOJUBOT_TEST_REPORTS; only a job that checks the counts gives its suites a folder"
+    ),
+    wiringProblems(flow).problems.join("\n")
+  );
 });
 
 test("runs every node:test suite through the counting runner and gives every Vitest config a report", () => {

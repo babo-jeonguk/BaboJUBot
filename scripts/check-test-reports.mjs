@@ -153,6 +153,8 @@ function judgeReport(name, report, os) {
 /**
  * 판정한다. `reports`는 묶음 이름 → 보고서, `expected`는 이 job이 돌린 묶음, `os`는 이 job의 시스템이다.
  * `problems`가 비어 있어야 성공이다.
+ * @param {Map<string, any>} reports
+ * @param {{ os: string, expected: string[], files?: string[] }} options
  */
 export function judgeReports(reports, { os, expected }) {
   if (!systems.includes(os))

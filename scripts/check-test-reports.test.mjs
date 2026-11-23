@@ -180,6 +180,78 @@ for (const [name, entries, os = "linux", expected] of rejected) {
   });
 }
 
+// 보고서에 남은 파일만 판정하면, 묶음 설정의 필터나 명령의 파일 목록에서 시험 파일 하나가 통째로 빠져도 남은 파일이 통과해 성공한다
+// (#286 항목 19). 기대하는 시험 파일은 실행과 따로, 저장소의 파일 목록(Git)과 묶음 정의로 정한다.
+test("rejects a suite whose report misses a test file the suite selects", () => {
+  const files = [
+    "packages/contracts/src/a.test.ts",
+    "packages/contracts/src/b.test.ts",
+    "packages/contracts/src/helper.ts",
+  ];
+  assert.deepEqual(
+    judgeReports(
+      reportsOf({
+        contracts: report({ "packages/contracts/src/a.test.ts": ["passed"] }),
+      }),
+      { os: "linux", expected: ["contracts"], files }
+    ).problems,
+    [
+      "contracts: packages/contracts/src/b.test.ts did not run, though the suite selects it (scripts/test-suites.ts)",
+    ]
+  );
+});
+
+test("rejects a report that ran a test file its suite does not select", () => {
+  const alone = "packages/process/src/lease-hidden.alone.test.ts";
+  const files = ["packages/process/src/a.test.ts", alone];
+  assert.deepEqual(
+    judgeReports(
+      reportsOf({
+        process: report({
+          "packages/process/src/a.test.ts": ["passed"],
+          [alone]: ["passed"],
+        }),
+      }),
+      { os: "linux", expected: ["process"], files }
+    ).problems,
+    [
+      `process: ran ${alone}, which the suite does not select (scripts/test-suites.ts)`,
+    ]
+  );
+});
+
+// 시스템이 지원하지 않아 건너뛰는 파일도 시험을 모아 건너뛴 기록이 있어야 한다. 시험이 0개면 파일을 읽지 못했거나 시험이 사라진 것이다.
+test("rejects an intended exclusion that ran no test at all", () => {
+  const relay = "packages/runtime/src/providers/relay.test.ts";
+  const skippedOnWindows = Object.fromEntries(
+    intendedExclusions
+      .filter(
+        (e) =>
+          e.report === "runtime" &&
+          e.systems.includes("windows") &&
+          e.file !== relay
+      )
+      .map((e) => [e.file, ["skipped"]])
+  );
+  const runtime = {
+    "packages/runtime/src/a.test.ts": ["passed"],
+    [jobObject]: ["passed"],
+    ...skippedOnWindows,
+    [relay]: [],
+  };
+  const files = Object.keys(runtime);
+  assert.deepEqual(
+    judgeReports(reportsOf({ runtime: report(runtime) }), {
+      os: "windows",
+      expected: ["runtime"],
+      files,
+    }).problems,
+    [
+      `runtime: ${relay} is listed as skipped on windows but recorded no test; a skipped file still reports its skipped tests`,
+    ]
+  );
+});
+
 test("rejects an unknown system and names the system of this computer", () => {
   assert.throws(
     () => judgeReports(reportsOf({}), { os: "aix", expected: [] }),
