@@ -30,6 +30,7 @@ import {
   orIfUnreadable,
 } from "@babojubot/contracts";
 import { field, isObject, numberField, textField } from "./json-field.ts";
+import { shownPath } from "./worker-summary.ts";
 import {
   createWorkerRun,
   outcome,
@@ -299,7 +300,7 @@ const written = [
           ["edit", "write", "patch", "multiedit"].includes(t.tool) &&
           t.status === "completed"
       )
-      .flatMap((t) => (t.file ? [t.file.replace(`${process.cwd()}/`, "")] : []))
+      .flatMap((t) => (t.file ? [shownPath(t.file, process.cwd())] : []))
   ),
 ];
 const denied = tools

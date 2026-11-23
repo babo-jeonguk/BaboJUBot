@@ -24,6 +24,7 @@ test("shows a POSIX path inside the working folder relative to it", () => {
     shownPath("/work/repo/src/a.ts", "/work/repo", path.posix),
     "src/a.ts"
   );
+  assert.equal(shownPath("/work/repo", "/work/repo", path.posix), ".");
 });
 
 test("keeps a path outside the working folder as it was reported", () => {
