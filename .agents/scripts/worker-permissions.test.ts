@@ -145,8 +145,13 @@ test("the code worker may edit product code in folders whose names hold a check 
     product.filter((file) => isProtected(rules, file)),
     []
   );
-  // 같은 이름의 실제 설정 파일은 어느 폴더에 있든 막힌다.
+  // 같은 이름의 실제 설정 파일은 어느 폴더에 있든 막힌다. 위에서 다시 연 폴더 안에 있어도 그렇다.
   const settings = [
+    "packages/core/src/vitest.d/eslint.config.js",
+    "packages/core/src/eslint.config.d/vitest.config.ts",
+    "packages/core/src/tsconfig-tools/tsconfig.json",
+    "packages/core/src/playwright.parts/vitest.alone.config.ts",
+    "packages/core/src/vitest.helpers/package.json",
     "eslint.config.js",
     "apps/web/playwright.config.ts",
     "apps/web/vite.config.ts",
