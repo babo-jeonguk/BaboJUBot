@@ -167,13 +167,11 @@ async function serveAndKill(label) {
               );
             }
           );
-          const fields =
-            text === undefined ? undefined : overviewFields(label, text);
-          if (fields === undefined) {
-            if (text !== undefined) lastAttempt = "HTTP 200, body not JSON";
+          if (text === undefined) {
             await delay(250);
             continue;
           }
+          const fields = overviewFields(label, text);
           console.log(
             `${label}: server ready on ${process.platform}: ${fields} overview fields`
           );
