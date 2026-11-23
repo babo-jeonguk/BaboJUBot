@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer, type AddressInfo, type Socket } from "node:net";
 import { finished } from "node:stream/promises";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { awaitedLater } from "./test-cleanup.ts";
+import { awaitedLater, withCleanup } from "./test-cleanup.ts";
 import { within } from "./test-support.ts";
 import {
   exited,
@@ -83,78 +83,111 @@ it("still reads a ready line written just before the program exits", async () =>
 // 부모가 끝나면 함께 끝나는 묶음에 넣는다. 프로그램은 자손이 연결한 뒤 시험이 시킬 때 끝난다. readyLine의 시계는 가짜라 exit 뒤
 // 시간이 얼마나 지나도(아래 5초) 출력이 열려 있는 동안은 기다린다.
 it("keeps reading after the program exits until its output ends", async () => {
-  const server = createServer();
-  // 자손은 연결하자마자 자기 번호를 보낸다. 정리가 그 연결을 닫은 뒤 자손이 끝났는지 그 번호로 확인한다.
-  const connected = awaitedLater(
-    new Promise<{ socket: Socket; pid: number }>((resolve, reject) =>
-      server.once("connection", (socket: Socket) => {
-        socket.once("error", reject);
-        let text = "";
-        const read = (chunk: Buffer) => {
-          text += String(chunk);
-          if (!text.includes("\n")) return;
-          socket.off("data", read);
-          resolve({ socket, pid: Number(text.trim()) });
-        };
-        socket.on("data", read);
-      })
-    )
+  await lateReadyLine(
+    (port) =>
+      `const s = require("node:net").connect(${port}, "127.0.0.1", () => s.write(process.pid + "\\n")); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`
   );
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  onTestFinished(() =>
-    within(
-      new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
-      ),
-      10_000,
-      "the test's server did not close"
-    )
-  );
-  const { port } = server.address() as AddressInfo;
-  const descendant = `const s = require("node:net").connect(${port}, "127.0.0.1", () => s.write(process.pid + "\\n")); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`;
-  const child = spawn(
-    process.execPath,
-    [
-      "-e",
-      `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: ["ignore", "inherit", "ignore"], detached: true, windowsHide: true }).unref(); process.stdin.once("data", () => process.exit(0));`,
-    ],
-    { stdio: ["pipe", "pipe", "ignore"] }
-  );
-  // 프로그램은 성공·실패 어디서든 끝난 것을 확인한다. 시험이 끝내라고 하기 전에 실패했으면 끈다. 띄우지 못했으면 그 오류로 실패한다.
-  const childEnded = awaitedLater(once(child, "exit"));
-  onTestFinished(async () => {
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-    await within(childEnded, 10_000, "the program did not end");
-  });
-  const { socket: output, pid } = await within(
-    connected,
-    10_000,
-    "the descendant did not connect"
-  );
-  // 자손은 연결이 닫히면 스스로 끝난다. 닫은 뒤 끝난 것을 확인한다.
-  onTestFinished(async () => {
-    output.destroy();
-    await untilExited([pid], 10_000);
-  });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  onTestFinished(() => {
-    vi.useRealTimers();
-  });
-  const ready = awaitedLater(readyLine(child));
-  // 상한은 AbortSignal.timeout이 진다(가짜 시계와 무관). 끝내라고 하기 전에 기다리기 시작한다.
-  const exited = once(child, "exit", { signal: AbortSignal.timeout(10_000) });
-  child.stdin!.write("exit\n");
-  await exited;
-  vi.advanceTimersByTime(5_000);
-  // readyLine의 시한은 가짜 시계에 남긴 채 실제 시계로 돌아와, 준비 줄을 기다리는 상한을 둔다.
-  vi.useRealTimers();
-  output.write("go");
-  await within(ready, 10_000, "readyLine did not take the late ready line");
 });
+
+// #288 리뷰 2회차 STD-2: 자손이 연결만 하고 아무 답도 하지 않아도(멈춤), 정리는 받은 연결을 닫고 자손과 프로그램의 끝을 확인한다.
+// 시험은 준비 줄이 오지 않은 그 실패 하나로만 끝난다(정리가 시한에 걸리거나 자손을 남기지 않는다).
+it("cleans up a descendant that connects and never answers, and fails only for the missing line", async () => {
+  const failure: unknown = await lateReadyLine(
+    (port) =>
+      `/* babojubot-silent-descendant */ require("node:net").connect(${port}, "127.0.0.1");`,
+    2_000
+  ).then(
+    () => new Error("the scene passed without a ready line"),
+    (error: unknown) => error
+  );
+  expect(failure).toMatchObject({
+    message: "readyLine did not take the late ready line within 2000 ms",
+  });
+});
+
+/**
+ * 늦은 준비 줄 장면. 프로그램은 출력을 물려받은 자손을 떼어 띄우고, 시험이 시킬 때 끝난다. 자손(`descendant(port)`)은 시험의 서버에
+ * 연결하고, 시험이 프로그램의 끝 뒤 가짜 시계를 5초 옮긴 다음 그 연결로 신호를 보낸다. 대기마다 `limitMs`를 상한으로 둔다.
+ */
+async function lateReadyLine(
+  descendant: (port: number) => string,
+  limitMs = 10_000
+) {
+  await withCleanup(async (defer) => {
+    const server = createServer();
+    // 자손은 연결하자마자 자기 번호를 보낸다. 정리가 그 연결을 닫은 뒤 자손이 끝났는지 그 번호로 확인한다.
+    const connected = awaitedLater(
+      new Promise<{ socket: Socket; pid: number }>((resolve, reject) =>
+        server.once("connection", (socket: Socket) => {
+          socket.once("error", reject);
+          let text = "";
+          const read = (chunk: Buffer) => {
+            text += String(chunk);
+            if (!text.includes("\n")) return;
+            socket.off("data", read);
+            resolve({ socket, pid: Number(text.trim()) });
+          };
+          socket.on("data", read);
+        })
+      )
+    );
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    defer(() =>
+      within(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        ),
+        limitMs,
+        "the test's server did not close"
+      )
+    );
+    const { port } = server.address() as AddressInfo;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant(port))}], { stdio: ["ignore", "inherit", "ignore"], detached: true, windowsHide: true }).unref(); process.stdin.once("data", () => process.exit(0));`,
+      ],
+      { stdio: ["pipe", "pipe", "ignore"] }
+    );
+    // 프로그램은 성공·실패 어디서든 끝난 것을 확인한다. 시험이 끝내라고 하기 전에 실패했으면 끈다. 띄우지 못했으면 그 오류로 실패한다.
+    const childEnded = awaitedLater(once(child, "exit"));
+    defer(async () => {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      await within(childEnded, limitMs, "the program did not end");
+    });
+    const { socket: output, pid } = await within(
+      connected,
+      limitMs,
+      "the descendant did not connect"
+    );
+    // 자손은 연결이 닫히면 스스로 끝난다. 닫은 뒤 끝난 것을 확인한다.
+    defer(async () => {
+      output.destroy();
+      await untilExited([pid], limitMs);
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    defer(() => {
+      vi.useRealTimers();
+    });
+    const ready = awaitedLater(readyLine(child));
+    // 상한은 AbortSignal.timeout이 진다(가짜 시계와 무관). 끝내라고 하기 전에 기다리기 시작한다.
+    const exited = once(child, "exit", {
+      signal: AbortSignal.timeout(limitMs),
+    });
+    child.stdin!.write("exit\n");
+    await exited;
+    vi.advanceTimersByTime(5_000);
+    // readyLine의 시한은 가짜 시계에 남긴 채 실제 시계로 돌아와, 준비 줄을 기다리는 상한을 둔다.
+    vi.useRealTimers();
+    output.write("go");
+    await within(ready, limitMs, "readyLine did not take the late ready line");
+  });
+}
 
 // 프로그램이 끝나고 출력도 끝났는데 준비 줄이 없으면, 그때 바로 준비 전에 끝난 것으로 실패한다.
 it("fails when the program's output ends without its ready line", async () => {
