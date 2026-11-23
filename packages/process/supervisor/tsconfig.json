@@ -1,6 +1,0 @@
-// 감독 실행기의 빌드 명령(build.mjs)을 pnpm typecheck:js가 타입 검사한다. JS를 .ts로 옮기기 전까지 암시적 any만 끈다(#270 PR 3a와 같다).
-{
-  "extends": "../../../tsconfig.base.json",
-  "compilerOptions": { "checkJs": true, "noImplicitAny": false },
-  "include": ["build.mjs"]
-}
