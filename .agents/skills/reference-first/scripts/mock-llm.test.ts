@@ -9,11 +9,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import {
-  killUnlessGone,
-  withCleanup,
-  type CleanupStep,
-} from "@babojubot/process/test-cleanup";
+import { withCleanup, type CleanupStep } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./mock-llm.ts", import.meta.url));
@@ -66,7 +62,9 @@ async function serve(defer: (step: CleanupStep) => void, args: string[]) {
   });
   const exited = once(child, "exit");
   defer(async () => {
-    if (child.pid !== undefined) killUnlessGone(child.pid);
+    // 번호가 아니라 자식 객체로 끈다. Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시
+    // 쓰였어도 그쪽으로 가지 않는다(#287 리뷰 STD-4). 띄우지 못한 자식에는 보낼 곳이 없다.
+    child.kill("SIGKILL");
     await within(exited, 10_000, "a killed mock-llm did not exit");
   });
   let output = "";

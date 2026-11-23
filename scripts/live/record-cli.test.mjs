@@ -19,7 +19,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDisconnect } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./record-cli.mjs", import.meta.url));
@@ -102,7 +102,9 @@ function recordCli(defer, args, env = {}) {
   const outputEnded = Promise.all([stdoutEnded, once(child.stderr, "end")]);
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
-    if (child.pid !== undefined) killUnlessGone(child.pid);
+    // 번호가 아니라 자식 객체로 끈다. Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시
+    // 쓰였어도 그쪽으로 가지 않는다(#287 리뷰 STD-4). 띄우지 못한 자식에는 보낼 곳이 없다.
+    child.kill("SIGKILL");
     await within(exited, eventMs, "a killed record-cli did not exit");
     await within(
       outputEnded,
