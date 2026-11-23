@@ -606,20 +606,16 @@ fn live_group_members(group: libc::pid_t) -> io::Result<usize> {
 /// once the last thread is gone. So a zombie still runs while it counts more than one thread.
 #[cfg(target_os = "linux")]
 fn group_member_runs(stat: &str, group: libc::pid_t) -> bool {
-    // The fields after the command name, which ends with the last ") ": state, parent, process group, ..., thread count (the 18th).
-    let Some((_, rest)) = stat.rsplit_once(") ") else {
-        return false;
-    };
-    let fields: Vec<&str> = rest.split(' ').collect();
-    let state = fields.first().copied().unwrap_or("");
-    let pgrp = fields
-        .get(2)
+    // The fields after the command name, which ends with the last ") ": state, parent, process group, ...
+    let pgrp = stat
+        .rsplit_once(") ")
+        .and_then(|(_, rest)| rest.split(' ').nth(2))
         .and_then(|field| field.parse::<libc::pid_t>().ok());
-    let threads = fields.get(17).and_then(|field| field.parse::<u64>().ok());
-    if pgrp != Some(group) || state == "X" {
-        return false;
-    }
-    state != "Z" || threads.is_none_or(|threads| threads > 1)
+    pgrp == Some(group)
+        && match marked::life_in_stat(stat) {
+            marked::Life::Runs | marked::Life::ThreadsRun | marked::Life::Unknown => true,
+            marked::Life::Ended => false,
+        }
 }
 
 #[cfg(target_os = "macos")]

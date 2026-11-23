@@ -97,10 +97,23 @@ fn procargs_reading(buffer: &[u8], marker: &str, restricted: impl FnOnce() -> bo
     }
 }
 
-/// What an empty `/proc/<id>/environ` tells (Linux), given the process's state. For now it is a read that found no marker.
+/// What an empty `/proc/<id>/environ` tells (Linux), given the process's state. The kernel reads the environment from the process's
+/// memory, and a task without memory reads empty too: one that is ending, and one whose main thread is a zombie while other threads
+/// still run user code (and can fork). So an empty read is a read that found no marker only for a process that runs with its main
+/// thread (an environment that really is empty, `env -i`); one whose main thread is gone may carry the marker (#283 review 2).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn empty_environ(_stat: impl FnOnce() -> std::io::Result<String>) -> Reading {
-    Reading::Clear
+fn empty_environ(stat: impl FnOnce() -> std::io::Result<String>) -> Reading {
+    match stat() {
+        Ok(stat) => match life_in_stat(&stat) {
+            Life::Runs => Reading::Clear,
+            Life::Ended => Reading::Gone,
+            Life::ThreadsRun | Life::Unknown => Reading::Unreadable,
+        },
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            Reading::Gone
+        }
+        Err(_) => Reading::Unreadable,
+    }
 }
 
 /// What the read made after the handle is open says about a candidate (Linux).
@@ -286,7 +299,7 @@ fn running_from(now: std::io::Result<Option<Seen>>, start: u64) -> Running {
 /// What a line of `/proc/<id>/stat` tells of a process's life (Linux). The state is the main thread's: a process of several threads
 /// (Node.js ended by a signal) shows its main thread as a zombie while its other threads still run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Life {
+pub enum Life {
     /// It runs, its main thread included.
     Runs,
     /// Its main thread is a zombie while other threads still run (or the thread count cannot be read): it still runs.
@@ -298,7 +311,7 @@ enum Life {
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn life_in_stat(stat: &str) -> Life {
+pub fn life_in_stat(stat: &str) -> Life {
     let fields = stat
         .rsplit_once(") ")
         .map(|(_, rest)| rest.split(' ').collect::<Vec<_>>())
