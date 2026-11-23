@@ -1,10 +1,12 @@
 // worker 호출의 시도·멈춤·결과 판정(#255 리뷰 SPEC-1·SPEC-4). opencode를 띄우는 일은 그 끄기와 한 쌍(공용 실행의 트리)인 대역으로
 // 넣는다. 실제 프로세스로는 끄기 확인 실패(SIGKILL 뒤에도 끝나지 않는 트리)를 만들 수 없어 여기서 본다. 실제 프로세스 시험은
 // run-worker.test.ts.
+// 세션 확인·한도는 시험이 옮기는 시계(`manualClock`)로 잰다. 시험은 띄움·끄기 시작 같은 상태를 본 뒤에만 시계를 옮겨, 시한과
+// 대역의 순서가 실제 시간이 아니라 시험이 정한 차례로 온다(#286 항목 33).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { TreeExit, TreeStart } from "@babojubot/process";
-import { within } from "@babojubot/process/test-support";
+import { manualClock, within } from "@babojubot/process/test-support";
 import { createWorkerRun, outcome, type WorkerTree } from "./worker-run.ts";
 
 /** 띄운 opencode 트리 대역: 번호와 대표의 종료를 흉내 내는 `end`가 더 있다. */
@@ -34,16 +36,28 @@ function fakeWorker(
   return tree;
 }
 
-/** 대역을 띄우는 launch와 띄운 목록. `stop`은 각 트리의 끄기다. */
+/** 대역을 띄우는 launch와 띄운 목록. `stop`은 각 트리의 끄기다. `launchedCount(n)`은 n번째 띄움이 오면 이행한다. */
 function launcher(stop: (tree: FakeWorker) => Promise<void>) {
   const launched: FakeWorker[] = [];
+  const waiting: { count: number; arrived: () => void }[] = [];
   return {
     launched,
     launch: () => {
       const tree = fakeWorker(100 + launched.length, stop);
       launched.push(tree);
+      for (const wait of waiting.filter((w) => w.count <= launched.length))
+        wait.arrived();
       return tree;
     },
+    launchedCount: (count: number) =>
+      within(
+        new Promise<void>((arrived) => {
+          if (launched.length >= count) arrived();
+          else waiting.push({ count, arrived });
+        }),
+        10_000,
+        `launch ${count} did not come`
+      ),
   };
 }
 
@@ -61,17 +75,22 @@ async function finish(
 
 test("a stop that cannot confirm the tree gone at --limit ends the call with exit code 4 and its reason", async () => {
   const stopped: number[] = [];
-  const { launch, launched } = launcher((tree) => {
+  const { launch, launched, launchedCount } = launcher((tree) => {
     stopped.push(tree.pid);
     return treeStuck();
   });
+  const clock = manualClock();
   const run = createWorkerRun({
     launch,
     hasSession: () => false,
-    startCheckMs: 60_000,
-    limitMs: 20,
+    startCheckMs: 600_000,
+    limitMs: 60_000,
+    clock,
   });
-  const ended = await finish(run, { limitMs: 20, session: "", errors: [] });
+  const running = finish(run, { limitMs: 60_000, session: "", errors: [] });
+  await launchedCount(1);
+  clock.advance(60_000);
+  const ended = await running;
   assert.equal(launched.length, 1);
   assert.deepEqual(stopped, [100]);
   assert.equal(ended.attempts, 1);
@@ -82,14 +101,19 @@ test("a stop that cannot confirm the tree gone at --limit ends the call with exi
 });
 
 test("a failed stop at the start check is not followed by a second worker", async () => {
-  const { launch, launched } = launcher(treeStuck);
+  const { launch, launched, launchedCount } = launcher(treeStuck);
+  const clock = manualClock();
   const run = createWorkerRun({
     launch,
     hasSession: () => false,
-    startCheckMs: 10,
-    limitMs: 60_000,
+    startCheckMs: 60_000,
+    limitMs: 600_000,
+    clock,
   });
-  const ended = await finish(run, { limitMs: 60_000, session: "", errors: [] });
+  const running = finish(run, { limitMs: 600_000, session: "", errors: [] });
+  await launchedCount(1);
+  clock.advance(60_000);
+  const ended = await running;
   assert.equal(launched.length, 1);
   assert.equal(ended.attempts, 1);
   assert.deepEqual(ended.outcome, [
@@ -99,33 +123,46 @@ test("a failed stop at the start check is not followed by a second worker", asyn
 });
 
 test("a stopped attempt ends with its stop even when its leader never exits", async () => {
-  // 대표가 끝나지 않아도(exit가 오지 않아도) 끄기가 끝나면 그 시도는 끝난다. 세션이 없으니 한 번 다시 띄운다.
-  const { launch, launched } = launcher(treeGone);
+  // 대표가 끝나지 않아도(exit가 오지 않아도) 끄기가 끝나면 그 시도는 끝난다. 세션이 없으니 한 번 다시 띄운다. 다시 띄운 시도의
+  // 세션 확인은 그 시도가 띄워진 뒤에 온다.
+  const { launch, launched, launchedCount } = launcher(treeGone);
+  const clock = manualClock();
   const run = createWorkerRun({
     launch,
     hasSession: () => false,
-    startCheckMs: 10,
-    limitMs: 60_000,
+    startCheckMs: 60_000,
+    limitMs: 600_000,
+    clock,
   });
-  const ended = await finish(run, { limitMs: 60_000, session: "", errors: [] });
+  const running = finish(run, { limitMs: 600_000, session: "", errors: [] });
+  await launchedCount(1);
+  clock.advance(60_000);
+  await launchedCount(2);
+  clock.advance(60_000);
+  const ended = await running;
   assert.equal(launched.length, 2);
   assert.equal(ended.attempts, 2);
   assert.deepEqual(ended.outcome, ["no session started", 3]);
 });
 
 test("an attempt stopped at --limit is not launched again and ends with exit code 4", async () => {
-  const { launch, launched } = launcher(treeGone);
+  const { launch, launched, launchedCount } = launcher(treeGone);
+  const clock = manualClock();
   const run = createWorkerRun({
     launch,
     hasSession: () => false,
-    startCheckMs: 60_000,
-    limitMs: 20,
+    startCheckMs: 600_000,
+    limitMs: 0.5 * 60_000,
+    clock,
   });
-  const ended = await finish(run, {
+  const running = finish(run, {
     limitMs: 0.5 * 60_000,
     session: "",
     errors: [],
   });
+  await launchedCount(1);
+  clock.advance(0.5 * 60_000);
+  const ended = await running;
   assert.equal(launched.length, 1);
   assert.deepEqual(ended.outcome, ["stopped after the 0.5-minute limit", 4]);
 });
@@ -141,6 +178,7 @@ test("a signal to the runner stops the attempt, starts no other and ends with 12
     hasSession: () => false,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const running = finish(run, { limitMs: 60_000, session: "", errors: [] });
   run.requestStop("SIGTERM");
@@ -157,6 +195,7 @@ test("a signal whose stop fails keeps the stop failure as the result", async () 
     hasSession: () => false,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const running = finish(run, { limitMs: 60_000, session: "", errors: [] });
   run.requestStop("SIGINT");
@@ -188,6 +227,7 @@ test("a worker that ends on its own with a session finishes after its tree is st
     hasSession: () => session,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const ended = await finish(run, {
     limitMs: 60_000,
@@ -214,6 +254,7 @@ test("a worker that ends on its own but whose tree cannot be confirmed stopped e
     hasSession: () => session,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const ended = await finish(run, {
     limitMs: 60_000,
@@ -238,6 +279,7 @@ test("a refused launch ends the call with exit code 4 and its reason", async () 
     hasSession: () => false,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const ended = await finish(run, { limitMs: 60_000, session: "", errors: [] });
   assert.equal(launches, 1);
@@ -261,6 +303,7 @@ test("an attempt whose brief could not be sent ends the call with exit code 4 an
     hasSession: () => false,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const ended = await finish(run, { limitMs: 60_000, session: "", errors: [] });
   assert.equal(ended.attempts, 2);
@@ -289,6 +332,7 @@ test("a brief failure belongs to its attempt: a second attempt that sends the br
     hasSession: () => session,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const ended = await finish(run, {
     limitMs: 60_000,
@@ -318,14 +362,19 @@ function unfinishedBrief(tree: FakeWorker, abandoned: number[]) {
 // 고치기 전에는 시도가 끝나지 않는 쓰기를 기다려 호출이 끝나지 않았다.
 test("a stop that fails while the brief is still being written ends the call with the stop failure, without waiting for the write", async () => {
   const abandoned: number[] = [];
-  const { launch, launched } = launcher(treeStuck);
+  const { launch, launched, launchedCount } = launcher(treeStuck);
+  const clock = manualClock();
   const run = createWorkerRun({
     launch: () => unfinishedBrief(launch(), abandoned),
     hasSession: () => false,
-    startCheckMs: 60_000,
-    limitMs: 20,
+    startCheckMs: 600_000,
+    limitMs: 60_000,
+    clock,
   });
-  const ended = await finish(run, { limitMs: 20, session: "", errors: [] });
+  const running = finish(run, { limitMs: 60_000, session: "", errors: [] });
+  await launchedCount(1);
+  clock.advance(60_000);
+  const ended = await running;
   assert.equal(launched.length, 1);
   assert.deepEqual(abandoned, [100]);
   assert.equal(ended.result.sendFailure, "unfinished");
@@ -348,6 +397,7 @@ test("an attempt that failed to start while the brief is still being written end
     hasSession: () => false,
     startCheckMs: 60_000,
     limitMs: 60_000,
+    clock: manualClock(),
   });
   const ended = await finish(run, {
     limitMs: 60_000,
@@ -359,31 +409,71 @@ test("an attempt that failed to start while the brief is still being written end
   assert.deepEqual(ended.outcome, ["spawn failed: ENOENT", 4]);
 });
 
+/**
+ * 기다리기 시작하면(`then`) `onWait`를 부르는 Promise. 시도가 지침 쓰기의 결과를 기다리기 시작한 것을 신호로 본다(`await`도
+ * `then`을 부른다).
+ */
+class WatchedWrite extends Promise<string | undefined> {
+  onWait: () => void = () => {};
+  override then<A = string | undefined, B = never>(
+    onFulfilled?: ((sent: string | undefined) => A | PromiseLike<A>) | null,
+    onRejected?: ((reason: unknown) => B | PromiseLike<B>) | null
+  ): Promise<A | B> {
+    this.onWait();
+    return super.then(onFulfilled, onRejected);
+  }
+}
+
 // 끄기가 트리의 끝을 확인한 시도는 읽을 쪽이 남지 않아 쓰기가 반드시 끝난다(보냄 또는 EPIPE). 그 결과를 기다려 남기고 쓰기를
-// 접지 않는다: 접으면 다 보낸 지침을 못 보낸 것으로 잘못 볼 수 있다.
+// 접지 않는다: 접으면 다 보낸 지침을 못 보낸 것으로 잘못 볼 수 있다. 차례는 신호로 정한다: 한도가 끄기를 부르고(끄기 시작), 시험이
+// 끄기를 끝내면(정지 완료) 시도가 쓰기를 기다리는지 접는지 정하고(쓰기 보류), 그 뒤에야 쓰기가 EPIPE로 끝난다.
 test("an attempt whose tree was confirmed stopped waits for the brief's write instead of abandoning it", async () => {
-  const abandoned: number[] = [];
-  const write = Promise.withResolvers<string | undefined>();
+  const stopping = Promise.withResolvers<void>();
+  const stopDone = Promise.withResolvers<void>();
+  /** 끄기가 끝난 뒤 시도가 고른 일: 쓰기를 기다림, 또는 쓰기를 접음. */
+  const chosen = Promise.withResolvers<"waits" | "abandons">();
+  let release: (sent: string | undefined) => void = () => {};
+  const write = new WatchedWrite((resolve) => (release = resolve));
+  write.onWait = () => chosen.resolve("waits");
+  const { launch, launchedCount } = launcher(() => {
+    stopping.resolve();
+    return stopDone.promise;
+  });
+  const clock = manualClock();
   const run = createWorkerRun({
     launch: () => {
-      const tree = fakeWorker(100, treeGone);
-      tree.delivered = write.promise;
+      const tree = launch();
+      tree.delivered = write;
       tree.abandonBrief = () => {
-        abandoned.push(tree.pid);
+        chosen.resolve("abandons");
         return "unfinished";
       };
       return tree;
     },
     hasSession: () => true,
-    startCheckMs: 60_000,
-    limitMs: 20,
+    startCheckMs: 600_000,
+    limitMs: 60_000,
+    clock,
   });
-  const running = finish(run, { limitMs: 20, session: "ses-1", errors: [] });
-  // 끄기가 끝난 뒤에 쓰기가 EPIPE로 끝난다.
-  await new Promise((resolve) => setImmediate(resolve));
-  write.resolve("EPIPE");
+  const running = finish(run, {
+    limitMs: 60_000,
+    session: "ses-1",
+    errors: [],
+  });
+  await launchedCount(1);
+  clock.advance(60_000);
+  await within(stopping.promise, 10_000, "the limit did not stop the tree");
+  stopDone.resolve();
+  assert.equal(
+    await within(
+      chosen.promise,
+      10_000,
+      "the attempt neither waited for the write nor abandoned it after the stop"
+    ),
+    "waits"
+  );
+  release("EPIPE");
   const ended = await running;
-  assert.deepEqual(abandoned, []);
   assert.equal(ended.result.sendFailure, "EPIPE");
   assert.deepEqual(ended.outcome, ["could not send the brief: EPIPE", 4]);
 });

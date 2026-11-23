@@ -14,7 +14,7 @@
 //   (`delivered`). An attempt that ends otherwise (the stop failed, the start failed) ends the write where it stands
 //   (`abandonBrief`), and its stop or start failure stays first.
 
-import type { TreeExit, TreeStart } from "@babojubot/process";
+import type { Clock, TreeExit, TreeStart } from "@babojubot/process";
 
 /**
  * `delivered` settles with why the brief could not be sent to this worker (an error code), or undefined once it was sent. It
@@ -72,6 +72,8 @@ export function createWorkerRun({
   hasSession: () => boolean;
   startCheckMs: number;
   limitMs: number;
+  /** The clock the start check and --limit are measured on (the real clock in run-worker.ts). */
+  clock: Clock;
 }) {
   /** What asked the whole call to stop (a signal name), if anything. */
   let requested: StopSignal | undefined;

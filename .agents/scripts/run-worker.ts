@@ -20,7 +20,7 @@
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { launchTree, prepareSupervisor } from "@babojubot/process";
+import { launchTree, prepareSupervisor, realClock } from "@babojubot/process";
 import type { Writable } from "node:stream";
 import {
   continueAfterFailure,
@@ -259,6 +259,7 @@ const workerRun = createWorkerRun({
   hasSession: () => Boolean(sessionOf(readEvents().events)),
   startCheckMs: opts.startCheckMs,
   limitMs: opts.limitMs,
+  clock: realClock,
 });
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] satisfies StopSignal[])
   process.on(signal, () => workerRun.requestStop(signal));
