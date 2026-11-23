@@ -16,8 +16,10 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
+  configInputs,
   diagnosticsOf,
   isJavaScript,
+  isTypeScriptConfig,
   javaScriptConfigs,
   ownershipProblems,
   readConfig,
@@ -132,19 +134,17 @@ test("a JS file added anywhere in a package or app is type-checked by exactly on
   const mirror = mkdtempSync(path.join(tmpdir(), "typecheck-js-places-"));
   context.after(() => removeFolder(mirror));
   git(mirror, "init", "-q");
-  // 검사기(javaScriptConfigs)처럼 아직 커밋하지 않은 설정도 옮긴다.
+  // 검사기(javaScriptConfigs)처럼 아직 커밋하지 않은 설정도 같은 판정(isTypeScriptConfig)으로 옮긴다.
   for (const config of git(
     root,
     "ls-files",
     "--cached",
     "--others",
     "--exclude-standard",
-    "-z",
-    "--",
-    "*tsconfig*.json"
+    "-z"
   )
     .split("\0")
-    .filter(Boolean)) {
+    .filter(isTypeScriptConfig)) {
     mkdirSync(path.join(mirror, path.dirname(config)), { recursive: true });
     copyFileSync(path.join(root, config), path.join(mirror, config));
   }
@@ -278,4 +278,23 @@ test("reports the JS file TypeScript leaves out beside a same-named JS file of a
     problems[0] ?? "",
     /^ui\/sample\.jsx?: no JS checking tsconfig includes it \(TypeScript keeps one of ui\/sample\.js, ui\/sample\.jsx\)$/
   );
+});
+
+// verify:changed는 이 목록이 바뀌면 JS 검사를 돌린다. 이름이 설정 모양이 아닌 `extends` 대상도 검사 결과를 바꾸므로 든다.
+test("lists the configs the JS check reads with the files they extend", (context) => {
+  const folder = sampleRepository(context, {}, []);
+  mkdirSync(path.join(folder, "config"));
+  writeFileSync(
+    path.join(folder, "config/strict.json"),
+    JSON.stringify({ compilerOptions: { strict: true } })
+  );
+  writeFileSync(
+    path.join(folder, "alternate-tsconfig.json"),
+    JSON.stringify({ extends: "./config/strict.json", include: [] })
+  );
+  writeFileSync(path.join(folder, "notes.json"), "{}");
+  assert.deepEqual([...configInputs(folder)].sort(), [
+    "alternate-tsconfig.json",
+    "config/strict.json",
+  ]);
 });
