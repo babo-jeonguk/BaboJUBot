@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -836,6 +837,33 @@ describe.skipIf(process.platform === "win32")(
       }
     );
 
+    // 로그인 자리로 가는 폴더 칸이 폴더가 아니면 그 안을 확인할 수 없다. 남은 로그인으로 본다(#280 리뷰 1회차 STD-1).
+    it("does not start Antigravity over a file in place of a folder on the way to its login place", async () => {
+      const env = await setup({});
+      const organization = path.join(
+        env.root,
+        "providers",
+        "antigravity",
+        "organizations",
+        env.org
+      );
+      await mkdir(path.join(organization, ".gemini"), { recursive: true });
+      await writeFile(
+        path.join(organization, ".gemini", "antigravity-cli"),
+        "not a folder"
+      );
+      const provider = createAntigravityProvider({
+        dataDir: env.root,
+        container: env.container,
+      });
+      const result = await provider.adapter.execute(env.isolated(), control());
+      expect(result.stopReason).toBe("failed");
+      expect(result.error).toContain("로그인 기록");
+      expect(
+        (await env.calls()).some((call) => call.args.includes("run"))
+      ).toBe(false);
+    });
+
     it.each([
       [
         "Codex",
@@ -1081,16 +1109,34 @@ describe.skipIf(process.platform === "win32")(
       ).toHaveLength(1);
     });
 
-    it("does not start when a login is left in the organization's product folder", async () => {
+    it.each([
+      [
+        "a login left in the organization's product folder",
+        async (config: string) => {
+          await mkdir(config, { recursive: true });
+          await writeFile(path.join(config, ".credentials.json"), "{}");
+        },
+      ],
+      // 로그인 폴더 자리가 폴더가 아니면(일반 파일·FIFO) 그 안을 확인할 수 없다. 없는 것과 달리 남은 로그인으로 본다(#280 리뷰 1회차 STD-1).
+      [
+        "a file in place of the organization's login folder",
+        async (config: string) => {
+          await mkdir(path.dirname(config), { recursive: true });
+          await writeFile(config, "not a folder");
+        },
+      ],
+      [
+        "a FIFO in place of the organization's login folder",
+        async (config: string) => {
+          await mkdir(path.dirname(config), { recursive: true });
+          execFileSync("mkfifo", [config], { timeout: 10_000 });
+        },
+      ],
+    ])("does not start over %s", async (_case, leave) => {
       const env = await setup(relayProgram);
-      const config = path.join(
-        env.root,
-        "providers/claude/organizations",
-        env.org,
-        "config"
+      await leave(
+        path.join(env.root, "providers/claude/organizations", env.org, "config")
       );
-      await mkdir(config, { recursive: true });
-      await writeFile(path.join(config, ".credentials.json"), "{}");
       const provider = createClaudeProvider({
         dataDir: env.root,
         container: env.container,
@@ -1616,6 +1662,47 @@ describe.skipIf(process.platform === "win32")(
         async (data: string) => {
           await mkdir(path.join(data, "opencode"), { recursive: true });
           await writeFile(path.join(data, "opencode", "auth.json"), "{}");
+        },
+      ],
+      // 조직 제품 폴더는 같은 조직의 컨테이너가 쓸 수 있다. 데이터베이스 자리의 FIFO를 경로로 열면 쓰는 쪽이 나타날 때까지
+      // 열기가 끝나지 않고, 데이터베이스 도구의 열기는 동기라 서버 전체가 멈춘다. 확인할 수 없는 것은 남은 로그인으로 본다.
+      [
+        "a FIFO in place of the organization's database",
+        async (data: string) => {
+          await mkdir(path.join(data, "opencode"), { recursive: true });
+          execFileSync("mkfifo", [path.join(data, "opencode", "opencode.db")], {
+            timeout: 10_000,
+          });
+        },
+      ],
+      // 로그인 폴더 자리가 폴더가 아니면(FIFO·일반 파일) 그 안을 확인할 수 없다. 없는 것과 달리 남은 로그인으로 본다(#280 리뷰 1회차 SPEC-1).
+      [
+        "a FIFO in place of the organization's login folder",
+        async (data: string) => {
+          await mkdir(data, { recursive: true });
+          execFileSync("mkfifo", [path.join(data, "opencode")], {
+            timeout: 10_000,
+          });
+        },
+      ],
+      [
+        "a file in place of the organization's login folder",
+        async (data: string) => {
+          await mkdir(data, { recursive: true });
+          await writeFile(path.join(data, "opencode"), "not a folder");
+        },
+      ],
+      // 로그인 폴더 자리의 링크를 따라가면 조직 폴더 밖(여기서는 로그인이 없는 데이터베이스)을 보고 통과시킨다.
+      [
+        "a link in place of the organization's login folder",
+        async (data: string) => {
+          const elsewhere = `${data}-elsewhere`;
+          await storeLogins(elsewhere, []);
+          await mkdir(data, { recursive: true });
+          await symlink(
+            path.join(elsewhere, "opencode"),
+            path.join(data, "opencode")
+          );
         },
       ],
     ])(

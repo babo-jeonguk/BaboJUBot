@@ -438,10 +438,10 @@ it("C10 follows a finite chain of self links and names more than 40 as a loop", 
 
 /**
  * 읽는 프로세스의 파일 작업 하나(`on`의 `nth`번째 `name` 호출) 앞이나 뒤에서 한 번만 `actions`를 실행한다.
- * 무작위 반복이 아니라 정해진 한 시점의 바꿔치기다.
+ * 무작위 반복이 아니라 정해진 한 시점의 바꿔치기다. 작업 폴더 옮기기(`chdir`) 말고는 `node:fs/promises`의 함수다.
  */
 const inject = `{
-  const fs = require("node:fs");
+  const fs = process.getBuiltinModule("node:fs");
   const plan = JSON.parse(process.env.PLAN);
   let seen = 0;
   let done = false;
@@ -449,21 +449,36 @@ const inject = `{
     if (done) return;
     done = true;
     for (const [operation, ...args] of plan.actions) {
-      if (operation === "exec") require("node:child_process").execFileSync(args[0], args.slice(1));
+      if (operation === "exec") process.getBuiltinModule("node:child_process").execFileSync(args[0], args.slice(1));
       else fs[operation](...args);
     }
   };
-  const owner = plan.on === "chdir" ? process : fs;
-  const real = owner[plan.on];
-  owner[plan.on] = (...args) => {
+  const now = (args) => {
     const matches = plan.name === null || args[0] === plan.name;
     if (matches) seen += 1;
-    const now = matches && seen === (plan.nth ?? 1);
-    if (now && plan.when === "before") act();
-    const result = real.apply(owner, args);
-    if (now && plan.when === "after") act();
-    return result;
+    return matches && seen === (plan.nth ?? 1);
   };
+  if (plan.on === "chdir") {
+    const chdir = process.chdir;
+    process.chdir = (directory) => {
+      if (now([directory]) && plan.when === "before") act();
+      chdir(directory);
+    };
+  } else {
+    // "handle.stat"은 연 파일의 stat이다. 연 handle 하나로 그 함수가 있는 곳(FileHandle)을 찾는다.
+    const handle = plan.on === "handle.stat" ? await fs.promises.open(process.execPath) : undefined;
+    const owner = handle ? Object.getPrototypeOf(handle) : fs.promises;
+    await handle?.close();
+    const name = handle ? "stat" : plan.on;
+    const real = owner[name];
+    owner[name] = async function (...args) {
+      const at = now(args);
+      if (at && plan.when === "before") act();
+      const result = await real.apply(this, args);
+      if (at && plan.when === "after") act();
+      return result;
+    };
+  }
 }
 `;
 type Action = [string, ...unknown[]];
@@ -471,7 +486,7 @@ const injected = (
   organizations: string,
   requested: string,
   plan: {
-    on: "chdir" | "lstatSync" | "openSync" | "fstatSync";
+    on: "chdir" | "lstat" | "open" | "handle.stat";
     when: "before" | "after";
     name: string | null;
     nth?: number;
@@ -509,7 +524,7 @@ it("C11 refuses when a folder in the path or the file itself is swapped right af
       ["dir", "a.md"].join(path.sep),
       isDir
         ? { on: "chdir", when: "before", name: "dir", actions }
-        : { on: "openSync", when: "before", name: "a.md", actions }
+        : { on: "open", when: "before", name: "a.md", actions }
     );
     expect(text(result.bytes), name).not.toBe(foreign);
     expect(result.code, name).toBe(readerExit.changed);
@@ -566,10 +581,10 @@ it("C14 reads the inside bytes when a hard link is added after the file was open
   needs(context, "C14", "hardLink");
   const { organizations, shared, root } = await world();
   const result = await injected(organizations, "a.md", {
-    on: "fstatSync",
+    on: "handle.stat",
     when: "after",
     name: null,
-    // 첫 fstat은 조직 표식 파일, 두 번째가 요청한 파일이다.
+    // 첫 handle stat은 조직 표식 파일, 두 번째가 요청한 파일이다.
     nth: 2,
     actions: [
       ["linkSync", path.join(shared, "a.md"), path.join(root, "added.md")],
@@ -619,7 +634,7 @@ it("C15 names the final file as changed when it disappears or is replaced right 
     }
     const { organizations, shared, other, root } = await world();
     const result = await injected(organizations, "a.md", {
-      on: "lstatSync",
+      on: "lstat",
       when: "after",
       name: "a.md",
       actions: actions(shared, other, root) as Action[],
@@ -643,7 +658,7 @@ it("C16 refuses a FIFO without opening it, also when the file turns into one rig
     without(context, "C16", "unverified", `FIFO를 만들지 못함: ${made}`);
   expect(await read("pipe.md")).toEqual(refusal("not_regular_file"));
   const result = await injected(organizations, "a.md", {
-    on: "lstatSync",
+    on: "lstat",
     when: "after",
     name: "a.md",
     actions: [

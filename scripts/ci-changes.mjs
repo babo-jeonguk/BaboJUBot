@@ -11,7 +11,8 @@ import { codeFormatPattern } from "./test-files.mjs";
  * (file-artifacts.test.ts)이 맡고 여기에 넣지 않는다.
  */
 export const fileBoundaryPaths = [
-  /^apps\/server\/src\/workspace\.ts$/,
+  // 서버의 산출물 읽기와 그 별도 프로세스(workspace-reader.ts)·둘이 함께 쓰는 값.
+  new RegExp(`^apps/server/src/workspace[^/]*\\.${codeFormatPattern}$`),
   new RegExp(
     `^apps/server/test/(workspace[^/]*|files-volume)\\.${codeFormatPattern}$`
   ),
@@ -19,6 +20,9 @@ export const fileBoundaryPaths = [
   /^apps\/server\/package\.json$/,
   // 산출물 파일 읽기의 거부 이유·크기 한도 계약.
   /^packages\/contracts\/src\/task\.ts$/,
+  // 읽는 프로세스가 파일·폴더를 여는 바탕(@babojubot/files)과 그 실패 판정.
+  /^packages\/files\//,
+  /^packages\/contracts\/src\/failure\.ts$/,
   new RegExp(
     `^scripts/(ci-changes|check-ci-test-gate|ci-test-gate|file-boundary-[^/]+)(\\.test)?\\.${codeFormatPattern}$`
   ),

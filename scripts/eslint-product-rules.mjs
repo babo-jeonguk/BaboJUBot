@@ -1549,13 +1549,13 @@ const enclosingFunction = (node) => {
 /**
  * 경로로 파일의 상태를 확인한 뒤(`stat`·`lstat`·`access`·`exists`) 같은 경로를 다시 열어 읽거나 쓰는 것(`readFile`·`writeFile`·
  * `appendFile`·`open`·스트림)을 막는다(#242, CWE-367). 그 사이 경로가 다른 파일·링크로 바뀌면 확인하지 않은 대상을 쓴다.
- * 한 번 연 파일 handle에서 `stat`하고 읽는다. 링크를 따라가면 안 되면 POSIX의 `O_NOFOLLOW`로 연다.
+ * 한 번 연 파일 handle에서 `stat`하고 읽는다. 다른 쪽이 바꿀 수 있는 자리의 파일은 @babojubot/files의 `openRegularFile`로 연다.
  * 선례: CodeQL `js/file-system-race`(확인 목록·사용 목록·있는지 본 뒤 읽기 제외가 같다), Node 문서의 fs.stat·fs.access 경고.
  * 같은 경로: 글자가 같고 그 안의 이름이 모두 같은, 다시 대입하지 않은 변수일 때. 순서: 사용이 확인을 감싼 함수 안에서 확인 뒤에
  * 나올 때(콜백 안 포함). 지우기·이름 바꾸기(`rm`·`unlink`·`rename`)는 이름 자체에 하는 일이라 링크를 따라가 다른 대상의 내용을
  * 읽거나 쓰지 않으므로 보지 않는다(CodeQL도 같다).
  * 알려진 한계: 확인이나 사용을 감싼 함수(`exists(target)`처럼 이름이 다른 지역 함수)를 거친 것, 다른 함수에서 확인한 경로,
- * 계산이 달라 글자가 다른 같은 경로, 글로 넣는 코드(고정 읽기 프로세스·설정 스크립트), node:fs 밖에서 경로로 여는 API
+ * 계산이 달라 글자가 다른 같은 경로, 글로 넣는 코드(OpenCode plugin·컨테이너 확인 스크립트), node:fs 밖에서 경로로 여는 API
  * (`node:sqlite` 등)는 보지 않는다. 리뷰가 본다.
  */
 const noCheckThenReopen = {
@@ -1568,7 +1568,7 @@ const noCheckThenReopen = {
     schema: [],
     messages: {
       reopen:
-        "{{check}}({{path}})로 확인한 경로를 {{use}}로 다시 엽니다. 그 사이 경로가 다른 파일이나 링크로 바뀌면 확인하지 않은 대상을 읽거나 씁니다(CWE-367). 한 번 연 파일 handle에서 stat하고 읽거나 쓰세요(링크를 따라가면 안 되면 O_NOFOLLOW로 엽니다). 없으면 만들기는 확인 없이 'wx'로 열고 EEXIST를 받습니다.",
+        "{{check}}({{path}})로 확인한 경로를 {{use}}로 다시 엽니다. 그 사이 경로가 다른 파일이나 링크로 바뀌면 확인하지 않은 대상을 읽거나 씁니다(CWE-367). 한 번 연 파일 handle에서 stat하고 읽거나 쓰세요(다른 쪽이 바꿀 수 있는 자리의 파일은 @babojubot/files의 openRegularFile로 엽니다). 없으면 만들기는 확인 없이 'wx'로 열고 EEXIST를 받습니다.",
     },
   },
   create(context) {
@@ -1608,6 +1608,73 @@ const noCheckThenReopen = {
   },
 };
 
+/** 다른 쪽이 바꿀 수 있는 자리를 확인한 대상 그대로 여는 데 쓰는 이름: 링크를 따라가지 않는 열기·FIFO에서 기다리지 않는 열기의 flag. */
+const ownOpenFlags = new Set(["O_NOFOLLOW", "O_NONBLOCK"]);
+/** 글로 넣는 코드(별도 프로세스에 넘기는 스크립트 문자열)에서 같은 열기를 알아보는 글자: 두 flag 이름과 inode 읽기. */
+const ownOpenText = /\bO_NOFOLLOW\b|\bO_NONBLOCK\b|\.ino\b/;
+/** 속성 이름. 계산한 이름은 문자열 그대로 적은 것만 안다. */
+const keyName = (key, computed) =>
+  !computed && key.type === "Identifier"
+    ? key.name
+    : key.type === "Literal" && typeof key.value === "string"
+      ? key.value
+      : undefined;
+
+/**
+ * 다른 쪽(격리 실행의 에이전트)이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 여는 방식은 @babojubot/files만 정한다(#277·#278).
+ * 그 밖의 제품 코드가 링크를 따라가지 않거나 FIFO에서 기다리지 않는 열기(`O_NOFOLLOW`·`O_NONBLOCK`)나 파일 식별 대조(`ino`)를 다시
+ * 적으면 판마다 flag·종류 확인·실패 분류가 어긋난다(#277 2회차 리뷰에서 같은 열기가 세 벌로 나뉨). 이름으로 본다: 두 flag는 node:fs
+ * `constants`에만 있고 `ino`는 파일 상태의 inode라, 어디서 왔는지 따라가지 않아도 같은 뜻이고 다른 이름을 거쳐 꺼내도 잡힌다.
+ * 글로 넣는 코드(문자열·template literal)에 담긴 같은 글자도 본다. 정하는 곳(packages/files)은 설정의 범위가 뺀다.
+ * 알려진 한계: 계산해 만든 이름(`constants["O_" + name]`), 숫자로 적은 flag, `ino`를 꺼내지 않는 대조(`isDeepStrictEqual`)는 보지
+ * 않는다. 리뷰가 본다.
+ */
+const noOwnUntrustedOpen = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "Leave opening a place others can change to @babojubot/files",
+    },
+    schema: [],
+    messages: {
+      own: "{{what}}: 다른 쪽이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 여는 방식(링크를 따라가지 않고 FIFO에서 기다리지 않는 열기, 파일 식별 dev·ino 대조)은 @babojubot/files만 정합니다(#278). openRegularFile·inFolder·enterFolder·sameEntry를 쓰세요.",
+    },
+  },
+  create(context) {
+    const report = (node, what) =>
+      context.report({ node, messageId: "own", data: { what } });
+    const flagged = (name) => ownOpenFlags.has(name) || name === "ino";
+    return {
+      MemberExpression(node) {
+        const name = keyName(node.property, node.computed);
+        if (name !== undefined && flagged(name)) report(node, name);
+      },
+      Property(node) {
+        if (node.parent.type !== "ObjectPattern") return;
+        const name = keyName(node.key, node.computed);
+        if (name !== undefined && flagged(name)) report(node, name);
+      },
+      Literal(node) {
+        if (typeof node.value !== "string" || !ownOpenText.test(node.value))
+          return;
+        // 계산한 속성 이름으로 적은 flag는 위에서 한 번 짚었다.
+        const { parent } = node;
+        if (
+          (parent.type === "MemberExpression" && parent.property === node) ||
+          (parent.type === "Property" && parent.key === node)
+        )
+          return;
+        report(node, "글로 넣는 코드");
+      },
+      TemplateElement(node) {
+        if (ownOpenText.test(node.value.cooked ?? node.value.raw))
+          report(node, "글로 넣는 코드");
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -1627,5 +1694,6 @@ export default {
     "no-failure-collecting": noFailureCollecting,
     "no-group-stop-import": noGroupStopImport,
     "no-check-then-reopen": noCheckThenReopen,
+    "no-own-untrusted-open": noOwnUntrustedOpen,
   },
 };

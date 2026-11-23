@@ -1140,11 +1140,9 @@ describe("login residue in an organization's product folder", () => {
     expect(
       await credentialResidue(root, ["auth.json", "config/.credentials.json"])
     ).toBe(true);
-    // 상위가 파일이면 그 아래 로그인은 없다.
+    // 상위 칸이 폴더가 아니면(파일·FIFO) 그 안을 확인할 수 없다. 없는 것과 달리 남은 로그인으로 본다(#280 리뷰 1회차 STD-1).
     await writeFile(path.join(root, "file"), "");
-    expect(await credentialResidue(root, ["file/auth.json"], login)).toBe(
-      false
-    );
+    expect(await credentialResidue(root, ["file/auth.json"], login)).toBe(true);
   });
 
   // 폴더 권한으로 읽기를 막는다. root는 권한을 넘고, Windows는 POSIX 권한 비트로 읽기를 막지 않는다.

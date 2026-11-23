@@ -10,6 +10,7 @@ import {
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loginLink } from "./login-link.ts";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import { permissionDenial } from "@babojubot/process/test-support";
@@ -20,10 +21,23 @@ import { testFolders } from "./test-folders.ts";
 // 로그인 원본이 이미 로그인 전용 폴더로 옮겨진 뒤(다른 컴퓨터에서 옮긴 제품 폴더, 링크만 사라진 경우)도 같다(PR #135 SPEC-1).
 
 let refusal: string | null = null;
+// 임시 링크(`….link`)를 제자리로 옮기기와 그 정리가 이 오류로 실패한다.
+const linkFailures = vi.hoisted(() => ({
+  rename: undefined as Error | undefined,
+  rm: undefined as Error | undefined,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    rename: (...args: Parameters<typeof actual.rename>) =>
+      linkFailures.rename && String(args[0]).endsWith(".link")
+        ? Promise.reject(linkFailures.rename)
+        : actual.rename(...args),
+    rm: (...args: Parameters<typeof actual.rm>) =>
+      linkFailures.rm && String(args[0]).endsWith(".link")
+        ? Promise.reject(linkFailures.rm)
+        : actual.rm(...args),
     // 권한 없는 Windows(EPERM)·링크를 모르는 파일 시스템(ENOTSUP·EOPNOTSUPP)처럼 링크 만들기를 거절한다.
     symlink: (...args: Parameters<typeof actual.symlink>) =>
       refusal
@@ -42,6 +56,9 @@ const createCodexProvider = folders.owning(unownedCodexProvider);
 const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 afterEach(async () => {
   refusal = null;
+  linkFailures.rename = undefined;
+  linkFailures.rm = undefined;
+  vi.restoreAllMocks();
 });
 const control = () => ({
   signal: new AbortController().signal,
@@ -303,3 +320,29 @@ describe("a machine that stops being able to create links", () => {
     expect(await reader.last()).toBe('{"new":1}');
   }, 30000);
 });
+
+// 임시 링크를 제자리로 옮기지 못하고 그 임시 링크도 지우지 못하면, 지우기 실패가 원래 실패를 덮지 않는다(#280 리뷰 2회차 STD-2와 같은 모양).
+// Windows에서 링크를 만들려면 권한이 필요하다. 링크를 만들지 못하면 이 길을 타지 않는다.
+it.skipIf(process.platform === "win32")(
+  "throws the failure to place the link, not the failure to remove the temporary link",
+  async () => {
+    const root = await folders.make("babojubot-login-link-");
+    const original = path.join(root, "login", "auth.json");
+    await mkdir(path.dirname(original), { recursive: true });
+    await writeFile(original, "{}");
+    const share = loginLink({
+      original,
+      fallback: path.join(root, "connection", "auth.json"),
+      label: "Synthetic",
+      setAside: path.join(root, "set-aside"),
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
+    linkFailures.rename = busy;
+    linkFailures.rm = Object.assign(new Error("io"), { code: "EIO" });
+    await expect(
+      share(path.join(root, "organization", "auth.json"))
+    ).rejects.toBe(busy);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("EIO"));
+  }
+);

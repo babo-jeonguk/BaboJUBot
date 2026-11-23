@@ -14,6 +14,7 @@ import {
   orIfUnreadable,
   type CredentialRelayEndpoint,
 } from "@babojubot/contracts";
+import { inFolder, type Folder } from "@babojubot/files";
 import { relayIdentityHeaders } from "./relay.ts";
 
 /**
@@ -546,7 +547,7 @@ export async function credentialResidue(
 ): Promise<boolean> {
   for (const relative of paths) {
     const residue = await orIfProbeFailed(
-      () => residueAt(path.join(home, relative), known),
+      () => residueAt(home, relative, known),
       true,
       (error) =>
         console.warn(
@@ -558,14 +559,48 @@ export async function credentialResidue(
   return false;
 }
 
-/** 경로 하나가 남은 로그인인가. 없으면(상위가 파일인 것 포함) 아니고, 알려진 원본을 가리키는 링크만 아니다. 확인하지 못하면 던진다. */
-async function residueAt(at: string, known: string | undefined) {
-  const found = await orIfMissing(
-    () => lstat(at),
-    hasErrorCode("ENOENT", "ENOTDIR"),
-    undefined
-  );
-  if (!found) return false;
-  if (!found.isSymbolicLink() || known === undefined) return true;
-  return (await readlink(at)) !== known;
+/**
+ * 조직 폴더 안 `parts`로 내려가 `use`로 남은 로그인을 본다. 남은 로그인이 없다고 할 수 있는 것은 가는 길의 칸이 실제로 없을 때뿐이다.
+ * 링크·폴더가 아닌 것·바뀐 칸은 그 안을 확인할 수 없으므로 남은 로그인으로 본다(fail closed, #280 리뷰 1회차 STD-1).
+ */
+export async function residueInFolder(
+  root: string,
+  parts: readonly string[],
+  use: (folder: Folder) => Promise<boolean>
+): Promise<boolean> {
+  const result = await inFolder(root, parts, use);
+  switch (result.state) {
+    case "reached":
+      return result.value;
+    case "absent":
+      return false;
+    case "unverifiable":
+      return true;
+  }
+}
+
+/**
+ * 경로 하나가 남은 로그인인가. 가는 길의 칸이 실제로 없으면 아니고, 알려진 원본을 가리키는 링크만 아니다. 확인하지 못하면 던진다.
+ * 경로의 폴더 칸은 확인한 폴더의 handle을 거쳐 내려가므로, 중간 칸이 링크로 바뀌어도 그 너머를 보지 않는다. 링크 너머는 확인할 수
+ * 없으므로 남은 로그인으로 본다.
+ */
+async function residueAt(
+  home: string,
+  relative: string,
+  known: string | undefined
+) {
+  const names = relative.split(path.sep === "/" ? "/" : /[/\\]/);
+  const name = names.pop();
+  if (name === undefined) return false;
+  return residueInFolder(home, names, async (folder) => {
+    const at = folder.at(name);
+    const found = await orIfMissing(
+      () => lstat(at),
+      hasErrorCode("ENOENT", "ENOTDIR"),
+      undefined
+    );
+    if (!found) return false;
+    if (!found.isSymbolicLink() || known === undefined) return true;
+    return (await readlink(at)) !== known;
+  });
 }

@@ -35,12 +35,16 @@ test("runs the tests but not the file-system verification for unrelated code", (
 
 for (const file of [
   "apps/server/src/workspace.ts",
+  "apps/server/src/workspace-reader.ts",
   "apps/server/test/workspace-cases.test.ts",
   "apps/server/test/workspace-race.test.ts",
   "apps/server/test/files-volume.ts",
   "apps/server/vitest.files.config.ts",
   "apps/server/package.json",
   "packages/contracts/src/task.ts",
+  "packages/files/src/regular-file.ts",
+  "packages/files/package.json",
+  "packages/contracts/src/failure.ts",
   "scripts/file-boundary-report.mjs",
   "scripts/files/prepare-windows.ps1",
   "scripts/check-ci-test-gate.mjs",
