@@ -177,9 +177,9 @@ describe("embedded Postgres lifetime", () => {
     const handle = await openDatabase({
       embedded: { dataDir, persistent: false },
     });
-    // 시험이 닫지 못했을 때만 닫는다. Postgres가 이미 죽어 닫기 오류는 시험과 무관하다.
+    // 시험이 닫지 못했을 때만 닫는다. Postgres가 먼저 죽어도 닫기는 성공해야 한다(이 시험이 보는 것). 실패하면 그 오류를 알린다.
     cluster.own(async () => {
-      if (!closed) await handle.close().catch(() => {});
+      if (!closed) await handle.close();
     });
     cluster.own(() => killPostgres(pid));
     pid = Number(
@@ -627,7 +627,10 @@ describe("a Postgres left by a killed process", () => {
     });
     client.on("error", () => {});
     await client.connect();
-    cluster.own(() => client.end().catch(() => {}));
+    // pg의 end는 연결이 이미 끊겼으면 바로 이행하고, 아니면 연결의 끝을 기다린다. 그 끝을 상한 안에서 확인한다.
+    cluster.own(() =>
+      within(client.end(), 10_000, "the test's Postgres client did not close")
+    );
     const { rows } = await client.query<{ pid: number }>(
       "select pg_backend_pid() as pid"
     );

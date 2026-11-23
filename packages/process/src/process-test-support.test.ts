@@ -54,7 +54,11 @@ it.skipIf(process.platform === "win32")(
     // 자손은 오류 출력을 물려받지 않으므로 그 출력은 프로그램이 끝나면 닫힌다. 닫힌 뒤에 읽어야 번호를 다 받았다.
     onTestFinished(async () => {
       child.kill("SIGKILL");
-      await errorsEnded;
+      await within(
+        errorsEnded,
+        10_000,
+        "the program's error output did not end"
+      );
       const pid = Number(descendant.trim());
       if (pid > 1) await killAndWait([pid]);
     });
@@ -80,25 +84,37 @@ it("still reads a ready line written just before the program exits", async () =>
 // 시간이 얼마나 지나도(아래 5초) 출력이 열려 있는 동안은 기다린다.
 it("keeps reading after the program exits until its output ends", async () => {
   const server = createServer();
-  let control: Socket | undefined;
+  // 자손은 연결하자마자 자기 번호를 보낸다. 정리가 그 연결을 닫은 뒤 자손이 끝났는지 그 번호로 확인한다.
   const connected = awaitedLater(
-    new Promise<Socket>((resolve) =>
+    new Promise<{ socket: Socket; pid: number }>((resolve, reject) =>
       server.once("connection", (socket: Socket) => {
-        control = socket;
-        resolve(socket);
+        socket.once("error", reject);
+        let text = "";
+        const read = (chunk: Buffer) => {
+          text += String(chunk);
+          if (!text.includes("\n")) return;
+          socket.off("data", read);
+          resolve({ socket, pid: Number(text.trim()) });
+        };
+        socket.on("data", read);
       })
     )
   );
-  await new Promise<void>((resolve) =>
-    server.listen(0, "127.0.0.1", () => resolve())
-  );
-  // 시험이 어디서 끝나든 연결을 닫으면 자손이 끝나고, 입력을 닫으면 프로그램이 끝난다.
-  onTestFinished(() => {
-    server.close();
-    control?.destroy();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
   });
+  onTestFinished(() =>
+    within(
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      ),
+      10_000,
+      "the test's server did not close"
+    )
+  );
   const { port } = server.address() as AddressInfo;
-  const descendant = `const s = require("node:net").connect(${port}, "127.0.0.1"); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`;
+  const descendant = `const s = require("node:net").connect(${port}, "127.0.0.1", () => s.write(process.pid + "\\n")); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`;
   const child = spawn(
     process.execPath,
     [
@@ -107,24 +123,31 @@ it("keeps reading after the program exits until its output ends", async () => {
     ],
     { stdio: ["pipe", "pipe", "ignore"] }
   );
-  onTestFinished(() => {
-    child.stdin!.destroy();
+  // 프로그램은 성공·실패 어디서든 끝난 것을 확인한다. 시험이 끝내라고 하기 전에 실패했으면 끈다. 띄우지 못했으면 그 오류로 실패한다.
+  const childEnded = awaitedLater(once(child, "exit"));
+  onTestFinished(async () => {
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+    await within(childEnded, 10_000, "the program did not end");
   });
-  const exited = awaitedLater(
-    once(child, "exit", { signal: AbortSignal.timeout(10_000) })
-  );
-  const output = await within(
+  const { socket: output, pid } = await within(
     connected,
     10_000,
     "the descendant did not connect"
   );
+  // 자손은 연결이 닫히면 스스로 끝난다. 닫은 뒤 끝난 것을 확인한다.
+  onTestFinished(async () => {
+    output.destroy();
+    await untilExited([pid], 10_000);
+  });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   onTestFinished(() => {
     vi.useRealTimers();
   });
   const ready = awaitedLater(readyLine(child));
+  // 상한은 AbortSignal.timeout이 진다(가짜 시계와 무관). 끝내라고 하기 전에 기다리기 시작한다.
+  const exited = once(child, "exit", { signal: AbortSignal.timeout(10_000) });
   child.stdin!.write("exit\n");
-  // 상한은 AbortSignal.timeout이 진다(가짜 시계와 무관).
   await exited;
   vi.advanceTimersByTime(5_000);
   // readyLine의 시한은 가짜 시계에 남긴 채 실제 시계로 돌아와, 준비 줄을 기다리는 상한을 둔다.
