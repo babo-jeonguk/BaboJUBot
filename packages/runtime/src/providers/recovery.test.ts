@@ -15,9 +15,15 @@ import {
 } from "@babojubot/process/test-cleanup";
 import { attemptAll } from "@babojubot/contracts";
 
-// Linux 기록의 시작 시각(clock tick). 표식을 읽을 수 없는 프로그램은 이 뒤에 생겼을 때만 우리 것일 수 있다.
-// 시험이 만든 기록은 시험 프로세스의 시작 시각을 쓴다. 그 전부터 돌던 이 컴퓨터의 프로그램(gpg-agent 등)은 대상이 아니다.
-const testStart = () => String(processStartTicks(process.pid) ?? 1);
+/**
+ * 실행의 시작: 이 시험 프로세스의 시작 시각을 감독 실행기의 단위로(Linux는 부팅 뒤 clock tick, /proc가 없는 시스템은 epoch 뒤
+ * 마이크로초). 기록의 시작 시각은 정리 요청의 실행 시작(`since`)으로도 쓰인다. 실제 기록처럼 시험이 시작한 때로 두어, 그 전부터
+ * 있던 이 컴퓨터의 숨은 프로그램(gpg-agent, macOS에서 정보가 막힌 로그인 때 프로세스 등)을 "확인하지 못함"으로 세지 않게 한다.
+ */
+const testStart = () =>
+  String(
+    processStartTicks(process.pid) ?? Math.floor(performance.timeOrigin * 1000)
+  );
 
 // 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다.
 const lease = vi.hoisted(() => ({
@@ -79,7 +85,7 @@ it("skips a record that cannot be read and still handles the others", async () =
     path.join(directory, `${finished}.json`),
     JSON.stringify({
       pid: finished,
-      start: "1",
+      start: testStart(),
       group: finished,
       boot: "another-boot",
       lease: "x",
