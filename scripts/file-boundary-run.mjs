@@ -3,7 +3,7 @@
 // --case·--nfd는 준비한 설정이다. 시험이 실제 동작을 관찰해 다르면 실패한다(준비가 틀렸다). 폴더가 없으면 운영체제 임시
 // 폴더로 대신하지 않고 실패한다. 결과 모으기는 scripts/file-boundary-report.mjs가 한다.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,7 +67,11 @@ const caseSetting = option("case");
 if (caseSetting) expect.caseSensitive = caseSetting === "sensitive";
 const nfd = option("nfd");
 if (nfd) expect.normalizationInsensitive = nfd === "insensitive";
+// 시험 보고서는 설정의 보고기(vitest.reports.ts suiteTest)가 이 볼륨의 폴더에 `server-files.json`으로 남기고, 끝나면 `<볼륨>.json`으로
+// 옮긴다. 명령줄 보고기를 따로 주지 않는다: 보고 방법을 둘로 두면 하나가 다른 하나를 가린다(run 44670627223).
 const report = path.join(reports, `${volume}.json`);
+const vitestReports = path.join(reports, `${volume}.vitest`);
+mkdirSync(vitestReports, { recursive: true });
 const args = [
   "--filter",
   "@babojubot/server",
@@ -76,9 +80,6 @@ const args = [
   "run",
   "--config",
   "vitest.files.config.ts",
-  "--reporter=default",
-  "--reporter=json",
-  `--outputFile.json=${report}`,
 ];
 const started = Date.now();
 const result = spawnSync("pnpm", args, {
@@ -94,8 +95,12 @@ const result = spawnSync("pnpm", args, {
     BABOJUBOT_FILES_VOLUME: volume,
     BABOJUBOT_FILES_FS: fileSystem,
     BABOJUBOT_FILES_EXPECT: JSON.stringify(expect),
+    BABOJUBOT_TEST_REPORTS: vitestReports,
   },
 });
+// 시험이 보고서를 남기지 못했으면(시작 실패 등) 옮기지 않는다. 결과 모으기가 "no test report"로 실패한다.
+const written = path.join(vitestReports, "server-files.json");
+if (statSync(written, { throwIfNoEntry: false })) renameSync(written, report);
 const seconds = Math.round((Date.now() - started) / 1000);
 const command = `pnpm ${args.join(" ")}`;
 if (result.error) {

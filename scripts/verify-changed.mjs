@@ -23,6 +23,9 @@ const sharedSettings = new Set([
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
   "scripts/test-files.mjs",
+  // 시험 묶음 정의와 Vitest 묶음 설정: 모든 패키지의 Vitest 설정과 CI 판정이 읽는다.
+  "scripts/test-suites.ts",
+  "vitest.reports.ts",
   "scripts/eslint-test-rules.mjs",
   "scripts/eslint-product-rules.mjs",
   "scripts/tsconfig.json",

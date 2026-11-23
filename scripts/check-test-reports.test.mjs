@@ -1,15 +1,23 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   intendedExclusions,
   judgeReports,
   systemOf,
 } from "./check-test-reports.mjs";
+import {
+  isTestInput,
+  judgedMarker,
+  suiteFiles,
+  suiteNamed,
+  testSuites,
+} from "./test-suites.ts";
+import { codeFormatPattern } from "./test-files.mjs";
 import { removeFolder } from "@babojubot/process/remove-folder";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -28,23 +36,41 @@ function report(files) {
     })),
   };
 }
+/** 저장소의 파일 목록(Git). 명령은 이 목록과 묶음 정의로 기대하는 시험 파일을 정한다. */
+const repositoryFiles = execFileSync(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  { cwd: root, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" }
+)
+  .split("\0")
+  .filter(Boolean);
 const reportsOf = (entries) => new Map(Object.entries(entries));
+/** 보고서들에 든 시험 파일. 이 표본의 저장소 파일 목록으로 쓴다: 묶음 정의가 고르는 파일이 모두 돈 경우다. */
+const filesIn = (entries) =>
+  Object.values(entries).flatMap((entry) =>
+    entry.testResults.map((result) =>
+      path.relative(root, result.name).split(path.sep).join("/")
+    )
+  );
 const problemsOf = (entries, os = "linux", expected = Object.keys(entries)) =>
-  judgeReports(reportsOf(entries), { os, expected }).problems;
+  judgeReports(reportsOf(entries), { os, expected, files: filesIn(entries) })
+    .problems;
 
 const jobObject = "packages/runtime/src/providers/process-windows.test.ts";
 const docker = "packages/runtime/src/providers/container.docker.test.ts";
 
 test("accepts reports where every test file passed a test, skips beside passes included", () => {
-  const { problems, lines } = judgeReports(
-    reportsOf({
-      server: report({
-        "apps/server/test/a.test.ts": ["passed", "skipped", "todo"],
-        "apps/server/test/b.test.ts": ["passed"],
-      }),
+  const entries = {
+    server: report({
+      "apps/server/test/a.test.ts": ["passed", "skipped", "todo"],
+      "apps/server/test/b.test.ts": ["passed"],
     }),
-    { os: "linux", expected: ["server"] }
-  );
+  };
+  const { problems, lines } = judgeReports(reportsOf(entries), {
+    os: "linux",
+    expected: ["server"],
+    files: filesIn(entries),
+  });
   assert.deepEqual(problems, []);
   assert.deepEqual(lines, [
     "server: 2 files, 4 tests, 2 passed, 1 skipped, 1 todo, 0 failed",
@@ -91,6 +117,55 @@ test("lists each intended exclusion with its suite, systems and reason, and only
       exclusion.file
     );
   }
+});
+
+// 묶음 정의 밖의 시험 파일은 어느 판정도 기대하지 않아, 돌지 않아도 아무것도 실패하지 않는다. 저장소의 시험 파일은 모두 어느 묶음이
+// 고르거나 시험 입력이어야 한다(#286 항목 19).
+test("every test file in the repository is selected by a suite or is a test input", () => {
+  const testFile = new RegExp(`\\.(?:test|spec)\\.${codeFormatPattern}$`);
+  const tests = repositoryFiles.filter((file) => testFile.test(file));
+  assert.ok(tests.length > 100, `${tests.length} test files`);
+  const selected = new Set(
+    testSuites.flatMap((suite) => suiteFiles(suite, repositoryFiles))
+  );
+  assert.deepEqual(
+    tests.filter((file) => !selected.has(file) && !isTestInput(file)),
+    []
+  );
+  // 시험 입력은 묶음이 고르지 않는다(묶음으로 돌리면 일부러 실패한다).
+  assert.deepEqual(
+    [...selected].filter((file) => isTestInput(file)),
+    []
+  );
+});
+
+test("names each suite once and lists node:test files that exist", () => {
+  const names = testSuites.map((suite) => suite.name);
+  assert.deepEqual(names, [...new Set(names)]);
+  const present = new Set(repositoryFiles);
+  for (const suite of testSuites)
+    if (suite.runner === "node") {
+      assert.ok(suite.files.length > 0, suite.name);
+      assert.deepEqual(
+        suite.files.filter((file) => !present.has(file)),
+        [],
+        suite.name
+      );
+    } else
+      assert.ok(
+        suiteFiles(suite, repositoryFiles).length > 0,
+        `${suite.name} selects no test file`
+      );
+});
+
+test("lists intended exclusions only for files their suite selects", () => {
+  for (const exclusion of intendedExclusions)
+    assert.ok(
+      suiteFiles(suiteNamed(exclusion.report), repositoryFiles).includes(
+        exclusion.file
+      ),
+      `${exclusion.report}: ${exclusion.file}`
+    );
 });
 
 /** @type {[string, Record<string, ReturnType<typeof report>>, string?, string[]?][]} */
@@ -254,7 +329,7 @@ test("rejects an intended exclusion that ran no test at all", () => {
 
 test("rejects an unknown system and names the system of this computer", () => {
   assert.throws(
-    () => judgeReports(reportsOf({}), { os: "aix", expected: [] }),
+    () => judgeReports(reportsOf({}), { os: "aix", expected: [], files: [] }),
     /unknown system "aix"/
   );
   assert.equal(systemOf("linux"), "linux");
@@ -271,7 +346,18 @@ const fixtures = fileURLToPath(
   new URL("./fixtures/test-reports/", import.meta.url)
 );
 
-test("fails the command for a rejected, unreadable or unnamed report and prints the counts", (context) => {
+/** 묶음 정의가 이 저장소에서 고르는 시험 파일마다 `statuses`를 둔 보고서. */
+const fullReport = (name, statuses = ["passed"]) =>
+  report(
+    Object.fromEntries(
+      suiteFiles(suiteNamed(name), repositoryFiles).map((file) => [
+        file,
+        statuses,
+      ])
+    )
+  );
+
+test("fails the command for a rejected, unreadable or unnamed report, prints the counts and marks the folder judged", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "test-reports-"));
   context.after(() => removeFolder(dir));
   const run = (...args) =>
@@ -279,28 +365,53 @@ test("fails the command for a rejected, unreadable or unnamed report and prints 
       encoding: "utf8",
       env: { ...process.env, BABOJUBOT_TEST_REPORTS: dir },
     });
-  writeFileSync(
-    path.join(dir, "server.json"),
-    JSON.stringify(report({ "apps/server/test/a.test.ts": ["passed"] }))
-  );
-  const ok = run("--expect", "server");
+  const contracts = fullReport("contracts");
+  writeFileSync(path.join(dir, "contracts.json"), JSON.stringify(contracts));
+  const ok = run("--expect", "contracts");
   assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /server: 1 files, 1 tests, 1 passed/);
-  writeFileSync(
-    path.join(dir, "web.json"),
-    JSON.stringify(report({ "apps/web/src/a.test.ts": ["skipped"] }))
-  );
-  const skippedOnly = run("--expect", "server,web");
-  assert.equal(skippedOnly.status, 1);
   assert.match(
-    skippedOnly.stderr,
-    /apps\/web\/src\/a\.test\.ts passed no test/
+    ok.stdout,
+    new RegExp(
+      `^contracts: ${contracts.testResults.length} files, ${contracts.testResults.length} tests, ${contracts.testResults.length} passed`,
+      "m"
+    )
   );
-  writeFileSync(path.join(dir, "web.json"), "not json");
-  const unreadable = run("--expect", "server,web");
+  // 판정한 폴더에는 표식이 남아, 같은 job에서 판정 뒤에 도는 묶음이 시작하지 않는다(scripts/test-suites.ts reportFolder).
+  assert.match(readFileSync(path.join(dir, judgedMarker), "utf8"), /contracts/);
+  // 묶음 정의가 고르는 파일 하나가 보고서에서 빠지면 실패한다.
+  const [dropped, ...kept] = contracts.testResults;
+  writeFileSync(
+    path.join(dir, "contracts.json"),
+    JSON.stringify({ testResults: kept })
+  );
+  const missingFile = run("--expect", "contracts");
+  assert.equal(missingFile.status, 1);
+  assert.match(
+    missingFile.stderr,
+    new RegExp(
+      `contracts: ${path
+        .relative(root, dropped?.name ?? "")
+        .split(path.sep)
+        .join("/")
+        .replaceAll(".", "\\.")} did not run`
+    )
+  );
+  writeFileSync(path.join(dir, "contracts.json"), JSON.stringify(contracts));
+  writeFileSync(
+    path.join(dir, "core.json"),
+    JSON.stringify(fullReport("core", ["skipped"]))
+  );
+  const skippedOnly = run("--expect", "contracts,core");
+  assert.equal(skippedOnly.status, 1);
+  assert.match(skippedOnly.stderr, /^core: packages\/core\/.* passed no test/m);
+  writeFileSync(path.join(dir, "core.json"), "not json");
+  const unreadable = run("--expect", "contracts,core");
   assert.equal(unreadable.status, 1);
-  assert.match(unreadable.stderr, /cannot read test report .*web\.json/);
+  assert.match(unreadable.stderr, /cannot read test report .*core\.json/);
   assert.equal(run().status, 1);
+  const unknown = run("--expect", "contracts,no-such-suite");
+  assert.notEqual(unknown.status, 0);
+  assert.match(unknown.stderr, /unknown test suite "no-such-suite"/);
   // 보고 폴더를 줬는데 아무 묶음도 보고서를 남기지 않았으면 묶음마다 보고서가 없다고 알린다(#272 외부 리뷰 S1).
   const empty = spawnSync(
     process.execPath,
@@ -328,22 +439,37 @@ test("fails the command for a rejected, unreadable or unnamed report and prints 
   assert.match(noFolder.stderr, /BABOJUBOT_TEST_REPORTS/);
 });
 
-/** 자식 실행기의 환경. 이 시험을 돌리는 node:test의 자식 표시(NODE_TEST_CONTEXT)를 물려주면 자식이 시험을 돌리지 않는다. */
+/**
+ * 자식 실행기의 환경. 이 시험을 돌리는 node:test의 자식 표시(NODE_TEST_CONTEXT)를 물려주면 자식이 시험을 돌리지 않는다. CI가 준
+ * 보고서 필수 표시(BABOJUBOT_REQUIRE_TEST_REPORTS)도 물려주지 않는다: 그 표시가 있는 장면은 시험이 직접 켠다.
+ */
 function childEnv(reports) {
-  const { NODE_TEST_CONTEXT: _, ...env } = process.env;
+  const {
+    NODE_TEST_CONTEXT: _context,
+    BABOJUBOT_REQUIRE_TEST_REPORTS: _required,
+    ...env
+  } = process.env;
   return { ...env, BABOJUBOT_TEST_REPORTS: reports };
 }
 
 // node:test 묶음은 run-node-tests.mjs로 돌린다. 사람이 읽는 줄 보고는 그대로 내고, 보고 폴더가 있으면 같은 모양의 보고서를 남긴다.
+// 묶음 정의 밖의 시험 입력(scripts/fixtures)은 실행기의 runNodeTests로 돌린다.
 test("runs node:test files, keeps their exit code and writes a report the checker reads", (context) => {
   const dir = mkdtempSync(path.join(tmpdir(), "test-reports-"));
   context.after(() => removeFolder(dir));
-  const run = (name, ...files) =>
+  // node:test의 run은 부모의 실행 인수(`-e` 등)를 시험 파일 프로세스에 물려주므로, 코드 글이 아니라 파일로 실행기를 부른다.
+  const driver = path.join(dir, "driver.mjs");
+  writeFileSync(
+    driver,
+    `import { runNodeTests } from ${JSON.stringify(pathToFileURL(runner).href)};\nrunNodeTests(process.argv[2], process.argv.slice(3));\n`
+  );
+  const runIn = (env, name, ...files) =>
     spawnSync(
       process.execPath,
-      [runner, name, ...files.map((file) => path.join(fixtures, file))],
-      { encoding: "utf8", env: childEnv(dir) }
+      [driver, name, ...files.map((file) => path.join(fixtures, file))],
+      { encoding: "utf8", env }
     );
+  const run = (name, ...files) => runIn(childEnv(dir), name, ...files);
   const passing = run("fixture-pass", "passes.test.mjs");
   assert.equal(passing.status, 0, passing.stderr);
   assert.match(passing.stdout, /✔ adds/);
@@ -378,22 +504,61 @@ test("runs node:test files, keeps their exit code and writes a report the checke
   const judged = JSON.parse(
     readFileSync(path.join(dir, "fixture-skip.json"), "utf8")
   );
+  const skipFile = path
+    .relative(root, path.join(fixtures, "skips.test.mjs"))
+    .split(path.sep)
+    .join("/");
   assert.match(
-    judgeReports(reportsOf({ "fixture-skip": judged }), {
+    judgeReports(reportsOf({ boot: judged }), {
       os: "linux",
-      expected: ["fixture-skip"],
+      expected: [],
+      files: [skipFile],
     }).problems.join("\n"),
-    /skips\.test\.mjs passed no test/
+    /boot: report this job did not expect/
   );
   // 보고 폴더가 없으면(로컬) 보고서를 남기지 않고 줄 보고만 낸다.
-  const local = spawnSync(
-    process.execPath,
-    [runner, "fixture-local", path.join(fixtures, "passes.test.mjs")],
-    { encoding: "utf8", env: childEnv("") }
-  );
+  const local = runIn(childEnv(""), "fixture-local", "passes.test.mjs");
   assert.equal(local.status, 0, local.stderr);
-  mkdirSync(dir, { recursive: true });
   assert.throws(() =>
     readFileSync(path.join(dir, "fixture-local.json"), "utf8")
   );
+  // CI가 보고서를 필수로 했는데 보고 폴더가 없으면 시험을 돌리지 않고 실패한다(래퍼 스크립트로 옮긴 실행도 같다).
+  const unreported = runIn(
+    { ...childEnv(""), BABOJUBOT_REQUIRE_TEST_REPORTS: "1" },
+    "fixture-unreported",
+    "passes.test.mjs"
+  );
+  assert.notEqual(unreported.status, 0);
+  assert.match(
+    unreported.stderr,
+    /test suite fixture-unreported runs where CI requires a report/
+  );
+  assert.doesNotMatch(unreported.stdout, /✔ adds/);
+  // 그 job의 판정이 끝난 폴더면 돌리지 않는다. 판정 뒤의 보고서는 아무도 판정하지 않는다.
+  writeFileSync(path.join(dir, judgedMarker), "judged\n");
+  const afterJudging = run("fixture-late", "passes.test.mjs");
+  assert.notEqual(afterJudging.status, 0);
+  assert.match(
+    afterJudging.stderr,
+    /test suite fixture-late runs after this job's reports were judged/
+  );
+});
+
+test("runs a node:test suite by its name only, with the files the suite definition lists", () => {
+  const extra = spawnSync(
+    process.execPath,
+    [runner, "check-rules", "scripts/lint-rules.test.mjs"],
+    { encoding: "utf8", env: childEnv("") }
+  );
+  assert.equal(extra.status, 1);
+  assert.match(
+    extra.stderr,
+    /usage: node scripts\/run-node-tests\.mjs <suite>/
+  );
+  const vitestSuite = spawnSync(process.execPath, [runner, "core"], {
+    encoding: "utf8",
+    env: childEnv(""),
+  });
+  assert.equal(vitestSuite.status, 1);
+  assert.match(vitestSuite.stderr, /test suite core is not a node:test suite/);
 });

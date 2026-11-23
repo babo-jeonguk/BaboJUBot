@@ -4,10 +4,11 @@ import { globSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { codeFormats } from "./test-files.mjs";
+import { testSuites } from "./test-suites.ts";
 
 const workflow = parse(
   readFileSync(
@@ -158,7 +159,8 @@ test("runs the macOS and Windows suites on their own systems", () => {
 // Windows E2E는 두 job으로 나눠(Playwright shard) 동시에 돌고, 판정 job이 두 보고서를 합쳐 결과 수·예상 spec을 판정한다.
 test("splits the Windows E2E into two shard jobs and judges their reports together", () => {
   const shards = [1, 2].map((n) => workflow.jobs[`test-e2e-windows-${n}`]);
-  const stopCheck = (each) => /test\/main\.test\.ts/.test(each.run ?? "");
+  const stopCheck = (each) =>
+    /--config vitest\.stop\.config\.ts/.test(each.run ?? "");
   shards.forEach((job, i) => {
     const n = i + 1;
     assert.equal(job.name, `e2e on windows-latest (${n}/2)`);
@@ -547,118 +549,107 @@ test("gives the Linux Chromium and system dependency install room for a slow pac
 });
 
 // Vitest·node:test는 시험 파일의 시험이 모두 건너뛰어져도 0으로 끝난다. 그래서 시험 묶음마다 보고서를 남기고 job의 마지막 단계가
-// 실행·통과 수를 판정한다(scripts/check-test-reports.mjs). 묶음을 더하거나 옮기고 그 판정을 고치지 않으면 그 묶음은 판정 밖에
-// 남는다. 단계의 명령에서 돌린 묶음을 끌어내 판정 단계의 목록과 맞춰 본다.
+// 실행·통과 수를 판정한다(scripts/check-test-reports.mjs). 어느 묶음을 돌리는지는 명령 글자로 찾지 않는다(래퍼 스크립트로 옮기면
+// 놓친다, #286 항목 20): CI 전체가 보고서를 필수로 하고(BABOJUBOT_REQUIRE_TEST_REPORTS), 보고 폴더를 준 job만 묶음을 돌릴 수 있으며,
+// 판정은 보고서를 묶음 정의(scripts/test-suites.ts)와 대조해 빠지거나 모르는 보고서를 실패로 본다. 여기서는 그 배선을 본다.
 const root = fileURLToPath(new URL("..", import.meta.url));
 const packageJson = (folder) =>
   JSON.parse(readFileSync(path.join(root, folder, "package.json"), "utf8"));
-const readRepositoryText = (file) =>
-  readFileSync(path.resolve(root, file), "utf8");
-/** Vitest 설정 파일이 남기는 보고서 이름(vitest.reports.ts의 testReport). 찾지 못하면 undefined. */
-function reportOf(config, readText = readRepositoryText) {
-  return /testReport\("([\w-]+)"\)/.exec(readText(config))?.[1];
-}
-const folders = {
-  contracts: "packages/contracts",
-  core: "packages/core",
-  db: "packages/db",
-  files: "packages/files",
-  process: "packages/process",
-  runtime: "packages/runtime",
-  server: "apps/server",
-  web: "apps/web",
-};
-/** 명령 한 줄이 돌리는 시험 묶음. `vitest run`은 그 설정의 보고서, run-node-tests.mjs는 받은 이름이다. */
-function suitesOf(command, folder = ".", readText = readRepositoryText) {
-  return command.split("&&").flatMap((part) => {
-    const words = part.trim().split(/\s+/);
-    if (words[0] === "node" && words[1] === "scripts/run-node-tests.mjs")
-      return [words[2]];
-    if (words[0] === "vitest") {
-      const at = words.indexOf("--config");
-      const config = path.join(
-        folder,
-        at === -1 ? "vitest.config.ts" : words[at + 1]
-      );
-      return [reportOf(config, readText) ?? `(no report in ${config})`];
-    }
-    if (words[0] === "pnpm") {
-      const filters = words.flatMap((word, i) =>
-        words[i - 1] === "--filter" ? [word.replace("@babojubot/", "")] : []
-      );
-      const script = words.includes("exec") ? undefined : words.at(-1);
-      if (words.includes("exec"))
-        return filters.flatMap((name) =>
-          suitesOf(
-            words.slice(words.indexOf("exec") + 1).join(" "),
-            folders[name],
-            readText
-          )
-        );
-      if (filters.length === 0)
-        return suitesOf(packageJson(".").scripts[script] ?? "", ".", readText);
-      return filters.flatMap((name) =>
-        suitesOf(
-          packageJson(folders[name]).scripts[script] ?? "",
-          folders[name],
-          readText
-        )
-      );
-    }
-    return [];
-  });
-}
+const reportFolderValue = "${{ github.workspace }}/test-reports";
 
 /**
- * 시험 묶음을 돌리는 job마다 보고 폴더와 실행·통과 수 판정 단계가 있고 그 목록이 돌린 묶음과 같은지. 문제마다 한 줄을 돌려준다.
- * `readText`는 저장소 파일을 읽는다(시험이 설정 파일 내용을 바꿔 넣는다).
+ * Vitest 설정 파일이 실제로 남기는 보고서 이름. 설정을 보고 폴더를 준 채 따로 띄운 Node로 가져와 JSON 보고기의 파일 이름을 읽는다.
+ * 글자를 찾지 않으므로 주석에 남은 이름은 세지 않는다. JSON 보고기가 없으면 undefined.
  */
-function wiringProblems(flow, readText = readRepositoryText) {
+function reportOf(config) {
+  // 보고 폴더는 경로만 쓴다: 설정을 읽을 때 보고기가 가리킬 파일 이름을 정할 뿐 폴더를 만들지 않는다.
+  const folder = path.join(tmpdir(), "ci-gate-report-folder-never-written");
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      "const { default: config } = await import(process.argv[1]); console.log(JSON.stringify(config.test?.reporters ?? []));",
+      pathToFileURL(path.resolve(root, config)).href,
+    ],
+    {
+      encoding: "utf8",
+      timeout: 60_000,
+      killSignal: "SIGKILL",
+      env: {
+        ...process.env,
+        BABOJUBOT_TEST_REPORTS: folder,
+        BABOJUBOT_REQUIRE_TEST_REPORTS: "1",
+      },
+    }
+  );
+  assert.equal(result.status, 0, `${config}: ${result.stderr}`);
+  const json = JSON.parse(result.stdout).find(
+    (reporter) => Array.isArray(reporter) && reporter[0] === "json"
+  );
+  return json ? path.basename(json[1].outputFile, ".json") : undefined;
+}
+
+/** `${{ <조건> && format('{0}/test-reports', github.workspace) || '' }}`의 조건. 그런 모양이 아니면 undefined. */
+const conditionalFolder = (value) =>
+  /^\$\{\{ (.+) && format\('\{0\}\/test-reports', github\.workspace\) \|\| '' \}\}$/.exec(
+    value ?? ""
+  )?.[1];
+
+/**
+ * 보고서 배선의 문제마다 한 줄. 판정하는 job(counted)과 그 job이 기대하는 묶음(expected: 늘, 전체 검증이 돌지 않을 때만)도 돌려준다.
+ * - workflow env가 보고서를 필수로 한다. 보고 폴더 없이 도는 묶음은 시작하지 않고 실패한다(scripts/test-suites.ts reportFolder).
+ * - 보고 폴더는 판정하는 job의 env에만 둔다. workflow·단계 env에 두면 판정하지 않는 폴더에 보고서가 남거나 다른 실행의 보고기를
+ *   가로챈다(run 44670627223).
+ * - 보고 폴더를 준 job에는 시험이 실패해도 도는 판정 단계가 하나 있고, 폴더가 조건부면 판정도 같은 조건에서 돈다.
+ * - 판정 단계가 기대하는 묶음은 묶음 정의에 있다.
+ */
+function wiringProblems(flow) {
   const problems = [];
-  // 워크플로 전체에 두면 판정하지 않는 job에도 보고 폴더가 생긴다(run 44670627223의 files 세 job이 결과표를 잃음).
+  if (flow.env?.BABOJUBOT_REQUIRE_TEST_REPORTS !== "1")
+    problems.push(
+      'the workflow env must set BABOJUBOT_REQUIRE_TEST_REPORTS to "1" so a suite run outside a judged job fails'
+    );
   if (flow.env?.BABOJUBOT_TEST_REPORTS !== undefined)
     problems.push("the workflow env gives every job a report folder");
   const counted = [];
+  /** @type {Map<string, { always: string[], withoutFiles: string[] }>} */
+  const expected = new Map();
+  const names = new Set(testSuites.map((suite) => suite.name));
   for (const [id, job] of Object.entries(flow.jobs)) {
     const steps = job.steps ?? [];
-    const check = steps.find((each) =>
+    if (steps.some((each) => each.env?.BABOJUBOT_TEST_REPORTS !== undefined))
+      problems.push(
+        `${id}: a step's env sets BABOJUBOT_TEST_REPORTS; only a job that checks the counts gives its suites a folder`
+      );
+    const checks = steps.filter((each) =>
       /check-test-reports\.mjs/.test(each.run ?? "")
     );
-    // check job의 matrix 단계는 문서 검사(check)일 때만 node:test 묶음을 돈다. E2E는 자기 판정(check-e2e-report.mjs)을 한다.
-    const ran = steps.flatMap((each) => {
-      const run = (each.run ?? "").replace("${{ matrix.script }}", "check");
-      if (
-        /playwright|check-test-reports|check-test-exit-code|file-boundary/.test(
-          run
-        )
-      )
-        return [];
-      return suitesOf(run, ".", readText).map((suite) => ({
-        suite,
-        if: each.if ?? "",
-      }));
-    });
-    if (ran.length === 0) {
-      if (check !== undefined)
-        problems.push(`${id} checks counts but runs no suite`);
-      // 보고 폴더는 판정하는 job에만 둔다. 다른 job(파일 경계 검증)이 자기 결과표용으로 넘긴 Vitest 보고를 설정의 보고기가 가로챈다.
-      if (job.env?.BABOJUBOT_TEST_REPORTS !== undefined)
-        problems.push(`${id} gives a report folder but runs no suite`);
+    const folder = job.env?.BABOJUBOT_TEST_REPORTS;
+    if (folder === undefined) {
+      if (checks.length > 0)
+        problems.push(
+          `${id} checks counts but gives its suites no report folder`
+        );
       continue;
     }
-    if (!check) {
+    if (checks.length !== 1) {
       problems.push(
-        `${id} runs ${ran.map((r) => r.suite).join(", ")} without checking their counts`
+        `${id} gives a report folder but has ${checks.length} count checks; it needs exactly one`
       );
       continue;
     }
+    const [check] = checks;
     counted.push(id);
-    if (
-      job.env?.BABOJUBOT_TEST_REPORTS !== "${{ github.workspace }}/test-reports"
-    )
-      problems.push(`${id} must give its suites a report folder`);
+    const condition = conditionalFolder(folder);
+    if (folder !== reportFolderValue && condition === undefined)
+      problems.push(`${id}: unexpected report folder ${folder}`);
     if (!/!cancelled\(\)/.test(check.if ?? ""))
       problems.push(`${id}: count even after a failed test`);
+    if (condition !== undefined && !(check.if ?? "").includes(condition))
+      problems.push(
+        `${id}: the report folder is given when ${condition}, but the count check does not run on that condition`
+      );
     const [, listed, conditional] =
       /--expect ([\w,-]+)(?:\$\{\{ needs\.changes\.outputs\.files != 'true' && ',([\w-]+)' \|\| '' \}\})?$/.exec(
         check.run
@@ -667,28 +658,21 @@ function wiringProblems(flow, readText = readRepositoryText) {
       problems.push(`${id}: ${check.run}`);
       continue;
     }
-    const always = ran
-      .filter((r) => !/outputs\.files != 'true'/.test(r.if))
-      .map((r) => r.suite);
-    const onlyWithoutFiles = ran
-      .filter((r) => /outputs\.files != 'true'/.test(r.if))
-      .map((r) => r.suite);
-    if (
-      listed.split(",").sort().join(",") !==
-      [...new Set(always)].sort().join(",")
-    )
-      problems.push(
-        `${id}: expects ${listed} but runs ${[...new Set(always)].sort().join(",")}`
-      );
-    if ((conditional ?? "") !== onlyWithoutFiles.join(","))
-      problems.push(
-        `${id}: expects ${conditional ?? "nothing"} without the file-system jobs but runs ${onlyWithoutFiles.join(",") || "nothing"}`
-      );
+    const entry = {
+      always: listed.split(","),
+      withoutFiles: conditional ? [conditional] : [],
+    };
+    for (const name of [...entry.always, ...entry.withoutFiles])
+      if (!names.has(name))
+        problems.push(
+          `${id}: expects ${name}, which scripts/test-suites.ts does not define`
+        );
+    expected.set(id, entry);
   }
-  return { problems, counted: counted.sort() };
+  return { problems, counted: counted.sort(), expected };
 }
 
-test("each job that runs test suites checks every suite's run and pass counts as its last test step", () => {
+test("each job that runs test suites gives them a report folder and checks their run and pass counts", () => {
   const { problems, counted } = wiringProblems(workflow);
   assert.deepEqual(problems, []);
   assert.deepEqual(counted, [
@@ -702,6 +686,31 @@ test("each job that runs test suites checks every suite's run and pass counts as
     "test-unit",
     "test-windows",
   ]);
+});
+
+// 묶음 정의에 있어도 어느 job도 기대하지 않으면 그 묶음의 파일은 CI에서 판정받지 않는다. Linux에서 늘 도는 job이 모든 Vitest·node:test
+// 묶음을 기대하고(같은 파일을 macOS·Windows만 돌리는 묶음은 Linux에서 다른 묶음이 같은 파일을 돈다), E2E는 자기 판정 단계가 있다.
+test("every suite in the suite definition is judged in CI", () => {
+  const { expected } = wiringProblems(workflow);
+  const judged = new Set(
+    [...expected.values()].flatMap((entry) => [
+      ...entry.always,
+      ...entry.withoutFiles,
+    ])
+  );
+  assert.deepEqual(
+    testSuites
+      .filter((suite) => suite.runner !== "playwright")
+      .map((suite) => suite.name)
+      .filter((name) => !judged.has(name)),
+    []
+  );
+  const e2eChecks = Object.values(workflow.jobs).flatMap((job) =>
+    (job.steps ?? []).filter((each) =>
+      /check-e2e-report\.mjs/.test(each.run ?? "")
+    )
+  );
+  assert.ok(e2eChecks.length > 0, "no E2E report check");
 });
 
 // 보고서 이름을 설정 글자에서 찾으면 주석에만 남은 `testReport("web")`도 보고기로 센다(#286 항목 20). 설정이 실제로 만드는 보고기를 본다.
@@ -750,7 +759,7 @@ test("refuses a report folder given in a step's env", () => {
   );
 });
 
-test("runs every node:test suite through the counting runner and gives every Vitest config a report", () => {
+test("runs every node:test suite through the counting runner and gives every Vitest config its suite's report", () => {
   const commands = [
     ...Object.values(packageJson(".").scripts),
     ...Object.values(workflow.jobs).flatMap((job) =>
@@ -763,24 +772,22 @@ test("runs every node:test suite through the counting runner and gives every Vit
       /node --test/,
       `use scripts/run-node-tests.mjs: ${command}`
     );
+  // 저장소의 Vitest 설정은 모두 묶음 정의의 설정이고, 그 묶음의 보고서를 남긴다(설정이 없으면 Vitest 기본값으로 돌아 보고서가 없다).
   const configs = globSync(
     `{apps,packages}/*/vitest{,.*}.config.${codeFormats}`,
-    {
-      cwd: root,
-    }
+    { cwd: root }
+  )
+    .map((config) => config.replaceAll("\\", "/"))
+    .sort();
+  const vitestSuites = testSuites.filter((suite) => suite.runner === "vitest");
+  assert.deepEqual(
+    configs,
+    vitestSuites.map((suite) => `${suite.folder}/${suite.config}`).sort()
   );
-  assert.ok(configs.length >= 8, configs.join(", "));
-  for (const config of configs)
-    assert.ok(
-      reportOf(config),
-      `${config} must add testReport(<suite>) to its reporters`
-    );
-  // 시험 파일이 있는 패키지는 모두 자기 설정으로 보고서를 남긴다(설정이 없으면 Vitest 기본값으로 돌아 보고서가 없다).
-  for (const [name, folder] of Object.entries(folders))
-    assert.ok(
-      configs.some((config) =>
-        config.replaceAll("\\", "/").startsWith(`${folder}/`)
-      ),
-      name
+  for (const suite of vitestSuites)
+    assert.equal(
+      reportOf(`${suite.folder}/${suite.config}`),
+      suite.name,
+      `${suite.folder}/${suite.config}`
     );
 });

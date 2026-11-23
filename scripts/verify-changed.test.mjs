@@ -137,6 +137,8 @@ test("treats package settings outside src as product changes", () => {
 for (const file of [
   "eslint.config.js",
   "scripts/test-files.mjs",
+  "scripts/test-suites.ts",
+  "vitest.reports.ts",
   "scripts/eslint-test-rules.mjs",
   "scripts/eslint-product-rules.mjs",
   "tsconfig.base.json",
