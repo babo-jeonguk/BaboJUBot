@@ -241,6 +241,27 @@ test("published text rejects a link path it cannot judge", async () => {
         "https://github.com/acme/demo/blob/main/test-results%5Ca%5Ctrace.zip",
         "a link path with a backslash",
         "https://github.com/acme/demo/blob/main/test-results%5Ca%5Ctrace.zip",
+      ], // 잘못된 퍼센트 인코딩은 그대로 판정하지 않는다. 아는 ref가 없는 주소의 첫 마디를 ref로 짐작하지 않는다. 주소 해석기가
+      // 읽지 못한 http(s) 주소를 "이 저장소 파일 아님"으로 접지 않는다(#295 2회차 parent 점검).
+      [
+        "[문서](docs/%E0%A4%A.md)",
+        "a link path with invalid percent-encoding",
+        "docs/%E0%A4%A.md",
+      ],
+      [
+        "https://github.com/acme/demo/blob/main/docs/%E0%A4%A.md",
+        "a link path with invalid percent-encoding",
+        "https://github.com/acme/demo/blob/main/docs/%E0%A4%A.md",
+      ],
+      [
+        "https://github.com/acme/demo/blob/no-such-ref/docs/a.md",
+        "a link to a GitHub branch or commit not known here",
+        "https://github.com/acme/demo/blob/no-such-ref/docs/a.md",
+      ],
+      [
+        "[주소](<https://[github.com/acme/demo>)",
+        "a link address the URL parser cannot read",
+        "https://[github.com/acme/demo",
       ],
     ];
     for (const [text, reason, url] of cases)
@@ -249,6 +270,20 @@ test("published text rejects a link path it cannot judge", async () => {
         [{ line: 1, undecidable: `${reason}: ${url}` }],
         text
       );
+  });
+});
+
+// origin 저장소를 모르면 github.com 파일 주소가 이 저장소를 가리키는지 알 수 없다. 다른 저장소로 접지 않는다.
+test("published text rejects a GitHub link when the checkout has no GitHub origin", async () => {
+  await withFixture((fixture) => {
+    git(fixture, "remote", "remove", "origin");
+    const url = "https://github.com/acme/demo/blob/main/docs/a.md";
+    assert.deepEqual(findLocalOnlyReferences(url, loadContext(fixture)), [
+      {
+        line: 1,
+        undecidable: `a link to GitHub while this checkout has no GitHub origin: ${url}`,
+      },
+    ]);
   });
 });
 
