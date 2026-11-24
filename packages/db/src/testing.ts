@@ -57,6 +57,7 @@ export async function startTestCluster(
   const options = await ephemeralCluster();
   const { port, stop } = await startEmbeddedCluster(options, testSettings);
   try {
+    // 만들기의 답을 받지 못해도 그 DB는 따로 지우지 않는다: 준비가 실패하면 아래 `stop`이 cluster를 멈추고 그 data 폴더째 지운다.
     await askServer(
       clusterUrl(port, "postgres"),
       (client) => client.query(`create database ${templateName}`),
@@ -120,45 +121,167 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   };
 }
 
-/** 서버(`admin`)에 DB `name`을 `template`에서 만든다(`askServer`). */
+/**
+ * 서버(`admin`)에 DB `name`을 `template`에서 만든다(`askServer`). 만들기의 답을 받지 못하면(상한·연결 실패) 서버는 그 DB를 이미
+ * 만들었거나 아직 만드는 중일 수 있다: 연결을 끊어도 그 서버 쪽 연결(backend)은 잠금을 기다리는 동안 끊김을 보지 못하고, 잠금이 풀리면
+ * 만들기를 마친다. 그래서 묻던 연결의 끝을 확인한 뒤(`askServer`) 그 backend를 끝내고 그 끝을 서버에서 본 다음 DB를 지운다(진행 중인
+ * 만들기와 지우기가 경쟁하지 않는다). 지우기도 실패하면 두 실패를 함께 알린다.
+ */
 export async function createDatabase(
   admin: string,
   name: string,
   template: string,
   limitMs: number
 ) {
-  await askServer(
-    admin,
-    (client) => client.query(`create database ${name} template ${template}`),
-    limitMs,
-    `the test cluster did not create ${name}`
+  let creator: Backend | undefined;
+  try {
+    await askServer(
+      admin,
+      async (client) => {
+        creator = await backendOf(client);
+        return client.query(`create database ${name} template ${template}`);
+      },
+      limitMs,
+      `the test cluster did not create ${name}`
+    );
+  } catch (error) {
+    throw combinedFailure(
+      [
+        error,
+        ...(await attemptEach([
+          () =>
+            askServer(
+              admin,
+              async (client) => {
+                if (creator) await endBackend(client, creator, limitMs);
+                await client.query(
+                  `drop database if exists ${name} with (force)`
+                );
+              },
+              limitMs,
+              `the test cluster did not drop ${name}, which it gave up creating`
+            ),
+        ])),
+      ],
+      `${name} was not created, and dropping it failed`,
+      { cause: error }
+    );
+  }
+}
+
+/**
+ * 서버 쪽 연결(backend) 하나. 번호는 그 연결이 끝나면 다른 연결에 다시 주어질 수 있어, 시작 시각(`pg_stat_activity.backend_start`,
+ * 마이크로초까지 비교하려고 글자로 둔다)과 함께 신원으로 쓴다.
+ */
+type Backend = { pid: number; started: string };
+
+/** `client`의 backend. */
+async function backendOf(client: pg.Client): Promise<Backend> {
+  const { rows } = await client.query<Backend>(
+    "select pid, backend_start::text as started from pg_stat_activity where pid = pg_backend_pid()"
+  );
+  return rows[0]!;
+}
+
+/**
+ * backend가 아직 그 연결이면 끝내고, 끝난 것을 서버에서 확인한다. `pg_terminate_backend(pid, timeout)`은 그 프로세스가 끝나기를
+ * `timeout`ms까지 기다린다(PostgreSQL 문서 「Server Signaling Functions」, 14판부터). 끝은 그 뒤 `pg_stat_activity`에 그 연결이 없는
+ * 것으로 본다(그 함수는 상한을 넘겨도, 이미 끝난 번호여도 거짓을 돌려준다).
+ */
+async function endBackend(
+  client: pg.Client,
+  { pid, started }: Backend,
+  limitMs: number
+) {
+  const same = "pid = $1 and backend_start::text = $2";
+  await client.query(
+    `select pg_terminate_backend(pid, $3) from pg_stat_activity where ${same}`,
+    [pid, started, limitMs]
+  );
+  const { rowCount } = await client.query(
+    `select from pg_stat_activity where ${same}`,
+    [pid, started]
+  );
+  if (rowCount !== 0)
+    throw new Error(`backend ${pid} did not end within ${limitMs} ms`);
+}
+
+/** 시험이 만든 소켓. 만든 직후 그 닫힘(`close`)을 지켜본다. 연결의 끝은 이것으로만 판정한다(`endSockets`). */
+function testSocket() {
+  const socket = new net.Socket();
+  const closed = new Promise<void>((resolve) =>
+    socket.once("close", () => resolve())
+  );
+  return { socket, closed };
+}
+
+type TestSocket = ReturnType<typeof testSocket>;
+
+/**
+ * 시험이 만든 소켓들(`testConnection`·`testPool`)을 끝낸다. 라이브러리의 정중한 끝(`end`)을 먼저 부른다: pg가 이 끝을 예상한 끝으로
+ * 다룬다(예상하지 못한 끊김의 오류 이벤트를 내지 않는다). 끝은 라이브러리 Promise의 이행이 아니라 소켓들의 닫힘으로 본다: pg-pool의
+ * `end()`는 연결을 목록에서 먼저 빼고 끝내므로 소켓이 닫히기 전에 이행할 수 있다(pg-pool 3.14 `_remove`·`_pulseQueue`). `end`의 이행과
+ * 소켓들의 닫힘을 `limitMs` 안에서 확인하고, 정중한 끝이 실패하거나 상한을 넘기면(상대가 끝에 답하지 않음) 끊고 닫힘을 다시 `limitMs`
+ * 안에서 확인한다. 끊어 닫았어도 정중한 끝의 실패는 알리고, 끊어도 닫히지 않으면 두 실패를 함께 알린다. `cut`이면(상대가 답하지
+ * 않았거나 멈췄을 수 있다) 처음부터 끊고, 끝은 마찬가지로 소켓들의 닫힘으로 본다.
+ */
+async function endSockets(
+  sockets: Iterable<TestSocket>,
+  end: () => Promise<unknown>,
+  cut: boolean,
+  limitMs: number,
+  what: string
+) {
+  const owned = [...sockets];
+  const closed = Promise.all(owned.map(({ closed }) => closed));
+  const ended = new Promise((resolve) => resolve(end()));
+  const cutAll = () => {
+    for (const { socket } of owned) socket.destroy();
+  };
+  const settled = () =>
+    within(Promise.all([ended, closed]), limitMs, what).then(() => {});
+  if (cut) {
+    cutAll();
+    return settled();
+  }
+  const polite = await attemptEach([settled]);
+  if (polite.length === 0) return;
+  cutAll();
+  throw combinedFailure(
+    [
+      ...polite,
+      ...(await attemptEach([
+        () => within(closed, limitMs, `${what}, even after it was cut`),
+      ])),
+    ],
+    `${what} politely, and cutting it did not close it either`,
+    { cause: polite[0] }
   );
 }
 
 /**
- * 시험이 여는 pg 연결. 연결의 소켓은 시험이 만든다(pg 설정 `stream`, `@types/pg` `ConnectionConfig.stream`). `close`는 `end()`를
- * 부르고, `cut`이면 그 소켓을 끊은 뒤, 연결의 끝(`end()`의 이행, 소켓의 `close`)을 `limitMs` 안에서 확인한다. pg의 `end()`는 답 없는
- * 질의가 있으면 소켓을 닫지만 연결 중이거나 쉬는 연결은 정중히 끝내며 상대의 끝을 기다리므로(pg 8.23 `lib/client.js` `end`), 상대가
- * 답하지 않았거나 멈췄을 수 있으면 끊어야 끝난다. `end()`를 먼저 불러 pg가 이 끝을 예상한 끝으로 다룬다(예상하지 못한 끊김의 오류
- * 이벤트를 내지 않는다). 제품 `withClient`는 시한을 두지 않으므로 시험의 연결에 쓰지 않는다.
+ * 시험이 여는 pg 연결. 연결의 소켓은 시험이 만든다(pg 설정 `stream`, `@types/pg` `ConnectionConfig.stream`). `close`는 그 연결을
+ * 끝내고 소켓의 닫힘을 확인한다(`endSockets`). pg의 `end()`는 답 없는 질의가 있으면 소켓을 닫지만 연결 중이거나 쉬는 연결은 정중히
+ * 끝내며 상대의 끝을 기다린다(pg 8.23 `lib/client.js` `end`). 상대가 답하지 않았거나 멈췄을 수 있으면 `cut`으로 처음부터 끊는다.
+ * 제품 `withClient`는 시한을 두지 않으므로 시험의 연결에 쓰지 않는다.
  */
 export function testConnection(url: string) {
-  const socket = new net.Socket();
-  const client = new pg.Client({ connectionString: url, stream: () => socket });
+  const owned = testSocket();
+  const client = new pg.Client({
+    connectionString: url,
+    stream: () => owned.socket,
+  });
   return {
     client,
-    close: (cut: boolean, limitMs: number, what: string) => {
-      const ended = client.end();
-      if (cut) socket.destroy();
-      return within(ended, limitMs, what);
-    },
+    close: (cut: boolean, limitMs: number, what: string) =>
+      endSockets([owned], () => client.end(), cut, limitMs, what),
   };
 }
 
 /**
  * 시험이 서버(`url`)에 `ask`로 묻는다(`testConnection`). 연결과 묻기를 합쳐 `limitMs` 안에 끝나지 않으면 `what`으로 실패하고, 성공·실패
  * 모두 그 연결을 끝내고 끝난 것을 확인한다(CODING_STANDARDS 「정리」). 상한이 거절만 하면 연결 시도나 묻기가 그대로 돌아 연결이 남는다.
- * 답을 받았으면 정중히 끝내고, 받지 못했으면 끊는다.
+ * 답을 받았으면 정중히 끝내고(끝나지 않으면 끊고 그 실패를 알린다), 받지 못했으면 끊는다.
  */
 export function askServer<T>(
   url: string,
@@ -186,28 +309,25 @@ export function askServer<T>(
  * 시험이 여는 pg pool(`testConnection`과 같은 기준). 연결마다 pg-pool의 연결 상한(`connectionTimeoutMillis`: 넘기면 그 연결의 소켓을
  * 끊는다)과 pg의 질의 상한(`query_timeout`: 넘긴 질의는 실패하고, pool은 오류와 함께 돌려받은 연결을 끝낸다. pg의 `end()`는 답 없는
  * 질의가 남은 연결의 소켓을 닫는다)을 `limitMs`로 둔다(pg-pool 3.14 `index.js` `newClient`·`_release`, pg 8.23 `lib/client.js`). 연결의
- * 소켓은 시험이 만든다(pg 설정 `stream`). 돌려준 `close`는 pool을 끝내고, `cut`이면(시험이 다 쓰지 못함: 상대가 멈췄을 수 있다) 그
- * 소켓들을 끊은 뒤, pool의 끝(`end()`의 이행: 모든 연결이 끝남)을 `limitMs` 안에서 확인한다.
+ * 소켓은 시험이 만든다(pg 설정 `stream`). 돌려준 `close`는 pool을 끝내고 그 연결들의 소켓이 모두 닫힌 것을 확인한다(`endSockets`).
+ * 시험이 다 쓰지 못했으면(상대가 멈췄을 수 있다) `cut`으로 처음부터 끊는다.
  */
 export function testPool(url: string, limitMs: number) {
-  const sockets = new Set<net.Socket>();
+  const sockets = new Set<TestSocket>();
   const pool = new pg.Pool({
     connectionString: url,
     connectionTimeoutMillis: limitMs,
     query_timeout: limitMs,
     stream: () => {
-      const socket = new net.Socket();
-      sockets.add(socket);
-      return socket;
+      const owned = testSocket();
+      sockets.add(owned);
+      return owned.socket;
     },
   });
   return {
     pool,
-    close: (cut: boolean, what: string) => {
-      const ended = pool.end();
-      if (cut) for (const socket of sockets) socket.destroy();
-      return within(ended, limitMs, what);
-    },
+    close: (cut: boolean, what: string) =>
+      endSockets(sockets, () => pool.end(), cut, limitMs, what),
   };
 }
 
