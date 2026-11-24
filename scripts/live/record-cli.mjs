@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createWriteStream } from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { buffer } from "node:stream/consumers";
 import { launchTree, prepareSupervisor } from "@babojubot/process";
 import {
   failureCode,
@@ -81,10 +82,21 @@ function proxy(target) {
         res.writeHead(400).end();
         return;
       }
-      const body = [];
-      req.on("data", (chunk) => body.push(chunk));
-      req.on("end", () => {
-        const sent = Buffer.concat(body);
+      // 본문은 끝까지 받은 뒤에 넘긴다. 요청자가 본문 중간에 떠나면 Node가 그 요청을 오류로 끝내고 `end`는 오지 않는다. 읽기가
+      // 정상 끝·오류·중간 닫힘을 함께 받으므로, 그때는 그 실패를 남기고 상류로 넘기지 않는다.
+      void buffer(req).then(
+        (sent) => passOn(sent, url),
+        (error) => {
+          record("http-request-error", {
+            method: req.method,
+            url,
+            code: failureCode(error),
+          });
+          res.destroy();
+        }
+      );
+      /** 끝까지 받은 요청을 상류로 넘기고 그 답을 요청자에게 넘긴다. */
+      function passOn(sent, url) {
         const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         record("http-request", {
           id,
@@ -128,7 +140,7 @@ function proxy(target) {
         });
         res.on("close", () => upstream.destroy());
         upstream.end(sent);
-      });
+      }
     });
     server.unref();
     server.listen(0, "127.0.0.1", () => {
