@@ -14,7 +14,17 @@ import { testFolders } from "./test-folders.ts";
 // @babojubot/process의 lease-hidden.alone.test.ts가 본다. 이 시험이 띄운 프로그램은 같은 시각의 다른 시험 실행 시도에도 그렇게
 // 보이므로, 이 파일은 다른 시험과 겹치지 않게 따로 돈다.
 /** 실행 시도가 남겼다고 알린 프로그램: 번호와 알린 때 본 시작 시각(`ps`의 lstart). */
-const reported: { pid: number; start: string | undefined }[] = [];
+type Reported = { pid: number; start: string | undefined };
+const reported: Reported[] = [];
+/**
+ * 알린 프로그램이 끝났는가. 그 번호의 시작 시각이 알린 때와 다르거나 없으면 그 번호는 이제 그 프로그램이 아니다(끝났다). 같으면
+ * 그 프로그램이라 그 상태(거두어지기 전의 좀비 포함)를 본다. 환경을 숨긴 Python 프로그램은 시험의 연결을 쥘 수 없어(연결 규약을
+ * Python으로 다시 써야 한다) 정리와 같은 신원(시작 시각)으로 판정한다.
+ */
+const ended = ({ pid, start }: Reported) => {
+  if (start === undefined) return true;
+  return psField(pid, "lstart", 10_000) !== start || exited(pid);
+};
 const folders = testFolders();
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -41,7 +51,7 @@ describe.runIf(process.platform === "linux")(
     // 옛 기대). 실행기가 끄는 것이 근본 수단이 되어 기대를 바꿨다.
     it("are ended with the run when the run left them", async () => {
       const stateDir = await folders.make("babojubot-hidden-");
-      let pid: number | undefined;
+      let left: Reported | undefined;
       const run = startProcess({
         command: [
           process.execPath,
@@ -61,16 +71,18 @@ setInterval(() => {}, 1000);
         env: { PATH: process.env.PATH },
         stateDir,
         onFrame: async (frame) => {
-          pid = (frame as { hidden: number }).hidden;
-          reported.push({ pid, start: psField(pid, "lstart", 10_000) });
+          const pid = (frame as { hidden: number }).hidden;
+          left = { pid, start: psField(pid, "lstart", 10_000) };
+          reported.push(left);
         },
       });
       const exit = await run.done;
-      // 프로그램이 번호를 알리기 전에 끝났으면 여기서 실패한다.
-      expect(pid).toBeDefined();
+      // 프로그램이 번호를 알리기 전에 끝났으면 여기서 실패한다. 알린 때 살아 있어 시작 시각이 있어야 한다.
+      if (left?.start === undefined)
+        throw new Error("the run did not report a running hidden program");
       expect(exit.broken).toBe(false);
       expect(await readdir(path.join(stateDir, "processes"))).toHaveLength(0);
-      expect(exited(pid!)).toBe(true);
+      expect(ended(left)).toBe(true);
     });
 
     // 실행 시도 중 서버와 같은 cgroup에 생겼지만 실행 시도의 트리 밖인 프로그램은 표식 정리만 본다. 환경을 숨겼으면 우리 것인지
