@@ -186,7 +186,7 @@ function linkedRepositoryPath(target, context) {
 /**
  * 게시문에서 독자가 열 수 없는 경로를 찾는다. 점 폴더 경로는 글자로(코드 표기 안 포함), 링크는 CommonMark·GFM 구문 트리로 본다
  * (인라인 링크·이미지·자동 링크·맨 주소·참조식 링크 정의·raw HTML의 href, 코드 안 글은 링크가 아님). 이 컴퓨터의 저장소 절대 경로는
- * 먼저 뗀다. 줄마다 같은 대상은 한 번만 낸다.
+ * 먼저 뗀다. 줄마다 같은 대상은 한 번만 낸다. 대상을 판정할 수 없는 raw HTML 링크는 `undecidable`로 낸다.
  */
 export function findLocalOnlyReferences(text, context) {
   let stripped = text;
@@ -201,15 +201,22 @@ export function findLocalOnlyReferences(text, context) {
     for (const match of line.matchAll(context.dotFolderPath))
       add(index + 1, match[0].trim().replace(/^[`'"(]/, ""));
   });
-  for (const { url, line } of linkTargets(parseMarkdown(stripped))) {
+  const targets = linkTargets(parseMarkdown(stripped));
+  for (const { url, line } of targets.links) {
     const relative = linkedRepositoryPath(url, context);
     if (relative && context.isIgnored(relative)) add(line, url);
   }
-  return [...byLine.keys()]
-    .sort((a, b) => a - b)
-    .flatMap((line) =>
-      [...byLine.get(line)].map((reference) => ({ line, reference }))
-    );
+  return [
+    ...[...byLine.keys()]
+      .sort((a, b) => a - b)
+      .flatMap((line) =>
+        [...byLine.get(line)].map((reference) => ({ line, reference }))
+      ),
+    ...targets.undecidable.map(({ line, reason }) => ({
+      line,
+      undecidable: reason,
+    })),
+  ];
 }
 
 // gh issue/pr 하위 명령에서 게시되는 글을 받는 옵션. 값이 파일이면 "file".
@@ -282,12 +289,14 @@ export function postToGitHub(args, { context, cwd, readStdin, runGh, report }) {
     }))
   );
   if (findings.length) {
-    for (const { source, line, reference } of findings)
+    for (const finding of findings)
       report(
-        `Local-only path in published text ${source}:${line}: ${reference}`
+        "undecidable" in finding
+          ? `Cannot tell where an HTML link points in published text ${finding.source}:${finding.line}: ${finding.undecidable}`
+          : `Local-only path in published text ${finding.source}:${finding.line}: ${finding.reference}`
       );
     report(
-      "Nothing was posted. Readers cannot open Git-ignored paths: summarize the content in the text or link a committed file instead."
+      "Nothing was posted. Readers cannot open Git-ignored paths: summarize the content in the text or link a committed file instead. Write an HTML link that cannot be read as a Markdown link or a single plain href."
     );
     return 1;
   }

@@ -143,7 +143,7 @@ test("each finding names the line and the reference", async () => {
       "첫 줄\n자세한 건 `.scratch/x.md` 참고",
       loadContext(fixture)
     );
-    assert.ok(finding, "no finding");
+    assert.ok(finding && "reference" in finding, "no path finding");
     assert.equal(finding.line, 2);
     assert.match(finding.reference, /\.scratch/);
   });
