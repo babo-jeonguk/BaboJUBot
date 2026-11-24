@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileLinks } from "@babojubot/process/test-support";
 import { testFolders } from "@babojubot/process/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { publishFile } from "./index.ts";
@@ -52,7 +53,8 @@ describe("publishing a file in one step", () => {
     expect(await readdir(root)).toEqual(["token"]);
   });
 
-  it.skipIf(process.platform === "win32")(
+  // 링크를 만들 권한이 없는 Windows에서는 이유와 함께 건너뛴다. CI는 필수로 정한다(`fileLinks`, #286 항목 16).
+  it.skipIf(!fileLinks())(
     "replaces a link at the place without following it",
     async () => {
       const root = await folders.make("babojubot-publish-");

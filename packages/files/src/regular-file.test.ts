@@ -1,11 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, openSync } from "node:fs";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { fileLinks } from "@babojubot/process/test-support";
 import { testFolders } from "@babojubot/process/testing";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { openRegularFile } from "./regular-file.ts";
@@ -33,25 +31,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return { ...real, open, default: { ...real, open } };
 });
 
-/**
- * 이 컴퓨터에서 링크를 만들 수 있는가. Windows는 링크 만들기 권한(관리자·개발자 모드)이 있어야 하고, 없으면 EPERM이다.
- * 권한이 있는 Windows(CI 실행기)에서는 링크 시험이 연 뒤 경로 항목과 연 파일을 대조하는 길을 실제로 돈다.
- */
-async function linksAllowed() {
-  if (process.platform !== "win32") return true;
-  return withCleanup(async (defer) => {
-    const root = await mkdtemp(path.join(tmpdir(), "babojubot-link-"));
-    defer(() => removeFolder(root));
-    try {
-      await symlink(path.join(root, "target"), path.join(root, "link"));
-      return true;
-    } catch (error) {
-      if (hasErrorCode("EPERM")(error)) return false;
-      throw error;
-    }
-  });
-}
-const canLink = await linksAllowed();
+// 링크를 만들 권한이 없는 Windows에서는 링크 시험을 이유와 함께 건너뛴다. CI는 필수로 정해 권한 있는 실행기에서 링크 시험이
+// 연 뒤 경로 항목과 연 파일을 대조하는 길을 실제로 돈다(`fileLinks`, #286 항목 16).
+const canLink = fileLinks();
 
 const folders = testFolders();
 afterEach(() => {

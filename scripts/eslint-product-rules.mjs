@@ -679,6 +679,7 @@ export const processNonLaunchers = [
   "within",
   "manualClock",
   "permissionDenial",
+  "fileLinks",
   "probeEnvironment",
   "reportedPid",
 ];

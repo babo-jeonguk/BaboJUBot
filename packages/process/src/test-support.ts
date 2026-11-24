@@ -1,4 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { symlinkSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { hasErrorCode } from "@babojubot/contracts";
 
 // 모듈을 불러올 때의 진짜 타이머. 시험이 가짜 시계를 켜도(`vi.useFakeTimers`) `within`의 상한은 실제 시간으로 잰다.
 const realSetTimeout = setTimeout;
@@ -113,6 +118,36 @@ export function permissionDenial(): boolean {
         process.getuid?.() === 0
           ? { missing: "root는 파일 권한을 넘어 읽고 쓴다" }
           : { value: true },
+    }) ?? false
+  );
+}
+
+/**
+ * 파일 링크(symlink)를 만들 수 있는가. Windows는 링크 만들기 권한(관리자·개발자 모드)이 있어야 하고 없으면 EPERM이다. 링크 시험은
+ * 이것으로 건너뛸지 정한다. CI는 `BABOJUBOT_REQUIRE_FILE_LINKS=1`로 필수로 정해(권한 있는 실행기), 만들 수 없으면 건너뛰지 않고
+ * 실패한다. 권한이 없다는 답(EPERM)만 "쓸 수 없음"이고, 그 밖의 실패는 링크 지원과 무관한 원인이라 그대로 던진다.
+ * 대상 없이 링크 하나만 임시 폴더에 만들고 바로 지운다. 폴더 링크(junction)는 Windows에서 권한 없이 만들므로 이 확인이 필요 없다.
+ */
+export function fileLinks(): boolean {
+  return (
+    probeEnvironment({
+      variable: "BABOJUBOT_REQUIRE_FILE_LINKS",
+      what: "파일 링크",
+      probe: () => {
+        const link = path.join(tmpdir(), `babojubot-link-${randomUUID()}`);
+        try {
+          symlinkSync(`${link}.target`, link, "file");
+        } catch (error) {
+          if (hasErrorCode("EPERM")(error))
+            return {
+              missing:
+                "파일 링크를 만들 권한이 없다(EPERM). Windows는 관리자 권한이나 개발자 모드에서만 만든다",
+            };
+          throw error;
+        }
+        unlinkSync(link);
+        return { value: true };
+      },
     }) ?? false
   );
 }
