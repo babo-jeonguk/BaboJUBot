@@ -39,6 +39,7 @@ import {
 import { killAndWait } from "@babojubot/process/testing";
 import { manualClock, probeEnvironment } from "@babojubot/process/test-support";
 import { attachedRelayHub, request } from "./test-support.ts";
+import { refusing, resetRefusing } from "./connect-failure-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
@@ -132,6 +133,13 @@ const policy = vi.hoisted(() => ({
         | { allowed: true; addresses: string[] }
         | { allowed: false; reason: EgressRefusal }),
 }));
+// 중계가 허용된 목적지로 붙는 연결(`relay.ts`의 `net.connect`)을 정한 오류로 실패시킨다(connect-failure-support.ts). 정한 포트가
+// 없으면 모든 연결이 진짜로 간다.
+vi.mock("node:net", async (importOriginal) =>
+  (await import("./connect-failure-support.ts")).failingNet(
+    await importOriginal()
+  )
+);
 vi.mock("./egress-policy.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./egress-policy.ts")>();
   return {
@@ -152,6 +160,7 @@ const createCodexProvider = folders.owning(unownedCodexProvider);
 const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 afterEach(() => {
+  resetRefusing();
   refusal = null;
   locked.folder = null;
   policy.decide = undefined;
@@ -3248,21 +3257,19 @@ describe.skipIf(process.platform === "win32")(
       });
     }
 
-    /** 받는 곳이 없는 이 컴퓨터의 포트: 잠깐 열어 번호를 받고 닫는다. */
-    async function closedPort() {
-      const server = net.createServer();
-      await new Promise<void>((resolve) =>
-        server.listen(0, "127.0.0.1", resolve)
-      );
-      const { port } = server.address() as net.AddressInfo;
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve()))
-      );
-      return port;
+    /**
+     * 금지 목적지. 중계가 그 주소로 붙으면 그 연결은 정한 오류(EHOSTUNREACH)로 실패하고 붙은 주소·포트가 남는다
+     * (connect-failure-support.ts). 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 번호를 잡으면 결함 없이 실패한다
+     * (#294 외부 리뷰 2회차 STD-2).
+     */
+    function forbiddenTarget() {
+      const target = { host: "127.0.0.1", port: 40_125 };
+      refusing.refuse = { port: target.port, code: "EHOSTUNREACH" };
+      return target;
     }
 
     it("finds a forbidden destination blocked only when the relay refuses its address", async () => {
-      const target = { host: "127.0.0.1", port: await closedPort() };
+      const target = forbiddenTarget();
       const environment = await probeEnvironmentWith();
       await expect(
         environment.probe(
@@ -3276,12 +3283,14 @@ describe.skipIf(process.platform === "win32")(
         toolsReached: true,
         unverified: [],
       });
+      // 주소 확인이 거부했으므로 중계는 목적지로 붙지 않았다.
+      expect(refusing.dialed).not.toHaveBeenCalled();
     });
 
     // 중계가 502로 답한 것은 정책이 그 목적지를 열고 연결만 실패한 것이다. 주소 확인이 막지 못했으므로 막혔다고 세지 않는다
     // (#286 항목 1).
     it("counts a forbidden destination the relay let through as reached, even when the connection behind it failed", async () => {
-      const target = { host: "127.0.0.1", port: await closedPort() };
+      const target = forbiddenTarget();
       policy.decide = () => ({ allowed: true, addresses: ["127.0.0.1"] });
       const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
       onTestFinished(() => warned.mockRestore());
@@ -3292,6 +3301,8 @@ describe.skipIf(process.platform === "win32")(
           AbortSignal.timeout(20_000)
         )
       ).resolves.toMatchObject({ proxied: [target] });
+      // 정책이 연 주소로 붙었고 그 연결이 실패했다(502).
+      expect(refusing.dialed.mock.calls).toEqual([[target]]);
     });
 
     // 주소 확인이 아닌 이유의 거부(정책을 읽지 못함·목록에 없음·이름을 풀지 못함)로는 주소 확인이 막는지 알 수 없다. 확인 불가다.
@@ -3302,7 +3313,7 @@ describe.skipIf(process.platform === "win32")(
     ] as const)(
       "reports the relay check as unverified when the relay refuses for %s instead of the address",
       async (reason) => {
-        const target = { host: "127.0.0.1", port: await closedPort() };
+        const target = forbiddenTarget();
         policy.decide = () => ({ allowed: false, reason });
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
@@ -3313,6 +3324,7 @@ describe.skipIf(process.platform === "win32")(
             AbortSignal.timeout(20_000)
           )
         ).resolves.toMatchObject({ proxied: [], unverified: ["proxied"] });
+        expect(refusing.dialed).not.toHaveBeenCalled();
       }
     );
 
@@ -3367,7 +3379,7 @@ describe.skipIf(process.platform === "win32")(
     ] as const)(
       "reports %s check answered by something other than HTTP as unverified, with the first line it got",
       async (_case, port, probe) => {
-        const target = { host: "127.0.0.1", port: await closedPort() };
+        const target = forbiddenTarget();
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
         const environment = await probeEnvironmentWith(
@@ -3380,6 +3392,8 @@ describe.skipIf(process.platform === "win32")(
         );
         expect(result.unverified).toEqual([probe]);
         expect(result.proxied).toEqual([]);
+        // 답을 바꿔 넣은 확인은 중계에 닿지 않아 목적지로 붙지 않았다.
+        expect(refusing.dialed).not.toHaveBeenCalled();
         expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
           `[provider] the isolation probe's ${probe} check failed (answered "SSH-2.0-OpenSSH_9.9")`,
         ]);

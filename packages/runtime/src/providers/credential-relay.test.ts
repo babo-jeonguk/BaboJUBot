@@ -10,12 +10,24 @@ import {
   credentialResidue,
   type RelayProfile,
 } from "./credential-relay.ts";
+import { refusing, resetRefusing } from "./connect-failure-support.ts";
 import { relayIdentityHeaders } from "./relay.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { attemptAll } from "@babojubot/contracts";
 import { permissionDenial } from "@babojubot/process/test-support";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
+
+// 상류로 가는 요청(`credential-relay.ts`의 `http.request`)의 연결을 정한 오류로 실패시킨다(connect-failure-support.ts).
+vi.mock("node:http", async (importOriginal) =>
+  (await import("./connect-failure-support.ts")).failingHttp(
+    await importOriginal(),
+    await import("node:net")
+  )
+);
+afterEach(() => {
+  resetRefusing();
+});
 
 type Seen = { method: string; url: string; headers: http.IncomingHttpHeaders };
 const servers: http.Server[] = [];
@@ -298,18 +310,13 @@ async function received(response: Response) {
 }
 
 describe("the credential relay", () => {
+  // 상류에 닿지 못한 연결의 원인은 그 연결이 받은 오류 코드다. 연결 경계에 실제 연결에서 나오지 않는 코드(EHOSTUNREACH)를 넣어
+  // 이 시스템의 포트 상태와 상관없이 본다(#294 외부 리뷰 2회차 STD-2 같은 모양).
   it("answers 502 and leaves why when it cannot reach the upstream", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
-    // 받는 곳이 없는 포트: 잠깐 열어 번호를 받고 닫는다.
-    const closed = net.createServer();
-    await new Promise<void>((resolve) =>
-      closed.listen(0, "127.0.0.1", resolve)
-    );
-    const port = (closed.address() as net.AddressInfo).port;
-    await new Promise<void>((resolve, reject) =>
-      closed.close((error) => (error ? reject(error) : resolve()))
-    );
+    const port = 40_124;
+    refusing.refuse = { port, code: "EHOSTUNREACH" };
     const { relay, url } = await setup({
       through: async (up) => `http://127.0.0.1:${port}${new URL(up).pathname}`,
     });
@@ -321,9 +328,10 @@ describe("the credential relay", () => {
     const response = await send(url, grant.token);
     expect(response.status).toBe(502);
     await response.body?.cancel();
-    expect(warned).toHaveBeenCalledWith(
-      expect.stringContaining("(ECONNREFUSED)")
-    );
+    expect(refusing.dialed.mock.calls).toEqual([[{ host: "127.0.0.1", port }]]);
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the credential relay could not reach the upstream; it answered 502 (EHOSTUNREACH)",
+    ]);
   });
 
   // 상류가 끊은 것은 상류 장애다. 프로그램이 떠나거나 실행이 취소되어 중계가 끊은 것과 같은 오류 코드(ECONNRESET)여도 원인을

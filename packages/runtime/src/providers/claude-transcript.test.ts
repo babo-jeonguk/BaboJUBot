@@ -123,29 +123,29 @@ describe.each(readers)(
       ]);
     });
 
-    // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하고, FIFO가 없다. 링크·FIFO 경우는 POSIX에서 본다.
-    it.skipIf(windows)(
-      "does not follow a link in place of a folder on the way to the transcript",
-      async () => {
-        const home = await folders.make("babojubot-transcript-");
-        const elsewhere = path.join(home, "elsewhere");
-        await mkdir(path.join(elsewhere, "projects", "project"), {
-          recursive: true,
-        });
-        await writeFile(
-          path.join(elsewhere, "projects", "project", `${session}.jsonl`),
-          transcript
-        );
-        await symlink(elsewhere, path.join(home, "config"));
-        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-        onTestFinished(() => warned.mockRestore());
-        expect(await readTranscript(home, session)).toBeUndefined();
-        // 확인하지 못한 폴더는 "기록 없음"과 같지 않다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
-        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
-          "[provider] a Claude session transcript folder could not be checked (link)",
-        ]);
-      }
-    );
+    // 가는 길의 폴더 자리에 둔 링크는 모든 시스템에서 본다. Windows의 폴더 링크(junction)는 권한 없이 만들 수 있고, 다른
+    // 시스템은 `"junction"`을 무시하고 폴더를 가리키는 링크를 만든다(Node `fs.symlink`). junction의 대상은 절대 경로여야 한다.
+    it("does not follow a link in place of a folder on the way to the transcript", async () => {
+      const home = await folders.make("babojubot-transcript-");
+      const elsewhere = path.join(home, "elsewhere");
+      await mkdir(path.join(elsewhere, "projects", "project"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(elsewhere, "projects", "project", `${session}.jsonl`),
+        transcript
+      );
+      await symlink(elsewhere, path.join(home, "config"), "junction");
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      expect(await readTranscript(home, session)).toBeUndefined();
+      // 확인하지 못한 폴더는 "기록 없음"과 같지 않다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] a Claude session transcript folder could not be checked (link)",
+      ]);
+    });
+
+    // Windows에는 FIFO가 없다. FIFO 경우는 POSIX에서 본다.
 
     it.skipIf(windows)(
       "answers nothing for a FIFO in place of the transcript without waiting for a writer",

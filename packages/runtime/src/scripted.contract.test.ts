@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import {
   defaultApprovalPolicy,
   type RunIdentity,
@@ -8,6 +9,19 @@ import {
   type RuntimeContractScene,
 } from "./runtime-contract.ts";
 import { createScriptedRuntime, expiredFakeSession } from "./scripted.ts";
+
+// 실행 시도가 띄운 프로그램의 끝을 계약 시험이 신호로 본다(runtime-contract.ts 약속 2). 실행 시도의 프로그램(`startProcess`)과
+// 공용 실행(`launchTree`·`runTree`)을 모두 본다.
+vi.mock("./providers/process.ts", async (importOriginal) =>
+  (await import("./providers/program-watch-support.ts")).watchPrograms(
+    await importOriginal()
+  )
+);
+vi.mock("@babojubot/process", async (importOriginal) =>
+  (await import("./providers/program-watch-support.ts")).watchProcessPackage(
+    await importOriginal()
+  )
+);
 
 /** 연구 진행 중인 조직의 Lead가 사용자 메시지 하나로 깨어난 요청. 신원은 공통 검사가 준다. */
 function leadRequest(
@@ -68,15 +82,14 @@ const saying =
 const scenes = {
   // 사용자 메시지에 답장하고 끝난다(맥락 조회 → 진행 활동 → 답장).
   finishes: saying("진행 상황을 알려 주세요"),
-  // `실행 유지 연습`은 취소될 때까지 끝내지 않는다.
+  // `실행 유지 연습`은 맥락을 읽고(일을 시작했다는 신호) 취소될 때까지 끝내지 않는다.
   worksUntilCancelled: saying("실행 유지 연습"),
-  // `실행 유지 연습`은 아무것도 하지 않고 기다려 일을 시작했다는 신호가 없다. 프로그램을 띄우지 않으므로 준비 시간도 없다.
-  quietStartMs: 200,
 };
 
 // 가짜 프로바이더가 첫 adapter다. 실제 HTTP로 가짜 도구 서버에 붙는다. 기본 설정(끼워 넣기·세션·사용량 지원)과
 // 아무것도 지원하지 않는 설정 둘 다 같은 공통 검사를 통과한다.
 describeRuntimeContract("scripted runtime", {
+  launches: "nothing",
   adapter: createScriptedRuntime(),
   ...scenes,
   unusableSession: expiredFakeSession,
@@ -94,6 +107,7 @@ describeRuntimeContract("scripted runtime", {
 });
 
 describeRuntimeContract("scripted runtime supporting nothing optional", {
+  launches: "nothing",
   adapter: createScriptedRuntime({
     settings: {
       capabilities: {

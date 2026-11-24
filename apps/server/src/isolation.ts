@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import os from "node:os";
 import {
   settled,
@@ -8,6 +9,14 @@ import {
   containerToolsOrigin,
   type DockerEnvironment,
 } from "@babojubot/runtime";
+
+/**
+ * 서버가 자기 컨테이너에 붙이고 시작 정리에서 고르는 주인 표식(`babojubot.owner`). 절대 경로로 받은 제품 폴더의 SHA-256 앞
+ * 16자다. 같은 Docker를 쓰는 다른 제품 폴더의 컨테이너는 이 값이 달라 건드리지 않는다.
+ */
+export function containerOwner(productHome: string): string {
+  return createHash("sha256").update(productHome).digest("hex").slice(0, 16);
+}
 
 /** 격리 실행을 시작하지 않은 이유. 제품이 쓴 안내라 실행 시도의 실패 문장으로 그대로 보인다. */
 export class IsolationError extends Error {}

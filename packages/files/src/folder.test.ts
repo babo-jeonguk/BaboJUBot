@@ -89,18 +89,23 @@ describe("reaching a name inside folders others can change", () => {
     ).rejects.toThrow(/one name/);
   });
 
-  // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하고, FIFO가 없다. 링크·FIFO 경우는 POSIX에서 본다.
-  it.skipIf(windows)(
-    "calls a link in place of a folder unverifiable without following it",
-    async () => {
-      const root = await placed(["elsewhere"], "file.db", "elsewhere");
-      await symlink(path.join(root, "elsewhere"), path.join(root, "data"));
-      expect(await openedIn(root, ["data"], "file.db")).toEqual({
-        state: "unverifiable",
-        found: "link",
-      });
-    }
-  );
+  // 폴더 자리의 링크는 모든 시스템에서 본다. Windows의 폴더 링크(junction)는 권한 없이 만들 수 있고, 그 시스템에서 다른 쪽이
+  // 폴더를 바꿔 두는 모양이다. 다른 시스템은 `"junction"`을 무시하고 폴더를 가리키는 링크를 만든다(Node `fs.symlink`). junction의
+  // 대상은 절대 경로여야 한다.
+  it("calls a link in place of a folder unverifiable without following it", async () => {
+    const root = await placed(["elsewhere"], "file.db", "elsewhere");
+    await symlink(
+      path.join(root, "elsewhere"),
+      path.join(root, "data"),
+      "junction"
+    );
+    expect(await openedIn(root, ["data"], "file.db")).toEqual({
+      state: "unverifiable",
+      found: "link",
+    });
+  });
+
+  // Windows에는 FIFO가 없고, 파일 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하다. FIFO·파일 링크 경우는 POSIX에서 본다.
 
   // FIFO 자리를 폴더로 열 때 쓰는 쪽을 기다리지 않고, 없는 것이 아니라 확인할 수 없는 것으로 답한다(#280 리뷰 1회차 STD-1).
   it.skipIf(windows)(
