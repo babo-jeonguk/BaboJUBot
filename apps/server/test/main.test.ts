@@ -68,11 +68,17 @@ const stopRequests = [
 // 외부 DB는 시험마다 새로 만든다. 같이 쓰면 앞 시험이 남긴 일(예: 조직 생성의 Lead 깨우기)을 뒤 시험의 서버가 이어받아
 // 그 시험의 결과가 실행 순서에 달린다.
 let external: TestDatabase;
-// 시험의 서버가 이 DB를 쓰므로 서버를 끈 뒤에 닫는다. 먼저 등록한 정리는 시험이 등록한 정리보다 뒤에 돈다.
+/**
+ * 그 시험의 DB를 닫기 전에 끝나야 하는 서버. 시험의 서버가 이 DB를 쓰므로 서버가 끝난 것을 확인한 뒤에만 닫고, 끄지 못한 서버가
+ * 있으면 닫지 않고 그 실패를 알린다(`folderCleanup`: 맡긴 멈춤이 모두 끝나야 마지막 단계를 한다). `startMain`이 띄운 서버를 맡긴다.
+ */
+let databaseUsers: ReturnType<typeof folderCleanup>;
 beforeEach(async ({ onTestFinished }) => {
   const database = await createTestDatabase();
   external = database;
-  onTestFinished(() => database.close());
+  const users = folderCleanup(() => database.close());
+  databaseUsers = users;
+  onTestFinished(users.cleanUp);
 });
 
 it("starts against an external Postgres URL and leaves that Postgres running on shutdown", async () => {
@@ -432,11 +438,13 @@ function startMain(
   if (home === undefined)
     throw new Error("BABOJUBOT_HOME is not set (test/product-home.ts sets it)");
   // 서버는 docker 클라이언트에 자기 환경을 넘기지 않고 Docker 설정 폴더(DOCKER_CONFIG)만 넘긴다. 서버마다 그 폴더를 따로 두어
-  // 가짜 docker에 이 서버의 주인 표식을 알리고, 가짜가 받은 명령을 그 폴더에서 읽는다. 서버를 끈 뒤에 지운다(정리는 역순).
+  // 가짜 docker에 이 서버의 주인 표식을 알리고, 가짜가 받은 명령을 그 폴더에서 읽는다. 서버가 끝난 것을 확인한 뒤에만 지운다.
+  // 끄지 못하면 폴더(가짜가 받은 명령의 기록)를 남기고 그 실패를 알린다.
   const dockerConfig = mkdtempSync(
     path.join(tmpdir(), "babojubot-fake-docker-")
   );
-  onTestFinished(() => removeFolder(dockerConfig));
+  const dockerFolder = folderCleanup(() => removeFolder(dockerConfig));
+  onTestFinished(dockerFolder.cleanUp);
   writeFileSync(
     path.join(dockerConfig, "fake-docker.json"),
     JSON.stringify({ owner: containerOwner(path.resolve(home)) })
@@ -496,6 +504,11 @@ function startMain(
       () => stdout,
       () => stderr
     ));
+  // 이 서버가 쓰는 폴더와 그 시험의 DB는 이 서버가 끝난 뒤에 정리한다. 시험이 따로 끄는 것(그룹 끄기 포함)과 겹쳐도 된다:
+  // `stopMain`은 이미 끝난 자식에 신호하지 않고 그 끝을 다시 확인한다.
+  const stop = () => stopMain(child);
+  dockerFolder.own(stop);
+  databaseUsers.own(stop);
   return child;
 }
 
