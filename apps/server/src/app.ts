@@ -186,6 +186,8 @@ export type ServerOptions = {
   notificationPollMs?: number;
   /** 격리 실행의 Docker 환경과 컨테이너에서 막혀야 하는 이 컴퓨터의 다른 포트(DB). 없으면 격리를 켜도 실제 연결은 준비안됨이다. */
   isolation?: { docker: DockerEnvironment; protectedPorts: number[] };
+  /** 듣기 시작한 순간 그 주소(`url`)로 한 번 부른다. 시작은 그 뒤 남은 실행 시도의 복구까지 기다렸다가 돌아온다. */
+  onListening?: (url: string) => void;
 };
 
 export type RunningServer = {
@@ -250,6 +252,7 @@ export async function startServer({
   ],
   notificationPollMs = 5_000,
   isolation,
+  onListening,
 }: ServerOptions): Promise<RunningServer> {
   if (notificationChannels.length !== 1)
     throw new Error(
@@ -1278,6 +1281,7 @@ export async function startServer({
   });
   const address = server.address() as net.AddressInfo;
   url = `http://${host}:${address.port}`;
+  onListening?.(url);
   /** 끄기의 지금 단계. 정리 시한이 지나면 `progress`가 이것으로 어디서 멈췄는지 알린다. */
   let stopStep: string | undefined;
   /**
