@@ -3347,6 +3347,59 @@ describe.skipIf(process.platform === "win32")(
       }
     );
 
+    // 중계의 답은 HTTP 파서가 읽은 머리로만 판정한다. 본문에 거부 머리와 같은 글자가 있어도 주소 거부가 아니다(#286 병합분 항목 10).
+    it("does not take refusal words in the body of the relay's answer for its address refusal", async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const environment = await probeEnvironmentWith(
+        {},
+        {
+          39280:
+            "HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\nx-babojubot-refusal: address_not_allowed\r\n",
+        }
+      );
+      await expect(
+        environment.probe(
+          { blocked: [], forbidden: [{ host: "192.0.2.20", port: 5432 }] },
+          AbortSignal.timeout(20_000)
+        )
+      ).resolves.toEqual({
+        interfaces: [],
+        reached: [],
+        proxied: [],
+        toolsReached: true,
+        unverified: ["proxied"],
+      });
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] the isolation probe's proxied check failed (answered 403)",
+      ]);
+    });
+
+    // 상태 줄 하나는 답이 아니다. 머리를 HTTP로 다 읽지 못하면 조직 도구에 닿았다고 보지 않고 파서가 알린 원인을 남긴다(#286 병합분 항목 10).
+    it("does not count the organization tools as reached when only the status line of their answer reads as HTTP", async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const environment = await probeEnvironmentWith(
+        {},
+        { 39281: "HTTP/1.1 200 OK\r\nnot a header line\r\n\r\n" }
+      );
+      await expect(
+        environment.probe(
+          { blocked: [], forbidden: [] },
+          AbortSignal.timeout(20_000)
+        )
+      ).resolves.toEqual({
+        interfaces: [],
+        reached: [],
+        proxied: [],
+        toolsReached: false,
+        unverified: ["tools"],
+      });
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] the isolation probe's tools check failed (HPE_INVALID_HEADER_TOKEN)",
+      ]);
+    });
+
     it("counts a direct connection that opened as reached", async () => {
       const target = { host: "192.0.2.10", port: 5432 };
       const environment = await probeEnvironmentWith({
@@ -3360,12 +3413,12 @@ describe.skipIf(process.platform === "win32")(
       ).resolves.toMatchObject({ reached: [target], unverified: [] });
     });
 
-    // HTTP가 아닌 것이 답하면 닿았는지 막혔는지 알 수 없다. 받은 첫 줄을 원인으로 남기고 확인 불가로 넘긴다(#286).
+    // HTTP가 아닌 것이 답하면 닿았는지 막혔는지 알 수 없다. HTTP 파서가 알린 원인을 남기고 확인 불가로 넘긴다(#286).
     it.each([
       ["the organization tools", 39281, "tools"],
       ["the relay", 39280, "proxied"],
     ] as const)(
-      "reports %s check answered by something other than HTTP as unverified, with the first line it got",
+      "reports %s check answered by something other than HTTP as unverified, with the cause its HTTP parser gave",
       async (_case, port, probe) => {
         const target = { host: "127.0.0.1", port: await closedPort() };
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -3381,7 +3434,7 @@ describe.skipIf(process.platform === "win32")(
         expect(result.unverified).toEqual([probe]);
         expect(result.proxied).toEqual([]);
         expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
-          `[provider] the isolation probe's ${probe} check failed (answered "SSH-2.0-OpenSSH_9.9")`,
+          `[provider] the isolation probe's ${probe} check failed (HPE_INVALID_CONSTANT)`,
         ]);
       }
     );
