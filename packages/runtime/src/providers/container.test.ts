@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { realpathSync, renameSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import http from "node:http";
@@ -1905,6 +1905,37 @@ describe.skipIf(process.platform === "win32")(
       expect(result.stopReason).toBe("failed");
       expectUnverified(result.error, "changed");
       expect(await t.env.calls()).toEqual([]);
+    }, 20000);
+
+    // 복사한 handle의 내용이 그대로여도, 그 사이 그 이름에 다른 저장소가 들어왔으면 읽은 것은 지금 그 이름의 저장소가 아니다. 남은 로그인이
+    // 없다고 볼 근거가 되지 못하므로 시작하지 않고 확인 중에 바뀌었다고 알린다(#286 병합분 항목 15).
+    it("does not start a container when another store with a login took the database's name while it was being copied", async () => {
+      const t = await openCodeSetup();
+      const data = path.join(t.organization, "data");
+      await storeLogins(data, []);
+      const replacement = path.join(t.organization, "replacement");
+      await storeLogins(replacement, [
+        { integration: "opencode-go", value: { type: "key", key: "left" } },
+      ]);
+      let replaced = false;
+      opening.beforeWal = () => {
+        renameSync(
+          path.join(replacement, "opencode", "opencode.db"),
+          path.join(data, "opencode", "opencode.db")
+        );
+        replaced = true;
+      };
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+
+      const result = await t
+        .provider()
+        .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+      expect(replaced).toBe(true);
+      expect(result.stopReason).toBe("failed");
+      expectUnverified(result.error, "changed");
+      expect(await t.env.calls()).toEqual([]);
+      expect(t.network.urls).toHaveLength(0);
     }, 20000);
 
     it("copies no connection login into the organization's product folder while an isolated run of the organization is still going, even after isolation is turned off (PR #171 SP-2)", async () => {
