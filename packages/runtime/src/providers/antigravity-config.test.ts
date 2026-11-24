@@ -509,8 +509,9 @@ it("keeps the confirmation failure and the unexpected put-back failure apart", a
 
 // 스크립트가 앞 파일의 까닭을 낸 뒤 다음 파일에서 죽어도(정리 실패 3이 아닌 끝남) 서버는 이미 받은 까닭을 버리지 않는다. 정해진 모양이
 // 아닌 줄(죽을 때의 스택)은 읽지 못한 출력으로, 끝남은 끝까지 돌지 못함으로 함께 남는다(#296 외부 리뷰 2회차 SPEC-3). 설정 파일을 읽을
-// 권한을 빼 스크립트가 죽게 한다(root는 권한을 무시하므로 건너뛴다).
-it.skipIf(!permissionDenial())(
+// 권한을 빼 스크립트가 죽게 한다(root는 권한을 무시하므로 건너뛴다). Windows는 POSIX 권한 비트로 읽기를 막지 않아(chmod는 읽기 전용
+// 표시만 바꾼다) 스크립트가 죽지 않으므로 건너뛴다.
+it.skipIf(process.platform === "win32" || !permissionDenial())(
   "keeps the reasons the cleanup script gave before it died, with how it ended",
   async () => {
     const { cwd, agents, config } = await workspace();
