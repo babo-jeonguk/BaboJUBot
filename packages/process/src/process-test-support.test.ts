@@ -6,6 +6,7 @@ import {
 import { once } from "node:events";
 import { createServer, type AddressInfo, type Socket } from "node:net";
 import { isDisconnect } from "@babojubot/contracts";
+import type { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { awaitedLater, killUnlessGone, withCleanup } from "./test-cleanup.ts";
@@ -163,6 +164,44 @@ it("cleans up a descendant that connects and never answers, and fails only for t
   });
 });
 
+/** 프로그램이 오류 출력의 첫 줄로 알린 자손의 번호. 줄 없이 출력이 끝나면 거절한다. */
+function reportedDescendant(errors: Readable) {
+  return new Promise<number>((resolve, reject) => {
+    let text = "";
+    errors.on("data", (chunk: Buffer) => {
+      text += String(chunk);
+      if (text.includes("\n"))
+        resolve(
+          reportedPid(
+            text.slice(0, text.indexOf("\n")),
+            "the descendant the program reported"
+          )
+        );
+    });
+    errors.once("end", () =>
+      reject(
+        new Error(
+          `the program ended without reporting its descendant (${JSON.stringify(text)})`
+        )
+      )
+    );
+  });
+}
+
+// #288 외부 리뷰 4회차 STD-5/SPEC-2: 프로그램이 번호 아닌 것을 알리면, 그 번호를 기다리는 쪽이 받은 값과 함께 거절된다. 출력
+// 이벤트 콜백 안에서 확인이 던지면 기다리는 쪽에 가지 않고 처리되지 않은 예외가 되어, 정리가 원래 실패로 받지 못한다.
+it("rejects the wait for a descendant's number with what the program reported instead", async () => {
+  const child = spawn(
+    process.execPath,
+    ["-e", `process.stderr.write("undefined\\n");`],
+    { stdio: ["ignore", "ignore", "pipe"] }
+  );
+  onTestFinished(() => endChild(child));
+  await expect(reportedDescendant(child.stderr!)).rejects.toThrow(
+    'the descendant the program reported is not a process number: "undefined"'
+  );
+});
+
 /**
  * 늦은 준비 줄 장면. 프로그램은 출력을 물려받은 자손을 떼어 띄우고, 시험이 시킬 때 끝난다. 자손(`descendant(port)`)은 시험의 서버에
  * 연결하고, 시험이 프로그램의 끝 뒤 가짜 시계를 5초 옮긴 다음 그 연결로 신호를 보낸다. 대기마다 `limitMs`를 상한으로 둔다.
@@ -217,28 +256,7 @@ async function lateReadyLine(
       ],
       { stdio: ["pipe", "pipe", "pipe"] }
     );
-    const descendantPid = awaitedLater(
-      new Promise<number>((resolve, reject) => {
-        let text = "";
-        child.stderr!.on("data", (chunk: Buffer) => {
-          text += String(chunk);
-          if (text.includes("\n"))
-            resolve(
-              reportedPid(
-                text.slice(0, text.indexOf("\n")),
-                "the descendant the program reported"
-              )
-            );
-        });
-        child.stderr!.once("end", () =>
-          reject(
-            new Error(
-              `the program ended without reporting its descendant (${JSON.stringify(text)})`
-            )
-          )
-        );
-      })
-    );
+    const descendantPid = awaitedLater(reportedDescendant(child.stderr!));
     // 자손은 띄운 즉시 정리 대상이다. 정리는 프로그램의 끝을 본 뒤(아래 단계가 먼저 돈다) 출력이 열려 있을 때만 그 번호로 끄고,
     // 끝은 출력의 끝으로 본다. 번호를 받지 못했는데 출력이 열려 있으면 그 이유로 실패한다.
     const holder = outputHolder(child, limitMs);

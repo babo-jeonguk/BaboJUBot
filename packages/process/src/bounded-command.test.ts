@@ -1,5 +1,4 @@
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -9,8 +8,7 @@ import {
 } from "./bounded-command.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { testFolders } from "./test-folders.ts";
-import { killUnlessGone } from "./test-cleanup.ts";
-import { reportedPid } from "./test-support.ts";
+import { lifelineHolder } from "./test-cleanup.ts";
 
 // 공용 실행 위에 놓을 수 없는 짧은 명령도 시한에 끝을 보장한다(#262). Node.js의 timeout은 신호만 보내고 기다리므로, 신호를 무시하는
 // 조회나 출력을 물려받은 자손이 남은 조회에서 끝나지 않았다. 남았는지는 번호가 아니라 그 프로세스가 쥔 연결로 본다(#259).
@@ -55,20 +53,10 @@ describe("runCommand", () => {
     const folder = await folders.make("babojubot-bounded-");
     const pidFile = path.join(folder, "child.pid");
     const name = unique("holder");
-    // 폴더를 지우기 전에 그 자식을 끄고 끝나기를 기다린다. 연결이 열려 있으면 그 번호의 프로세스는 아직 그 자식이다.
-    folders.own(async () => {
-      // 연결은 시험의 이벤트 루프가 처리한 뒤에야 보이므로 먼저 기다린다(오지 않으면 그 이유로 실패). 열려 있음을 본 직후에만 끈다.
-      await lifelines.connected(name);
-      if (lifelines.open(name))
-        killUnlessGone(
-          reportedPid(
-            await readFile(pidFile, "utf8"),
-            `the pid file of ${name}`
-          )
-        );
-      await lifelines.closed(name);
-    }, "the child holding the output");
-    const child = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(name)} ${keep}`;
+    // 폴더를 지우기 전에 그 자식을 끄고 끝나기를 기다린다(`lifelineHolder`).
+    const holder = lifelineHolder(lifelines, name, pidFile);
+    folders.own(holder.end, "the child holding the output");
+    const child = `${holder.code} ${keep}`;
     // 자식은 번호를 먼저 남긴 뒤 연결을 쥔다(#286: 연결이 보이면 정리가 그 번호를 읽을 수 있다). 대표는 자식이 번호를 남긴 뒤
     // 끝난다. 자식은 대표의 출력을 물려받아 쥔 채 남는다.
     const result = await node(

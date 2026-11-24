@@ -24,7 +24,7 @@ import {
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { supervisorProtocol } from "./supervisor.ts";
 import { endChild } from "./process-test-support.ts";
-import { killUnlessGone } from "./test-cleanup.ts";
+import { lifelineHolder } from "./test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
 import { reportedPid } from "./test-support.ts";
 
@@ -444,22 +444,10 @@ describe("launchTree without a supervisor", () => {
     const name = unique(label);
     const pidFile = path.join(dataDir, `${name}.pid`);
     const file = path.join(dataDir, `${name}.cjs`);
-    await writeFile(
-      file,
-      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(name)} ${keep}`
-    );
-    // 시험이 `spawnSync`로 막혀 있는 동안 온 연결은 그 뒤에야 처리되므로, 정리는 먼저 연결을 기다린다(오지 않으면 그 이유로 실패).
-    onTestFinished(async () => {
-      await lifelines.connected(name);
-      if (lifelines.open(name))
-        killUnlessGone(
-          reportedPid(
-            await readFile(pidFile, "utf8"),
-            `the pid file of ${name}`
-          )
-        );
-      await lifelines.closed(name);
-    });
+    const held = lifelineHolder(lifelines, name, pidFile);
+    await writeFile(file, `${held.code} ${keep}`);
+    // 시험이 `spawnSync`로 막혀 있는 동안 온 연결은 그 뒤에야 처리된다. 정리는 먼저 연결을 기다린다(`lifelineHolder`).
+    onTestFinished(held.end);
     const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
     return `${quote(process.execPath)} ${quote(file)}`;
   }
