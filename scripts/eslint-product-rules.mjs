@@ -1870,21 +1870,21 @@ const functionNodeTypes = new Set([
 ]);
 
 /**
- * git 인수(`{ value }`는 글자, `{ unknown }`은 모르는 인수)가 경로 목록을 -z 없이 읽으면 그 하위 명령, 아니면 undefined. 경로 목록:
- * `ls-files`, `ls-tree`, diff 계열·`log`·`show`의 `--name-only`·`--name-status`, `status`의 `--porcelain`·`--short`·`-s`. 하위 명령을
- * 모르면(전역 옵션 뒤 첫 인수가 모르는 값) 판정하지 않는다. -z는 따로 적거나 짧은 옵션 묶음(`-sz`)에 든다.
+ * git 인수(`{ value }`는 글자, `{ unknown }`은 모르는 인수)를 판정한다: 경로 목록을 -z 없이 읽으면 `{ command }`, 하위 명령을
+ * 모르면(전역 옵션 뒤 첫 인수가 모르는 값) `{ unjudged: true }`, 아니면 undefined. 경로 목록: `ls-files`, `ls-tree`, diff 계열·`log`·
+ * `show`의 `--name-only`·`--name-status`, `status`의 `--porcelain`·`--short`·`-s`. -z는 따로 적거나 짧은 옵션 묶음(`-sz`)에 든다.
  */
 function gitPathListWithoutNul(parts) {
   let at = 0;
   while (at < parts.length) {
     const part = parts[at];
-    if (!part || "unknown" in part) return undefined;
+    if (!part || "unknown" in part) return { unjudged: true };
     if (gitOptionsWithValue.has(part.value)) at += 2;
     else if (part.value.startsWith("-")) at += 1;
     else break;
   }
   const command = parts[at];
-  if (!command || "unknown" in command) return undefined;
+  if (!command || "unknown" in command) return { unjudged: true };
   const flags = parts
     .slice(at + 1)
     .flatMap((part) => ("value" in part ? [part.value] : []));
@@ -1903,7 +1903,7 @@ function gitPathListWithoutNul(parts) {
       has("--name-only", "--name-status")) ||
     (command.value === "status" &&
       (has("--porcelain", "--short") || short("s")));
-  return lists && !short("z") ? command.value : undefined;
+  return lists && !short("z") ? { command: command.value } : undefined;
 }
 
 /**
@@ -1911,7 +1911,8 @@ function gitPathListWithoutNul(parts) {
  * 줄로 나누면 그런 이름을 다른 경로로 읽으므로, 경로 목록은 -z로 NUL 구분 목록을 받는다(#285 외부 리뷰, #286 항목 31). 구문 트리로
  * 본다: child_process에서 온 실행(출처로, 이름을 바꿔 가져오거나 모듈 객체로 불러도)에 "git"과 인수 배열을 넘기거나 "git …" 셸
  * 명령 글을 넘기는 호출. git 인수를 매개변수(나머지 인자·배열 인자)로 받아 넘기는 같은 파일의 감싸기 함수는 그 함수를 부르는 자리의
- * 인수로 판정하고, 감싸기를 다시 감싼 함수도 따라간다. 하위 명령이 글자가 아니면 판정하지 않는다.
+ * 인수로 판정하고, 감싸기를 다시 감싼 함수도 따라간다. 하위 명령을 읽지 못하면(글자가 아님, 감싸기를 내보내거나 값으로 넘기거나 이름
+ * 없이 넘겨 부르는 자리를 따라갈 수 없음) "경로 목록 아님"으로 접지 않고 판정할 수 없다고 보고한다.
  */
 const gitPathListNul = {
   meta: {
@@ -1924,6 +1925,8 @@ const gitPathListNul = {
     messages: {
       missing:
         "git {{command}}의 경로 목록을 -z 없이 읽습니다. 줄 단위 출력은 줄바꿈·따옴표·탭·ASCII 밖 글자가 든 이름을 따옴표로 감싸 이스케이프하므로(core.quotePath) 그 이름을 다른 경로로 읽습니다. -z를 더해 NUL 구분 목록을 받고 \\0으로 나누세요.",
+      unjudged:
+        "git 호출의 하위 명령을 읽지 못해 경로 목록을 -z로 읽는지 판정할 수 없습니다. 하위 명령과 그 앞 옵션을 글자로 적고, git 인수를 넘기는 감싸기 함수는 같은 파일에서 이름으로 부르세요(내보내거나 값으로 넘기지 않음).",
     },
   },
   create(context) {
@@ -2006,21 +2009,45 @@ const gitPathListNul = {
         .getDeclaredVariables(declaration)
         .find((variable) => variable.name === name);
     };
+    /** 함수 선언이나 const로 받은 함수 식이 그 자리에서 내보내지는지. 이름으로 내보내는 것은 부르지 않고 읽는 자리로 잡힌다. */
+    const exported = (fn) => {
+      const statement =
+        fn.type === "FunctionDeclaration" ? fn : fn.parent?.parent;
+      return (
+        statement?.parent?.type === "ExportNamedDeclaration" ||
+        statement?.parent?.type === "ExportDefaultDeclaration"
+      );
+    };
     const follow = (parts, fn, node, seen) => {
       if (!parts.some((part) => "param" in part)) {
-        const command = gitPathListWithoutNul(parts);
-        if (command)
-          context.report({ node, messageId: "missing", data: { command } });
+        const judged = gitPathListWithoutNul(parts);
+        if (judged && "unjudged" in judged)
+          context.report({ node, messageId: "unjudged" });
+        else if (judged)
+          context.report({
+            node,
+            messageId: "missing",
+            data: { command: judged.command },
+          });
         return;
       }
-      if (!fn || seen.has(fn)) return;
-      for (const reference of functionVariable(fn)?.references ?? []) {
+      if (seen.has(fn)) return;
+      // 매개변수로 받은 git 인수는 부르는 자리에서 정해진다. 그 자리를 모두 볼 수 없으면(이름 없는 함수, 내보낸 함수, 부르지 않고
+      // 읽는 자리) 판정할 수 없다.
+      const variable = functionVariable(fn);
+      if (!variable || exported(fn)) {
+        context.report({ node, messageId: "unjudged" });
+        return;
+      }
+      for (const reference of variable.references) {
         const call = reference.identifier.parent;
         if (
           call?.type !== "CallExpression" ||
           call.callee !== reference.identifier
-        )
+        ) {
+          if (!reference.init) context.report({ node, messageId: "unjudged" });
           continue;
+        }
         const caller = enclosingFunction(call);
         follow(
           atCall(parts, fn, call, caller),
