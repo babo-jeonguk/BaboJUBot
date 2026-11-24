@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultAgentAppearance } from "@babojubot/contracts";
+import { defaultAgentAppearance, faceColors } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -202,12 +202,13 @@ describe("organization records", () => {
     const leadA = a.agents[0]!;
     const leadB = b.agents[0]!;
     const orgA = a.organization.id;
+    // 바꿀 얼굴은 지금(ID에서 정한 기본) 얼굴과 반드시 다르다: 색을 지금과 다른 값으로 둔다. 고정 얼굴은 매번 새 ID의 기본
+    // 얼굴과 우연히 같아 바뀐 것이 없게 될 수 있다.
+    const current = defaultAgentAppearance(leadA.id);
     const face = {
-      color: "mint",
-      eyes: "oval",
-      mouth: "flat",
-      accessory: "sprout",
-    } as const;
+      ...current,
+      color: faceColors.find((color) => color !== current.color)!,
+    };
 
     // 다른 조직의 에이전트는 없는 에이전트와 같다.
     expect(
