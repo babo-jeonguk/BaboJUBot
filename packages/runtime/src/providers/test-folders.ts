@@ -62,8 +62,31 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
       }),
     };
   };
+  /**
+   * 시험이 띄운 실행 시도(`startProcess`)를 정리에 맡긴다. 정리는 입력을 닫아 끝내고(`end`), 끄기 유예가 시험의 가짜 시계(`clock`) 위면
+   * 그 타이머까지 시계를 옮긴 뒤, 정리의 끝(`done`)을 정리 상한 안에서 기다린다. 이미 끝난 실행 시도에는 할 일이 없다. 실행의 결과는
+   * 시험이 본다. 띄운 직후 맡겨, 시험이 어디서 실패하든 실행 시도가 끝난 뒤에만 폴더를 지운다.
+   */
+  const ownRun = <T extends { end: () => void; done: Promise<unknown> }>(
+    run: T,
+    clock?: {
+      untilNext: () => number | undefined;
+      advance: (ms: number) => void;
+    }
+  ): T => {
+    folders.own(async () => {
+      run.end();
+      if (clock) {
+        const stop = clock.untilNext();
+        if (stop !== undefined) clock.advance(stop);
+      }
+      await Promise.allSettled([run.done]);
+    }, "run attempt");
+    return run;
+  };
   return {
     ...folders,
+    ownRun,
     /** 시험이 만든 프로바이더 연결을 정리에 맡긴다(위 `ownProvider`). */
     ownProvider,
     /**

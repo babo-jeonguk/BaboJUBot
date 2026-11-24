@@ -1,3 +1,4 @@
+import { within } from "@babojubot/process/test-support";
 import path from "node:path";
 import {
   afterAll,
@@ -75,21 +76,23 @@ describe("stopping a tree", () => {
     fault.stop = true;
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => error.mockRestore());
-    const attempt = startProcess({
-      // 입력이 닫혀도 끝나지 않는다.
-      command: [
-        process.execPath,
-        "-e",
-        `process.stdin.resume(); ${leader.script}`,
-      ],
-      args: [],
-      cwd: process.cwd(),
-      env: { PATH: process.env.PATH },
-      onFrame: async () => {},
-    });
+    const attempt = folders.ownRun(
+      startProcess({
+        // 입력이 닫혀도 끝나지 않는다.
+        command: [
+          process.execPath,
+          "-e",
+          `process.stdin.resume(); ${leader.script}`,
+        ],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        onFrame: async () => {},
+      })
+    );
     await lifelines.connected(leader.name);
     attempt.end();
-    const exit = await attempt.done;
+    const exit = await within(attempt.done, 30_000, "the run did not finish");
     expect(exit.broken).toBe(true);
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("could not all be stopped")

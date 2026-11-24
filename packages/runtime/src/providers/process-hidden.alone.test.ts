@@ -1,3 +1,4 @@
+import { within } from "@babojubot/process/test-support";
 import { spawn, type ChildProcess } from "node:child_process";
 import { readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -52,11 +53,12 @@ describe.runIf(process.platform === "linux")(
     it("are ended with the run when the run left them", async () => {
       const stateDir = await folders.make("babojubot-hidden-");
       let left: Reported | undefined;
-      const run = startProcess({
-        command: [
-          process.execPath,
-          "-e",
-          `
+      const run = folders.ownRun(
+        startProcess({
+          command: [
+            process.execPath,
+            "-e",
+            `
 const { spawn } = require("node:child_process");
 const hidden = spawn("python3", ["-c", ${JSON.stringify(hide)}], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
 hidden.stdout.once("data", () => {
@@ -65,18 +67,19 @@ hidden.stdout.once("data", () => {
 });
 setInterval(() => {}, 1000);
 `,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        stateDir,
-        onFrame: async (frame) => {
-          const pid = (frame as { hidden: number }).hidden;
-          left = { pid, start: psField(pid, "lstart", 10_000) };
-          reported.push(left);
-        },
-      });
-      const exit = await run.done;
+          ],
+          args: [],
+          cwd: process.cwd(),
+          env: { PATH: process.env.PATH },
+          stateDir,
+          onFrame: async (frame) => {
+            const pid = (frame as { hidden: number }).hidden;
+            left = { pid, start: psField(pid, "lstart", 10_000) };
+            reported.push(left);
+          },
+        })
+      );
+      const exit = await within(run.done, 30_000, "the run did not finish");
       // 프로그램이 번호를 알리기 전에 끝났으면 여기서 실패한다. 알린 때 살아 있어 시작 시각이 있어야 한다.
       if (left?.start === undefined)
         throw new Error("the run did not report a running hidden program");
@@ -92,33 +95,35 @@ setInterval(() => {}, 1000);
       const go = path.join(stateDir, "go");
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       let hidden: ChildProcess | undefined;
-      const run = startProcess({
-        command: [
-          process.execPath,
-          "-e",
-          `
+      const run = folders.ownRun(
+        startProcess({
+          command: [
+            process.execPath,
+            "-e",
+            `
 console.log(JSON.stringify({ started: true }));
 setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(go)})) process.exit(0); }, 20);
 `,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        stateDir,
-        onFrame: async () => {
-          // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 대표를 끝낸다.
-          // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
-          hidden = folders.ownChild(
-            spawn("python3", ["-c", hide], {
-              detached: true,
-              stdio: ["ignore", "pipe", "ignore"],
-            })
-          );
-          await readyLine(hidden, "ready");
-          await writeFile(go, "");
-        },
-      });
-      const exit = await run.done;
+          ],
+          args: [],
+          cwd: process.cwd(),
+          env: { PATH: process.env.PATH },
+          stateDir,
+          onFrame: async () => {
+            // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 대표를 끝낸다.
+            // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
+            hidden = folders.ownChild(
+              spawn("python3", ["-c", hide], {
+                detached: true,
+                stdio: ["ignore", "pipe", "ignore"],
+              })
+            );
+            await readyLine(hidden, "ready");
+            await writeFile(go, "");
+          },
+        })
+      );
+      const exit = await within(run.done, 30_000, "the run did not finish");
       if (hidden?.pid === undefined)
         throw new Error("the hidden program did not start");
       expect(exit.broken).toBe(true);

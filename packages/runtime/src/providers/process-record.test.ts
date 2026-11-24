@@ -1,3 +1,4 @@
+import { within } from "@babojubot/process/test-support";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -35,14 +36,20 @@ afterEach(async () => {
 });
 async function run() {
   const stateDir = await folders.make("babojubot-record-");
-  const exit = await startProcess({
-    stateDir,
-    command: [process.execPath, "-e", ""],
-    args: [],
-    cwd: process.cwd(),
-    env: { PATH: process.env.PATH },
-    onFrame: async () => {},
-  }).done;
+  const exit = await within(
+    folders.ownRun(
+      startProcess({
+        stateDir,
+        command: [process.execPath, "-e", ""],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        onFrame: async () => {},
+      })
+    ).done,
+    30_000,
+    "the run did not finish"
+  );
   return { exit, records: await readdir(path.join(stateDir, "processes")) };
 }
 

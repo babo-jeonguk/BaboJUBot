@@ -45,18 +45,22 @@ const run = async (
   } = {}
 ) => {
   const frames: unknown[] = [];
-  const child = startProcess({
-    command: [process.execPath, "-e", script],
-    args: [],
-    cwd: process.cwd(),
-    env: { PATH: process.env.PATH },
-    ...(options.maxLineLength ? { maxLineLength: options.maxLineLength } : {}),
-    onFrame: async (frame) => {
-      frames.push(frame);
-      await options.onFrame?.(frame);
-    },
-  });
-  const exit = await child.done;
+  const child = folders.ownRun(
+    startProcess({
+      command: [process.execPath, "-e", script],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      ...(options.maxLineLength
+        ? { maxLineLength: options.maxLineLength }
+        : {}),
+      onFrame: async (frame) => {
+        frames.push(frame);
+        await options.onFrame?.(frame);
+      },
+    })
+  );
+  const exit = await within(child.done, 20_000, "the run did not finish");
   return { frames, exit };
 };
 
@@ -73,26 +77,28 @@ it("skips only the line that is over the limit, across chunks", async () => {
   // 한 번에 쓰므로(POSIX는 512바이트 이하 쓰기를 파이프에 한꺼번에 넣는다) 부모가 앞 프레임을 받았을 때 앞부분도 받았다.
   // 나머지의 `{"n":0}`은 한도 안이라, 넘친 줄의 끝으로 버리지 않고 새 줄로 읽으면 프레임으로 잡힌다.
   const frames: unknown[] = [];
-  const child = startProcess({
-    command: [
-      process.execPath,
-      "-e",
-      `process.stdout.write('{"n":1}\\n' + 'x'.repeat(40));
+  const child = folders.ownRun(
+    startProcess({
+      command: [
+        process.execPath,
+        "-e",
+        `process.stdout.write('{"n":1}\\n' + 'x'.repeat(40));
        process.stdin.once("data", () => {
          process.stdout.write('{"n":0}\\n{"n":2}\\n');
          process.stdin.destroy();
        });`,
-    ],
-    args: [],
-    cwd: process.cwd(),
-    env: { PATH: process.env.PATH },
-    maxLineLength: 16,
-    onFrame: async (frame) => {
-      frames.push(frame);
-      if (isDeepStrictEqual(frame, { n: 1 })) child.write({ go: true });
-    },
-  });
-  const exit = await child.done;
+      ],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      maxLineLength: 16,
+      onFrame: async (frame) => {
+        frames.push(frame);
+        if (isDeepStrictEqual(frame, { n: 1 })) child.write({ go: true });
+      },
+    })
+  );
+  const exit = await within(child.done, 20_000, "the run did not finish");
   expect(frames).toEqual([{ n: 1 }, { n: 2 }]);
   expect(exit.broken).toBe(false);
 });
@@ -123,28 +129,24 @@ it("finishes a run when its program ends without waiting on the clock for a chil
   const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
   const frames: unknown[] = [];
   const clock = manualClock();
-  const child = startProcess({
-    command: [
-      process.execPath,
-      "-e",
-      `const h = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "ignore", "pipe"] }); h.stdio[3].once("data", () => { h.stdio[3].destroy(); h.unref(); process.stdout.write('{"n":1}'); });`,
-    ],
-    args: [],
-    cwd: process.cwd(),
-    env: { PATH: process.env.PATH },
-    clock,
-    onFrame: async (frame) => {
-      frames.push(frame);
-    },
-  });
-  // 시험이 어디서 실패하든 실행 시도의 트리를 끄고 그 정리의 끝(done)을 상한 안에서 확인한다. 연결 서버는 그 뒤에 닫는다(등록
-  // 역순). 입력을 닫은 뒤 트리를 끄기까지의 유예는 가짜 시계 위라, 그 타이머까지 시계를 옮긴다(이미 끝났으면 타이머가 없다).
-  onTestFinished(async () => {
-    child.end();
-    const stop = clock.untilNext();
-    if (stop !== undefined) clock.advance(stop);
-    await within(child.done, 20_000, "the run did not end in the cleanup");
-  });
+  const child = folders.ownRun(
+    startProcess({
+      command: [
+        process.execPath,
+        "-e",
+        `const h = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "ignore", "pipe"] }); h.stdio[3].once("data", () => { h.stdio[3].destroy(); h.unref(); process.stdout.write('{"n":1}'); });`,
+      ],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      clock,
+      onFrame: async (frame) => {
+        frames.push(frame);
+      },
+    }),
+    // 입력을 닫은 뒤 트리를 끄기까지의 유예는 가짜 시계 위라, 정리는 그 타이머까지 시계를 옮긴다.
+    clock
+  );
   const exit = await within(child.done, 20_000, "the run did not finish");
   expect(frames).toEqual([{ n: 1 }]);
   expect(exit).toMatchObject({ code: 0, broken: false });
@@ -199,14 +201,18 @@ describe("runProbe", () => {
   it("leaves why a run's program could not be started", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => logged.mockRestore());
-    const child = startProcess({
-      command: ["/missing/program"],
-      args: [],
-      cwd: process.cwd(),
-      env: { PATH: process.env.PATH },
-      onFrame: async () => {},
-    });
-    expect((await child.done).broken).toBe(true);
+    const child = folders.ownRun(
+      startProcess({
+        command: ["/missing/program"],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        onFrame: async () => {},
+      })
+    );
+    expect(
+      (await within(child.done, 20_000, "the run did not finish")).broken
+    ).toBe(true);
     expect(logged).toHaveBeenCalledWith(expect.stringContaining("(ENOENT)"));
   });
 

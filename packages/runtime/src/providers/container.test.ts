@@ -56,7 +56,11 @@ import {
 } from "./container.ts";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { lifelineHolder } from "@babojubot/process/test-cleanup";
-import { manualClock, probeEnvironment } from "@babojubot/process/test-support";
+import {
+  manualClock,
+  probeEnvironment,
+  within,
+} from "@babojubot/process/test-support";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { refusing, resetRefusing } from "./connect-failure-support.ts";
 import { startProcess } from "./process.ts";
@@ -617,25 +621,27 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     // The program shares the Docker program's output, so the child it leaves holds that output open after both end.
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
-    const started = startProcess({
-      command: ["unused"],
-      args: [log],
-      cwd: env.root,
-      env: { PATH: process.env.PATH },
-      container: {
-        settings: env.container,
-        mounts: [],
-        labels: {},
-        program: "codex",
-        env: {},
-        relay: { identity: { organizationId: env.org }, required: [] },
-      },
-      onFrame: async () => {
-        started.write({ go: true });
-      },
-    });
+    const started = folders.ownRun(
+      startProcess({
+        command: ["unused"],
+        args: [log],
+        cwd: env.root,
+        env: { PATH: process.env.PATH },
+        container: {
+          settings: env.container,
+          mounts: [],
+          labels: {},
+          program: "codex",
+          env: {},
+          relay: { identity: { organizationId: env.org }, required: [] },
+        },
+        onFrame: async () => {
+          started.write({ go: true });
+        },
+      })
+    );
 
-    await started.done;
+    await within(started.done, 30_000, "the run did not finish");
     // The child recorded, when it was told to stop, whether the relay was still open.
     expect(await readFile(log, "utf8")).toBe("relay closed");
   }, 20_000);
@@ -651,31 +657,35 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     // slow machine. Once the program ends, the run takes the relay back and stops the tree at once; nothing waits on the clock for
     // the output (#268; before, a 1 s output wait ran on this clock too).
     const clock = manualClock();
-    const started = startProcess({
-      clock,
-      command: ["unused"],
-      args: [log],
-      cwd: env.root,
-      env: { PATH: process.env.PATH },
-      container: {
-        settings: env.container,
-        mounts: [],
-        labels: {},
-        program: "codex",
-        env: {},
-        relay: { identity: { organizationId: env.org }, required: [] },
-      },
-      onFrame: async () => {
-        // Cancel: close the input. The stop timer would signal the group 2 s later.
-        started.end();
-      },
-    });
+    const started = folders.ownRun(
+      startProcess({
+        clock,
+        command: ["unused"],
+        args: [log],
+        cwd: env.root,
+        env: { PATH: process.env.PATH },
+        container: {
+          settings: env.container,
+          mounts: [],
+          labels: {},
+          program: "codex",
+          env: {},
+          relay: { identity: { organizationId: env.org }, required: [] },
+        },
+        onFrame: async () => {
+          // Cancel: close the input. The stop timer would signal the group 2 s later.
+          started.end();
+        },
+      }),
+      // 취소 뒤 끄기 타이머는 시험 시계 위라, 정리는 그 타이머까지 시계를 옮긴다.
+      clock
+    );
 
     await expect.poll(() => clock.scheduled(), programStart).toEqual([2_000]);
     clock.advance(1_500);
     // The program ends 1.5 s after the cancel, before the stop timer.
     await writeFile(log + ".exit", "");
-    await started.done;
+    await within(started.done, 30_000, "the run did not finish");
     expect(await readFile(log, "utf8")).toBe("relay closed");
   }, 20_000);
 

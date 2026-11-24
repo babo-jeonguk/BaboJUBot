@@ -41,7 +41,9 @@ import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   commandFailure,
   probeEnvironment,
+  within,
 } from "@babojubot/process/test-support";
+import { testFolders } from "./test-folders.ts";
 
 // 실제 Docker가 있는 환경에서만 도는 격리 경계 검사(#102, #149). 로컬에서 Docker를 쓸 수 없으면 원인을 출력하고 건너뛴다.
 // Linux CI는 BABOJUBOT_REQUIRE_DOCKER=1로 이 검사를 필수로 정한다(.github/workflows/scaffold.yml `tests / runtime`). 그때는
@@ -92,6 +94,9 @@ const available = probeEnvironment({
     return missing === undefined ? { value: true } : { missing };
   },
 });
+
+// 시험이 띄운 실행 시도는 띄운 직후 정리에 맡긴다(`ownRun`): 시험이 어디서 실패하든 끝내고 그 끝을 확인한다.
+const programs = testFolders();
 
 describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
   const suffix = crypto.randomUUID().slice(0, 8);
@@ -209,18 +214,20 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
     env: NodeJS.ProcessEnv = {}
   ) {
     const frames: unknown[] = [];
-    const child = startProcess({
-      command: ["unused"],
-      args: ["-e", script],
-      cwd: org.shared,
-      env: { HOME: org.home, ...env },
-      container: launchFor(org, extra),
-      onFrame: async (frame) => {
-        frames.push(frame);
-      },
-    });
+    const child = programs.ownRun(
+      startProcess({
+        command: ["unused"],
+        args: ["-e", script],
+        cwd: org.shared,
+        env: { HOME: org.home, ...env },
+        container: launchFor(org, extra),
+        onFrame: async (frame) => {
+          frames.push(frame);
+        },
+      })
+    );
     child.endInput();
-    const done = await child.done;
+    const done = await within(child.done, 30_000, "the run did not finish");
     return { done, frame: frames.at(-1) as Record<string, unknown> };
   }
 
@@ -478,47 +485,51 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
   it("lets this computer call a server inside the container through the relay, the way OpenCode is controlled", async () => {
     const org = await organization();
     const results: string[] = [];
-    const child = startProcess({
-      command: ["unused"],
-      args: [
-        "-e",
-        `require("node:http").createServer((q, s) => s.end("inside " + q.url)).listen(4096, "0.0.0.0", () => console.log(JSON.stringify({ url: "http://0.0.0.0:4096" })));`,
-      ],
-      cwd: org.shared,
-      env: { HOME: org.home },
-      container: launchFor(org, { inbound: 4096 }),
-      onFrame: async () => {
-        try {
-          const origin = await child.inboundOrigin();
-          results.push(await (await fetch(`${origin}/hello`)).text());
-        } finally {
-          child.end();
-        }
-      },
-    });
-    await child.done;
+    const child = programs.ownRun(
+      startProcess({
+        command: ["unused"],
+        args: [
+          "-e",
+          `require("node:http").createServer((q, s) => s.end("inside " + q.url)).listen(4096, "0.0.0.0", () => console.log(JSON.stringify({ url: "http://0.0.0.0:4096" })));`,
+        ],
+        cwd: org.shared,
+        env: { HOME: org.home },
+        container: launchFor(org, { inbound: 4096 }),
+        onFrame: async () => {
+          try {
+            const origin = await child.inboundOrigin();
+            results.push(await (await fetch(`${origin}/hello`)).text());
+          } finally {
+            child.end();
+          }
+        },
+      })
+    );
+    await within(child.done, 30_000, "the run did not finish");
     expect(results).toEqual(["inside /hello"]);
     expect(containersOf(settings.owner)).toBe("");
   }, 120_000);
 
   it("removes a container that ignores the stop signals as the last step of cancellation", async () => {
     const org = await organization();
-    const child = startProcess({
-      command: ["unused"],
-      args: [
-        "-e",
-        `process.on("SIGTERM", () => {}); process.on("SIGINT", () => {}); console.log(JSON.stringify({ ready: true })); setInterval(() => {}, 1000);`,
-      ],
-      cwd: org.shared,
-      env: { HOME: org.home },
-      container: launchFor(org),
-      onFrame: async () => {
-        child.end();
-      },
-    });
+    const child = programs.ownRun(
+      startProcess({
+        command: ["unused"],
+        args: [
+          "-e",
+          `process.on("SIGTERM", () => {}); process.on("SIGINT", () => {}); console.log(JSON.stringify({ ready: true })); setInterval(() => {}, 1000);`,
+        ],
+        cwd: org.shared,
+        env: { HOME: org.home },
+        container: launchFor(org),
+        onFrame: async () => {
+          child.end();
+        },
+      })
+    );
     // 신호를 무시하는 컨테이너도 취소가 끝나면(마지막 단계로 지워져) 남지 않는다. 멈춤 단계의 순서는 가짜 docker로
     // container.test.ts가 보고, 끝나지 않으면 시험 시한에 걸린다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
-    const done = await child.done;
+    const done = await within(child.done, 30_000, "the run did not finish");
     expect(done.broken).toBe(false);
     expect(containersOf(settings.owner)).toBe("");
   }, 120_000);
