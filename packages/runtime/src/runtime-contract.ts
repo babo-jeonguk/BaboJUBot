@@ -20,6 +20,7 @@ import {
 import { within } from "@babojubot/process/test-support";
 import {
   afterAll,
+  afterEach,
   beforeAll,
   describe,
   expect,
@@ -28,10 +29,11 @@ import {
 } from "vitest";
 import { probeTimeoutMs } from "./providers/process.ts";
 import {
-  activityLog,
-  programCount,
-  programsFrom,
+  lateProblems,
+  newOwner,
+  runAs,
   settleProblems,
+  takeUnowned,
   watchingPrograms,
 } from "./providers/program-watch-support.ts";
 
@@ -277,11 +279,18 @@ export function describeRuntimeContract(
       tools = await startFakeToolServer();
     });
     afterAll(() => tools.close());
+    // 어느 실행 시도·준비 확인에도 귀속되지 않고 띄운 것은 "없음"으로 접지 않는다. 시험마다 비어 있는지 본다.
+    afterEach(() => {
+      expect(
+        takeUnowned().map((launch) => launch.kind),
+        `${name} launched programs outside any run or readiness check`
+      ).toEqual([]);
+    });
 
     /**
-     * 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. 돌아온 뒤 낸 활동은 `late`에 따로 모으고
-     * 그 `emit`을 거절한다. adapter가 그 거절을 처리해 버려도 시험이 끝날 때 `late`가 비어 있는지 본다. 돌아올 때 이 실행 시도가
-     * 띄운 프로그램 가운데 아직 끝나지 않은 수와, 그때까지 띄운 프로그램 수를 남긴다.
+     * 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. 실행 시도는 자기 문맥(`runAs`)에서 돌아,
+     * 그동안 띄운 것과 낸 활동이 그 실행 시도에 귀속된다. 돌아온 뒤의 활동은 거절하고 따로 남기며, 돌아온 뒤에 띄운 것도 따로
+     * 남긴다. 둘 다 언제 오든 시험이 끝날 때 실패로 드러난다(`lateProblems`).
      */
     function run(
       scene: RuntimeContractScene,
@@ -294,17 +303,11 @@ export function describeRuntimeContract(
       );
       const messages = tools.serve(request);
       const controller = new AbortController();
-      const log = activityLog(name);
-      const { activities, late } = log;
+      const owner = newOwner(name);
+      const { activities, late } = owner;
       onTestFinished(() => {
-        expect(
-          late,
-          `${name} emitted activities after the run returned`
-        ).toEqual([]);
+        expect(lateProblems(owner)).toEqual([]);
       });
-      const firstProgram = programCount();
-      let atReturn:
-        { started: number; programs: number; notEnded: number } | undefined;
       // 활동 기록을 붙잡아 두면 풀어 줄 때까지 `emit`이 돌아오지 않는다. 기록은 그대로 한다.
       let gate: Promise<void> | undefined;
       let open: (() => void) | undefined;
@@ -328,26 +331,19 @@ export function describeRuntimeContract(
         };
       });
       tools.onRequest.add(markWorking);
-      const result = adapter
-        .execute(request, {
+      const result = runAs(owner, () =>
+        adapter.execute(request, {
           signal: controller.signal,
           emit: async (activity) => {
-            log.record(activity);
+            owner.record(activity);
             markWorking();
             await gate;
           },
         })
-        .finally(() => {
-          log.markReturned();
-          tools.onRequest.delete(markWorking);
-          atReturn = {
-            started: programCount() - firstProgram,
-            programs: programCount(),
-            notEnded: programsFrom(firstProgram).filter(
-              (p) => p.state !== "ended"
-            ).length,
-          };
-        });
+      ).finally(() => {
+        owner.markReturned();
+        tools.onRequest.delete(markWorking);
+      });
       /**
        * 일을 시작했다는 신호를 `startWithinMs` 안에 기다린다. 준비가 끝난 뒤에 취소·완료 시한을 재려고 쓴다. 신호 없이 끝나면
        * 그 뒤의 시한이 아무것도 재지 못하므로 기다리지 않고 실패한다(완료를 시작으로 치면 완료 시한이 준비 상한에 묻힌다).
@@ -371,15 +367,13 @@ export function describeRuntimeContract(
         activities,
         late,
         result,
-        /** 돌아올 때의 프로그램 기록. 돌아오기 전에는 없다. */
-        get atReturn() {
-          return atReturn;
-        },
+        /** 이 실행 시도가 띄운 것과 낸 활동. */
+        owner,
         started,
         working,
         holdActivities,
         get returned() {
-          return log.returned;
+          return owner.returned;
         },
       };
     }
@@ -398,17 +392,7 @@ export function describeRuntimeContract(
       // 반환 뒤 활동의 원천이 닫힌 것을 신호로 본 뒤 늦은 활동이 없는지 본다. 띄운 프로그램과 그 출력은 돌아올 때 이미 끝나 있고
       // (`done`), 돌아온 뒤 새로 띄운 프로그램이 없으며, 도구 호출은 이 서버에서 모두 끝난다. 그 뒤에 오는 활동도 `emit`이 거절하고
       // 시험 끝에 `late`로 드러난다.
-      const atReturn = attempt.atReturn;
-      if (!atReturn)
-        throw new Error("expectSettled is called after the run returned");
-      expect(
-        settleProblems({
-          launches,
-          started: atReturn.started,
-          notEnded: atReturn.notEnded,
-          startedAfterReturn: programCount() - atReturn.programs,
-        })
-      ).toEqual([]);
+      expect(settleProblems(attempt.owner, launches)).toEqual([]);
       await within(
         tools.settled(),
         settleMs,
@@ -647,11 +631,19 @@ export function describeRuntimeContract(
       "checks readiness without calling tools, within its time",
       async () => {
         const before = tools.requests;
+        // 준비 확인도 자기 문맥에서 돌아, 띄운 확인 명령이 돌아올 때 모두 끝났는지 본다.
+        const owner = newOwner(`${name} readiness check`);
+        onTestFinished(() => {
+          expect(lateProblems(owner)).toEqual([]);
+        });
         const result = await within(
-          adapter.checkReadiness(new AbortController().signal),
+          runAs(owner, () =>
+            adapter.checkReadiness(new AbortController().signal)
+          ).finally(() => owner.markReturned()),
           readinessWithinMs,
           "did not check readiness"
         );
+        expect(settleProblems(owner)).toEqual([]);
         expect(
           providerReadinessCheckSchema.safeParse(result).error
         ).toBeUndefined();

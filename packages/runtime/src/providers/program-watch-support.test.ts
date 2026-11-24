@@ -1,76 +1,278 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
-  activityLog,
-  programCount,
-  programsFrom,
+  lateProblems,
+  newOwner,
+  runAs,
   settleProblems,
+  takeUnowned,
   watchPrograms,
   watchProcessPackage,
 } from "./program-watch-support.ts";
 
-// 계약 시험(runtime-contract.ts)의 반환 뒤 판정이 실패해야 할 때 실패하는지 본다. 판정과 프로그램 관찰을 계약 시험 밖의 작은
-// 단위로 떼어, 결함 사례를 넣으면 정확한 이유로 걸리는지 고정한다(#294 외부 리뷰 1회차 SPEC-2 parent 점검).
+// 계약 시험(runtime-contract.ts)의 반환 뒤 판정이 실패해야 할 때 실패하는지 본다. 판정, 활동 기록, 띄운 것의 수집과 그것을 띄운
+// 실행 시도로의 귀속을 계약 시험 밖의 작은 단위로 떼어, 결함 사례를 넣으면 정확한 이유로 걸리는지 고정한다
+// (#294 외부 리뷰 1회차 SPEC-2 parent 점검, 2회차 SPEC-2-R1·REC-SPEC-1).
 
 /** 시험이 끝을 정하는 약속. */
-function deferred() {
-  let resolve!: () => void;
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
   let reject!: (error: Error) => void;
-  const promise = new Promise<void>((ok, fail) => {
+  const promise = new Promise<T>((ok, fail) => {
     resolve = ok;
     reject = fail;
   });
   return { promise, resolve, reject };
 }
 
-describe("judging a run that returned", () => {
-  const clean = {
-    launches: "programs" as const,
-    started: 1,
-    notEnded: 0,
-    startedAfterReturn: 0,
+/** 실제로 시작한 트리 하나를 돌려주는 대역. 끄기·출력·시작 결과는 시험이 정한다. */
+function fakeTree(
+  start: Promise<{ kind: "running" } | { kind: "failed"; reason: string }>
+) {
+  const stopped = deferred();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  return {
+    tree: { started: start, stop: () => stopped.promise, stdout, stderr },
+    stopped,
+    close() {
+      stdout.destroy();
+      stderr.destroy();
+    },
   };
+}
 
-  it("finds nothing when the declared programs all ended before the return and none started after", () => {
-    expect(settleProblems(clean)).toEqual([]);
-    expect(
-      settleProblems({ ...clean, launches: "nothing", started: 0 })
-    ).toEqual([]);
+/** 공용 실행 대역. `launchTree`는 넘긴 트리를, `runTree`는 넘긴 결과를 돌려준다. */
+function processPackage(
+  launch: () => ReturnType<typeof fakeTree>["tree"],
+  run: () => Promise<{ started: boolean }> = () =>
+    Promise.resolve({ started: true })
+) {
+  return watchProcessPackage({ launchTree: launch, runTree: run });
+}
+
+describe("judging a run when it returns", () => {
+  it("finds nothing when the programs the run started all ended before it returned", async () => {
+    const owner = newOwner("adapter");
+    const fake = fakeTree(Promise.resolve({ kind: "running" }));
+    const watched = processPackage(() => fake.tree);
+    const tree = runAs(owner, () => watched.launchTree());
+    await tree.started;
+    const stopping = tree.stop();
+    fake.stopped.resolve();
+    await stopping;
+    fake.close();
+    await Promise.all(owner.launches.map((launch) => launch.end));
+    owner.markReturned();
+    expect(settleProblems(owner, "programs")).toEqual([]);
+    expect(lateProblems(owner)).toEqual([]);
   });
 
-  it("names a program that had not ended when the run returned", () => {
-    expect(settleProblems({ ...clean, started: 2, notEnded: 1 })).toEqual([
-      "1 of the 2 programs the run started had not ended (or their end was not confirmed) when it returned",
+  it("names what had not ended when the run returned, even if it ends right after", async () => {
+    const owner = newOwner("adapter");
+    const fake = fakeTree(Promise.resolve({ kind: "running" }));
+    const watched = processPackage(() => fake.tree);
+    const tree = runAs(owner, () => watched.launchTree());
+    await tree.started;
+    owner.markReturned();
+    const stopping = tree.stop();
+    fake.stopped.resolve();
+    await stopping;
+    fake.close();
+    await Promise.all(owner.launches.map((launch) => launch.end));
+    expect(settleProblems(owner, "programs")).toEqual([
+      "1 of the 1 launches the run made had not ended (or their end was not confirmed) when it returned",
     ]);
   });
 
-  it("names programs started after the run returned", () => {
-    expect(settleProblems({ ...clean, startedAfterReturn: 2 })).toEqual([
-      "2 programs started after the run returned",
+  it("does not take a failed end signal as an end", async () => {
+    const owner = newOwner("adapter");
+    const done = deferred();
+    const watched = watchPrograms({
+      startProcess: () => ({ done: done.promise }),
+    });
+    runAs(owner, () => watched.startProcess());
+    done.reject(new Error("cleanup failed"));
+    await Promise.all(owner.launches.map((launch) => launch.end));
+    owner.markReturned();
+    expect(settleProblems(owner, "nothing")).toEqual([
+      "1 of the 1 launches the run made had not ended (or their end was not confirmed) when it returned",
     ]);
   });
 
-  it("does not let a run that declares programs pass with none seen", () => {
-    expect(settleProblems({ ...clean, started: 0 })).toEqual([
+  it("does not take a tree that was never stopped, or whose output is still open, as ended", async () => {
+    const owner = newOwner("adapter");
+    const open = fakeTree(Promise.resolve({ kind: "running" }));
+    const never = fakeTree(Promise.resolve({ kind: "running" }));
+    const trees = [open.tree, never.tree];
+    const watched = processPackage(() => trees.shift()!);
+    const first = runAs(owner, () => watched.launchTree());
+    runAs(owner, () => watched.launchTree());
+    const stopping = first.stop();
+    open.stopped.resolve();
+    await stopping;
+    owner.markReturned();
+    expect(settleProblems(owner, "programs")).toEqual([
+      "2 of the 2 launches the run made had not ended (or their end was not confirmed) when it returned",
+    ]);
+  });
+});
+
+describe("counting the programs a run actually started", () => {
+  it("counts a run's program once, though startProcess launches its tree through the shared runner", async () => {
+    const owner = newOwner("adapter");
+    const fake = fakeTree(Promise.resolve({ kind: "running" }));
+    const shared = processPackage(() => fake.tree);
+    const done = deferred();
+    const watched = watchPrograms({
+      startProcess: () => ({ tree: shared.launchTree(), done: done.promise }),
+    });
+    const { tree } = runAs(owner, () => watched.startProcess());
+    await tree.started;
+    const stopping = tree.stop();
+    fake.stopped.resolve();
+    await stopping;
+    fake.close();
+    done.resolve();
+    await Promise.all(owner.launches.map((launch) => launch.end));
+    owner.markReturned();
+    expect(owner.launches.map((launch) => launch.kind)).toEqual([
+      "tree",
+      "run",
+    ]);
+    expect(settleProblems(owner, "programs")).toEqual([]);
+    expect(settleProblems(owner, "nothing")).toEqual([
+      "declares that it starts nothing, but this run started 1 program",
+    ]);
+  });
+
+  it("does not count a tree that failed to start or a command that did not start as a started program", async () => {
+    const owner = newOwner("adapter");
+    const fake = fakeTree(
+      Promise.resolve({ kind: "failed", reason: "spawn ENOENT" })
+    );
+    const watched = processPackage(
+      () => fake.tree,
+      () => Promise.resolve({ started: false })
+    );
+    const tree = runAs(owner, () => watched.launchTree());
+    const command = runAs(owner, () => watched.runTree());
+    await tree.started;
+    await command;
+    const stopping = tree.stop();
+    fake.stopped.resolve();
+    await stopping;
+    fake.close();
+    await Promise.all(owner.launches.map((launch) => launch.end));
+    owner.markReturned();
+    expect(owner.launches.map((launch) => launch.started)).toEqual([
+      "no",
+      "no",
+    ]);
+    expect(settleProblems(owner, "programs")).toEqual([
       "declares that its runs start programs, but this run started none",
     ]);
+    expect(settleProblems(owner, "nothing")).toEqual([]);
   });
 
-  it("does not let a run that declares nothing start programs", () => {
-    expect(
-      settleProblems({ ...clean, launches: "nothing", started: 3 })
-    ).toEqual(["declares that it starts nothing, but this run started 3"]);
+  it("counts a short command that started", async () => {
+    const owner = newOwner("adapter");
+    const watched = processPackage(
+      () => fakeTree(Promise.resolve({ kind: "running" })).tree,
+      () => Promise.resolve({ started: true })
+    );
+    await runAs(owner, () => watched.runTree());
+    await Promise.all(owner.launches.map((launch) => launch.end));
+    owner.markReturned();
+    expect(settleProblems(owner, "programs")).toEqual([]);
+  });
+});
+
+describe("tying each launch to the run that made it", () => {
+  // 실행 시도가 일으킨 타이머·promise 이어짐·입출력 콜백은 그 실행 시도의 문맥에서 돈다(Node AsyncLocalStorage). 실제 adapter의
+  // 프로그램 출력 처리 같은 입출력 콜백은 계약 시험(runtime-contract.ts)이 귀속 없는 실행이 없는지로 본다.
+  it("keeps the run through timers, immediates and promise continuations it set up", async () => {
+    takeUnowned();
+    const owner = newOwner("adapter");
+    const watched = processPackage(
+      () => fakeTree(Promise.resolve({ kind: "running" })).tree
+    );
+    // 띄운 실행의 결과는 그 약속이 넘겨받아 시험이 기다린다.
+    const fromTimer = deferred<unknown>();
+    const fromImmediate = deferred<unknown>();
+    const continued = runAs(owner, () => {
+      setTimeout(() => fromTimer.resolve(watched.runTree()), 0);
+      setImmediate(() => fromImmediate.resolve(watched.runTree()));
+      return Promise.resolve().then(() => watched.runTree());
+    });
+    await Promise.all([fromTimer.promise, fromImmediate.promise, continued]);
+    expect(owner.launches.map((launch) => launch.kind)).toEqual([
+      "command",
+      "command",
+      "command",
+    ]);
+    expect(takeUnowned()).toEqual([]);
+  });
+
+  it("names a launch that came after the run returned, whenever it comes", async () => {
+    const owner = newOwner("adapter");
+    const watched = processPackage(
+      () => fakeTree(Promise.resolve({ kind: "running" })).tree
+    );
+    const later = deferred();
+    const launching = runAs(owner, () =>
+      later.promise.then(() => watched.runTree())
+    );
+    owner.markReturned();
+    later.resolve();
+    await launching;
+    expect(owner.launches).toEqual([]);
+    expect(lateProblems(owner)).toEqual([
+      "adapter launched 1 program after the run returned",
+    ]);
+  });
+
+  it("gives a late launch to the run that made it, not to the next run working at that moment", async () => {
+    const first = newOwner("adapter");
+    const second = newOwner("adapter");
+    const watched = processPackage(
+      () => fakeTree(Promise.resolve({ kind: "running" })).tree
+    );
+    const later = deferred();
+    const launching = runAs(first, () =>
+      later.promise.then(() => watched.runTree())
+    );
+    first.markReturned();
+    // 다음 실행 시도가 일하는 동안 앞 실행 시도의 미룬 일이 프로그램을 띄운다.
+    await runAs(second, async () => {
+      later.resolve();
+      await launching;
+    });
+    expect(second.launches).toEqual([]);
+    expect(lateProblems(first)).toEqual([
+      "adapter launched 1 program after the run returned",
+    ]);
+  });
+
+  it("keeps a launch made outside any run apart instead of dropping it", () => {
+    const watched = processPackage(
+      () => fakeTree(Promise.resolve({ kind: "running" })).tree
+    );
+    takeUnowned();
+    const run = watched.runTree();
+    expect(takeUnowned().map((launch) => launch.kind)).toEqual(["command"]);
+    expect(takeUnowned()).toEqual([]);
+    return run;
   });
 });
 
 describe("the activity log of a run", () => {
   it("keeps activities before the return and refuses and keeps one after it, even when the adapter swallows the refusal", async () => {
-    const log = activityLog("adapter");
-    log.record({ type: "progress", text: "before" });
-    log.markReturned();
-    // adapter가 거절을 처리해 버리는 경우: 거절은 사라져도 기록은 남는다.
+    const owner = newOwner("adapter");
+    owner.record({ type: "progress", text: "before" });
+    owner.markReturned();
     const swallowed = await Promise.resolve()
-      .then(() => log.record({ type: "progress", text: "after" }))
+      .then(() => owner.record({ type: "progress", text: "after" }))
       .then(
         () => "accepted",
         (error: unknown) =>
@@ -79,94 +281,9 @@ describe("the activity log of a run", () => {
     expect(swallowed).toBe(
       'adapter emitted an activity after the run returned: {"type":"progress","text":"after"}'
     );
-    expect(log.activities).toEqual([{ type: "progress", text: "before" }]);
-    expect(log.late).toEqual([{ type: "progress", text: "after" }]);
-  });
-});
-
-describe("watching the programs runs start", () => {
-  it("counts a run's program and sees it end only when its done is fulfilled", async () => {
-    const done = deferred();
-    const watched = watchPrograms({
-      startProcess: () => ({ done: done.promise }),
-    });
-    const before = programCount();
-    watched.startProcess();
-    const [program] = programsFrom(before);
-    expect(programCount()).toBe(before + 1);
-    expect(program?.state).toBe("running");
-    done.resolve();
-    await program?.end;
-    expect(program?.state).toBe("ended");
-  });
-
-  it("does not take a run's failed done as its end", async () => {
-    const done = deferred();
-    const watched = watchPrograms({
-      startProcess: () => ({ done: done.promise }),
-    });
-    const before = programCount();
-    watched.startProcess();
-    const [program] = programsFrom(before);
-    done.reject(new Error("cleanup failed"));
-    await program?.end;
-    expect(program?.state).toBe("unconfirmed");
-  });
-
-  it("sees a launched tree end only after its stop settled and its output closed", async () => {
-    const stopped = deferred();
-    const stdout = new PassThrough();
-    const stderr = new PassThrough();
-    const watched = watchProcessPackage({
-      launchTree: () => ({ stop: () => stopped.promise, stdout, stderr }),
-      runTree: () => Promise.resolve(),
-    });
-    const before = programCount();
-    const tree = watched.launchTree();
-    const [program] = programsFrom(before);
-    expect(programCount()).toBe(before + 1);
-    const stopping = tree.stop();
-    stopped.resolve();
-    await stopping;
-    // 끄기는 끝났지만 출력이 아직 열려 있다.
-    expect(program?.state).toBe("running");
-    stdout.destroy();
-    stderr.destroy();
-    await program?.end;
-    expect(program?.state).toBe("ended");
-  });
-
-  it("does not take a tree that was never stopped as ended", () => {
-    const watched = watchProcessPackage({
-      launchTree: () => ({
-        stop: () => Promise.resolve(),
-        stdout: null,
-        stderr: null,
-      }),
-      runTree: () => Promise.resolve(),
-    });
-    const before = programCount();
-    watched.launchTree();
-    expect(programsFrom(before).map((p) => p.state)).toEqual(["running"]);
-  });
-
-  it("sees a short command end when its run settles", async () => {
-    const ran = deferred();
-    const watched = watchProcessPackage({
-      launchTree: () => ({
-        stop: () => Promise.resolve(),
-        stdout: null,
-        stderr: null,
-      }),
-      runTree: () => ran.promise,
-    });
-    const before = programCount();
-    const run = watched.runTree();
-    const [program] = programsFrom(before);
-    expect(program?.state).toBe("running");
-    ran.resolve();
-    await run;
-    await program?.end;
-    expect(program?.state).toBe("ended");
+    expect(owner.activities).toEqual([{ type: "progress", text: "before" }]);
+    expect(lateProblems(owner)).toEqual([
+      'adapter emitted an activity after the run returned: {"type":"progress","text":"after"}',
+    ]);
   });
 });
