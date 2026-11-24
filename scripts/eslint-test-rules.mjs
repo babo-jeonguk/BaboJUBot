@@ -2172,12 +2172,16 @@ const functionTypes = new Set([
 /**
  * `node`에서 그 함수의 끝(함수 경계)까지 지나는 분기 자리: if·조건식의 한쪽, `&&`·`||`·`??`의 오른쪽, switch의 case,
  * 반복의 몸(한 번도 돌지 않을 수 있다), catch. try 블록·finally·do-while 몸은 분기가 아니다. 안에서 밖으로 `{ node, branch }`.
+ * `caught`(try 문)가 주어지면 그 try 블록 안은 "거절이 나지 않은 길"이라는 갈래(`not-thrown`, catch 절과 짝)를 더한다.
  */
-function branchesOf(node) {
+function branchesOf(node, caught = undefined) {
   const edges = [];
   let child = node;
   for (let parent = child.parent; parent; parent = child.parent) {
     if (functionTypes.has(parent.type)) break;
+    // 시한으로 끝날 수 있는 조합을 기다린 try: 거절이 나지 않은 길이다. 거절은 catch로 간다(그 catch의 갈래와 짝).
+    if (parent === caught && parent.block === child)
+      edges.push({ node: parent.handler, branch: "not-thrown" });
     if (
       (parent.type === "IfStatement" ||
         parent.type === "ConditionalExpression") &&
@@ -2220,7 +2224,153 @@ function branchesOf(node) {
  * `classify(nodes)`: 여러 읽기 자리를 모아 "always"(분기 없이 기다리거나, if·조건식의 두 쪽 또는 default가 있는 switch의 모든 case에서
  * 기다림, 중첩 포함), "branch"(한 분기에서만), "never"로 나눈다.
  */
-function waiting(sourceCode) {
+function waiting(sourceCode, unreachable = new WeakSet()) {
+  /** 이름 있는 함수(선언, 변수로 받은 함수 식)의 변수. 이름이 없으면 undefined. */
+  const namedFunctionVariable = (fn) => {
+    if (fn.type === "FunctionDeclaration" && fn.id)
+      return sourceCode
+        .getDeclaredVariables(fn)
+        .find((variable) => variable.name === fn.id.name);
+    if (
+      fn.parent?.type === "VariableDeclarator" &&
+      fn.parent.init === fn &&
+      fn.parent.id.type === "Identifier"
+    )
+      return sourceCode.getDeclaredVariables(fn.parent)[0];
+    return undefined;
+  };
+  const enclosingFunction = (node) => {
+    for (let at = node.parent; at; at = at.parent)
+      if (functionTypes.has(at.type) || at.type === "FunctionDeclaration")
+        return at;
+    return undefined;
+  };
+  /**
+   * `node`까지 가는 분기 길들(바깥부터). 함수 안의 자리는 그 함수가 실행되는 길에 이어 붙인다: 이름 있는 함수는 내보냈으면(다른 파일이
+   * 부른다) 분기 없이, 자기 밖에서 부르는 자리(호출·new의 callee, 도달할 수 있는 것)나 돌려주는 자리(반환값·반환하는 객체 식의 속성
+   * 값: 내보내기처럼 받은 쪽이 부른다)마다 그 자리까지의 길에 잇는다. 이름을
+   * 읽기만 하는 자리(인자로 넘기기, 다른 이름에 담기)는 넘겨받은 쪽이 부르는지 모르므로 길이 아니다. 이름 없는 함수(그 자리에 쓴
+   * 콜백·메서드)는 넘겨받은 함수가 부른다고 보고 그 함수를 쓴 자리까지의 길에 잇는다. 파일의 맨 위와 `boundary` 함수(받은 인자의
+   * 기다림을 그 함수 안에서 볼 때)에서 멈춘다. 길이 없으면 실행되지 않는다. 한 분기에서만 부르는 함수 안의 기다림은 그 분기의 길만
+   * 갖는다(#291 외부 리뷰 2회차 STD-3).
+   * `propagate`(시한으로 끝날 수 있는 기다림의 거절이 전파되어야 함)면 함수 안의 기다림의 거절은 그 함수의 결과가 거절되는 것이므로,
+   * 함수를 부르는 자리에서는 부른 결과가 거절이 전파되게 기다려지는 길만 잇는다(`waitOf`로 그 호출 결과를 본다, #291 외부 리뷰 3회차
+   * SPEC-1). 그 자리에서 부르는 이름 없는 함수와 then·catch·finally의 처리기도 그 호출의 결과로 잇는다. 내보낸·돌려준 함수, 그 밖에
+   * 넘긴 이름 없는 콜백은 위 경계대로 실행으로 센다(받은 쪽의 소비는 따라갈 수 없다). `entered`는 이미 지난 함수다(순환 막기).
+   */
+  /** 이름 `identifier`를 그대로 돌려주는 반환(return 문, 화살표 식 몸)이면 그 반환 자리. 반환하는 객체 식의 속성 값도 같다. */
+  const returnOf = (identifier) => {
+    let value = identifier;
+    if (
+      value.parent?.type === "Property" &&
+      value.parent.value === value &&
+      value.parent.parent?.type === "ObjectExpression"
+    )
+      value = value.parent.parent;
+    const parent = value.parent;
+    if (parent?.type === "ReturnStatement" && parent.argument === value)
+      return parent;
+    if (parent?.type === "ArrowFunctionExpression" && parent.body === value)
+      return value;
+    return undefined;
+  };
+  const pathsTo = (
+    node,
+    boundary,
+    entered = new Set(),
+    caught = undefined,
+    propagate = false
+  ) => {
+    const inner = [...branchesOf(node, caught)].reverse();
+    const fn = enclosingFunction(node);
+    if (!fn || fn === boundary) return [inner];
+    if (entered.has(fn)) return [];
+    const next = new Set([...entered, fn]);
+    /** 함수를 부른 자리 `call`까지의 길. 거절이 전파되어야 하면 그 호출 결과가 그렇게 기다려지는 길이다. */
+    const calledAt = (call) => {
+      if (!propagate) return pathsTo(call, boundary, next);
+      const found = waitOf(call, new Set(), true, boundary, next);
+      if (!found) return [];
+      // 넘긴 함수 안에서 한 분기에서만 기다렸으면 어떤 분기로도 덮이지 않는 갈래를 붙인다.
+      return found.conditional
+        ? found.paths.map((path) => [
+            ...path,
+            { node: call, branch: "conditional" },
+          ])
+        : found.paths;
+    };
+    const variable = namedFunctionVariable(fn);
+    let outer;
+    if (!variable) {
+      const parent = fn.parent;
+      outer =
+        propagate &&
+        parent?.type === "CallExpression" &&
+        (parent.callee === fn ||
+          (parent.arguments.includes(fn) &&
+            ["then", "catch", "finally"].includes(memberName(parent.callee))))
+          ? calledAt(parent)
+          : pathsTo(fn, boundary, next);
+    } else {
+      const declaration =
+        fn.type === "FunctionDeclaration" ? fn : fn.parent.parent;
+      outer =
+        declaration.parent?.type === "ExportNamedDeclaration"
+          ? [[]]
+          : variable.references.flatMap((reference) => {
+              const parent = reference.identifier.parent;
+              // 내보내면 다른 파일이 부른다.
+              if (
+                parent?.type === "ExportSpecifier" ||
+                parent?.type === "ExportDefaultDeclaration"
+              )
+                return [[]];
+              // 돌려주면(반환값, 반환하는 객체 식의 속성 값) 내보내기처럼 받은 쪽이 부른다. 그 반환까지의 길에 잇는다.
+              const returned = returnOf(reference.identifier);
+              if (returned) return pathsTo(returned, boundary, next);
+              if (
+                !(
+                  (parent?.type === "CallExpression" ||
+                    (!propagate && parent?.type === "NewExpression")) &&
+                  parent.callee === reference.identifier
+                ) ||
+                unreachable.has(parent)
+              )
+                return [];
+              // 자기 안에서만 부르는 재귀는 실행되지 않는다.
+              for (
+                let at = enclosingFunction(reference.identifier);
+                at;
+                at = enclosingFunction(at)
+              )
+                if (at === fn) return [];
+              return calledAt(parent);
+            });
+    }
+    return outer.map((path) => [...path, ...inner]);
+  };
+  /**
+   * race·any에서 표시한 Promise와 함께 넘긴 다른 값이 거절만 할 수 있는 Promise인가(`new Promise((_, reject) => …)`, 이행 함수를
+   * 받지 않거나 쓰지 않음). 그래야 표시한 Promise가 정해질 때까지 조합이 끝나지 않는다. 시한은 거절로 끝내는 모양이다(공용 within).
+   */
+  const onlyRejects = (node) => {
+    if (
+      node?.type !== "NewExpression" ||
+      !comesFrom(sourceCode, node.callee, "global:Promise")
+    )
+      return false;
+    const executor = node.arguments[0];
+    if (!executor || !functionTypes.has(executor.type)) return false;
+    const resolve = executor.params[0];
+    if (!resolve) return true;
+    if (resolve.type !== "Identifier") return false;
+    return (
+      sourceCode
+        .getDeclaredVariables(executor)
+        .find((variable) => variable.name === resolve.name)?.references
+        .length === 0
+    );
+  };
   /** 같은 파일에 정의한 함수(함수 선언, const로 받은 함수 식). */
   const functionOf = (variable) => {
     const def = variable.defs[0];
@@ -2242,8 +2392,9 @@ function waiting(sourceCode) {
    * `expect`는 첫 인자(둘째는 문구), 가져온 시험 도움은 첫 인자(저장소의 기다림 도움 `within`·`settled`는 Promise를 첫 인자로
    * 받는다), 같은 파일의 함수는 그 위치의 매개변수가 기다려질 때다.
    */
-  const callPasses = (call, index, isArray, seen) => {
+  const callPasses = (call, index, isArray, seen, element, mustPropagate) => {
     const callee = call.callee;
+    const never = { kind: "never", propagate: false };
     // 출처가 확인된 받는 자리(Promise 조합·expect·저장소 시험 도움)를 부르는 모양과 무관하게 먼저 본다(이름 바꾼 가져오기·별칭·
     // 이름공간 속성·구조 분해, #266 리뷰 SPEC-8·9). 저장소 도움은 그 함수 자체여야 한다(호출 결과 `()`는 무엇인지 모른다).
     if (
@@ -2252,55 +2403,135 @@ function waiting(sourceCode) {
         callee,
         ...[...promiseCombinators].map((name) => `global:Promise.${name}`)
       )
-    )
-      return index === 0 && isArray ? "always" : "never";
-    if (isExpect(sourceCode, callee))
-      return !isArray &&
-        index === 0 &&
-        ["rejects", "resolves"].includes(memberName(call.parent)) &&
-        call.parent.object === call
-        ? "always"
-        : "never";
+    ) {
+      if (index !== 0 || !isArray) return never;
+      // race·any는 먼저 끝나는 쪽에서 끝난다. 다른 값이 먼저 이행할 수 있으면 표시한 Promise의 거절은 기다리지 않고 지나간다.
+      // 다른 값이 모두 거절만 하면(시한) 조합은 표시한 Promise의 결과나 시한의 거절로 끝난다. 시한의 거절로 끝나면 표시한 Promise는
+      // 보지 않았으므로, 그 거절이 시험 실패로 전파되는 자리에서만 센다(propagate).
+      if (
+        comesFrom(
+          sourceCode,
+          callee,
+          "global:Promise.race",
+          "global:Promise.any"
+        )
+      )
+        return call.arguments[0].elements.every(
+          (other) => other === element || onlyRejects(other)
+        )
+          ? { kind: "always", propagate: true }
+          : never;
+      // allSettled는 거절을 결과로 바꾼다. 앞에서 거절의 전파가 필요해졌으면 그 거절을 받아 넘기는 자리다.
+      if (
+        mustPropagate &&
+        comesFrom(sourceCode, callee, "global:Promise.allSettled")
+      )
+        return never;
+      return { kind: "always", propagate: false };
+    }
+    if (isExpect(sourceCode, callee)) {
+      const assertion = memberName(call.parent);
+      if (
+        isArray ||
+        index !== 0 ||
+        !["rejects", "resolves"].includes(assertion) ||
+        call.parent.object !== call
+      )
+        return never;
+      // rejects는 거절을 성공으로 받는다.
+      return mustPropagate && assertion === "rejects"
+        ? never
+        : { kind: "always", propagate: false };
+    }
     const origin = originOf(sourceCode.getScope(callee), callee);
+    // 가져온 저장소 도움(시한 도움 within 등)은 따라갈 수 없어 기다림으로 보되, 그 안이 시한으로 끝내는 race일 수 있으므로 결과의
+    // 거절이 전파되는 자리에서만 센다.
     if (origin)
       return !isArray &&
         index === 0 &&
         repoModule.test(origin.module ?? "") &&
         !origin.path.some((name) => name.endsWith("()"))
-        ? "always"
-        : "never";
-    if (isArray || callee.type !== "Identifier") return "never";
+        ? { kind: "always", propagate: true }
+        : never;
+    if (isArray || callee.type !== "Identifier") return never;
     const variable = bindingOf(sourceCode, callee);
-    if (!variable) return "never";
+    if (!variable) return never;
     const fn = functionOf(variable);
     const param = fn?.params[index];
-    if (!fn || seen.has(fn) || param?.type !== "Identifier") return "never";
+    if (!fn || seen.has(fn) || param?.type !== "Identifier") return never;
     const parameter = sourceCode
       .getDeclaredVariables(fn)
       .find((each) => each.name === param.name);
-    return classify(
+    // 받은 인자의 기다림은 그 함수 안에서 본다(분기도 그 함수 안까지, boundary).
+    return classifyWaits(
       parameter.references
         .filter((reference) => reference.isRead())
         .map((reference) => reference.identifier),
-      new Set([...seen, fn])
+      new Set([...seen, fn]),
+      mustPropagate,
+      fn
     );
   };
-  const waitOf = (node, seen = new Set()) => {
+  /** `node`(await)의 거절을 받는 같은 함수 안의 가장 가까운 try 문(catch가 있고 `node`가 그 try 블록 안), 없으면 undefined. */
+  const caughtBy = (node) => {
+    let child = node;
+    for (let parent = child.parent; parent; parent = child.parent) {
+      if (functionTypes.has(parent.type)) return undefined;
+      if (
+        parent.type === "TryStatement" &&
+        parent.block === child &&
+        parent.handler
+      )
+        return parent;
+      child = parent;
+    }
+    return undefined;
+  };
+  const waitOf = (
+    node,
+    seen = new Set(),
+    mustPropagate = false,
+    boundary = undefined,
+    entered = new Set()
+  ) => {
     let child = node;
     // 아직 그 Promise 자신인가(호출 결과로 바뀌기 전). 자신의 속성은 then·catch·finally 호출만 결과를 받는다.
     let original = true;
     let conditional = false;
     // 배열 안에 있는가. 배열은 그것을 받는 호출(Promise.all 등)을 거쳐야 기다림에 닿는다.
     let inArray = false;
+    // 배열 안이면 그 배열의 원소 중 이 값을 담은 것.
+    let element;
     for (let parent = child.parent; parent; parent = child.parent) {
       if (
         parent.type === "AwaitExpression" ||
         parent.type === "ReturnStatement" ||
         (parent.type === "ArrowFunctionExpression" && parent.body === child)
-      )
-        return inArray ? undefined : { edges: branchesOf(node), conditional };
+      ) {
+        if (inArray) return undefined;
+        // 시한으로 끝날 수 있는 조합의 거절을 try/catch로 받으면, 그 기다림은 거절이 나지 않은 길만 덮는다. 거절이 catch로 간
+        // 길은 catch 안에서 표시한 Promise를 따로 기다려야 덮인다.
+        const caught =
+          mustPropagate && parent.type === "AwaitExpression"
+            ? caughtBy(parent)
+            : undefined;
+        // 실행되지 않는 기다림은 기다림이 아니다: 도달할 수 없는 코드(조기 return 뒤 등), 아무도 부르지 않는 함수 안. 기다림까지의
+        // 길은 함수를 부르는 자리의 분기까지 이어 본다(pathsTo). try/catch가 받지 않은 거절은 그 함수의 결과로 나가므로, 거절이
+        // 전파되어야 하면 부르는 자리에서도 전파되어야 한다.
+        if (unreachable.has(parent)) return undefined;
+        const paths = pathsTo(
+          node,
+          boundary,
+          entered,
+          caught,
+          mustPropagate && !caught
+        );
+        if (paths.length === 0) return undefined;
+        return { paths, conditional, mustPropagate };
+      }
       if (parent.type === "ArrayExpression") {
         inArray = true;
+        element = child;
         child = parent;
         continue;
       }
@@ -2319,6 +2550,15 @@ function waiting(sourceCode) {
           parent.parent.type === "CallExpression" &&
           parent.parent.callee === parent;
         if (original && !settles) return undefined;
+        // 시한으로 끝날 수 있는 조합의 거절을 처리기로 받으면(catch, then의 둘째 인자) 표시한 Promise를 보지 않고 지나간다.
+        if (
+          mustPropagate &&
+          settles &&
+          (memberName(parent) === "catch" ||
+            (memberName(parent) === "then" &&
+              parent.parent.arguments.length > 1))
+        )
+          return undefined;
         child = parent;
         continue;
       }
@@ -2335,10 +2575,13 @@ function waiting(sourceCode) {
           parent,
           parent.arguments.indexOf(child),
           child.type === "ArrayExpression",
-          seen
+          seen,
+          element,
+          mustPropagate
         );
-        if (passed === "never") return undefined;
-        if (passed === "branch") conditional = true;
+        if (passed.kind === "never") return undefined;
+        if (passed.kind === "branch") conditional = true;
+        if (passed.propagate) mustPropagate = true;
         inArray = false;
         original = false;
         child = parent;
@@ -2348,19 +2591,33 @@ function waiting(sourceCode) {
     }
     return undefined;
   };
-  const classify = (nodes, seen = new Set()) => {
+  /**
+   * 읽기 자리들의 기다림을 모아 `{ kind, propagate }`로: kind는 "always"·"branch"·"never", propagate는 센 기다림 중 결과의 거절이
+   * 전파되어야 하는 것(시한으로 끝날 수 있는 조합을 거친 것)이 있는지다. `boundary`가 있으면 분기를 그 함수 안까지만 본다.
+   */
+  const classifyWaits = (
+    nodes,
+    seen = new Set(),
+    mustPropagate = false,
+    boundary = undefined
+  ) => {
     const waits = nodes.flatMap((node) => {
-      const found = waitOf(node, seen);
+      const found = waitOf(node, seen, mustPropagate, boundary);
       return found ? [found] : [];
     });
-    if (waits.length === 0) return "never";
+    if (waits.length === 0) return { kind: "never", propagate: false };
     // 넘긴 함수 안에서 한 분기에서만 기다린 자리는 모든 길을 덮지 못한다. 분기는 바깥부터 본다.
-    const paths = waits
-      .filter((w) => !w.conditional)
-      .map((w) => [...w.edges].reverse());
-    return covers(paths) ? "always" : "branch";
+    const paths = waits.filter((w) => !w.conditional).flatMap((w) => w.paths);
+    return {
+      kind: covers(paths) ? "always" : "branch",
+      propagate: waits.some((w) => w.mustPropagate),
+    };
   };
-  /** 기다림까지의 분기 길(바깥부터)들이 모든 길을 덮는가: 분기 없는 기다림이 있거나, 한 분기 자리의 모든 쪽이 다시 덮인다. */
+  const classify = (nodes) => classifyWaits(nodes).kind;
+  /**
+   * 기다림까지의 분기 길(바깥부터)들이 모든 길을 덮는가: 분기 없는 기다림이 있거나, 한 분기 자리의 모든 쪽이 다시 덮인다. 부른 함수
+   * 안에서 한 분기에서만 기다린 갈래(`conditional`)는 무엇으로도 덮이지 않는다.
+   */
   const covers = (paths) => {
     if (paths.some((path) => path.length === 0)) return true;
     const rest = (node, branch) =>
@@ -2374,6 +2631,14 @@ function waiting(sourceCode) {
           node.type === "ConditionalExpression") &&
         covers(rest(node, "then")) &&
         covers(rest(node, "else"))
+      )
+        return true;
+    // 시한으로 끝날 수 있는 조합을 try에서 기다렸으면, 거절이 나지 않은 길과 catch 길이 모두 덮여야 한다.
+    for (const node of firsts)
+      if (
+        node.type === "CatchClause" &&
+        covers(rest(node, "not-thrown")) &&
+        covers(rest(node, "catch"))
       )
         return true;
     // default가 있는 switch는 내용이 있는 모든 case가 덮이면 된다(내용 없는 case는 다음 case로 이어진다).
@@ -2408,7 +2673,15 @@ function waiting(sourceCode) {
  *   경로로 따라갈 수 없는 자리(계산된 이름, 호출 결과의 속성)와 같은 객체를 다른 이름으로 읽는 것은 기다리지 않은 것으로 본다.
  * - 부르지 않고 함수 값으로 넘기거나 다시 내보내는 것(`items.map(awaitedLater)`, `export { awaitedLater } from …`). 결과를 따라갈 수 없다.
  * 속성을 다른 파일에서 읽어 기다리는 것은 따라가지 않아 짚는다. 루트는 이름으로 맞추므로 같은 이름으로 넘겨받은 객체(다른 함수의
- * 매개변수 `child`)는 같은 경로다. 기다리는 자리가 실제로 실행되는지(그 앞의 `return`, 기다림을 담은 함수를 부르는지)는 따라가지 않는다.
+ * 매개변수 `child`)는 같은 경로다. 실행되지 않는 기다림은 세지 않는다(#286 항목 21): 도달할 수 없는 코드(조기 `return`·`throw` 뒤)와,
+ * 부르는 자리(호출의 callee)가 없거나 그런 함수만 부르는 이름 있는 함수 안(이름을 인자로 넘기거나 다른 이름에 담기만 한 것은 부르는
+ * 것이 아니다; 내보내거나 돌려준 함수, 그 자리에 쓴 이름 없는 콜백, 메서드는 실행된다고 본다). 함수 안의 기다림은 그 함수를 부르는
+ * 자리의 분기까지 이어 본다: 한 분기에서만 부르면 한 분기다(#291 외부 리뷰 2회차 STD-3).
+ * `Promise.race`·`any` 안의 기다림은 다른 값이 모두 거절만 할 수 있을 때(시한을 거절로 끝내는 공용 within의 모양)만 센다. 다른 값이
+ * 먼저 이행할 수 있으면 표시한 Promise가 정해지기 전에 끝나, 그 뒤의 거절을 기다리지 않는다. 그런 조합(과 가져온 저장소 도움)은 시한의
+ * 거절로 끝날 수 있으므로, 그 거절이 시험 실패로 전파되는 자리에서만 센다: 거절을 성공으로 받는 `expect(…).rejects`·`.catch`·`then`의
+ * 거절 처리기·`allSettled`를 거치면 세지 않고, try/catch로 받으면 거절이 나지 않은 길만 덮어 catch에서 다시 기다려야 한다
+ * (#291 외부 리뷰 2회차 SPEC-1). 함수 안에서 그렇게 기다리면 그 함수를 부른 결과도 같은 기준으로 본다(#291 외부 리뷰 3회차 SPEC-1).
  */
 const noUnawaitedLater = {
   meta: {
@@ -2425,14 +2698,25 @@ const noUnawaitedLater = {
       notAwaited:
         "awaitedLater로 표시한 Promise를 이 파일에서 기다리지 않습니다. 빈 처리기가 그 거절을 감춰 실패해도 시험이 통과합니다. 뒤에서 await하거나(Promise.all·expect(…).rejects·받은 인자를 기다리는 함수 포함) 돌려주세요. 무관한 호출의 인자로 넣고 그 호출을 기다리는 것(await Boolean(x))은 기다림이 아닙니다. 기다릴 필요가 없으면 awaitedLater를 쓰지 말고 결과를 단언하세요. CODING_STANDARDS.md#단언",
       awaitedInBranch:
-        "awaitedLater로 표시한 Promise를 한 분기(if·조건식의 한쪽, &&·||의 오른쪽, 반복의 몸, catch)에서만 기다립니다. 다른 길로 가면 기다리지 않아 빈 처리기가 그 거절을 감춥니다. 분기 앞에서 기다리거나 모든 분기에서 기다리세요. CODING_STANDARDS.md#단언",
+        "awaitedLater로 표시한 Promise를 한 분기(if·조건식의 한쪽, &&·||의 오른쪽, 반복의 몸, catch, 한 분기에서만 부르는 함수 안, 시한으로 끝날 수 있는 조합을 기다린 try의 거절이 나지 않은 길)에서만 기다립니다. 다른 길로 가면 기다리지 않아 빈 처리기가 그 거절을 감춥니다. 분기 앞에서 기다리거나 모든 분기에서 기다리세요(try의 catch에서도). CODING_STANDARDS.md#단언",
       notCalled:
         "awaitedLater를 부르지 않고 값으로 넘기거나 다시 내보냅니다. 표시한 Promise를 기다리는지 따라갈 수 없습니다. 그 자리에서 불러 결과를 담고 기다리세요. CODING_STANDARDS.md#단언",
     },
   },
   create(context) {
     const { sourceCode } = context;
-    const { classify } = waiting(sourceCode);
+    /** 도달할 수 없는 코드의 기다림 자리(await·return). ESLint 코드 경로 분석으로 모은다. 화살표 함수의 식 몸은 그 함수가 실행되는지로 본다. */
+    const unreachable = new WeakSet();
+    /** 지금 지나는 코드 경로들의 현재 조각(no-unreachable과 같은 방식). */
+    const segmentStack = [];
+    const reachableNow = () =>
+      [...(segmentStack.at(-1) ?? [])].some((segment) => segment.reachable);
+    const markIfUnreachable = (node) => {
+      if (segmentStack.length > 0 && !reachableNow()) unreachable.add(node);
+    };
+    const { classify } = waiting(sourceCode, unreachable);
+    /** 파일을 다 지난 뒤(뒤쪽 기다림과 도달성까지 모은 뒤) 판정할 일. */
+    const pending = [];
     /** 모듈 경로 `source`가 test-cleanup.ts를 가리키는가(패키지 입구·상대 경로·확장자 없는 철자 모두). */
     const fromCleanup = (source) =>
       targetOf(context.filename, source)?.file === cleanupFile;
@@ -2501,8 +2785,10 @@ const noUnawaitedLater = {
     /** awaitedLater를 가리키는 자리 하나. 부르는 자리면 결과를 보고, const로 다시 받는 자리는 넘기고, 그 밖은 값으로 넘긴 것이다. */
     const visit = (reference) => {
       const parent = reference.parent;
-      if (parent.type === "CallExpression" && parent.callee === reference)
-        return checkCall(parent);
+      if (parent.type === "CallExpression" && parent.callee === reference) {
+        pending.push(parent);
+        return undefined;
+      }
       if (
         parent.type === "VariableDeclarator" &&
         parent.init === reference &&
@@ -2512,6 +2798,32 @@ const noUnawaitedLater = {
       context.report({ node: reference, messageId: "notCalled" });
     };
     return {
+      onCodePathStart() {
+        segmentStack.push(new Set());
+      },
+      onCodePathEnd() {
+        segmentStack.pop();
+      },
+      onCodePathSegmentStart(segment) {
+        segmentStack.at(-1)?.add(segment);
+      },
+      onCodePathSegmentEnd(segment) {
+        segmentStack.at(-1)?.delete(segment);
+      },
+      onUnreachableCodePathSegmentStart(segment) {
+        segmentStack.at(-1)?.add(segment);
+      },
+      onUnreachableCodePathSegmentEnd(segment) {
+        segmentStack.at(-1)?.delete(segment);
+      },
+      AwaitExpression: markIfUnreachable,
+      ReturnStatement: markIfUnreachable,
+      // 도달할 수 없는 호출은 그 함수 안의 기다림을 실행하지 않는다.
+      CallExpression: markIfUnreachable,
+      NewExpression: markIfUnreachable,
+      "Program:exit"() {
+        for (const call of pending) checkCall(call);
+      },
       Identifier(node) {
         const parent = node.parent;
         // 선언·가져오기·속성 이름 자리는 값을 쓰는 곳이 아니다.

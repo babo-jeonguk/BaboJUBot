@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   afterAll,
@@ -10,7 +10,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { killUnlessGone } from "./test-cleanup.ts";
+import { lifelineHolder } from "./test-cleanup.ts";
 import { launchTree, runTree } from "./launch.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -64,22 +64,17 @@ const unique = (label: string) => `${label}-${++count}`;
 const keep = "setInterval(() => {}, 1000);";
 
 /**
- * 연결을 쥐고 자기 번호를 파일에 남기는 프로그램. 대역 때문에 시험이 끄지 못한 프로그램은 정리가 그 번호로 끈다. 연결이 열려 있으면
+ * 자기 번호를 파일에 남긴 뒤 연결을 쥐는 프로그램(#286: 번호를 먼저 남겨, 연결이 보이면 정리가 그 번호를 읽을 수 있다. 연결 뒤에
+ * 남기면 그 사이 시험이 끝날 때 정리가 아직 없는 파일을 읽었다). 대역 때문에 시험이 끄지 못한 프로그램은 정리가 그 번호로 끈다. 연결이 열려 있으면
  * 그 번호의 프로세스는 아직 그 프로그램이다.
  */
 async function holder(label: string, body = keep) {
   const name = unique(label);
   const folder = await folders.make("babojubot-launch-stop-");
   const pidFile = path.join(folder, "pid");
-  folders.own(async () => {
-    if (lifelines.names().includes(name) && lifelines.open(name))
-      killUnlessGone(Number(await readFile(pidFile, "utf8")));
-    await lifelines.closed(name);
-  }, name);
-  return {
-    name,
-    script: `${lifelines.hold(name, `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`)} ${body}`,
-  };
+  const held = lifelineHolder(lifelines, name, pidFile);
+  folders.own(held.end, name);
+  return { name, script: `${held.code} ${body}` };
 }
 
 /**
@@ -173,7 +168,13 @@ describe.skipIf(process.platform === "win32")(
       });
       await lifelines.connected(leader.name);
       await lifelines.connected(moved.name);
-      await expect(tree.stop()).rejects.toThrow(/process group did not end/);
+      // 진단은 문구가 아니라 원인 코드와 실행기의 답(그대로)으로 남는다(#286, failureCode).
+      await expect(tree.stop()).rejects.toMatchObject({
+        name: "TreeStopFailure",
+        code: "TREE_LEFT",
+        left: "1 (the process group did not end)",
+        message: expect.stringMatching(/process group did not end/),
+      });
       expect(lifelines.open(moved.name)).toBe(true);
       expect(lifelines.open(leader.name)).toBe(true);
     }, 60_000);
@@ -213,7 +214,12 @@ describe.skipIf(process.platform === "win32")(
         stdio: ["ignore", "ignore", "ignore"],
       });
       await lifelines.connected(leader.name);
-      await expect(tree.stop()).rejects.toThrow(/broke the protocol/);
+      await expect(tree.stop()).rejects.toMatchObject({
+        name: "TreeStopFailure",
+        code: "TREE_END_UNCONFIRMED",
+        protocolFailure: expect.stringContaining("broke the protocol"),
+        message: expect.stringMatching(/broke the protocol/),
+      });
     }, 60_000);
 
     // #274 외부 리뷰 2회차 SPEC-4: 실행기가 프로그램의 끝을 알리지 않고 끝나면, 프로그램의 끝은 모르는 것이다. 실행기 자신의 종료
@@ -250,7 +256,10 @@ describe.skipIf(process.platform === "win32")(
           maxOutputBytes: 1024,
           overflow: "stop",
         })
-      ).rejects.toThrow(/process group did not end/);
+      ).rejects.toMatchObject({
+        code: "TREE_LEFT",
+        message: expect.stringMatching(/process group did not end/),
+      });
     }, 60_000);
   }
 );

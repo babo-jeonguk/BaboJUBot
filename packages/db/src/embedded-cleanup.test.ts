@@ -70,6 +70,12 @@ function logged() {
   return () => [...error.mock.calls, ...warn.mock.calls].flat();
 }
 
+/** 진단은 오류 문구·객체 대신 원인 코드로 남는다(#286, failureCode). 남긴 줄에 그 코드가 있고, 오류 객체는 남기지 않는다. */
+function expectLoggedCode(values: unknown[], code: string) {
+  expect(values.filter((value) => value instanceof Error)).toEqual([]);
+  expect(values).toContainEqual(expect.stringContaining(`(${code})`));
+}
+
 afterEach(() => {
   inject.removeFails = undefined;
   inject.ownerFolderFails = undefined;
@@ -99,7 +105,7 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
     await expect(startEmbeddedCluster(options)).rejects.toThrow(
       "could not create embedded Postgres"
     );
-    expect(logs()).toContain(removeError);
+    expectLoggedCode(logs(), "EACCES");
   }, 60_000);
 
   it("keeps the ownership error and records the removal failure", async () => {
@@ -125,7 +131,7 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
     inject.ownerFolderFails = ownerError;
     inject.removeFails = removeError;
     await expect(ephemeralCluster()).rejects.toBe(ownerError);
-    expect(logs()).toContain(removeError);
+    expectLoggedCode(logs(), "EACCES");
   });
 });
 
@@ -188,10 +194,15 @@ describe("a leftover temporary cluster whose owner record cannot be read", () =>
 
     expect(fs.existsSync(options.dataDir)).toBe(true);
     expect(fs.readdirSync(owners)).toEqual(["1"]);
+    // 남긴 줄이 그 남은 cluster와 원인 코드를 함께 담는다.
     expect(
-      logs().some(
-        (value) => typeof value === "string" && value.includes(leftover)
+      logs().filter(
+        (value) =>
+          typeof value === "string" &&
+          value.includes(leftover) &&
+          value.includes("(EACCES)")
       )
-    ).toBe(true);
+    ).toHaveLength(1);
+    expectLoggedCode(logs(), "EACCES");
   });
 });

@@ -38,6 +38,12 @@ function logged() {
   return () => [...error.mock.calls, ...warn.mock.calls].flat();
 }
 
+/** 진단은 오류 문구·객체 대신 원인 코드로 남는다(#286, failureCode). 남긴 줄에 그 코드가 있고, 오류 객체는 남기지 않는다. */
+function expectLoggedCode(values: unknown[], code: string) {
+  expect(values.filter((value) => value instanceof Error)).toEqual([]);
+  expect(values).toContainEqual(expect.stringContaining(`(${code})`));
+}
+
 const embedded = { embedded: { dataDir: "unused", persistent: true } };
 
 afterEach(() => {
@@ -62,7 +68,10 @@ describe("opening a database that fails", () => {
   });
 
   it("keeps the connection error and records the stop failure when stopping Postgres also fails", async () => {
-    const stopError = new Error("injected: Postgres did not stop");
+    const stopError = Object.assign(
+      new Error("injected: Postgres did not stop"),
+      { code: "EMBEDDED_STOP_TIMEOUT" }
+    );
     const stop = fakeCluster(await candidatePort(), stopError);
     const logs = logged();
 
@@ -70,7 +79,7 @@ describe("opening a database that fails", () => {
       code: "ECONNREFUSED",
     });
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(logs()).toContain(stopError);
+    expectLoggedCode(logs(), "EMBEDDED_STOP_TIMEOUT");
   });
 
   it("throws the migration error and stops Postgres once", async () => {
@@ -85,20 +94,26 @@ describe("opening a database that fails", () => {
   it("keeps the migration error and records the stop failure when stopping Postgres also fails", async () => {
     const migrationError = new Error("injected: migration failed");
     vi.mocked(migrate).mockRejectedValueOnce(migrationError);
-    const stopError = new Error("injected: Postgres did not stop");
+    const stopError = Object.assign(
+      new Error("injected: Postgres did not stop"),
+      { code: "EMBEDDED_STOP_TIMEOUT" }
+    );
     const stop = fakeCluster(testClusterPort(), stopError);
     const logs = logged();
 
     await expect(openDatabase(embedded)).rejects.toBe(migrationError);
     expect(stop).toHaveBeenCalledTimes(1);
-    expect(logs()).toContain(stopError);
+    expectLoggedCode(logs(), "EMBEDDED_STOP_TIMEOUT");
   });
 });
 
 describe("closing a database that fails", () => {
   it("still stops Postgres when closing the connections fails, and reports both failures", async () => {
     vi.mocked(migrate).mockResolvedValueOnce(undefined);
-    const stopError = new Error("injected: Postgres did not stop");
+    const stopError = Object.assign(
+      new Error("injected: Postgres did not stop"),
+      { code: "EMBEDDED_STOP_TIMEOUT" }
+    );
     const stop = fakeCluster(testClusterPort(), stopError);
     const handle = await openDatabase(embedded);
     const poolError = new Error("injected: closing the connections failed");
@@ -125,7 +140,10 @@ describe("closing a database that fails", () => {
 describe("a one-off connection that fails", () => {
   it("keeps the work's error and records the close failure", async () => {
     const workError = new Error("injected: the work failed");
-    const closeError = new Error("injected: closing the connection failed");
+    const closeError = Object.assign(
+      new Error("injected: closing the connection failed"),
+      { code: "ECONNRESET" }
+    );
     // 제품은 Promise를 돌려주는 end()만 부른다. 콜백 판(end(cb): void)은 빼고 그 판만 바꾼다.
     const clients: { end(this: pg.Client): Promise<void> } =
       pg.Client.prototype;
@@ -143,6 +161,6 @@ describe("a one-off connection that fails", () => {
         throw workError;
       })
     ).rejects.toBe(workError);
-    expect(logs()).toContain(closeError);
+    expectLoggedCode(logs(), "ECONNRESET");
   });
 });

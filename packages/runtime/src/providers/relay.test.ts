@@ -2,12 +2,23 @@ import { existsSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { destinationSchema, type Destination } from "@babojubot/contracts";
+import { refusing, resetRefusing } from "./connect-failure-support.ts";
 import { createRelayHub, type RelayHooks } from "./relay.ts";
 
 // 격리 실행의 중계(#149). 컨테이너에는 네트워크가 없고, 실행 시도마다 연 파일 소켓으로만 바깥과 조직 도구에 닿는다.
 // 여기서는 컨테이너 쪽 대신 시험이 그 소켓에 직접 붙는다. 금지 목적지는 실제 listener가 연결을 받지 않았는지까지 본다.
+
+// 허용된 목적지로 붙는 연결(`relay.ts` `dial`의 `net.connect`)을 정한 오류로 실패시킨다(connect-failure-support.ts).
+vi.mock("node:net", async (importOriginal) =>
+  (await import("./connect-failure-support.ts")).failingNet(
+    await importOriginal()
+  )
+);
+afterEach(() => {
+  resetRefusing();
+});
 
 const destination = (value: unknown): Destination =>
   destinationSchema.parse(value);
@@ -898,38 +909,33 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(warned).not.toHaveBeenCalled();
   });
 
-  it("answers 502 and leaves why when it cannot connect to an allowed destination", async () => {
+  // 연결 실패의 원인은 그 연결이 실제로 받은 오류 코드다(#286 항목 14). 연결 경계에 정한 오류를 넣어, 이 시스템의 이름 풀이·IPv6
+  // 설정과 상관없이 중계가 확인한 주소·포트로 붙고 그 오류 코드를 그대로 남기며 502로 답하는지 본다. 실제 연결에서 나오지 않는
+  // 코드(EHOSTUNREACH)를 넣어, 다른 실패가 끼어들면 드러나게 한다. 이름 풀이의 실패 원인은 egress-policy.test.ts가 풀이 함수를 넣어 본다.
+  it("answers 502 and leaves the code the connection failed with, dialing only the checked address and port", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
-    // 받는 곳이 없는 포트: 잠깐 열어 번호를 받고 닫는다.
-    const listener = net.createServer();
-    await new Promise<void>((resolve) =>
-      listener.listen(0, "127.0.0.1", resolve)
-    );
-    const port = (listener.address() as net.AddressInfo).port;
-    await new Promise<void>((resolve, reject) =>
-      listener.close((error) => (error ? reject(error) : resolve()))
-    );
+    const port = 40_123;
+    refusing.refuse = { port, code: "EHOSTUNREACH" };
     const { relays } = hub();
     const relay = relays.open({
       identity,
       required: [
-        // 이 컴퓨터에 따라 localhost는 두 주소로 풀린다. 둘 다 적어야 연결 시도까지 간다.
-        destination({
-          host: "localhost",
-          port,
-          addresses: ["127.0.0.1", "::1"],
-        }),
+        destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
       ],
     });
     await relay.ready;
-    const answer = await connectVia(relay.directory, `localhost:${port}`);
+    const answer = await connectVia(relay.directory, `127.0.0.1:${port}`);
     answer.socket.destroy();
-    expect(answer.head).toMatch(/^HTTP\/1\.1 502/);
-    // 마지막으로 시도한 주소의 실패 코드는 이 컴퓨터의 IPv6 설정에 따라 다르다(ECONNREFUSED·EADDRNOTAVAIL 등).
-    expect(warned).toHaveBeenCalledWith(
-      expect.stringMatching(/answered 502 \(E[A-Z]+\)$/)
+    expect(answer.head).toBe(
+      "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     );
+    expect(refusing.dialed.mock.calls).toEqual([[{ host: "127.0.0.1", port }]]);
+    expect(warned.mock.calls).toEqual([
+      [
+        "[provider] the relay could not connect to an allowed destination; it answered 502 (EHOSTUNREACH)",
+      ],
+    ]);
   });
 
   it("refuses when the policy cannot be read", async () => {

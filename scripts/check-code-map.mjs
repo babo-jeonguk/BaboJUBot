@@ -734,7 +734,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   // check-project.mjs처럼 Git이 아는 파일만 본다. 무시된 worktree·캐시 폴더의 같은 이름을 찾은 것으로 치지 않는다.
   const files = execFileSync(
     "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     { cwd: root, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" }
   )
     .split("\0")

@@ -64,17 +64,17 @@ export async function runPlaywright(options: {
 }
 
 /**
- * `runToEnd`가 끝까지 돌지 못한 자식을 끈 뒤 그 끝을 확인하는 상한. 부르는 시험의 시한은 최악의 길(`timeoutMs` + 이 상한)보다 길어야
- * 그 길에서 모은 원인(시한 실패·끄기 실패)이 시험 시한보다 먼저 보고된다.
+ * `runToEnd`가 끝까지 돌지 못한 자식을 끈 뒤 그 종료와 출력 닫힘을 각각 확인하는 상한. 부르는 시험의 시한은 최악의 길(`timeoutMs` +
+ * 이 상한 둘)보다 길어야 그 길에서 모은 원인(시한 실패·끄기 실패)이 시험 시한보다 먼저 보고된다.
  */
 export const runToEndStopMs = 10_000;
 
 /**
  * 띄운 자식(stdout·stderr가 파이프)을 끝까지 돌려 종료 코드와 출력(`output`은 stdout·stderr를 받은 차례대로, `stdout`은 표준
- * 출력만)을 돌려준다. 끝은 종료와 출력의
- * 끝을 함께 본다(`exit` 때는 출력이 아직 열려 있을 수 있다, Node 문서 child_process `'exit'`). 그 대기가 어떤 이유로든(`timeoutMs`
- * 시한, 출력 읽기 오류, 시작 실패) 끝나지 않으면 자식을 끄고 그 끝을 확인한 뒤, 원래 실패와 끄기의 실패를 함께 알린다(#287 리뷰
- * STD-3). 띄운 직후 넘겨받아 자식을 남기는 길이 없다.
+ * 출력만)을 돌려준다. 끝은 종료와 출력의 끝을 함께 본다(`exit` 때는 출력이 아직 열려 있을 수 있다, Node 문서 child_process `'exit'`).
+ * 그 대기가 어떤 이유로든(`timeoutMs` 시한, 출력 읽기 오류, 시작 실패) 끝나지 않으면 자식을 끄고, 그 종료와 출력 닫힘을 각각 상한 안에
+ * 확인한 뒤 원래 실패와 끄기의 실패를 함께(`cause`) 그때까지의 출력과 알린다(#287 리뷰 STD-3). 출력이 닫히지 않으면 그 출력을 물려받은 자손이 남은 것이다.
+ * 띄운 직후 넘겨받아 자식을 남기는 길이 없다.
  */
 export async function runToEnd(
   child: ChildProcess,
@@ -87,59 +87,55 @@ export async function runToEnd(
     stdout += chunk;
   });
   child.stderr!.on("data", (chunk) => (output += chunk));
-  // 자식의 끝은 출력과 따로, 거절하지 않는 기록으로 둔다. 끈 뒤의 확인은 출력의 끝이 아니라 이것으로 한다.
+  // 끈 뒤의 확인에 쓰는 끝의 기록. 거절하지 않는다: 출력 오류로 끝나도 출력은 닫힌다.
   const exited = new Promise<void>((resolve) =>
     child.once("exit", () => resolve())
   );
-  const ended = Promise.all([
-    once(child, "exit") as Promise<[number | null]>,
-    once(child.stdout!, "end"),
-    once(child.stderr!, "end"),
-  ]);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timedOut = new Promise<"timeout">((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), timeoutMs);
-  });
-  const outcome = await Promise.race([ended, timedOut])
-    .then(
-      (result) =>
-        result === "timeout"
-          ? {
-              ended: false as const,
-              failure: new Error(
-                `${what}: ${timeoutMs}ms 안에 끝나지 않았다: ${output}`
-              ),
-            }
-          : { ended: true as const, result },
-      (error: unknown) => ({ ended: false as const, failure: error })
+  const outputClosed = Promise.all(
+    [child.stdout!, child.stderr!].map(
+      (stream) =>
+        new Promise<void>((resolve) => stream.once("close", () => resolve()))
     )
-    .finally(() => clearTimeout(timer));
-  if (outcome.ended) {
-    const [[code]] = outcome.result;
-    return { code, output, stdout };
-  }
-  const failures = await attemptEach([() => stopChild(child, exited, what)]);
-  throw combinedFailure(
-    [outcome.failure, ...failures],
-    `${what} did not run to its end`
   );
-}
-
-/**
- * 끝까지 돌지 못한 자식을 끄고 그 끝을 상한 안에 확인한다. 띄우지 못한 자식(번호 없음)은 끌 것이 없다. Node가 이미 끝을 본 자식에는
- * `kill()`이 신호를 보내지 않으므로, 끝난 자식의 번호가 다른 프로세스에 다시 쓰였어도 신호가 그쪽으로 가지 않는다.
- */
-async function stopChild(
-  child: ChildProcess,
-  exited: Promise<void>,
-  what: string
-) {
-  if (child.pid === undefined) return;
-  if (child.exitCode === null && child.signalCode === null)
-    child.kill("SIGKILL");
-  await within(
-    exited,
-    runToEndStopMs,
-    `${what}: the stopped child did not exit`
+  const outcome = await within(
+    Promise.all([
+      once(child, "exit") as Promise<[number | null]>,
+      once(child.stdout!, "end"),
+      once(child.stderr!, "end"),
+    ]),
+    timeoutMs,
+    `${what} did not end`
+  ).then(
+    ([[code]]) => ({ ended: true as const, code }),
+    (failure: unknown) => ({ ended: false as const, failure })
   );
+  if (outcome.ended) return { code: outcome.code, output, stdout };
+  // 띄우지 못한 자식(번호 없음)은 끌 것도, 기다릴 끝도 없다. Node가 이미 끝을 본 자식에는 `kill()`이 신호를 보내지 않으므로, 끝난
+  // 자식의 번호가 다른 프로세스에 다시 쓰였어도 신호가 그쪽으로 가지 않는다.
+  const failures =
+    child.pid === undefined
+      ? []
+      : await attemptEach([
+          async () => {
+            child.kill("SIGKILL");
+            await within(
+              exited,
+              runToEndStopMs,
+              `${what}: the stopped child did not exit`
+            );
+          },
+          () =>
+            within(
+              outputClosed,
+              runToEndStopMs,
+              `${what}: the output of the stopped child did not close`
+            ),
+        ]);
+  // 원인(대기의 실패와 끄기의 실패)은 cause에, 그때까지의 출력은 문구에 둔다.
+  throw new Error(`${what} did not run to its end. Output so far:\n${output}`, {
+    cause: combinedFailure(
+      [outcome.failure, ...failures],
+      `${what} did not run to its end`
+    ),
+  });
 }

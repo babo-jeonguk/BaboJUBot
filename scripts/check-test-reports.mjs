@@ -92,13 +92,6 @@ export const intendedExclusions = [
     reason:
       "환경을 읽을 수 없게 막은 프로그램(prctl)과 그 표식 확인은 Linux의 /proc에만 있다",
   },
-  {
-    report: "runtime",
-    file: "packages/runtime/src/providers/process-stop.test.ts",
-    systems: ["windows"],
-    reason:
-      "프로세스 그룹과 표식으로 끄는 길의 실패라 Linux·macOS에서만 돈다(Windows는 감독 실행기의 묶음이 끈다)",
-  },
 ];
 
 /** Node의 `process.platform`을 이 검사의 시스템 이름으로 바꾼다. */
@@ -237,7 +230,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   // 기대하는 시험 파일은 실행과 따로 저장소의 파일 목록에서 정한다(추적한 파일과 무시하지 않은 새 파일).
   const files = execFileSync(
     "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     {
       cwd: root,
       encoding: "utf8",

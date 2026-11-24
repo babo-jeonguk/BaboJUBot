@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
+  awaitedLater,
   killUnlessGone,
   withCleanup,
   type CleanupStep,
@@ -200,8 +201,11 @@ function runner(
   let output = "";
   stdout.on("data", (chunk) => (output += chunk));
   stderr.on("data", (chunk) => (output += chunk));
-  const exited = once(child, "exit");
-  const outputEnded = Promise.all([once(stdout, "end"), once(stderr, "end")]);
+  // 시작 실패(`error`)와 출력 오류는 기다리기 전에 올 수 있다. 그 거절은 `ended()`나 정리가 받는다.
+  const exited = awaitedLater(once(child, "exit"));
+  const outputEnded = awaitedLater(
+    Promise.all([once(stdout, "end"), once(stderr, "end")])
+  );
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
     // 번호가 아니라 자식 객체로 끈다. Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시

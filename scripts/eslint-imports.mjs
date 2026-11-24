@@ -340,7 +340,7 @@ function originOfVariable(variable, name, depth = 0) {
 }
 
 /** 부른 함수가 불러오는 함수면 그 이름(메시지용): `require`, createRequire가 만든 함수를 담은 이름·`createRequire(…)`, `getBuiltinModule`. */
-function loaderOf(scope, callee, depth = 0) {
+export function loaderOf(scope, callee, depth = 0) {
   const origin = originOf(scope, callee, depth);
   if (same(origin, { global: "require", path: [] })) return "require";
   if (same(origin, madeRequire))

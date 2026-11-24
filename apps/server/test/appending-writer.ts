@@ -1,4 +1,5 @@
 import { appendFile } from "node:fs/promises";
+import { within } from "@babojubot/process/test-support";
 
 type Append = (file: string, text: string) => Promise<void>;
 
@@ -49,26 +50,12 @@ export function keepAppending(
       clearTimeout(next);
       if (!writing) finish(undefined);
       // 멈춘 쓰기가 정리를 테스트 전체 시한까지 붙잡지 않게 시한을 둔다.
-      let deadline: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const failure = await Promise.race([
-          finished,
-          new Promise<never>((_, reject) => {
-            deadline = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    `appends to ${file} did not finish in ${stopTimeoutMs}ms`
-                  )
-                ),
-              stopTimeoutMs
-            );
-          }),
-        ]);
-        if (failure) throw failure.reason;
-      } finally {
-        clearTimeout(deadline);
-      }
+      const failure = await within(
+        finished,
+        stopTimeoutMs,
+        `appends to ${file} did not finish`
+      );
+      if (failure) throw failure.reason;
     },
   };
 }

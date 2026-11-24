@@ -285,7 +285,8 @@ export function parseGoalMessage(
  * - 연구 진행(사용자가 `결과 제출`을 부탁하거나 제출한 결과에 수정을 요청함): 완료한 작업의 산출물을 근거로 결과를 제출한다.
  *   가짜 프로바이더는 완료 기준 충족을 판단하지 않으므로 사용자의 부탁이 제출 시점이다.
  * - 어느 단계든 사용자가 `실패 연습`을 부탁함: 아무것도 쓰지 않고 실행 시도를 실패로 끝낸다(Inbox·알림의 실패 항목 확인용).
- * - 어느 단계든 사용자가 `실행 유지 연습`을 부탁함: 아무것도 쓰지 않고 취소될 때까지 실행 시도를 끝내지 않는다(대시보드의 실행 중 확인용).
+ * - 어느 단계든 사용자가 `실행 유지 연습`을 부탁함: 맥락을 읽은 뒤(일을 시작했다는 신호) 아무것도 쓰지 않고 취소될 때까지 실행 시도를
+ *   끝내지 않는다(대시보드의 실행 중 확인용).
  * - 어느 단계든 사용자가 `끼워 넣기 연습`을 부탁함: 실행 중에 끼워 넣은 말을 받을 때까지 끝내지 않는다. 받은 말은 끝날 때 반영했다고
  *   답한다(실행 중에 받은 말은 어느 시나리오든 이렇게 답한다).
  * - `메모해 주세요: <말>`: 그 말을 세션 메모에 담고 답한다. `세션 메모를 알려 주세요`: 이어 간 세션의 메모를 알린다(세션 이어가기 확인용).
@@ -330,7 +331,9 @@ export function demoLeadScript(request: RunRequest): Script {
       ],
     };
   if (messages.some((m) => holdDrill.test(m)))
-    return { steps: [{ do: "hold", until: untilCancelled }] };
+    return {
+      steps: [{ do: "read_context" }, { do: "hold", until: untilCancelled }],
+    };
   if (messages.some((m) => steerDrill.test(m)))
     return {
       steps: [{ do: "read_context" }, { do: "until_steered" }],
@@ -740,7 +743,9 @@ export function demoWorkerScript(request: RunRequest): Script {
       ],
     };
   if (comments.some((c) => holdDrill.test(c)))
-    return { steps: [{ do: "hold", until: untilCancelled }] };
+    return {
+      steps: [{ do: "read_context" }, { do: "hold", until: untilCancelled }],
+    };
   const steps: ScriptStep[] = [{ do: "read_context" }];
   // 조직 사본 템플릿이 선언한 첫 노드 종류(기본 연구 흐름에서는 연구 문제).
   const firstNodeKind = request.context.researchFlow?.nodeKinds[0]?.name;

@@ -23,8 +23,10 @@ import {
 } from "./launch.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { supervisorProtocol } from "./supervisor.ts";
-import { killUnlessGone } from "./test-cleanup.ts";
+import { endChild } from "./process-test-support.ts";
+import { lifelineHolder } from "./test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
+import { reportedPid } from "./test-support.ts";
 
 // 공용 실행(#262): 띄운 트리를 stop()이 모두 끄고 확인한다. 실제 프로세스로 보고, 남았는지는 번호가 아니라 각 프로세스가 쥔 연결로
 // 본다(#259). 세 OS 모두 실행 시도마다 감독 실행기로 띄우고(#268), 시험 파일마다 준비한다(launcher-setup-support.ts).
@@ -59,10 +61,18 @@ const ignoreTerm = 'process.on("SIGTERM", () => {});';
 /** 자식 하나를 띄우는 코드. 자식은 연결 `name`을 쥐고 돈다. */
 const child = (name: string, options: string, body = "") =>
   `process.getBuiltinModule("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold(name)} ${body} ${keep}`)}], ${options});`;
-/** 프로세스의 환경 항목. Linux는 `/proc`, macOS는 `ps -E`(실행 인자 뒤에 환경이 붙는다)로 읽는다. */
-function environmentOf(pid: number): string[] {
+/**
+ * 프로세스가 실행 시도 `lease`의 표식(`BABOJUBOT_PROCESS_LEASE[_n]=<lease>`)을 환경에 지니는가. Linux는 `/proc`의 환경 항목(NUL
+ * 구분)을 본다. macOS는 `ps -E`의 한 줄(실행 인자 뒤에 환경이 공백으로 이어 붙는다)뿐이라 항목의 경계를 알 수 없으므로, 공백이 없는
+ * 표식(이름과 UUID) 하나가 공백 사이에 통째로 있는지만 본다. 그 줄을 항목 목록으로 나누어 돌려주지 않는다(#288 외부 리뷰 3회차
+ * STD-4 같은 모양: OS마다 모양이 다른 값을 공백으로 나누지 않는다).
+ */
+function carriesLease(pid: number, lease: string): boolean {
+  const mark = new RegExp(`^BABOJUBOT_PROCESS_LEASE(_\\d+)?=${lease}$`);
   if (process.platform === "linux")
-    return readFileSync(`/proc/${pid}/environ`, "latin1").split("\0");
+    return readFileSync(`/proc/${pid}/environ`, "latin1")
+      .split("\0")
+      .some((entry) => mark.test(entry));
   const listing = spawnSync(
     "ps",
     ["-E", "-ww", "-o", "command=", "-p", String(pid)],
@@ -70,7 +80,9 @@ function environmentOf(pid: number): string[] {
   );
   if (listing.status !== 0)
     throw new Error(`ps could not read process ${pid}: ${listing.stderr}`);
-  return listing.stdout.trim().split(/\s+/);
+  return new RegExp(
+    `(^|\\s)BABOJUBOT_PROCESS_LEASE(_\\d+)?=${lease}(\\s|$)`
+  ).test(listing.stdout);
 }
 let count = 0;
 /** 시험마다 겹치지 않는 연결 이름. */
@@ -293,9 +305,7 @@ describe("launchTree", () => {
           env: { PATH: process.env.PATH, BABOJUBOT_PROCESS_LEASE: marker },
         }
       );
-      onTestFinished(() => {
-        killUnlessGone(stray.pid!);
-      });
+      onTestFinished(() => endChild(stray));
       await lifelines.connected(outside);
       server.killLeader();
       await server.exited;
@@ -316,13 +326,15 @@ describe("launchTree", () => {
         `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(leader)} ${keep}`
       );
       await lifelines.connected(leader);
-      const marked = (pid: number) =>
-        environmentOf(pid).some(
-          (entry) =>
-            /^BABOJUBOT_PROCESS_LEASE(_\d+)?=/.test(entry) &&
-            entry.endsWith(`=${tree.lease}`)
-        );
-      expect(marked(Number(await readFile(pidFile, "utf8")))).toBe(true);
+      const marked = (pid: number) => carriesLease(pid, tree.lease);
+      expect(
+        marked(
+          reportedPid(
+            await readFile(pidFile, "utf8"),
+            `the pid file of ${leader}`
+          )
+        )
+      ).toBe(true);
       expect(marked(tree.pid!)).toBe(false);
     },
     60_000
@@ -423,6 +435,22 @@ describe("launchTree without a supervisor", () => {
     await chmod(file, 0o755);
     return file;
   }
+  /**
+   * 셸 가짜 실행기가 띄우는 Node 보유 프로그램의 셸 명령(#288 parent 점검: 번호 신원). 그 프로그램은 자기 번호를 파일에 남긴 뒤 연결을
+   * 쥐고, 물려받은 핸들(제어 통로)도 그대로 쥔다. 정리는 시험이 끝날 때 그 연결이 열려 있음을 본 직후에만 그 번호로 끄고, 끝은 연결의
+   * 닫힘으로 본다. `sleep`처럼 번호만 남기면 그 번호가 아직 그 프로그램인지 볼 수단이 없다.
+   */
+  async function shellHolder(label: string) {
+    const name = unique(label);
+    const pidFile = path.join(dataDir, `${name}.pid`);
+    const file = path.join(dataDir, `${name}.cjs`);
+    const held = lifelineHolder(lifelines, name, pidFile);
+    await writeFile(file, `${held.code} ${keep}`);
+    // 시험이 `spawnSync`로 막혀 있는 동안 온 연결은 그 뒤에야 처리된다. 정리는 먼저 연결을 기다린다(`lifelineHolder`).
+    onTestFinished(held.end);
+    const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
+    return `${quote(process.execPath)} ${quote(file)}`;
+  }
   const tryPrepare = (file: string) =>
     separately(`import { launchTree, prepareSupervisor } from ${launchModule};
        console.log(JSON.stringify(await prepareSupervisor({ file: ${JSON.stringify(file)} })));`);
@@ -449,13 +477,10 @@ describe("launchTree without a supervisor", () => {
   it.skipIf(windows)(
     "gives up a trial at its time limit when a child keeps the control channel open",
     async () => {
-      const pidFile = path.join(dataDir, "channel-holder-pid");
-      folders.own(async () => {
-        killUnlessGone(Number(await readFile(pidFile, "utf8")));
-      }, "the child that holds the control channel");
+      const holder = await shellHolder("channel-holder");
       const file = await fakeSupervisor(
         "leaky-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\n${holder} &\nexit 0\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -471,14 +496,12 @@ describe("launchTree without a supervisor", () => {
   it.skipIf(windows)(
     "confirms the supervisor's end after the trial's time limit, and says when it cannot",
     async () => {
-      const pidFile = path.join(dataDir, "stuck-supervisor-pids");
-      folders.own(async () => {
-        for (const pid of (await readFile(pidFile, "utf8")).trim().split(/\s+/))
-          killUnlessGone(Number(pid));
-      }, "the stuck supervisor and its child");
+      // 실행기의 자식과, 끝나지 않는 실행기 자신(셸이 그 프로그램으로 바뀐다). 둘 다 연결을 쥐어 정리가 신원을 보고 끈다.
+      const child = await shellHolder("stuck-supervisor-child");
+      const supervisor = await shellHolder("stuck-supervisor");
       const file = await fakeSupervisor(
         "stuck-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! >> ${JSON.stringify(pidFile)}\necho $$ >> ${JSON.stringify(pidFile)}\nexec sleep 600\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\n${child} &\nexec ${supervisor}\n`
       );
       vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(() => true);
       onTestFinished(async () => {
@@ -572,10 +595,13 @@ describe("runTree", () => {
       overflow: "stop",
     });
 
+  // 대표는 남길 자식이 연결을 쥔 것을 그 자식의 신호로 본 뒤에 끝난다(#286). 시간(200ms)으로 기다리면 느린 실행기에서 자식이 연결하기
+  // 전에 트리 끄기로 끝나, 연결이 닫히는 것을 볼 수 없었다.
   it("returns the output and exit code, and stops what the program left", async () => {
     const left = unique("left");
+    const held = `${lifelines.hold(left, 'process.stdout.write("held\\n");')} ${keep}`;
     const result = await run(
-      `${child(left, '{ stdio: "ignore" }')} setTimeout(() => { process.stdout.write("done"); process.exit(4); }, 200);`
+      `const c = process.getBuiltinModule("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(held)}], { stdio: ["ignore", "pipe", "ignore"] }); c.stdout.once("data", () => process.stdout.write("done", () => process.exit(4)));`
     );
     expect(result).toMatchObject({ started: true, code: 4 });
     expect(result.started && result.stdout.toString()).toBe("done");
