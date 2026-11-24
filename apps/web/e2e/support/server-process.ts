@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   awaitedLater,
@@ -265,13 +266,17 @@ export async function startServerProcess({
   }
 }
 
+/** 시작 줄 기다리기가 자식에게서 쓰는 것만. */
+export type ReadyChild = { readonly stdout: Readable | null };
+
 /** 완전한 시작 줄(`BaboJUBot server on <url> (…)`)이 나올 때까지 기다려 그 주소를 돌려준다. */
-function waitForReadyLine(
-  child: ChildProcess,
+export function waitForReadyLine(
+  child: ReadyChild,
   exited: Promise<Exit>,
   stdout: () => string,
   label: string,
-  output: () => string
+  output: () => string,
+  limits: { readyTimeoutMs: number } = { readyTimeoutMs }
 ) {
   return new Promise<string>((resolve, reject) => {
     let settled = false;
@@ -293,11 +298,11 @@ function waitForReadyLine(
         finish(() =>
           reject(
             new Error(
-              `${label}가 ${readyTimeoutMs}ms 안에 시작하지 않았다: ${output()}`
+              `${label}가 ${limits.readyTimeoutMs}ms 안에 시작하지 않았다: ${output()}`
             )
           )
         ),
-      readyTimeoutMs
+      limits.readyTimeoutMs
     );
     child.stdout!.on("data", onData);
     exited.then(
