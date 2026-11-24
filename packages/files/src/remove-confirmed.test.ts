@@ -77,10 +77,14 @@ describe("removing a file in a place others can change, only the one confirmed",
   const kept =
     /^\.config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/;
   const failure = Object.assign(new Error("could not read"), { code: "EIO" });
-  /** 확인이 실패했을 때 던진 것. 그 실패와 남긴 결과를 담은 `ConfirmFailed`여야 한다. */
+  /** 확인이 실패했을 때 던진 것. 이행하면 그 자체로 실패이고, 거절 값은 그 실패와 남긴 결과를 담은 `ConfirmFailed`여야 한다. */
   const confirmFailure = async (attempt: Promise<unknown>) => {
     const failed = await attempt.then(
-      (result) => result,
+      (result) => {
+        throw new Error(
+          `expected a confirm failure, but it fulfilled with ${JSON.stringify(result)}`
+        );
+      },
       (error: unknown) => error
     );
     if (!(failed instanceof ConfirmFailed))
