@@ -96,6 +96,8 @@ export function loadContext(root = scriptRoot) {
     if (real !== undefined) roots.add(real);
   }
   const refs = new Map();
+  /** @type {string[] | undefined} origin 브랜치 이름. 처음 물을 때 한 번 읽는다. */
+  let originBranches;
   let origin;
   return {
     root,
@@ -113,19 +115,34 @@ export function loadContext(root = scriptRoot) {
       };
       return origin.repository;
     },
-    refExists(ref) {
+    /**
+     * GitHub가 아는 것으로 확인한 ref: origin 브랜치 이름(원격 추적 ref `refs/remotes/origin/<이름>`, HEAD 제외)이나, origin 원격
+     * 추적 ref 가운데 하나에서 닿는 전체 커밋 SHA. 로컬에서만 풀리는 revision(로컬 브랜치·태그, `origin/…`, 짧은 SHA, push 안 된
+     * 커밋, ORIG_HEAD 같은 상태 이름)은 GitHub가 모를 수 있어 인정하지 않는다. 원격을 묻지 않으므로 마지막으로 내려받은 origin 기준이다.
+     */
+    knownRef(ref) {
       if (!refs.has(ref))
         refs.set(
           ref,
-          [ref, `origin/${ref}`].some(
-            (candidate) =>
-              // 없는 ref는 종료 코드 1이다.
+          /^[0-9a-f]{40}$/.test(ref)
+            ? // 이 checkout에 없는 커밋은 종료 코드 129다.
               gitOutput(
                 root,
-                ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`],
-                { absent: [1] }
+                [
+                  "for-each-ref",
+                  "--contains",
+                  ref,
+                  "--format=%(refname)",
+                  "refs/remotes/origin",
+                ],
+                { absent: [129] }
               ) !== ""
-          )
+            : ref !== "HEAD" &&
+                (originBranches ??= gitOutput(root, [
+                  "for-each-ref",
+                  "--format=%(refname:lstrip=3)",
+                  "refs/remotes/origin",
+                ]).split("\n")).includes(ref)
         );
       return refs.get(ref);
     },
@@ -163,11 +180,19 @@ function repositoryPathFromUrl(url, context) {
     rest.length < 2
   )
     return null;
-  // 브랜치 이름에 `/`가 들어갈 수 있어 실제로 있는 가장 짧은 ref를 찾는다. 아는 ref가 없으면 어디까지가 ref인지 모른다.
-  for (let index = 1; index < rest.length; index++)
-    if (context.refExists(rest.slice(0, index).join("/")))
-      return rest.slice(index).join("/");
-  return { undecidable: "to a GitHub branch or commit not known here" };
+  // 브랜치 이름에 `/`가 들어갈 수 있어 어디까지가 ref인지는 아는 ref로 정한다. 맞는 경계가 정확히 하나일 때만 경로가 정해진다.
+  const bounds = rest
+    .slice(1)
+    .map((_, index) => index + 1)
+    .filter((index) => context.knownRef(rest.slice(0, index).join("/")));
+  const advice = "(write it with a full commit SHA or an origin branch name)";
+  if (bounds.length === 1) return rest.slice(bounds[0]).join("/");
+  return {
+    undecidable:
+      bounds.length === 0
+        ? `to a GitHub branch or commit not known here ${advice}`
+        : `to a GitHub ref that splits the path more than one way ${advice}`,
+  };
 }
 
 /** URL 인코딩을 푼 글자. 잘못된 인코딩(URIError)이면 undefined다. */
