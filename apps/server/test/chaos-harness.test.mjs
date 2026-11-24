@@ -36,11 +36,13 @@ import {
   chaosServer,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
-import { hasErrorCode } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { openLifelines } from "@babojubot/process/lifelines";
+import { within } from "@babojubot/process/test-support";
 import {
   awaitedLater,
   folderCleanup,
+  lifelineHolder,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
 
@@ -774,25 +776,36 @@ describe("chaos harness on a fake connection", () => {
   }, 120_000);
 
   it("keeps the home and fails the scene when a provider process record cannot be recovered", async () => {
-    // 대표는 끝나고 그룹의 프로세스만 남았다. 제품 복구는 우리 것인지 확인할 수 없어 기록을 남긴다.
-    const leader = spawn("sh", ["-c", "sleep 60 & exit 0"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    await once(leader, "exit");
+    // 대표는 끝나고 그룹의 구성원 하나만 남았다. 제품 복구는 우리 것인지 확인할 수 없어 기록을 남긴다.
+    // 구성원은 연결을 쥐고 돈다. 정리는 그 연결이 열려 있음을 본 직후에만 그 번호로 끄고, 끝은 연결의 닫힘으로 본다(`lifelineHolder`).
+    // 대표가 거두어진 뒤의 그룹 번호로는 신호하지 않는다. 구성원이 끝난 뒤에는 그 번호가 다른 그룹에 쓰였을 수 있다(#286).
+    const lifelines = await openLifelines();
+    onTestFinished(() => lifelines.close());
+    const memberFolder = await mkdtemp(path.join(tmpdir(), "chaos-member-"));
+    const memberCleanup = folderCleanup(() => removeFolder(memberFolder));
+    onTestFinished(memberCleanup.cleanUp);
+    const member = lifelineHolder(
+      lifelines,
+      "member",
+      path.join(memberFolder, "pid")
+    );
+    memberCleanup.own(member.end);
+    const leader = spawn(
+      process.execPath,
+      [
+        "-e",
+        `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${member.code} setInterval(() => {}, 1000);`)}], { stdio: "ignore" }); process.exit(0);`,
+      ],
+      { detached: true, stdio: "ignore" }
+    );
+    await within(once(leader, "exit"), 10_000, "the group leader did not end");
     const group = leader.pid;
     if (group === undefined) throw new Error("the leader did not start");
+    await lifelines.connected("member");
     /** @type {string | undefined} */
     let home;
-    // 남은 그룹을 끄고 홈을 지운다. 그룹이 이미 끝났으면 넘어간다.
-    // 남은 sleep은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 끝나기를 기다리지 않고 지운다.
-    // (부모 sh가 먼저 끝나 sleep은 다른 프로세스가 거둔다. 거두지 않는 환경에서는 종료 확인이 시한까지 기다리게 된다.)
+    // 남은 구성원은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 그 끝과 따로 홈을 지운다.
     onTestFinished(async () => {
-      try {
-        process.kill(-group, "SIGKILL");
-      } catch (error) {
-        if (!hasErrorCode("ESRCH")(error)) throw error;
-      }
       if (home) await removeFolder(home);
     });
     const planted = {
