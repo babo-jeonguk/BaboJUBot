@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { attemptAll } from "@babojubot/contracts";
 import { psField } from "@babojubot/process";
 import { killUnlessGone } from "@babojubot/process/test-cleanup";
-import { exited, readyLine, untilExited } from "@babojubot/process/testing";
+import { exited, readyLine } from "@babojubot/process/testing";
 import { startProcess } from "./process.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -36,7 +36,14 @@ afterEach(async () => {
       if (start === undefined || psField(pid, "lstart", 10_000) !== start)
         return;
       killUnlessGone(pid);
-      await untilExited([pid]);
+      // 끝은 같은 신원으로 본다: 그 번호의 시작 시각이 바뀌거나 없어지거나, 그 프로그램이 끝난(좀비 포함) 때다.
+      await expect
+        .poll(() => ended({ pid, start }), {
+          timeout: 10_000,
+          interval: 25,
+          message: `hidden program ${pid} did not end after SIGKILL`,
+        })
+        .toBe(true);
     })
   );
 });

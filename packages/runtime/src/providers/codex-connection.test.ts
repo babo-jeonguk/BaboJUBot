@@ -9,7 +9,7 @@ import {
 } from "./codex-connection.ts";
 import { testFolders } from "./test-folders.ts";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
-import { lifelineHolder, processAlive } from "@babojubot/process/test-cleanup";
+import { lifelineHolder } from "@babojubot/process/test-cleanup";
 
 // 합성 peer(replay.mjs)로 응답·종료를 정한다. 모델·네트워크는 쓰지 않는다.
 // 시험이 연 연결은 정리가 닫고 프로그램 정리(done)까지 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
@@ -23,8 +23,6 @@ function openOwned(options: Parameters<typeof openCodexConnection>[0]) {
   }, "Codex connection");
   return connection;
 }
-const record = (value: unknown) => value as Record<string, unknown>;
-const alive = processAlive;
 // 프로그램이 남긴 자식은 연결을 쥐고 돈다. 끝은 번호가 아니라 연결의 닫힘으로 보고, 시험이 끄지 못한 것은 정리가 연결이 열려 있음을
 // 본 직후에만 그 번호로 끈다(`lifelineHolder`). 끝난 번호는 다른 프로그램에 다시 쓰일 수 있다.
 let lifelines: Lifelines;
@@ -206,26 +204,24 @@ describe("a Codex app-server connection", () => {
       const closedInput = new Promise<void>((resolve) => {
         ready = resolve;
       });
-      let pid = 0;
+      // 프로그램은 연결을 쥔 뒤 준비를 알린다. 살아 있음은 그 연결로 본다(프로그램 정리는 연결 닫기가 맡는다).
+      const name = `write-fails-${++leftCount}`;
       const connection = openOwned({
         command: [process.execPath],
         args: [
           "-e",
-          `require("fs").closeSync(0); console.log(JSON.stringify({ method: "ready", params: { pid: process.pid } })); setInterval(() => {}, 1000)`,
+          `require("fs").closeSync(0); ${lifelines.hold(name, 'console.log(JSON.stringify({ method: "ready", params: {} }));')} setInterval(() => {}, 1000)`,
         ],
         cwd: root,
         env: { PATH: process.env.PATH },
-        onNotification: (frame) => {
-          pid = record(frame.params).pid as number;
-          ready();
-        },
+        onNotification: () => ready(),
       });
       await closedInput;
       await expect(
         connection.request("lost", {}, { timeoutMs: 60_000 })
       ).rejects.toBeInstanceOf(ProtocolClosed);
       // The failed write ends the wait at once, not when the program has been stopped about two seconds later.
-      expect(alive(pid)).toBe(true);
+      expect(lifelines.open(name)).toBe(true);
       expect(connection.closed).toBe(true);
       await expect(
         connection.request("after", {}, { timeoutMs: 60_000 })

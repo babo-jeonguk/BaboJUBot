@@ -32,9 +32,8 @@ afterEach(async () => {
   ]);
 });
 
-/** 연결 `name`이 열려 있고 그 번호의 프로세스가 끝나지 않았다(연결이 그 번호가 아직 그 프로그램임을 보인다). */
-const running = (name: string, pid: number) =>
-  lifelines.open(name) && !exited(pid);
+/** 그 프로그램이 아직 돈다: 그 프로그램이 쥔 연결 `name`이 열려 있다. 번호는 신호를 보낼 곳으로만 쓴다. */
+const running = (name: string) => lifelines.open(name);
 /** 연결이 닫혀 프로그램이 끝났음을 상한 안에서 확인한다. */
 const stopped = async (...names: string[]) => {
   for (const name of names) await lifelines.closed(name);
@@ -137,7 +136,7 @@ describe.skipIf(process.platform === "win32")(
 
     it("leave another run's programs, unrelated programs and the server alone", async () => {
       const other = await start("");
-      const theirs = await other.left;
+      await other.left;
       const unrelated = folders.ownChild(
         spawn(process.execPath, ["-e", keep], {
           detached: true,
@@ -150,8 +149,8 @@ describe.skipIf(process.platform === "win32")(
       await left;
       await run.done;
       await stopped(names.child, names.grandchild);
-      expect(running(other.names.child, theirs.child)).toBe(true);
-      expect(running(other.names.grandchild, theirs.grandchild)).toBe(true);
+      expect(running(other.names.child)).toBe(true);
+      expect(running(other.names.grandchild)).toBe(true);
       // 시험이 띄운 자식은 Node가 끝을 보기 전에는 거두어지지 않아, 그 번호는 아직 그 프로그램이다.
       expect(unrelated.exitCode).toBeNull();
       expect(unrelated.signalCode).toBeNull();
