@@ -2,8 +2,8 @@
 // `antigravity-config.ts`의 `clearOwnedConfig`가 조직의 작업 폴더를 현재 폴더로 띄우고, 인수는 JSON `[우리 표시]`다.
 // 작업 폴더로 `.agents`를 붙들려고 별도 프로세스로 돈다(@babojubot/files `enterFolder`). 열기와 폴더 확인은 그 패키지가 한다.
 // 끝난 코드: 0 지움(또는 지울 것 없음), 3 지우지 못한 까닭이 있음. 까닭은 표준 오류에 한 줄에 JSON 하나로 남긴다:
-// `{"reason": …, "name": …}`(되돌리지 못해 옮긴 이름으로 남겼으면 `.agents` 안의 그 이름 `keptAs`, 예상 밖의 실패로 남겼거나 handle을
-// 닫지 못했으면 `code`). 그 밖은 실패.
+// `{"reason": …, "name": …}`(되돌리지 못해 옮긴 이름으로 남겼으면 `.agents` 안의 그 이름 `keptAs`와 예상 밖의 실패로 남겼으면 그 코드
+// `keptCode`, 확인하지 못한 원인이나 handle을 닫지 못한 원인은 `code`). 그 밖은 실패.
 import { lstat, readdir } from "node:fs/promises";
 import {
   continueAfterFailure,
@@ -36,7 +36,7 @@ let unsafeReason = false;
 function report(
   reason: ScriptCleanupReason,
   name: string,
-  extra?: { keptAs?: string; code?: string }
+  extra?: { keptAs?: string; keptCode?: string; code?: string }
 ) {
   unsafeReason = true;
   process.stderr.write(`${JSON.stringify({ reason, name, ...extra })}\n`);
@@ -91,10 +91,15 @@ async function confirmOwned(moved: string): Promise<boolean> {
   }
 }
 
-/** 옮긴 이름에 남긴 파일의 위치(`.agents` 안의 이름)와, 예상 밖의 실패로 남겼으면 그 코드. 까닭 줄에 함께 담는다. */
+/**
+ * 옮긴 이름에 남긴 파일의 위치(`.agents` 안의 이름)와, 예상 밖의 실패로 남겼으면 그 코드(`keptCode`). 까닭 줄에 함께 담는다. 남긴
+ * 원인은 까닭 자신의 원인(`code`)과 다른 칸이라 둘이 함께 있어도 하나가 덮이지 않는다.
+ */
 const keptFields = (kept: Kept) => ({
   keptAs: kept.keptAs,
-  ...(kept.because === undefined ? {} : { code: failureCode(kept.because) }),
+  ...(kept.because === undefined
+    ? {}
+    : { keptCode: failureCode(kept.because) }),
 });
 
 /** `removeConfirmed`의 결과를 빠짐없이 처리한다. 되돌렸으면 정리하지 못한 까닭이다. */

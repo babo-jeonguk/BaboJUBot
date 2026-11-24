@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { link, rename, unlink } from "node:fs/promises";
 import path from "node:path";
-import { hasErrorCode, orIfMissing } from "@babojubot/contracts/failure";
+import {
+  failureCode,
+  hasErrorCode,
+  orIfMissing,
+} from "@babojubot/contracts/failure";
 
 /**
  * 지우지 못하고 옮긴 이름에 남긴 파일. `keptAs`는 원래 파일과 같은 폴더 안의 파일 이름이다. 부른 쪽은 자기가 아는 폴더 기준으로
@@ -14,15 +18,18 @@ export type Removal = "removed" | "missing" | "restored" | Kept;
 
 /**
  * `confirm`이 던져 옮긴 파일을 확인하지 못했다. 지우지 않았다. `cause`는 그 오류이고, `kept`는 제자리에 되돌렸는지(`"restored"`) 옮긴
- * 이름에 남겼는지다. 남긴 위치를 확인 실패와 함께 부른 쪽에 넘긴다.
+ * 이름에 남겼는지다. 남긴 위치를 확인 실패와 함께 부른 쪽에 넘긴다. `code`는 원인의 코드(`failureCode`)라, 이 오류를 받아 코드만
+ * 남기는 기록도 감싼 오류의 이름이 아니라 원래 원인을 남긴다.
  */
 export class ConfirmFailed extends Error {
   readonly kept: "restored" | Kept;
+  readonly code: string;
   constructor(cause: unknown, kept: "restored" | Kept) {
     super("the moved file could not be confirmed; it was not removed", {
       cause,
     });
     this.kept = kept;
+    this.code = failureCode(cause);
   }
 }
 
