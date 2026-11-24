@@ -74,9 +74,9 @@ function changedFiles(root: string, base: string) {
       .filter(Boolean);
   return [
     ...new Set([
-      ...list("diff", "--name-only", "--no-renames", "-z", base),
-      ...list("diff", "--cached", "--name-only", "--no-renames", "-z", base),
-      ...list("ls-files", "--others", "--exclude-standard", "-z"),
+      ...list("diff", "-z", "--name-only", "--no-renames", base),
+      ...list("diff", "-z", "--cached", "--name-only", "--no-renames", base),
+      ...list("ls-files", "-z", "--others", "--exclude-standard"),
     ]),
   ].sort();
 }

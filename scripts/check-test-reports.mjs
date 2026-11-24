@@ -237,7 +237,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   // 기대하는 시험 파일은 실행과 따로 저장소의 파일 목록에서 정한다(추적한 파일과 무시하지 않은 새 파일).
   const files = execFileSync(
     "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     {
       cwd: root,
       encoding: "utf8",

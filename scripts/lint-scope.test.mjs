@@ -399,7 +399,7 @@ test("the product and test type checks split files the way the test scope does",
   assert.ok(packages.length > 0, "no workspace package found");
   const tracked = execFileSync(
     "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     { cwd: repository, encoding: "utf8" }
   )
     .split("\0")

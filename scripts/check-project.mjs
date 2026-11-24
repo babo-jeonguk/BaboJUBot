@@ -31,7 +31,7 @@ let markdownFiles = 0;
 const repositoryFiles = new Set(
   execFileSync(
     "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     { cwd: root, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" }
   )
     .split("\0")
