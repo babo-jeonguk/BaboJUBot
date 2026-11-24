@@ -5,6 +5,7 @@ import { hasErrorCode, orIfMissing } from "@babojubot/contracts/failure";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { bind, recording } from "./recording.mjs";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 const args = process.argv
     .slice(2)
     .filter(
@@ -14,7 +15,7 @@ const args = process.argv
     process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
 if (args.includes("--version")) {
   console.log("9.9.9");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 /** 시험이 이 프로그램에 주는 HOME. */
 function home() {
@@ -56,11 +57,11 @@ if (args[0] === "models") {
     console.error(
       "Error: Please sign in to view available models. Launch the CLI without arguments to sign in."
     );
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   await refresh();
   console.log("simulated-model\tSimulated Model");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 const conversations = path.join(
   home(),
@@ -131,7 +132,7 @@ async function prompt(id, text) {
           conversationId: context.context.conversations[0].id,
         }),
       });
-  if (!response.ok) process.exit(23);
+  if (!response.ok) process.exit(await afterOutput(23));
   if (recording) {
     for (const frame of recording.updates) out(bind(frame, session.id));
     out({ id, result: recording.promptResult });

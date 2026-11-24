@@ -2,9 +2,10 @@
 import http from "node:http";
 import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 if (process.argv.includes("--version")) {
   console.log("opencode v9.9.9");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 /**
  * 옵션 뒤의 값. 옵션이 없으면 null이고, 값 없이 끝나면 실행을 멈춘다.
@@ -369,7 +370,7 @@ if (gate !== null) {
     await writeFile(starting, "", { flag: "wx" });
   } catch {
     console.error("synthetic: table already exists");
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   await writeFile(`${gate}.reached`, "");
   // 열렸는지 다시 확인한다(파일 감시는 OS마다 알림이 다르다).

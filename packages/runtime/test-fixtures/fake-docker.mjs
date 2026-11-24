@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 
 const [stateDir, programsJson, ...args] = process.argv.slice(2);
 if (stateDir === undefined || programsJson === undefined)
@@ -127,7 +128,7 @@ if (verb === "run") {
       : programs[program];
   if (!mapped) {
     process.stderr.write(`fake docker: unknown program ${program}\n`);
-    process.exit(127);
+    process.exit(await afterOutput(127));
   }
   const child = spawn(mapped[0], [...mapped.slice(1), ...programArgs], {
     cwd: options.get("--workdir")?.[0] ?? options.get("-w")?.[0],
@@ -161,8 +162,8 @@ if (verb === "run") {
   /** @type {NodeJS.Signals[]} */
   const forwarded = ["SIGINT", "SIGTERM"];
   for (const signal of forwarded) process.on(signal, () => child.kill(signal));
-  child.on(passOutput ? "exit" : "close", (code, signal) =>
-    process.exit(code ?? (signal ? 137 : 1))
+  child.on(passOutput ? "exit" : "close", async (code, signal) =>
+    process.exit(await afterOutput(code ?? (signal ? 137 : 1)))
   );
 } else {
   const failing = existsSync(path.join(stateDir, "rm-fails"));
@@ -177,18 +178,18 @@ if (verb === "run") {
     record({ args, relayOpen });
     if (failing) {
       process.stderr.write("Error response from daemon: cannot remove\n");
-      process.exit(1);
+      process.exit(await afterOutput(1));
     }
-    process.exit(0);
+    process.exit(await afterOutput(0));
   }
   record({ args });
   if (verb === "inspect" && failing) {
     process.stdout.write("[{}]\n");
-    process.exit(0);
+    process.exit(await afterOutput(0));
   }
   if (verb === "inspect") {
     process.stderr.write(`Error: No such container: ${args.at(-1)}\n`);
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   const stored = (file, fallback) => {
     try {
@@ -214,5 +215,5 @@ if (verb === "run") {
     );
   if (args[0] === "image" && args[1] === "inspect")
     process.stdout.write(stored("runner-version", "2") + "\n");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }

@@ -2,51 +2,52 @@
 // Not a recording. Usage: quirky-cli.synthetic.mjs <claude|codex|antigravity> <variant> [adapter arguments...]
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 
 const [kind, variant] = process.argv.slice(2);
 const args = process.argv.slice(4);
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 if (args.includes("--version")) {
-  if (variant === "version-fails") process.exit(3);
+  if (variant === "version-fails") process.exit(await afterOutput(3));
   console.log("anything 1.2.3");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
-if (args[0] === "login") process.exit(variant === "no-file-login" ? 1 : 0);
-if (args[0] === "auth") process.exit(variant === "logged-out" ? 1 : 0);
+if (args[0] === "login")
+  process.exit(await afterOutput(variant === "no-file-login" ? 1 : 0));
+if (args[0] === "auth")
+  process.exit(await afterOutput(variant === "logged-out" ? 1 : 0));
 // 이전 세션으로는 어떤 문구로든 시작하지 못하는 프로그램. 문구에 기대지 않는다는 것을 확인한다.
 const resuming = args.includes("--resume") || args.includes("resume");
 if (variant === "fails-on-resume" && resuming) {
   console.error("Something unexpected happened with that conversation.");
-  process.exit(1);
+  process.exit(await afterOutput(1));
 }
 if (args[0] === "models") {
   if (variant === "logged-out") {
     console.error(
       "Error: Please sign in to view available models. Launch the CLI without arguments to sign in."
     );
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   if (variant === "offline") {
     console.error("Error: could not reach the service.");
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   console.log("model-one\tModel One");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 if (variant === "banner")
   console.log("A new version is available. Run the update command.");
 const finish = async () => {
-  if (variant === "exits-1") process.exit(1);
+  if (variant === "exits-1") process.exit(await afterOutput(1));
   // 결과를 낸 뒤 입력이 닫혀도 몇 초 더 머문다. 끝나기를 기다리는 adapter(Claude, #125)도 시험 시간 안에 결과를 받는다.
   if (variant === "slow-exit") {
     process.stdin.pause();
     setInterval(() => {}, 1000);
     await sleep(6_000);
   }
-  // 파이프 출력은 비동기다. 큰 줄이 잘리지 않도록 비운 뒤 끝낸다.
-  await new Promise((resolve) => process.stdout.write("", resolve));
-  process.exit(0);
+  process.exit(await afterOutput(0));
 };
 const input = createInterface({ input: process.stdin });
 
@@ -73,7 +74,7 @@ if (kind === "claude")
         usage: { input_tokens: 0, output_tokens: 0 },
         total_cost_usd: 0,
       });
-      process.exit(1);
+      process.exit(await afterOutput(1));
     }
     if (variant === "api-error") {
       out({
@@ -86,7 +87,7 @@ if (kind === "claude")
         usage: { input_tokens: 0, output_tokens: 0 },
         total_cost_usd: 0,
       });
-      process.exit(1);
+      process.exit(await afterOutput(1));
     }
     if (variant === "waits-for-steer") {
       for await (const _steer of input) break;
@@ -120,7 +121,7 @@ if (kind === "codex" && args.includes("exec")) {
       type: "turn.failed",
       error: { message: "unexpected status 401 Unauthorized: Missing bearer" },
     });
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   // 실제 프로그램은 재개한 세션의 누적 사용량을 낸다.
   if (variant === "cumulative") {

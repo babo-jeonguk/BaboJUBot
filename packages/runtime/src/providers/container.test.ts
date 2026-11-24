@@ -3044,7 +3044,7 @@ describe("docker failures during container cleanup", () => {
     docker: [
       process.execPath,
       "-e",
-      `process.stderr.write("Cannot connect to the Docker daemon"); process.exit(1);`,
+      `process.stderr.write("Cannot connect to the Docker daemon", () => process.exit(1));`,
     ] as const,
     image,
     owner: "owner-test",
@@ -3304,7 +3304,7 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
     const broken = path.join(root, "broken.mjs");
     await writeFile(
       broken,
-      `process.stderr.write("probe broke"); process.exit(3);\n`
+      `process.stderr.write("probe broke", () => process.exit(3));\n`
     );
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());

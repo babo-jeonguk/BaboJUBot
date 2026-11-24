@@ -16,13 +16,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 
 const [logArgument, mode = "ok", ...rest] = process.argv.slice(2);
 if (rest.includes("--version")) {
   console.log("codex-cli 9.9.9");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
-if (rest.includes("login")) process.exit(0);
+if (rest.includes("login")) process.exit(await afterOutput(0));
 if (logArgument === undefined)
   throw new Error("usage: codex-refresh.mjs <log> [mode] ...");
 const log = logArgument;
@@ -73,7 +74,7 @@ input.on("line", async (line) => {
       return;
     }
     if (mode === "silent") return;
-    if (mode === "exit") process.exit(1);
+    if (mode === "exit") process.exit(await afterOutput(1));
     if (mode === "stall") await pause(700);
     if (mode === "fail-once") {
       const marker = `${log}.failed`;
@@ -99,4 +100,4 @@ input.on("line", async (line) => {
     out({ id: frame.id, result: { account: { type: "chatgpt" } } });
   } else if (typeof frame.id === "number") out({ id: frame.id, result: {} });
 });
-input.on("close", () => process.exit(0));
+input.on("close", async () => process.exit(await afterOutput(0)));

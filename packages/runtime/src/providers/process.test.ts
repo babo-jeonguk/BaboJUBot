@@ -194,7 +194,7 @@ describe("runProbe", () => {
 
   it("reports the exit code and the output of a failed program", async () => {
     await expect(
-      probe(`console.error("not signed in"); process.exit(1)`)
+      probe(`process.stderr.write("not signed in\\n", () => process.exit(1))`)
     ).rejects.toMatchObject({ code: 1, stderr: "not signed in\n" });
   });
 

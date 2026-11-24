@@ -8,6 +8,7 @@
 import { createInterface } from "node:readline";
 import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 
 const args = process.argv.slice(2);
 /** 시험이 이 프로그램에 주는 CODEX_HOME. */
@@ -92,14 +93,14 @@ if (args[0] === "exec") {
         type: "turn.completed",
         usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
       });
-      process.exit(0);
+      process.exit(await afterOutput(0));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
 const input = createInterface({ input: process.stdin });
-input.on("line", (line) => {
+input.on("line", async (line) => {
   if (!line.trim()) return;
   const frame = JSON.parse(line);
   if (frame.method === "initialize") out({ id: frame.id, result: {} });
@@ -108,14 +109,14 @@ input.on("line", (line) => {
     frame.method === "thread/resume"
   ) {
     if (args.includes("--never-start-thread")) return;
-    if (args.includes("--die-on-thread")) process.exit(1);
+    if (args.includes("--die-on-thread")) process.exit(await afterOutput(1));
     out({ id: frame.id, result: { thread: { id: threadId } } });
   } else if (frame.method === "turn/start") {
     out({ id: frame.id, result: { turn: { id: turnId } } });
     void runTurn();
   } else if (typeof frame.id === "number") out({ id: frame.id, result: {} });
 });
-input.on("close", () => {
+input.on("close", async () => {
   closed = true;
-  process.exit(completed ? 0 : 1);
+  process.exit(await afterOutput(completed ? 0 : 1));
 });

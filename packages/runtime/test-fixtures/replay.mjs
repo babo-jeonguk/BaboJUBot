@@ -2,26 +2,27 @@
 // No model or network requests. Mismatched input fails closed.
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 const recordingFile = process.argv[2];
 if (recordingFile === undefined)
   throw new Error("usage: replay.mjs <recording> <arguments...>");
 const recording = JSON.parse(await readFile(recordingFile, "utf8"));
 if (process.argv.includes("--version")) {
   console.log(recording.version ?? "9.9.9 (Claude Code)");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 if (process.argv.includes("login") && process.argv.includes("status"))
-  process.exit(0);
+  process.exit(await afterOutput(0));
 for (const [flag, value] of Object.entries(recording.argv ?? {})) {
   const i = process.argv.indexOf(flag);
   if (i < 0 || (value !== true && process.argv[i + 1] !== value))
-    process.exit(24);
+    process.exit(await afterOutput(24));
 }
 for (const [flag, content] of Object.entries(recording.argvFile ?? {})) {
   const i = process.argv.indexOf(flag);
   const file = i < 0 ? undefined : process.argv[i + 1];
   if (file === undefined || (await readFile(file, "utf8")) !== content)
-    process.exit(25);
+    process.exit(await afterOutput(25));
 }
 const input = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
 function matches(actual, expected) {
@@ -33,16 +34,16 @@ for (const step of recording.steps) {
   if (step.input) {
     const line = await input.next();
     if (line.done || !matches(JSON.parse(line.value), step.input))
-      process.exit(23);
+      process.exit(await afterOutput(23));
   }
   // 입력이 닫히기를 기다린다. 닫히지 않고 다른 줄이 오면 실패한다.
   if (step.inputEnd) {
     const line = await input.next();
-    if (!line.done) process.exit(26);
+    if (!line.done) process.exit(await afterOutput(26));
   }
   if (step.sleepMs) await new Promise((r) => setTimeout(r, step.sleepMs));
   if (step.stdout !== undefined) process.stdout.write(step.stdout);
   if (step.frame) process.stdout.write(JSON.stringify(step.frame) + "\n");
-  if (step.exit !== undefined) process.exit(step.exit);
+  if (step.exit !== undefined) process.exit(await afterOutput(step.exit));
 }
 process.stdin.resume();

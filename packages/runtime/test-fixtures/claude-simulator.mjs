@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { bind, recording } from "./recording.mjs";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 const argv = process.argv
   .slice(2)
   .filter(
@@ -24,7 +25,7 @@ function home() {
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 if (argv.includes("--version")) {
   console.log("9.9.9 (Claude Code)");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 let id = argv.includes("--resume") ? option("--resume") : crypto.randomUUID();
 if (id === "expired") {
@@ -33,7 +34,7 @@ if (id === "expired") {
     subtype: "error_during_execution",
     errors: ["No conversation found with session ID: expired"],
   });
-  process.exit(1);
+  process.exit(await afterOutput(1));
 }
 let note = "";
 try {
