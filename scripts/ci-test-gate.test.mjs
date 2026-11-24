@@ -11,9 +11,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import ts from "typescript";
 import { parse } from "yaml";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { importedSpecifiers } from "./module-imports.ts";
 import { codeFormats } from "./test-files.mjs";
 import { testSuites } from "./test-suites.ts";
 
@@ -804,31 +804,16 @@ function packagesImportedBy(base, script, seen = new Set()) {
   if (seen.has(script)) return [];
   seen.add(script);
   const text = readFileSync(path.join(base, script), "utf8");
-  const source = ts.createSourceFile(script, text, ts.ScriptTarget.Latest);
-  const specifiers = [];
-  const visit = (node) => {
-    if (
-      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-      node.moduleSpecifier &&
-      ts.isStringLiteral(node.moduleSpecifier)
-    )
-      specifiers.push(node.moduleSpecifier.text);
-    else if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments[0] &&
-      ts.isStringLiteralLike(node.arguments[0])
-    )
-      specifiers.push(node.arguments[0].text);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+  const specifiers = importedSpecifiers(script, text);
   return specifiers.flatMap((specifier) => {
     if (specifier.startsWith("node:")) return [];
-    if (!specifier.startsWith(".")) return [specifier];
-    const file = path.posix.normalize(
-      path.posix.join(path.posix.dirname(script), specifier)
-    );
+    if (!/^\.{1,2}\//.test(specifier)) return [specifier];
+    // 상대 경로는 ESM처럼 가져오는 파일에 대한 URL로 푼다. 없는 파일은 읽다가 실패한다.
+    const url = new URL(specifier, pathToFileURL(path.join(base, script)));
+    const file = path
+      .relative(base, fileURLToPath(url))
+      .split(path.sep)
+      .join("/");
     return packagesImportedBy(base, file, seen);
   });
 }
@@ -839,19 +824,19 @@ function installProblems(workflow, base) {
   for (const [id, job] of Object.entries(workflow.jobs)) {
     const steps = job.steps ?? [];
     steps.forEach((each, index) => {
-      const script =
-        /(?:^|\s)node\s+((?:scripts|\.agents)\/\S+\.(?:mjs|ts))/.exec(
-          each.run ?? ""
-        )?.[1];
-      if (!script) return;
       const installed = steps
         .slice(0, index)
         .some((before) => /^pnpm install\b/.test(before.run ?? ""));
-      const packages = [...new Set(packagesImportedBy(base, script))];
-      if (!installed && packages.length > 0)
-        problems.push(
-          `${id}: ${script} imports ${packages.join(", ")} without pnpm install before it`
-        );
+      // 한 단계가 돌리는 스크립트를 모두 본다.
+      for (const [, script] of (each.run ?? "").matchAll(
+        /(?:^|\s)node\s+((?:scripts|\.agents)\/\S+\.(?:mjs|ts))/g
+      )) {
+        const packages = [...new Set(packagesImportedBy(base, script))];
+        if (!installed && packages.length > 0)
+          problems.push(
+            `${id}: ${script} imports ${packages.join(", ")} without pnpm install before it`
+          );
+      }
     });
   }
   return problems;
