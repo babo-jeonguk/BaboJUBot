@@ -689,7 +689,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(warned).not.toHaveBeenCalled();
   });
 
-  it("answers 502 and leaves why when it cannot connect to an allowed destination", async () => {
+  // 연결 실패의 원인은 그 연결이 실제로 받은 오류 코드다. 이름(`localhost`)으로 붙으면 이 컴퓨터의 이름 풀이와 IPv6 설정에 따라
+  // 시도하는 주소와 마지막 오류(ECONNREFUSED·EADDRNOTAVAIL)가 달라진다(#286 항목 14). 이름 풀이 없이 IPv4 주소 하나로 붙어, 듣는
+  // 곳이 없는 loopback 포트의 연결 거절(ECONNREFUSED)을 모든 시스템에서 같은 원인으로 받는다. 이름 풀이의 실패 원인은
+  // egress-policy.test.ts가 풀이 함수를 넣어 본다.
+  it("answers 502 and leaves the code the connection failed with when it cannot connect to an allowed destination", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
     // 받는 곳이 없는 포트: 잠깐 열어 번호를 받고 닫는다.
@@ -705,22 +709,18 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const relay = relays.open({
       identity,
       required: [
-        // 이 컴퓨터에 따라 localhost는 두 주소로 풀린다. 둘 다 적어야 연결 시도까지 간다.
-        destination({
-          host: "localhost",
-          port,
-          addresses: ["127.0.0.1", "::1"],
-        }),
+        destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
       ],
     });
     await relay.ready;
-    const answer = await connectVia(relay.directory, `localhost:${port}`);
+    const answer = await connectVia(relay.directory, `127.0.0.1:${port}`);
     answer.socket.destroy();
-    expect(answer.head).toMatch(/^HTTP\/1\.1 502/);
-    // 마지막으로 시도한 주소의 실패 코드는 이 컴퓨터의 IPv6 설정에 따라 다르다(ECONNREFUSED·EADDRNOTAVAIL 등).
-    expect(warned).toHaveBeenCalledWith(
-      expect.stringMatching(/answered 502 \(E[A-Z]+\)$/)
-    );
+    expect(answer.head).toMatch(/^HTTP\/1\.1 502 /);
+    expect(warned.mock.calls).toEqual([
+      [
+        "[provider] the relay could not connect to an allowed destination; it answered 502 (ECONNREFUSED)",
+      ],
+    ]);
   });
 
   it("refuses when the policy cannot be read", async () => {
