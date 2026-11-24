@@ -146,6 +146,7 @@ export const testSuites: TestSuite[] = [
       "scripts/check-code-map.test.mjs",
       "scripts/markdown.test.ts",
       "scripts/boot-check-overview.test.ts",
+      "scripts/exit-after-output.test.ts",
       "scripts/gh-post.test.mjs",
       "scripts/ci-test-gate.test.mjs",
       "scripts/check-test-reports.test.mjs",
@@ -165,6 +166,7 @@ export const testSuites: TestSuite[] = [
       "scripts/live/provider-scenes.test.mjs",
       "scripts/live/provider-arguments.test.mjs",
       "scripts/live/record-cli.test.mjs",
+      "scripts/live/chaos-interrupt.test.ts",
     ],
   },
   // 실제 서버·내장 DB를 띄우는 부팅 확인(pnpm test:root, CI db·macOS·Windows job).

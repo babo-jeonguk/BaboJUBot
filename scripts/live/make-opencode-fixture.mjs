@@ -4,13 +4,14 @@
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { orIfUnreadable } from "@babojubot/contracts";
+import { afterOutput } from "../exit-after-output.ts";
 
 const [directory, output] = process.argv.slice(2);
 if (!directory || !output) {
   console.error(
     "Usage: node scripts/live/make-opencode-fixture.mjs <recording folder> <output file>"
   );
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 const keptStrings = new Set([
   "type",

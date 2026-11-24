@@ -10,6 +10,7 @@ import { run } from "node:test";
 import { spec } from "node:test/reporters";
 import { pathToFileURL } from "node:url";
 import { reportFolder, suiteNamed } from "./test-suites.ts";
+import { afterOutput } from "./exit-after-output.ts";
 
 /**
  * 시험 파일을 `name` 묶음으로 돌리고 보고 폴더가 있으면 보고서를 남긴다. 실패하면 process.exitCode를 1로 둔다. 묶음 정의에 없는
@@ -88,12 +89,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     console.error(
       "usage: node scripts/run-node-tests.mjs <suite> (files come from scripts/test-suites.ts)"
     );
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   const suite = suiteNamed(name);
   if (suite.runner !== "node") {
     console.error(`test suite ${name} is not a node:test suite`);
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   runNodeTests(name, suite.files);
 }

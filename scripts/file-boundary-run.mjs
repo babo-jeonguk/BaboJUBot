@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { afterOutput } from "./exit-after-output.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const reports = path.join(root, "file-boundary-reports");
@@ -21,7 +22,7 @@ if (!volume || !/^[\w.-]+$/.test(volume) || !fileSystem) {
   console.error(
     "usage: --volume <name> --fs <type> --dir <folder> [--case sensitive|insensitive] [--nfd sensitive|insensitive]"
   );
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 mkdirSync(reports, { recursive: true });
 // 수동 실행은 지정한 commit을 checkout하므로 GITHUB_SHA가 아니라 실제로 받은 commit을 남긴다. 읽지 못하면 그 이유를 남긴다.
@@ -40,12 +41,12 @@ const meta = {
       ? head.stdout.trim()
       : `unknown (git rev-parse HEAD: ${head.error?.message ?? head.stderr.trim()})`,
 };
-const finish = (fields, code) => {
+const finish = async (fields, code) => {
   writeFileSync(
     path.join(reports, `${volume}.meta.json`),
     JSON.stringify({ ...meta, ...fields }, null, 2)
   );
-  process.exit(code);
+  process.exit(await afterOutput(code));
 };
 
 let ready = "";
@@ -59,7 +60,7 @@ try {
 }
 if (ready) {
   console.error(`volume ${volume} is not prepared: ${ready}`);
-  finish({ exitCode: null, error: `not prepared: ${ready}` }, 1);
+  await finish({ exitCode: null, error: `not prepared: ${ready}` }, 1);
 }
 
 const expect = {};
@@ -105,9 +106,12 @@ const seconds = Math.round((Date.now() - started) / 1000);
 const command = `pnpm ${args.join(" ")}`;
 if (result.error) {
   console.error(result.error);
-  finish({ exitCode: null, seconds, command, error: String(result.error) }, 1);
+  await finish(
+    { exitCode: null, seconds, command, error: String(result.error) },
+    1
+  );
 }
-finish(
+await finish(
   { exitCode: result.status, seconds, command, expect },
   result.status ?? 1
 );

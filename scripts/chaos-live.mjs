@@ -11,6 +11,8 @@ import { LaunchRefused, limits, parseLaunch } from "./live/chaos-budget.mjs";
 import { exitCodeOf, runChaos, writeEvidence } from "./live/chaos-run.mjs";
 import { scrubEnvironment } from "./live/chaos-server.mjs";
 import { scenes } from "./live/chaos-scenes.mjs";
+import { afterOutput } from "./exit-after-output.ts";
+import { installUserInterrupt } from "./live/chaos-interrupt.ts";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -33,7 +35,7 @@ try {
   if (!(error instanceof LaunchRefused)) throw error;
   console.error(error.message);
   console.error(usage);
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 
 // 실제 호출 전 확인과 서버가 개인 설정·자격 증명(PASS_ENV 등)을 읽지 않게 한다.
@@ -41,13 +43,7 @@ scrubEnvironment(process.env);
 
 // 사용자 중단(Ctrl-C): 지금 장면을 멈추고 정리한 뒤 결과를 남긴다. 두 번째 Ctrl-C는 바로 끝낸다.
 const stop = new AbortController();
-process.on("SIGINT", () => {
-  if (stop.signal.aborted) process.exit(130);
-  console.error(
-    "Stopping: cancelling runs and cleaning up. Press Ctrl-C again to quit now."
-  );
-  stop.abort(new Error("user interrupt"));
-});
+installUserInterrupt(stop);
 
 /** 실제 호출 전 확인: 프로그램·로그인 상태와 무료 모델. 임시 홈에서 하고 지운다. 사용자 OpenCode 설정·자격 증명은 읽지 않는다. */
 async function preflight() {
@@ -126,4 +122,6 @@ console.log(
     evidence: path.relative(repoRoot, file),
   })
 );
-process.exit(stop.signal.aborted ? 130 : exitCodeOf(evidence.outcome));
+process.exit(
+  await afterOutput(stop.signal.aborted ? 130 : exitCodeOf(evidence.outcome))
+);

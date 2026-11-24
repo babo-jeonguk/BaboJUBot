@@ -6,6 +6,7 @@
 import { globSync, readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { codeFormats } from "./test-files.mjs";
+import { afterOutput } from "./exit-after-output.ts";
 
 /** 판정할 수 있는 실행 시스템. CI는 Linux job과 Windows shard job에서 E2E를 돈다. */
 const systems = ["linux", "windows"];
@@ -203,7 +204,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     console.error(
       `usage: node scripts/check-e2e-report.mjs --os <${systems.join("|")}> <report.json> [<report.json> ...]`
     );
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   const reports = [];
   for (const file of files) {
@@ -213,7 +214,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       console.error(
         `cannot read E2E report ${file}: ${error instanceof Error ? error.message : String(error)}`
       );
-      process.exit(1);
+      process.exit(await afterOutput(1));
     }
   }
   const { summary, skips, problems } = judge(combine(reports), {

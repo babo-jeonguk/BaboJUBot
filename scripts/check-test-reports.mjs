@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
 import { judgedMarker, suiteFiles, suiteNamed } from "./test-suites.ts";
+import { afterOutput } from "./exit-after-output.ts";
 
 const systems = ["linux", "macos", "windows"];
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -202,7 +203,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     console.error(
       "usage: BABOJUBOT_TEST_REPORTS=<folder> node scripts/check-test-reports.mjs --expect <suite>[,<suite> ...]"
     );
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   // 모르는 묶음 이름은 판정할 정의가 없다. 보고서를 읽기 전에 거부한다.
   for (const name of expected) suiteNamed(name);
@@ -224,7 +225,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
       console.error(
         `cannot read test report ${file}: ${error instanceof Error ? error.message : String(error)}`
       );
-      process.exit(1);
+      process.exit(await afterOutput(1));
     }
   }
   // 기대하는 시험 파일은 실행과 따로 저장소의 파일 목록에서 정한다(추적한 파일과 무시하지 않은 새 파일).

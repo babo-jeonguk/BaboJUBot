@@ -2,6 +2,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createConnection, runLogin } from "@babojubot/runtime";
+import { afterOutput } from "./exit-after-output.ts";
 
 const [name, flag, value] = process.argv.slice(2);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -12,7 +13,7 @@ const dataDir = path.resolve(
 );
 if (!name) {
   console.error("Usage: pnpm provider:login <connection> [--home <folder>]");
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 try {
   await runLogin(createConnection(name, { dataDir }));
