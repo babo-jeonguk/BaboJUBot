@@ -7,12 +7,11 @@ import { copyFileSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
 
-const helper = pathToFileURL(
-  new URL("./exit-after-output.ts", import.meta.url).pathname
-).href;
+// 같은 폴더의 도움을 URL로 바로 푼다. URL의 pathname은 퍼센트 인코딩된 글이라 파일 경로나 다른 파일 URL의 재료가 아니다.
+const helper = new URL("./exit-after-output.ts", import.meta.url).href;
 const size = 4 << 20;
 
 function run(code: string) {
@@ -57,6 +56,7 @@ test("runs from a checkout path holding a space and a percent sign", (context) =
     process.execPath,
     [
       "--test",
+      "--test-reporter=tap",
       "--test-name-pattern=hands back the exit code",
       path.join(folder, "exit-after-output.test.ts"),
     ],
