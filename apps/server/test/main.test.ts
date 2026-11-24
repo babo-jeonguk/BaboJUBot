@@ -214,8 +214,9 @@ it.each(stopRequests)(
     send(child);
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(1);
-    expect(child.stderrText()).toContain(
-      "embedded Postgres exited before it was ready"
+    // 진단은 오류 문구(Postgres 로그가 섞임) 대신 원인 코드만 남긴다(CODING_STANDARDS.md#제품-코드).
+    expect(stderrLines(child)).toContain(
+      "[server] start failed (EMBEDDED_EXITED_BEFORE_READY)"
     );
   },
   60_000
@@ -242,7 +243,13 @@ it("ends with the HTTP start error and records the database close failure when b
   const { code } = await waitExit(child, shutdownWaitMs);
   expect(code, child.stderrText()).toBe(1);
   expect(child.stderrText()).toContain("EADDRINUSE");
-  expect(child.stderrText()).toContain("injected: closing the database failed");
+  // 닫기 실패는 오류 문구 대신 원인 코드로 따로 남는다. 주입한 실패는 code가 없는 Error다.
+  expect(stderrLines(child)).toContain(
+    "[server] closing the database after a failed start failed (Error)"
+  );
+  expect(child.stderrText()).not.toContain(
+    "injected: closing the database failed"
+  );
 }, 60_000);
 
 // 정리가 멈추면 정해진 시한(BABOJUBOT_SHUTDOWN_TIMEOUT_MS)에 실패로 끝난다. 서버를 감싼 실행기(Playwright·Docker·
@@ -583,6 +590,11 @@ async function startOutcome(child: MainProcess) {
     const exit = await waitExit(child, 1_000).catch(() => undefined);
     return exit ? { code: exit.code } : { error: String(error) };
   }
+}
+
+/** 서버가 stderr에 남긴 줄. */
+function stderrLines(child: MainProcess) {
+  return child.stderrText().split(/\r?\n/);
 }
 
 /** 이미 붙여 둔 종료 관찰을 시한 안에서 기다린다. 시한은 기다리기 시작할 때부터 센다. */
