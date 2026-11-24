@@ -14,6 +14,7 @@ import { killUnlessGone } from "./test-cleanup.ts";
 import { launchTree, runTree } from "./launch.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { testFolders } from "./test-folders.ts";
+import { reportedPid } from "./test-support.ts";
 
 // 끄기가 실패하는 길(#263 외부 리뷰 1회차 S2·SP1·SP2). 실제 감독 실행기로는 그룹을 끄지 못한 답, 시작 응답 전에 멈춘 실행기를 만들 수
 // 없어, 실행기만 같은 약속으로 답하는 가짜(Node.js 프로그램)로 바꾸고 나머지는 실제 프로세스로 본다(#268).
@@ -76,7 +77,9 @@ async function holder(label: string, body = keep) {
     // 연결은 시험의 이벤트 루프가 처리한 뒤에야 보이므로 먼저 기다린다(오지 않으면 그 이유로 실패). 열려 있음을 본 직후에만 끈다.
     await lifelines.connected(name);
     if (lifelines.open(name))
-      killUnlessGone(Number(await readFile(pidFile, "utf8")));
+      killUnlessGone(
+        reportedPid(await readFile(pidFile, "utf8"), `the pid file of ${name}`)
+      );
     await lifelines.closed(name);
   }, name);
   return {

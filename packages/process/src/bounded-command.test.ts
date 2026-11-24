@@ -10,6 +10,7 @@ import {
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { testFolders } from "./test-folders.ts";
 import { killUnlessGone } from "./test-cleanup.ts";
+import { reportedPid } from "./test-support.ts";
 
 // 공용 실행 위에 놓을 수 없는 짧은 명령도 시한에 끝을 보장한다(#262). Node.js의 timeout은 신호만 보내고 기다리므로, 신호를 무시하는
 // 조회나 출력을 물려받은 자손이 남은 조회에서 끝나지 않았다. 남았는지는 번호가 아니라 그 프로세스가 쥔 연결로 본다(#259).
@@ -59,7 +60,12 @@ describe("runCommand", () => {
       // 연결은 시험의 이벤트 루프가 처리한 뒤에야 보이므로 먼저 기다린다(오지 않으면 그 이유로 실패). 열려 있음을 본 직후에만 끈다.
       await lifelines.connected(name);
       if (lifelines.open(name))
-        killUnlessGone(Number(await readFile(pidFile, "utf8")));
+        killUnlessGone(
+          reportedPid(
+            await readFile(pidFile, "utf8"),
+            `the pid file of ${name}`
+          )
+        );
       await lifelines.closed(name);
     }, "the child holding the output");
     const child = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(name)} ${keep}`;

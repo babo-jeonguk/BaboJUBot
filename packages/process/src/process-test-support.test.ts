@@ -9,7 +9,7 @@ import { isDisconnect } from "@babojubot/contracts";
 import { finished } from "node:stream/promises";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { awaitedLater, killUnlessGone, withCleanup } from "./test-cleanup.ts";
-import { within } from "./test-support.ts";
+import { reportedPid, within } from "./test-support.ts";
 import {
   endChild,
   exited,
@@ -67,12 +67,7 @@ it.skipIf(process.platform === "win32")(
           10_000,
           "the program's error output did not end"
         );
-        const pid = Number(descendant.trim());
-        if (!(pid > 1))
-          throw new Error(
-            `the program did not report its descendant (${JSON.stringify(descendant)})`
-          );
-        return pid;
+        return reportedPid(descendant, "the descendant the program reported");
       });
     });
     await expect(readyLine(child, "ready", 10_000, 500)).rejects.toThrow(
@@ -228,7 +223,12 @@ async function lateReadyLine(
         child.stderr!.on("data", (chunk: Buffer) => {
           text += String(chunk);
           if (text.includes("\n"))
-            resolve(Number(text.slice(0, text.indexOf("\n"))));
+            resolve(
+              reportedPid(
+                text.slice(0, text.indexOf("\n")),
+                "the descendant the program reported"
+              )
+            );
         });
         child.stderr!.once("end", () =>
           reject(

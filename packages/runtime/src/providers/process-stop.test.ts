@@ -14,6 +14,7 @@ import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { killUnlessGone } from "@babojubot/process/test-cleanup";
 import { startProcess } from "./process.ts";
 import { testFolders } from "./test-folders.ts";
+import { reportedPid } from "@babojubot/process/test-support";
 
 // 실행 시도의 끄기가 실패하는 길(#263 외부 리뷰 1회차 SP1). 실제 프로세스로는 SIGKILL 뒤에도 끝나지 않는 대표를 만들 수 없어,
 // 공용 실행(@babojubot/process의 launchTree)이 돌려준 트리의 끄기만 대역으로 바꾸고 나머지는 실제 프로세스로 본다. 감독 실행기의
@@ -69,7 +70,9 @@ async function holder(label: string, body = keep) {
     // 연결은 시험의 이벤트 루프가 처리한 뒤에야 보이므로 먼저 기다린다(오지 않으면 그 이유로 실패). 열려 있음을 본 직후에만 끈다.
     await lifelines.connected(name);
     if (lifelines.open(name))
-      killUnlessGone(Number(await readFile(pidFile, "utf8")));
+      killUnlessGone(
+        reportedPid(await readFile(pidFile, "utf8"), `the pid file of ${name}`)
+      );
     await lifelines.closed(name);
   }, name);
   return {

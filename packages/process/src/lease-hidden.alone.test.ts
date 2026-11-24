@@ -5,7 +5,11 @@ import { leaseVariable, processStartTicks } from "./lease.ts";
 import { attemptAll } from "@babojubot/contracts";
 import { endChild, exited, readyLine } from "./process-test-support.ts";
 import { cleanThroughSupervisor } from "./supervisor.ts";
-import { commandFailure, probeEnvironment } from "./test-support.ts";
+import {
+  commandFailure,
+  probeEnvironment,
+  reportedPid,
+} from "./test-support.ts";
 
 // 환경을 읽을 수 없게 막은 프로그램(gpg-agent·ssh-agent처럼 PR_SET_DUMPABLE 0)은 표식을 확인할 수 없다(#219, PR #220 외부 리뷰 SPEC-2).
 // 이 실행 시도가 시작한 뒤 실행기와 같은 cgroup에 생긴 같은 사용자의 산 프로그램이면 우리 것일 수 있어, 감독 실행기는 신호하지 않고
@@ -102,7 +106,10 @@ describe.runIf(process.platform === "linux")(
         line += String(chunk);
         if (line.includes("\n")) break;
       }
-      const zombie = Number(line.trim());
+      const zombie = reportedPid(
+        line,
+        "the pid Python reported for its forked child"
+      );
       await vi.waitFor(
         () => {
           if (!exited(zombie)) throw new Error("the forked child did not exit");

@@ -150,9 +150,16 @@ export function probeEnvironment<T>({
 }
 
 /**
- * 다른 프로세스가 알린 프로세스 번호(pid 파일·출력 줄·서버 응답). 받은 그대로 숫자로 바꾼다.
+ * 다른 프로세스가 알린 프로세스 번호(pid 파일·출력 줄·서버 응답·구조화된 줄의 값). 숫자이거나 숫자 글자(앞뒤 공백·줄 끝 허용)인
+ * 양의 정수만 받는다. 아니면 무엇(`what`)이 무엇을 알렸는지와 함께 던진다. 그대로 `Number`로 바꾸면 빈 글자는 0(프로세스 그룹
+ * 전체에 가는 신호)이, 잘린 글자는 NaN(대상 없이 지나가는 확인)이 된다(#288 외부 리뷰 3회차 STD-4 같은 모양).
  */
 export function reportedPid(value: unknown, what: string): number {
-  void what;
-  return Number(value);
+  const pid =
+    typeof value === "string" && /^\s*\d+\s*$/.test(value)
+      ? Number(value)
+      : value;
+  if (typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0)
+    return pid;
+  throw new Error(`${what} is not a process number: ${JSON.stringify(value)}`);
 }

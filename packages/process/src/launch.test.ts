@@ -26,6 +26,7 @@ import { supervisorProtocol } from "./supervisor.ts";
 import { endChild } from "./process-test-support.ts";
 import { killUnlessGone } from "./test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
+import { reportedPid } from "./test-support.ts";
 
 // 공용 실행(#262): 띄운 트리를 stop()이 모두 끄고 확인한다. 실제 프로세스로 보고, 남았는지는 번호가 아니라 각 프로세스가 쥔 연결로
 // 본다(#259). 세 OS 모두 실행 시도마다 감독 실행기로 띄우고(#268), 시험 파일마다 준비한다(launcher-setup-support.ts).
@@ -60,10 +61,18 @@ const ignoreTerm = 'process.on("SIGTERM", () => {});';
 /** 자식 하나를 띄우는 코드. 자식은 연결 `name`을 쥐고 돈다. */
 const child = (name: string, options: string, body = "") =>
   `process.getBuiltinModule("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold(name)} ${body} ${keep}`)}], ${options});`;
-/** 프로세스의 환경 항목. Linux는 `/proc`, macOS는 `ps -E`(실행 인자 뒤에 환경이 붙는다)로 읽는다. */
-function environmentOf(pid: number): string[] {
+/**
+ * 프로세스가 실행 시도 `lease`의 표식(`BABOJUBOT_PROCESS_LEASE[_n]=<lease>`)을 환경에 지니는가. Linux는 `/proc`의 환경 항목(NUL
+ * 구분)을 본다. macOS는 `ps -E`의 한 줄(실행 인자 뒤에 환경이 공백으로 이어 붙는다)뿐이라 항목의 경계를 알 수 없으므로, 공백이 없는
+ * 표식(이름과 UUID) 하나가 공백 사이에 통째로 있는지만 본다. 그 줄을 항목 목록으로 나누어 돌려주지 않는다(#288 외부 리뷰 3회차
+ * STD-4 같은 모양: OS마다 모양이 다른 값을 공백으로 나누지 않는다).
+ */
+function carriesLease(pid: number, lease: string): boolean {
+  const mark = new RegExp(`^BABOJUBOT_PROCESS_LEASE(_\\d+)?=${lease}$`);
   if (process.platform === "linux")
-    return readFileSync(`/proc/${pid}/environ`, "latin1").split("\0");
+    return readFileSync(`/proc/${pid}/environ`, "latin1")
+      .split("\0")
+      .some((entry) => mark.test(entry));
   const listing = spawnSync(
     "ps",
     ["-E", "-ww", "-o", "command=", "-p", String(pid)],
@@ -71,7 +80,9 @@ function environmentOf(pid: number): string[] {
   );
   if (listing.status !== 0)
     throw new Error(`ps could not read process ${pid}: ${listing.stderr}`);
-  return listing.stdout.trim().split(/\s+/);
+  return new RegExp(
+    `(^|\\s)BABOJUBOT_PROCESS_LEASE(_\\d+)?=${lease}(\\s|$)`
+  ).test(listing.stdout);
 }
 let count = 0;
 /** 시험마다 겹치지 않는 연결 이름. */
@@ -315,13 +326,15 @@ describe("launchTree", () => {
         `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(leader)} ${keep}`
       );
       await lifelines.connected(leader);
-      const marked = (pid: number) =>
-        environmentOf(pid).some(
-          (entry) =>
-            /^BABOJUBOT_PROCESS_LEASE(_\d+)?=/.test(entry) &&
-            entry.endsWith(`=${tree.lease}`)
-        );
-      expect(marked(Number(await readFile(pidFile, "utf8")))).toBe(true);
+      const marked = (pid: number) => carriesLease(pid, tree.lease);
+      expect(
+        marked(
+          reportedPid(
+            await readFile(pidFile, "utf8"),
+            `the pid file of ${leader}`
+          )
+        )
+      ).toBe(true);
       expect(marked(tree.pid!)).toBe(false);
     },
     60_000
@@ -439,7 +452,12 @@ describe("launchTree without a supervisor", () => {
     onTestFinished(async () => {
       await lifelines.connected(name);
       if (lifelines.open(name))
-        killUnlessGone(Number(await readFile(pidFile, "utf8")));
+        killUnlessGone(
+          reportedPid(
+            await readFile(pidFile, "utf8"),
+            `the pid file of ${name}`
+          )
+        );
       await lifelines.closed(name);
     });
     const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;

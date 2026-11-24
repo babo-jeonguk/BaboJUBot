@@ -34,7 +34,7 @@ import {
   hasErrorCode,
   orIfMissing,
 } from "@babojubot/contracts";
-import { within } from "@babojubot/process/test-support";
+import { reportedPid, within } from "@babojubot/process/test-support";
 
 /**
  * 붙잡을 단계(#286). 놓기 전까지 그 단계는 끝나지 않는다. `stop`은 다음 `pg_ctl stop` 호출, `remove`는 그 폴더의 다음 지우기다.
@@ -193,13 +193,14 @@ describe("embedded Postgres lifetime", () => {
     );
     // 연결을 받은 서버에게 번호를 묻는다. 그 서버가 도는 동안 신원을 함께 잡는다.
     const started = identified(
-      Number(
+      reportedPid(
         await withClient(handle.url, async (client) => {
           const { rows } = await client.query<{ pid: string }>(
             "select split_part(pg_read_file('postmaster.pid'), E'\\n', 1) as pid"
           );
           return rows[0]!.pid;
-        })
+        }),
+        "the pid the server read from its lock file"
       )
     );
     seen.postgres = started;
@@ -380,7 +381,9 @@ describe("embedded Postgres lifetime", () => {
       const exited = watchExit(child);
       const lines = lineReader(child);
       // 자식이 연결을 쥐고 기다리는 동안이라 둘 다 돈다. 그때 신원을 잡는다.
-      const stopped = identified(Number((await lines.next()).trim()));
+      const stopped = identified(
+        reportedPid(await lines.next(), "the backend pid the child reported")
+      );
       seen.backend = stopped;
       const started = identified(readPostmaster(dataDir));
       seen.postmaster = started;
@@ -1034,8 +1037,11 @@ async function recordOwner(
 }
 
 function readPostmaster(dataDir: string) {
-  return Number(
-    fs.readFileSync(path.join(dataDir, "postmaster.pid"), "utf8").split("\n")[0]
+  return reportedPid(
+    fs
+      .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
+      .split("\n")[0],
+    `the first line of the lock file in ${dataDir}`
   );
 }
 
@@ -1048,14 +1054,32 @@ type Postgres = { pid: number; identity: string };
 
 /**
  * 자식이 띄운 Postgres를 부모에게 알리는 줄을 만드는 식(자식 코드에 그대로 넣는다. 자식에 `pid`와 `processIdentity`가 있어야
- * 한다). 부모는 `postgresReport`로 읽는다. 두 쪽의 모양을 한곳에 둔다.
+ * 한다). 부모는 `postgresReport`로 읽는다. 두 쪽의 모양을 한곳에 둔다. 신원은 OS마다 모양이 달라(macOS는 공백이 든 시작 시각)
+ * 구분 글자로 잇지 않고 JSON 한 줄로 보낸다.
  */
-const reportPostgres = `pid + " " + processIdentity(pid)`;
+const reportPostgres = `JSON.stringify({ pid, identity: processIdentity(pid) })`;
 
-/** 자식이 `reportPostgres`로 알린 줄의 Postgres. */
+/**
+ * 자식이 `reportPostgres`로 알린 줄의 Postgres. 번호는 양의 정수, 신원은 비어 있지 않은 글자여야 한다. 아니면(자식이 신원을 읽지
+ * 못함 등) 받은 줄과 함께 던진다.
+ */
 function postgresReport(line: string): Postgres {
-  const [pid, identity] = line.split(" ");
-  return { pid: Number(pid), identity: identity! };
+  const fail = (cause?: unknown) =>
+    new Error(`the child did not report its Postgres: ${line}`, { cause });
+  let report: unknown;
+  try {
+    report = JSON.parse(line);
+  } catch (error) {
+    throw fail(error);
+  }
+  if (typeof report !== "object" || report === null) throw fail();
+  const { pid, identity } = report as { pid?: unknown; identity?: unknown };
+  if (typeof identity !== "string" || identity === "") throw fail();
+  try {
+    return { pid: reportedPid(pid, "the Postgres pid"), identity };
+  } catch (error) {
+    throw fail(error);
+  }
 }
 
 /** 지금 살아 있는 그 번호의 프로세스를 신원과 함께 잡는다. 신원을 읽지 못하면 던진다. */
