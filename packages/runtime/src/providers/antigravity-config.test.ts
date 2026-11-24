@@ -314,7 +314,7 @@ it("keeps a configuration place that is not a regular file and says so", async (
 
 // 열기 결과를 주입한다: `plan.miss`에 맞는 이름(정규식)을 처음 열 때 한 번 "없음"(ENOENT)으로 실패한다. 그 자리는 그대로 있으므로
 // 바로 뒤 lstat은 일반 파일을 본다 — 확인하는 사이 자리가 바뀐 장면이다(실제 시간 지연 없이). `plan.take`가 있으면 그 실패 전에
-// 그 경로에 새 파일을 둔다(그 사이 다른 쪽이 원래 이름에 저장한 장면).
+// 그 경로에 새 파일을 둔다(그 사이 다른 쪽이 원래 이름에 저장한 장면). `plan.code`가 있으면 "없음" 대신 그 오류 코드로 실패한다(읽기 실패).
 const missOnce = `{
   const fs = process.getBuiltinModule("node:fs");
   const plan = JSON.parse(process.env.PLAN);
@@ -325,7 +325,8 @@ const missOnce = `{
     if (!missed && pattern.test(String(args[0]))) {
       missed = true;
       if (plan.take) fs.writeFileSync(plan.take, "saved meanwhile");
-      return Promise.reject(Object.assign(new Error("no such file"), { code: "ENOENT" }));
+      const code = plan.code ?? "ENOENT";
+      return Promise.reject(Object.assign(new Error(code), { code }));
     }
     return real(...args);
   };
@@ -396,6 +397,37 @@ it("names where it kept the configuration when it could neither confirm it nor p
     {
       reason: "changed",
       name: "mcp_config.json",
+      keptAs: expect.stringMatching(
+        /^\.mcp_config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
+      ),
+    },
+  ]);
+  const keptAs = read[0]!.keptAs!;
+  expect(await readFile(path.join(agents, keptAs), "utf8")).toBe(ownedLeftover);
+  expect(await readFile(config, "utf8")).toBe("saved meanwhile");
+});
+
+// 옮긴 설정을 다시 읽지 못해(읽기 오류) 확인이 던졌을 때도 같다. 확인하지 못한 것이므로 정리하지 못함(3)으로 끝나고, 그 원인 코드와
+// 남긴 위치가 정해진 까닭 줄로 서버에 닿는다. 스크립트가 스택을 남기고 죽어 위치를 잃지 않는다(#296 외부 리뷰 2회차 전 점검).
+it("names the read failure and where it kept the configuration when confirming it failed, up to the server's reading", async () => {
+  const { cwd, agents, config } = await workspace();
+  await writeFile(config, ownedLeftover);
+  const ended = await script(
+    cwd,
+    {
+      miss: "\\.mcp_config\\.json\\.[0-9a-f-]+\\.removing$",
+      take: config,
+      code: "EIO",
+    },
+    missOnce
+  );
+  expect(ended.status).toBe(3);
+  const read = readCleanupReasons(ended.stderr, false);
+  expect(read).toEqual([
+    {
+      reason: "not_checkable",
+      name: "mcp_config.json",
+      code: "EIO",
       keptAs: expect.stringMatching(
         /^\.mcp_config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
       ),
