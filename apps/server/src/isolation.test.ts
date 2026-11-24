@@ -12,7 +12,7 @@ import {
 } from "@babojubot/runtime";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
-import { IsolationGate } from "./isolation.ts";
+import { containerOwner, IsolationGate } from "./isolation.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -541,3 +541,13 @@ describe.each([
     });
   }
 );
+
+// 주인 표식은 제품 폴더 절대 경로의 SHA-256 앞 16자다. 기대값은 같은 함수가 아니라 셸에서 따로 계산했다:
+// `printf '%s' '/srv/babojubot' | sha256sum`, `printf '%s' 'C:\Users\research\.babojubot' | sha256sum`.
+// 서버 시작 시험(test/main.test.ts)은 이렇게 고정한 이 함수로 그 서버의 주인을 정한다.
+it("names a product folder's containers by the first 16 characters of the SHA-256 of its path", () => {
+  expect(containerOwner("/srv/babojubot")).toBe("dd9c37f4a36a85b3");
+  expect(containerOwner("C:\\Users\\research\\.babojubot")).toBe(
+    "acc4f2ce6e6d3f88"
+  );
+});

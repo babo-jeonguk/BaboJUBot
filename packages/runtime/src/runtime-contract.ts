@@ -17,8 +17,25 @@ import {
   type RuntimeAdapter,
   type SessionState,
 } from "@babojubot/contracts";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { within } from "@babojubot/process/test-support";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import { probeTimeoutMs } from "./providers/process.ts";
+import {
+  lateProblems,
+  newOwner,
+  runAs,
+  settleProblems,
+  takeUnowned,
+  watchingPrograms,
+} from "./providers/program-watch-support.ts";
 
 // 프로바이더 계약(contracts `RuntimeAdapter`)의 공통 검사. 프로바이더 adapter마다 장면 두 개를 주고 같은 약속과
 // 그 adapter가 선언한 일(`capabilities`)이 동작과 맞는지 확인한다.
@@ -45,6 +62,11 @@ export type RuntimeContractEvidence = {
 
 export type RuntimeContractOptions = {
   adapter: RuntimeAdapter;
+  /**
+   * 실행 시도마다 프로그램을 띄우는지(`programs`, 공용 실행 `startProcess`) 아니면 아무것도 띄우지 않는지(`nothing`, in-process 가짜).
+   * 실행 시도마다 본 프로그램 수가 이 선언과 맞는지 본다. 프로그램을 보지 못한 채 "끝난 프로그램만 있다"고 통과하지 않는다.
+   */
+  launches: "programs" | "nothing";
   /** 스스로 끝나는 요청. 끝나기 전에 일을 시작했다는 신호(도구 호출·활동)를 낸다. 그 뒤부터 완료 시한을 잰다. */
   finishes: RuntimeContractScene;
   /** 취소할 때까지 일하는 요청. */
@@ -58,11 +80,6 @@ export type RuntimeContractOptions = {
    * 느린 실행기를 감당하게 잡고, 취소·완료 시한과 따로 잰다(#215).
    */
   startWithinMs?: number;
-  /**
-   * `worksUntilCancelled`가 취소될 때까지 일을 시작했다는 신호를 내지 않는 adapter(프로그램을 띄우지 않는 in-process 가짜)만 준다.
-   * 그때는 신호 대신 이 시간 뒤에 취소한다. 주지 않으면 신호를 `startWithinMs` 안에 기다린 뒤 취소한다.
-   */
-  quietStartMs?: number;
   /** 이 adapter가 이어 가지 못하는 세션(만료 등). 세션 이어가기를 선언한 adapter는 꼭 준다. */
   unusableSession?: SessionState;
   /**
@@ -91,7 +108,10 @@ export type RuntimeContractOptions = {
   readinessWithinMs?: number;
 };
 
-/** 가짜 도구 서버. 지금 실행 시도의 요청 하나로 답하고, 도구 호출을 받을 때마다 알린다. */
+/**
+ * 가짜 도구 서버. 지금 실행 시도의 요청 하나로 답하고, 도구 호출을 받을 때마다 알린다. 받은 요청이 모두 끝났는지(답을 다 쓰거나
+ * 연결이 닫힘)도 알린다(`settled`). 실행 시도의 프로그램이 낸 도구 호출이 이 서버에서 끝난 것을 보는 신호다.
+ */
 async function startFakeToolServer() {
   let current: RunRequest | undefined;
   let messages: string[] = [];
@@ -99,7 +119,15 @@ async function startFakeToolServer() {
   const route = (tool: "get_run_context" | "send_message") =>
     `${orgTools[tool].method} ${orgToolsBasePath}${orgTools[tool].path}`;
   let requests = 0;
+  // 받았지만 아직 끝나지 않은 요청 수와, 그 수가 0이 되기를 기다리는 쪽.
+  let open = 0;
+  const onSettled = new Set<() => void>();
   const server: Server = createServer((req, res) => {
+    open++;
+    res.once("close", () => {
+      open--;
+      if (open === 0) for (const notify of onSettled) notify();
+    });
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -169,6 +197,16 @@ async function startFakeToolServer() {
       return messages;
     },
     onRequest,
+    /** 받은 요청이 모두 끝나면 이행한다. 지금 열린 요청이 없으면 바로 이행한다. */
+    settled: () =>
+      new Promise<void>((resolve) => {
+        if (open === 0) return resolve();
+        const notify = () => {
+          onSettled.delete(notify);
+          resolve();
+        };
+        onSettled.add(notify);
+      }),
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -178,23 +216,17 @@ async function startFakeToolServer() {
   };
 }
 
-/** 돌아온 뒤 늦은 활동을 기다리는 시간. */
-const quietMs = 50;
 /** 기한 밖에서 검사 자체에 주는 여유(vitest 시간 제한). */
 const settleMs = 5_000;
-
-const deadline = <T>(promise: Promise<T>, ms: number, what: string) =>
-  Promise.race([
-    promise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${what} within ${ms}ms`)), ms)
-    ),
-  ]);
 
 /**
  * 프로바이더 adapter의 공통 검사를 등록한다. 두 장면에서 다음 약속을 확인한다.
  * 1. 취소를 받으면 정해진 시간 안에 `cancelled`로 끝난다.
- * 2. 돌아온 뒤 활동을 내지 않는다.
+ * 2. 돌아온 뒤 활동을 내지 않는다. 실행 시도는 자기 문맥에서 돌고, 그동안 띄운 것(실행 시도의 `startProcess`, 공용 실행
+ *    `launchTree`·`runTree`)은 띄우는 순간 그 실행 시도에 귀속된다(providers/program-watch-support.ts). 돌아올 때 그 실행 시도가 띄운
+ *    것이 모두 끝나 있어야 하고(실제로 시작한 프로그램 수는 선언 `launches`와 맞아야 한다), 도구 호출은 가짜 도구 서버에서 모두 끝나야
+ *    한다. 돌아온 뒤의 활동과 돌아온 뒤에 띄운 것은 언제 오든 따로 남아 시험 끝에 실패로 드러나고, 어느 실행 시도에도 귀속되지 않고
+ *    띄운 것도 시험마다 실패로 드러난다. adapter 안의 타이머는 활동을 내지 않는다는 것을 코드로 확인했을 뿐 신호로 보지 않는다.
  * 3. 내는 활동은 모두 공개 활동 형식(`runtimeActivitySchema`)에 맞는다. 맞지 않으면 dispatcher가 버려 대시보드에서 사라진다.
  * 4. 종료 결과가 계약 형식(`runResultSchema`)에 맞는다.
  * 5. 실행 시도 토큰이 오류 문구·요약·활동에 나오지 않는다.
@@ -214,18 +246,23 @@ export function describeRuntimeContract(
   name: string,
   {
     adapter,
+    launches,
     finishes,
     worksUntilCancelled,
     cancelWithinMs = 5_000,
     finishWithinMs = 10_000,
     startWithinMs = 30_000,
-    quietStartMs,
     unusableSession,
     resumes,
     steers,
     readinessWithinMs = 2 * probeTimeoutMs,
   }: RuntimeContractOptions
 ): void {
+  if (!watchingPrograms())
+    throw new Error(
+      `${name}: watch the programs runs start, so that "no program" is seen and not assumed: wrap ./providers/process.ts with ` +
+        "watchPrograms and @babojubot/process with watchProcessPackage (providers/program-watch-support.ts) through vi.mock"
+    );
   const { capabilities } = adapter;
   if (capabilities?.resume && (!unusableSession || !resumes))
     throw new Error(
@@ -243,9 +280,18 @@ export function describeRuntimeContract(
       tools = await startFakeToolServer();
     });
     afterAll(() => tools.close());
+    // 어느 실행 시도·준비 확인에도 귀속되지 않고 띄운 것은 "없음"으로 접지 않는다. 시험마다 비어 있는지 본다.
+    afterEach(() => {
+      expect(
+        takeUnowned().map((launch) => launch.kind),
+        `${name} launched programs outside any run or readiness check`
+      ).toEqual([]);
+    });
 
     /**
-     * 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. 돌아온 뒤 낸 활동은 `late`에 따로 모은다.
+     * 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. 실행 시도는 자기 문맥(`runAs`)에서 돌아,
+     * 그동안 띄운 것과 낸 활동이 그 실행 시도에 귀속된다. 돌아온 뒤의 활동은 거절하고 따로 남기며, 돌아온 뒤에 띄운 것도 따로
+     * 남긴다. 둘 다 언제 오든 시험이 끝날 때 실패로 드러난다(`lateProblems`).
      */
     function run(
       scene: RuntimeContractScene,
@@ -258,9 +304,11 @@ export function describeRuntimeContract(
       );
       const messages = tools.serve(request);
       const controller = new AbortController();
-      const activities: unknown[] = [];
-      const late: unknown[] = [];
-      let returned = false;
+      const owner = newOwner(name);
+      const { activities, late } = owner;
+      onTestFinished(() => {
+        expect(lateProblems(owner)).toEqual([]);
+      });
       // 활동 기록을 붙잡아 두면 풀어 줄 때까지 `emit`이 돌아오지 않는다. 기록은 그대로 한다.
       let gate: Promise<void> | undefined;
       let open: (() => void) | undefined;
@@ -284,33 +332,25 @@ export function describeRuntimeContract(
         };
       });
       tools.onRequest.add(markWorking);
-      // 돌아온 뒤에 온 활동. 오는 순간 조용히 있어야 할 구간의 확인이 실패한다.
-      let markLate!: () => void;
-      const lateArrived = new Promise<void>((resolve) => {
-        markLate = resolve;
-      });
-      const result = adapter
-        .execute(request, {
+      const result = runAs(owner, () =>
+        adapter.execute(request, {
           signal: controller.signal,
           emit: async (activity) => {
-            if (returned) {
-              late.push(activity);
-              markLate();
-            } else activities.push(activity);
+            owner.record(activity);
             markWorking();
             await gate;
           },
         })
-        .finally(() => {
-          returned = true;
-          tools.onRequest.delete(markWorking);
-        });
+      ).finally(() => {
+        owner.markReturned();
+        tools.onRequest.delete(markWorking);
+      });
       /**
        * 일을 시작했다는 신호를 `startWithinMs` 안에 기다린다. 준비가 끝난 뒤에 취소·완료 시한을 재려고 쓴다. 신호 없이 끝나면
        * 그 뒤의 시한이 아무것도 재지 못하므로 기다리지 않고 실패한다(완료를 시작으로 치면 완료 시한이 준비 상한에 묻힌다).
        */
       const started = async () => {
-        await deadline(
+        await within(
           Promise.race([working, settled(result)]),
           startWithinMs,
           "did not show that it started working"
@@ -327,13 +367,14 @@ export function describeRuntimeContract(
         controller,
         activities,
         late,
-        lateArrived,
         result,
+        /** 이 실행 시도가 띄운 것과 낸 활동. */
+        owner,
         started,
         working,
         holdActivities,
         get returned() {
-          return returned;
+          return owner.returned;
         },
       };
     }
@@ -349,13 +390,15 @@ export function describeRuntimeContract(
           runtimeActivitySchema.safeParse(activity).error,
           JSON.stringify(activity)
         ).toBeUndefined();
-      // 돌아온 뒤 quietMs 동안 활동이 오지 않아야 한다. 오면 그 순간 이 경주가 끝나 실패한다.
-      expect(
-        await Promise.race([
-          attempt.lateArrived.then(() => "late activity"),
-          new Promise((resolve) => setTimeout(() => resolve("quiet"), quietMs)),
-        ])
-      ).toBe("quiet");
+      // 반환 뒤 활동의 원천이 닫힌 것을 신호로 본 뒤 늦은 활동이 없는지 본다. 띄운 프로그램과 그 출력은 돌아올 때 이미 끝나 있고
+      // (`done`), 돌아온 뒤 새로 띄운 프로그램이 없으며, 도구 호출은 이 서버에서 모두 끝난다. 그 뒤에 오는 활동도 `emit`이 거절하고
+      // 시험 끝에 `late`로 드러난다.
+      expect(settleProblems(attempt.owner, launches)).toEqual([]);
+      await within(
+        tools.settled(),
+        settleMs,
+        "did not settle its tool calls after it returned"
+      );
       expect(attempt.late).toEqual([]);
       const published = JSON.stringify({
         error: result.error,
@@ -370,7 +413,7 @@ export function describeRuntimeContract(
       async () => {
         const attempt = run(finishes);
         await attempt.started();
-        const result = await deadline(
+        const result = await within(
           attempt.result,
           finishWithinMs,
           "did not finish on its own"
@@ -385,18 +428,8 @@ export function describeRuntimeContract(
       "settles as cancelled soon after a cancel and stays quiet afterwards",
       async () => {
         const attempt = run(worksUntilCancelled);
-        // 시작 신호가 없는 in-process 가짜는 quietStartMs 동안 스스로 돌아오지 않았는지를 보고 취소한다.
-        if (quietStartMs === undefined) await attempt.started();
-        else
-          expect(
-            await Promise.race([
-              settled(attempt.result).then(() => "returned"),
-              new Promise((resolve) =>
-                setTimeout(() => resolve("still working"), quietStartMs)
-              ),
-            ]),
-            "returned before it was cancelled"
-          ).toBe("still working");
+        // 일을 시작했다는 신호(도구 호출·활동)를 본 뒤에 취소한다. 그 신호 없이 돌아오면 `started`가 실패한다.
+        await attempt.started();
         expect(attempt.returned, "returned before it was cancelled").toBe(
           false
         );
@@ -404,7 +437,7 @@ export function describeRuntimeContract(
           type: "cancel",
           reason: "owner_interrupt",
         } satisfies RunCancel);
-        const result = await deadline(
+        const result = await within(
           attempt.result,
           cancelWithinMs,
           "did not settle as cancelled"
@@ -412,7 +445,7 @@ export function describeRuntimeContract(
         expect(result.stopReason).toBe("cancelled");
         await expectSettled(attempt, result);
       },
-      (quietStartMs ?? startWithinMs) + cancelWithinMs + settleMs
+      startWithinMs + cancelWithinMs + settleMs
     );
 
     const evidenceOf = (
@@ -443,7 +476,7 @@ export function describeRuntimeContract(
         agent
       );
       await attempt.started();
-      const result = await deadline(
+      const result = await within(
         attempt.result,
         finishWithinMs,
         "did not finish on its own"
@@ -554,7 +587,7 @@ export function describeRuntimeContract(
         "takes a steered message into the run it is working on so that the run's result reflects it, and refuses one for an unknown or returned run",
         async () => {
           const attempt = run(steers!.scene);
-          await deadline(
+          await within(
             attempt.working,
             startWithinMs,
             "did not show that it started working"
@@ -571,7 +604,7 @@ export function describeRuntimeContract(
           const release = attempt.holdActivities();
           try {
             expect(
-              await deadline(
+              await within(
                 steer(attempt.runId, body),
                 finishWithinMs,
                 "did not decide the steer without waiting for an activity to be recorded"
@@ -580,7 +613,7 @@ export function describeRuntimeContract(
           } finally {
             release();
           }
-          const result = await deadline(
+          const result = await within(
             attempt.result,
             finishWithinMs,
             "did not finish after taking the steered message"
@@ -599,11 +632,19 @@ export function describeRuntimeContract(
       "checks readiness without calling tools, within its time",
       async () => {
         const before = tools.requests;
-        const result = await deadline(
-          adapter.checkReadiness(new AbortController().signal),
+        // 준비 확인도 자기 문맥에서 돌아, 띄운 확인 명령이 돌아올 때 모두 끝났는지 본다.
+        const owner = newOwner(`${name} readiness check`);
+        onTestFinished(() => {
+          expect(lateProblems(owner)).toEqual([]);
+        });
+        const result = await within(
+          runAs(owner, () =>
+            adapter.checkReadiness(new AbortController().signal)
+          ).finally(() => owner.markReturned()),
           readinessWithinMs,
           "did not check readiness"
         );
+        expect(settleProblems(owner)).toEqual([]);
         expect(
           providerReadinessCheckSchema.safeParse(result).error
         ).toBeUndefined();

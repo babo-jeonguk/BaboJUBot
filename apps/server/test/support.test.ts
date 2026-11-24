@@ -83,3 +83,27 @@ it("fails naming what it waited for and cleans up when the startup readiness che
   // 넘기기 전 실패의 정리를 모두 마쳤다(정리 실패가 없어 원래 오류 그대로다). 작업 폴더는 서버가 닫힌 것을 확인한 뒤에만 지운다.
   expect(await readdir(temp)).toEqual([]);
 });
+
+// 서버의 끝을 확인하지 못하면 그 서버가 쓰는 DB와 작업 폴더를 닫거나 지우지 않는다(#294 외부 리뷰 5회차 STD-4-R1). 서버 닫기의 한 단계(알림
+// 채널 닫기)를 실패시킨다. 서버의 닫기는 다시 부를 수 없으므로(이미 닫은 부분에서 실패한다), 끄기가 실패한 서버는 그 뒤에도 닫힌 것이
+// 확인되지 않는다.
+it("keeps the database and the workspace folder when stopping the server failed, and reports that failure on close", async () => {
+  const temp = await ownTemporaryFolder();
+  const refused = new Error("the notification channel did not close");
+  const t = await startTestServer({
+    notificationChannels: [
+      {
+        name: "refusing-close",
+        deliver: () => Promise.resolve(),
+        listen: () => {},
+        close: () => Promise.reject(refused),
+      },
+    ],
+  });
+  await expect(t.stopServer()).rejects.toBe(refused);
+  await expect(t.close()).rejects.toBe(refused);
+  expect(await readdir(temp)).toHaveLength(1);
+  // DB는 닫히지 않았다. 일부러 남긴 것: 그 DB(시험 실행의 cluster와 함께 지워짐)와 연결(pg pool이 유휴 10초 뒤 닫음). 작업 폴더는
+  // afterEach가 이 시험의 임시 폴더와 함께 지운다.
+  expect((await t.db.execute("select 1 as one")).rows).toEqual([{ one: 1 }]);
+});
