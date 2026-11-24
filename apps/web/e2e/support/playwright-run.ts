@@ -64,6 +64,12 @@ export async function runPlaywright(options: {
 }
 
 /**
+ * `runToEnd`가 끝까지 돌지 못한 자식을 끈 뒤 그 끝을 확인하는 상한. 부르는 시험의 시한은 최악의 길(`timeoutMs` + 이 상한)보다 길어야
+ * 그 길에서 모은 원인(시한 실패·끄기 실패)이 시험 시한보다 먼저 보고된다.
+ */
+export const runToEndStopMs = 10_000;
+
+/**
  * 띄운 자식(stdout·stderr가 파이프)을 끝까지 돌려 종료 코드와 출력(`output`은 stdout·stderr를 받은 차례대로, `stdout`은 표준
  * 출력만)을 돌려준다. 끝은 종료와 출력의
  * 끝을 함께 본다(`exit` 때는 출력이 아직 열려 있을 수 있다, Node 문서 child_process `'exit'`). 그 대기가 어떤 이유로든(`timeoutMs`
@@ -131,5 +137,9 @@ async function stopChild(
   if (child.pid === undefined) return;
   if (child.exitCode === null && child.signalCode === null)
     child.kill("SIGKILL");
-  await within(exited, 10_000, `${what}: the stopped child did not exit`);
+  await within(
+    exited,
+    runToEndStopMs,
+    `${what}: the stopped child did not exit`
+  );
 }
