@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
-import { runPlaywright } from "./playwright-run.ts";
+import { runPlaywright, runToEndStopMs } from "./playwright-run.ts";
 import { alive, type ServerProcess } from "./server-process.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
@@ -20,7 +20,9 @@ type SharedState = Pick<ServerProcess, "pid" | "postgresPid" | "folder">;
  * 바깥 테스트 시한은 이 시한에 여유를 더해 따로 정하므로, 느린 기기에서도 안쪽 실행이 바깥 시한에 먼저 걸리지 않는다.
  */
 const runTimeoutMs = 180_000;
-test.describe.configure({ timeout: runTimeoutMs + 30_000 });
+// 바깥 시한은 안쪽 실행의 최악의 길(시한 + 끈 뒤 끝 확인, `runToEndStopMs`)에 바깥 정리의 여유(20초)를 더한다. 그 길에서도
+// runPlaywright가 모은 원인이 바깥 시한보다 먼저 보고된다.
+test.describe.configure({ timeout: runTimeoutMs + runToEndStopMs + 20_000 });
 
 const config = fileURLToPath(
   new URL("./shared-server-run/playwright.config.ts", import.meta.url)

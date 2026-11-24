@@ -1,5 +1,6 @@
 // 사람이 돌리는 실제 시험 전용. 프로바이더 명령 자리에 놓여 입출력을 그대로 넘기며 비공개 폴더에 남긴다.
 // 원본 기록은 모델 출력과 지침을 담으므로 Git 밖 로컬 기록 폴더에만 둔다. 인증 헤더와 환경 변수는 남기지 않는다.
+import { once } from "node:events";
 import { createWriteStream } from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -166,15 +167,51 @@ child.stdout.on("data", (chunk) => {
     }
   });
 });
-/** 기록을 닫고 끝낸다. 기록을 다 쓰지 못한 녹화는 쓸 수 없으므로 원인을 오류 출력에 남기고 실패로 끝낸다. */
+/**
+ * 넘긴 출력을 모두 쓴 뒤에 이행한다. POSIX의 파이프 쓰기는 비동기라 `process.exit()`가 아직 쓰지 못한 출력을 버린다(Node 문서
+ * process `A note on process I/O`·`process.exit()`). 빈 쓰기의 콜백은 앞선 쓰기가 끝난 뒤에 온다. 쓰지 못했으면 false다.
+ */
+const flushed = () =>
+  Promise.all(
+    [process.stdout, process.stderr].map(
+      (stream) =>
+        new Promise((resolve) => stream.write("", (error) => resolve(!error)))
+    )
+  ).then((results) => results.every(Boolean));
+/**
+ * 기록을 닫고, 넘긴 출력을 다 쓴 뒤 끝낸다. 기록을 다 쓰지 못한 녹화는 쓸 수 없으므로 원인을 오류 출력에 남기고 실패로 끝낸다.
+ * 넘긴 출력을 다 쓰지 못했어도 실패로 끝낸다.
+ */
 const exitAfterLog = (code) =>
   log.end((error) => {
     if (error)
       process.stderr.write(
         `[record-cli] the recording could not be written (${failureCode(error)})\n`
       );
-    process.exit(error ? 1 : code);
+    void flushed().then((written) =>
+      process.exit(error || !written ? 1 : code)
+    );
   });
+/** 트리가 끝난 뒤 프로그램의 출력이 닫히기까지의 상한. */
+const outputCloseMs = 10_000;
+/**
+ * 프로그램의 출력(표준 출력·오류)이 모두 닫혔는가. 트리가 끝났으니 출력을 쥔 프로그램은 없어 곧 닫히고, 닫힐 때까지 마지막 조각을
+ * 넘긴다(공용 실행 `runTree`와 같은 판단). 상한 안에 닫히지 않거나 읽기가 실패하면 그 이유를 남기고 false다.
+ */
+const outputClosed = () =>
+  Promise.all(
+    [child.stdout, child.stderr].map((stream) =>
+      stream.closed
+        ? undefined
+        : once(stream, "close", { signal: AbortSignal.timeout(outputCloseMs) })
+    )
+  ).then(
+    () => true,
+    (error) => {
+      record("output-not-closed", { code: failureCode(error) });
+      return false;
+    }
+  );
 void (async () => {
   // 프로그램이 끝나거나 끄라는 신호가 오면 트리를 끈다(프로그램이 남긴 것까지). 끄기를 시작한 뒤의 끝은 끄기의 결과가 정한다: 끝났음을
   // 확인하지 못하면 그 이유를 남기고 실패로 끝난다.
@@ -196,7 +233,10 @@ void (async () => {
     ? await child.exited
     : { code: null, signal: null };
   record("exit", { code, signal });
+  // 프로그램의 끝(`exit`)과 그 출력의 끝은 따로 온다: 마지막 출력은 끝난 뒤에 닿을 수 있다(Node 문서 child_process `'exit'`).
+  // 끄기가 트리의 끝을 확인했을 때만 출력이 닫히기를 기다린다. 확인하지 못했으면 출력을 쥔 프로그램이 남았을 수 있다.
+  const complete = stopped && (await outputClosed());
   await queue;
   if (pending) process.stdout.write(pending);
-  exitAfterLog(stopped ? (code ?? 1) : 1);
+  exitAfterLog(complete ? (code ?? 1) : 1);
 })();
