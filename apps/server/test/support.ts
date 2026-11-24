@@ -23,6 +23,7 @@ import {
   type ServerOptions,
 } from "../src/index.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { folderCleanup } from "@babojubot/process/test-cleanup";
 
 /**
  * 서버 작업·Event·준비 확인처럼 끝나는 신호가 오는 대기의 상한(#215). 신호가 오면 바로 끝나므로 넉넉해도 통과 시간은
@@ -126,7 +127,8 @@ export async function startTestServer({
   let ownDataDir: string | undefined;
   let server: RunningServer | undefined;
   const sockets = new Set<WebSocket>();
-  let serverStopped = false;
+  /** 서버의 끝. 한 번만 하고, 끄기를 부른 쪽과 정리가 같은 결과를 기다린다. */
+  let stopped: Promise<void> | undefined;
 
   const request: TestServer["request"] = async (
     method,
@@ -201,23 +203,19 @@ export async function startTestServer({
       });
     if (failed) throw failed.error;
   } catch (error) {
-    // 원래 실패를 그대로 알린다. 치우기는 단계마다 따로 시도하고, 실패하면 그 실패를 원래 실패와 함께 알린다.
-    let serverClosed = !server;
-    const failures = await attemptEach([
-      async () => {
-        await server?.close();
-        serverClosed = true;
-      },
-      () => database.close(),
-    ]);
-    // 서버가 닫힌 것을 확인하지 못하면 그 서버가 쓰는 폴더는 남긴다.
+    // 원래 실패를 그대로 알린다. 서버가 닫힌 것을 확인한 뒤에만 그 서버가 쓰는 DB와 폴더를 닫고 지운다. 확인하지 못하면 둘 다
+    // 남긴다(`folderCleanup`). 치우기가 실패하면 그 실패를 원래 실패와 함께 알린다.
     const dataDir = ownDataDir;
-    if (dataDir && serverClosed)
-      failures.push(...(await attemptEach([() => removeFolder(dataDir)])));
-    else if (dataDir)
-      failures.push(
-        new Error(`kept ${dataDir}: the test server did not close`)
-      );
+    const closing = folderCleanup(() =>
+      attemptAll([
+        () => database.close(),
+        async () => {
+          if (dataDir) await removeFolder(dataDir);
+        },
+      ])
+    );
+    closing.own(() => server?.close());
+    const failures = await attemptEach([closing.cleanUp]);
     if (failures.length > 0)
       throw combinedFailure(
         [error, ...failures],
@@ -244,10 +242,9 @@ export async function startTestServer({
     tickCompactions: () => server.tickCompactions(),
     deliverNotifications: () => server.deliverNotifications(),
     stopProgress: () => server.progress(),
-    async stopServer() {
-      serverStopped = true;
+    stopServer() {
       for (const socket of sockets) socket.terminate();
-      await server.close();
+      return (stopped ??= server.close());
     },
     subscribe(scope, { origin } = {}) {
       const query =
@@ -316,24 +313,20 @@ export async function startTestServer({
       });
     },
     async close() {
-      // 넘기기 전 실패의 정리와 같은 순서다. 서버가 닫힌 것을 확인하지 못하면 그 서버가 쓰는 폴더는 남기고 그 사실을 알린다.
-      let serverClosed = serverStopped;
-      await attemptAll([
-        async () => {
-          for (const socket of sockets) socket.terminate();
-          if (!serverClosed) await server.close();
-          serverClosed = true;
-        },
-        () => database.close(),
-        async () => {
-          if (!ownDataDir) return;
-          if (!serverClosed)
-            throw new Error(
-              `kept ${ownDataDir}: the test server did not close`
-            );
-          await removeFolder(ownDataDir);
-        },
-      ]);
+      // 넘기기 전 실패의 정리와 같다. 서버의 끝(끄기를 이미 불렀으면 그 결과)을 확인한 뒤에만 DB와 폴더를 닫고 지운다.
+      const closing = folderCleanup(() =>
+        attemptAll([
+          () => database.close(),
+          async () => {
+            if (ownDataDir) await removeFolder(ownDataDir);
+          },
+        ])
+      );
+      closing.own(() => {
+        for (const socket of sockets) socket.terminate();
+        return (stopped ??= server.close());
+      });
+      await closing.cleanUp();
     },
   };
 }

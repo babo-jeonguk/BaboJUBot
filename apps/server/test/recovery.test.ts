@@ -55,6 +55,7 @@ import {
   type TestServer,
 } from "./support.ts";
 import {
+  awaitedLater,
   folderCleanup,
   withCleanup,
   type CleanupStep,
@@ -73,11 +74,13 @@ afterEach(() => {
   database = undefined;
   t = undefined;
   databaseUsers = [];
-  // 서버와 DB를 쓰는 것이 모두 끝난 것을 확인한 뒤에만 그 DB를 닫는다. 하나라도 확인하지 못하면 DB를 남기고 그 실패를
-  // 알린다(`folderCleanup`). 한 단계가 실패해도 나머지를 닫는다.
-  const closing = folderCleanup(() => db?.close());
+  // 서버와 DB를 쓰는 것이 모두 끝난 것을 확인한 뒤에만 그 DB(재시작한 서버가 쓰는 시험 서버 `t`의 DB 포함)를 닫는다. 하나라도
+  // 확인하지 못하면 DB를 남기고 그 실패를 알린다(`folderCleanup`). 한 단계가 실패해도 나머지를 닫는다.
+  const closing = folderCleanup(() =>
+    attemptAll([() => db?.close(), () => test?.close()])
+  );
   for (const end of [() => running?.close(), ...users]) closing.own(end);
-  return attemptAll([closing.cleanUp, () => test?.close()]);
+  return closing.cleanUp();
 });
 
 const api = (base: () => string) => {
@@ -462,17 +465,29 @@ async function crashAndRestart(
   child.stderr!.on("data", (chunk: Buffer) => {
     stderr = (stderr + String(chunk)).slice(-4000);
   });
-  // spawn 실패에는 exit가 오지 않을 수 있다. 기다림이 멈추지 않게 error도 종료로 본다.
-  const exited = new Promise<{
-    code: number | null;
-    signal: NodeJS.Signals | null;
-  }>((resolve) => {
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-    child.once("error", (error) => {
-      spawnError = error;
-      resolve({ code: null, signal: null });
-    });
+  // 띄우지 못하면 exit가 오지 않을 수 있어, 띄우기 전의 error는 끌 프로세스가 없는 것으로 본다. 띄운 뒤의 error(신호를 보내지
+  // 못함 등)는 종료를 확인하지 못한 것이라 거절한다.
+  let spawned = false;
+  child.once("spawn", () => {
+    spawned = true;
   });
+  const exited = awaitedLater(
+    new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+        child.once("error", (error) => {
+          if (spawned)
+            return reject(
+              new Error("the crash server's end was not confirmed", {
+                cause: error,
+              })
+            );
+          spawnError = error;
+          resolve({ code: null, signal: null });
+        });
+      }
+    )
+  );
   // SIGKILL 뒤 종료가 보고되지 않으면 시험을 멈추지 않고 그 자식을 밝혀 실패한다.
   const exitedWithin = (ms: number) =>
     within(
