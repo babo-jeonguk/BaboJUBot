@@ -82,16 +82,30 @@ async function sessionTranscripts<T>(
           let file: OpenedRegularFile | undefined;
           try {
             const opened = await openRegularFile(folder.at(`${id}.jsonl`));
-            if (typeof opened === "string") {
-              // 확인한 폴더 안에서 열었으므로, 여는 사이 자리가 바뀐 것만 알린다. 없음·일반 파일 아님은 기록이 없는 것이다.
-              if (opened === "changed")
+            // 에이전트가 쓸 수 있는 폴더라 기록 자리가 바뀔 수 있다. 실제로 없는 것만 말없이 넘기고, 일반 파일 아님·여는
+            // 사이 바뀜·특수 파일은 확인하지 못한 것이라 까닭을 남긴다(사용량 사실 읽기라 허용 판정이 아니다).
+            if (typeof opened !== "string") {
+              file = opened;
+              return await read(opened.handle, Number(opened.info.size));
+            }
+            switch (opened) {
+              case "missing":
+                return;
+              case "not-regular":
+                console.warn(
+                  "[provider] a Claude session transcript is not a regular file"
+                );
+                return;
+              case "changed":
                 console.warn(
                   "[provider] a Claude session transcript changed while it was opened"
                 );
-              return;
+                return;
+              default: {
+                const unhandled: never = opened;
+                throw new Error(`unhandled opened result ${String(unhandled)}`);
+              }
             }
-            file = opened;
-            return await read(opened.handle, Number(opened.info.size));
           } catch (error) {
             console.warn(
               `[provider] a Claude session transcript could not be read (${failureCode(error)})`
