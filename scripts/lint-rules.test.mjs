@@ -2163,6 +2163,88 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
       );
 });
 
+// 시한으로 끝날 수 있는 조합(다른 값이 거절만 하는 race·any, 가져온 저장소 도움)의 기다림은 함수로 뽑아도 직접 쓴 것과 같은
+// 판정이다(#291 외부 리뷰 3회차 SPEC-1): 함수 안의 기다림은 그 함수의 결과가 거절되는 것이라, 부르는 자리에서 그 결과를 받는 모양
+// (expect(…).rejects·.catch·then의 거절 처리기·allSettled·try/catch)까지 본다. 여러 단계로 감싼 함수, 그 자리에서 부르는 이름 없는
+// 함수, then의 처리기도 같다. 각 줄은 [직접 쓴 모양, 함수로 뽑은 모양들…, 기대: 짚는 문구 또는 null(통과)].
+test("a deadline wait gets the same verdict written directly or moved into a local function", async () => {
+  const race = `Promise.race([later, ${rejectsLate}])`;
+  const pairs = [
+    [
+      `const later = awaitedLater(p);\nawait expect(${race}).rejects.toThrow("late");\n`,
+      `const later = awaitedLater(p);\nasync function wait() {\n  await ${race};\n}\nawait expect(wait()).rejects.toThrow("late");\n`,
+      `const later = awaitedLater(p);\nconst wait = () => ${race};\nawait expect(wait()).rejects.toThrow("late");\n`,
+      `const later = awaitedLater(p);\nasync function inner() {\n  await ${race};\n}\nasync function outer() {\n  return await inner();\n}\nawait expect(outer()).rejects.toThrow("late");\n`,
+      `const later = awaitedLater(p);\nawait expect(\n  (async () => {\n    await ${race};\n  })()\n).rejects.toThrow("late");\n`,
+      /기다리지 않습니다/,
+    ],
+    [
+      `const later = awaitedLater(p);\nawait ${race}.catch(() => undefined);\n`,
+      `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\nawait wait().catch(() => undefined);\n`,
+      `const later = awaitedLater(p);\nawait p\n  .then(async () => {\n    await ${race};\n  })\n  .catch(() => undefined);\n`,
+      /기다리지 않습니다/,
+    ],
+    [
+      `const later = awaitedLater(p);\nawait ${race}.then(use, () => undefined);\n`,
+      `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\nawait wait().then(use, () => undefined);\n`,
+      /기다리지 않습니다/,
+    ],
+    [
+      `const later = awaitedLater(p);\nawait Promise.allSettled([${race}]);\n`,
+      `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\nawait Promise.allSettled([wait()]);\n`,
+      /기다리지 않습니다/,
+    ],
+    [
+      `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait expect(within(later, 1000)).rejects.toThrow();\n`,
+      `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nconst wait = () => within(later, 1000);\nawait expect(wait()).rejects.toThrow();\n`,
+      /기다리지 않습니다/,
+    ],
+    [
+      `const later = awaitedLater(p);\ntry {\n  await ${race};\n} catch {\n  use(1);\n}\n`,
+      `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\ntry {\n  await wait();\n} catch {\n  use(1);\n}\n`,
+      /한 분기/,
+    ],
+    // 결과의 거절이 전파되는 자리면 직접 쓴 것처럼 통과한다.
+    [
+      `const later = awaitedLater(p);\nawait ${race};\n`,
+      `const later = awaitedLater(p);\nasync function wait() {\n  await ${race};\n}\nawait wait();\n`,
+      `const later = awaitedLater(p);\nasync function inner() {\n  await ${race};\n}\nasync function outer() {\n  return await inner();\n}\nawait outer();\n`,
+      `const later = awaitedLater(p);\nawait (async () => {\n  await ${race};\n})();\n`,
+      `const later = awaitedLater(p);\nawait p.then(async () => {\n  await ${race};\n});\n`,
+      null,
+    ],
+    [
+      `const later = awaitedLater(p);\nawait expect(${race}).resolves.toBe(1);\n`,
+      `const later = awaitedLater(p);\nconst wait = () => ${race};\nawait expect(wait()).resolves.toBe(1);\n`,
+      null,
+    ],
+    [
+      `const later = awaitedLater(p);\ntry {\n  await ${race};\n} catch {\n  await later.catch(() => undefined);\n}\n`,
+      `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\ntry {\n  await wait();\n} catch {\n  await later.catch(() => undefined);\n}\n`,
+      null,
+    ],
+  ];
+  for (const pair of pairs) {
+    const kind = pair.at(-1);
+    for (const code of pair.slice(0, -1))
+      for (const place of testPlaces) {
+        const messages = await lint(
+          laterImport + laterHead + code,
+          place,
+          laterRules
+        );
+        if (kind === null) {
+          assert.deepEqual(messages, [], `${place}: ${code}`);
+          continue;
+        }
+        const [message, ...rest] = messages;
+        assert.ok(message, `${place}: not reported: ${code}`);
+        assert.deepEqual(rest, [], `${place}: ${code}`);
+        assert.match(message.message, kind, code);
+      }
+  }
+});
+
 // 시험 규칙은 JS 기본 전역(Promise·Math·console·process 등)과 시험 도구(expect·assert·test)도 글자 이름이 아니라 출처로 본다(#266
 // 리뷰 SPEC-4): 별칭·다른 이름으로 가져와도 같고, 같은 이름의 지역 값으로 가리면 그것이 아니다.
 test("test rules tell globals and test tools by origin, not by name", async () => {
