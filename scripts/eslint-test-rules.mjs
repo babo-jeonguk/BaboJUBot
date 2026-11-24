@@ -2253,6 +2253,10 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
    * 콜백·메서드)는 넘겨받은 함수가 부른다고 보고 그 함수를 쓴 자리까지의 길에 잇는다. 파일의 맨 위와 `boundary` 함수(받은 인자의
    * 기다림을 그 함수 안에서 볼 때)에서 멈춘다. 길이 없으면 실행되지 않는다. 한 분기에서만 부르는 함수 안의 기다림은 그 분기의 길만
    * 갖는다(#291 외부 리뷰 2회차 STD-3).
+   * `propagate`(시한으로 끝날 수 있는 기다림의 거절이 전파되어야 함)면 함수 안의 기다림의 거절은 그 함수의 결과가 거절되는 것이므로,
+   * 함수를 부르는 자리에서는 부른 결과가 거절이 전파되게 기다려지는 길만 잇는다(`waitOf`로 그 호출 결과를 본다, #291 외부 리뷰 3회차
+   * SPEC-1). 그 자리에서 부르는 이름 없는 함수와 then·catch·finally의 처리기도 그 호출의 결과로 잇는다. 내보낸·돌려준 함수, 그 밖에
+   * 넘긴 이름 없는 콜백은 위 경계대로 실행으로 센다(받은 쪽의 소비는 따라갈 수 없다). `entered`는 이미 지난 함수다(순환 막기).
    */
   /** 이름 `identifier`를 그대로 돌려주는 반환(return 문, 화살표 식 몸)이면 그 반환 자리. 반환하는 객체 식의 속성 값도 같다. */
   const returnOf = (identifier) => {
@@ -2270,16 +2274,44 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
       return value;
     return undefined;
   };
-  const pathsTo = (node, boundary, seen = new Set(), caught = undefined) => {
+  const pathsTo = (
+    node,
+    boundary,
+    entered = new Set(),
+    caught = undefined,
+    propagate = false
+  ) => {
     const inner = [...branchesOf(node, caught)].reverse();
     const fn = enclosingFunction(node);
     if (!fn || fn === boundary) return [inner];
-    if (seen.has(fn)) return [];
-    const next = new Set([...seen, fn]);
+    if (entered.has(fn)) return [];
+    const next = new Set([...entered, fn]);
+    /** 함수를 부른 자리 `call`까지의 길. 거절이 전파되어야 하면 그 호출 결과가 그렇게 기다려지는 길이다. */
+    const calledAt = (call) => {
+      if (!propagate) return pathsTo(call, boundary, next);
+      const found = waitOf(call, new Set(), true, boundary, next);
+      if (!found) return [];
+      // 넘긴 함수 안에서 한 분기에서만 기다렸으면 어떤 분기로도 덮이지 않는 갈래를 붙인다.
+      return found.conditional
+        ? found.paths.map((path) => [
+            ...path,
+            { node: call, branch: "conditional" },
+          ])
+        : found.paths;
+    };
     const variable = namedFunctionVariable(fn);
     let outer;
-    if (!variable) outer = pathsTo(fn, boundary, next);
-    else {
+    if (!variable) {
+      const parent = fn.parent;
+      outer =
+        propagate &&
+        parent?.type === "CallExpression" &&
+        (parent.callee === fn ||
+          (parent.arguments.includes(fn) &&
+            ["then", "catch", "finally"].includes(memberName(parent.callee))))
+          ? calledAt(parent)
+          : pathsTo(fn, boundary, next);
+    } else {
       const declaration =
         fn.type === "FunctionDeclaration" ? fn : fn.parent.parent;
       outer =
@@ -2299,7 +2331,7 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
               if (
                 !(
                   (parent?.type === "CallExpression" ||
-                    parent?.type === "NewExpression") &&
+                    (!propagate && parent?.type === "NewExpression")) &&
                   parent.callee === reference.identifier
                 ) ||
                 unreachable.has(parent)
@@ -2312,7 +2344,7 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
                 at = enclosingFunction(at)
               )
                 if (at === fn) return [];
-              return pathsTo(parent, boundary, next);
+              return calledAt(parent);
             });
     }
     return outer.map((path) => [...path, ...inner]);
@@ -2459,7 +2491,8 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
     node,
     seen = new Set(),
     mustPropagate = false,
-    boundary = undefined
+    boundary = undefined,
+    entered = new Set()
   ) => {
     let child = node;
     // 아직 그 Promise 자신인가(호출 결과로 바뀌기 전). 자신의 속성은 then·catch·finally 호출만 결과를 받는다.
@@ -2483,9 +2516,16 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
             ? caughtBy(parent)
             : undefined;
         // 실행되지 않는 기다림은 기다림이 아니다: 도달할 수 없는 코드(조기 return 뒤 등), 아무도 부르지 않는 함수 안. 기다림까지의
-        // 길은 함수를 부르는 자리의 분기까지 이어 본다(pathsTo).
+        // 길은 함수를 부르는 자리의 분기까지 이어 본다(pathsTo). try/catch가 받지 않은 거절은 그 함수의 결과로 나가므로, 거절이
+        // 전파되어야 하면 부르는 자리에서도 전파되어야 한다.
         if (unreachable.has(parent)) return undefined;
-        const paths = pathsTo(node, boundary, new Set(), caught);
+        const paths = pathsTo(
+          node,
+          boundary,
+          entered,
+          caught,
+          mustPropagate && !caught
+        );
         if (paths.length === 0) return undefined;
         return { paths, conditional, mustPropagate };
       }
@@ -2574,7 +2614,10 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
     };
   };
   const classify = (nodes) => classifyWaits(nodes).kind;
-  /** 기다림까지의 분기 길(바깥부터)들이 모든 길을 덮는가: 분기 없는 기다림이 있거나, 한 분기 자리의 모든 쪽이 다시 덮인다. */
+  /**
+   * 기다림까지의 분기 길(바깥부터)들이 모든 길을 덮는가: 분기 없는 기다림이 있거나, 한 분기 자리의 모든 쪽이 다시 덮인다. 부른 함수
+   * 안에서 한 분기에서만 기다린 갈래(`conditional`)는 무엇으로도 덮이지 않는다.
+   */
   const covers = (paths) => {
     if (paths.some((path) => path.length === 0)) return true;
     const rest = (node, branch) =>
@@ -2638,7 +2681,7 @@ function waiting(sourceCode, unreachable = new WeakSet()) {
  * 먼저 이행할 수 있으면 표시한 Promise가 정해지기 전에 끝나, 그 뒤의 거절을 기다리지 않는다. 그런 조합(과 가져온 저장소 도움)은 시한의
  * 거절로 끝날 수 있으므로, 그 거절이 시험 실패로 전파되는 자리에서만 센다: 거절을 성공으로 받는 `expect(…).rejects`·`.catch`·`then`의
  * 거절 처리기·`allSettled`를 거치면 세지 않고, try/catch로 받으면 거절이 나지 않은 길만 덮어 catch에서 다시 기다려야 한다
- * (#291 외부 리뷰 2회차 SPEC-1).
+ * (#291 외부 리뷰 2회차 SPEC-1). 함수 안에서 그렇게 기다리면 그 함수를 부른 결과도 같은 기준으로 본다(#291 외부 리뷰 3회차 SPEC-1).
  */
 const noUnawaitedLater = {
   meta: {
