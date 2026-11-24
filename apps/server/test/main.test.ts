@@ -18,6 +18,7 @@ import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
+import { within } from "@babojubot/process/test-support";
 import {
   awaitedLater,
   folderCleanup,
@@ -574,27 +575,19 @@ async function startOutcome(child: MainProcess) {
   }
 }
 
-/** 이미 붙여 둔 종료 관찰을 시한 안에서 기다린다. 시한은 기다리기 시작할 때부터 센다. */
+/**
+ * 이미 붙여 둔 종료 관찰을 시한 안에서 기다린다. 시한은 기다리기 시작할 때부터 센다. 실패하면 그때의 종료 상태와 출력 끝을
+ * 덧붙여 알린다.
+ */
 async function waitExit(child: MainProcess, ms: number): Promise<Exit> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      child.exited,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(
-              new Error(
-                `server ${child.pid} did not exit in ${ms}ms (exit code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(child.stdoutText().slice(-2000))} stderr=${JSON.stringify(child.stderrText().slice(-2000))}`
-              )
-            ),
-          ms
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  return within(child.exited, ms, `server ${child.pid} did not exit`).catch(
+    (error: unknown) => {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} (exit code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(child.stdoutText().slice(-2000))} stderr=${JSON.stringify(child.stderrText().slice(-2000))}`,
+        { cause: error }
+      );
+    }
+  );
 }
 
 /** 자식이 살아 있으면 끝내고, 이미 끝났으면 그 종료를 기다린다. 그룹 테스트는 남은 그룹까지 정리한다. */
@@ -609,25 +602,11 @@ async function stopMain(child: MainProcess, { group = false } = {}) {
     if (child.exitCode === null && child.signalCode === null) throw error;
   }
   // 폴더를 지우기 전에 stdio 닫힘까지 확인한다.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      child.closed,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () =>
-            reject(
-              new Error(
-                `server ${child.pid} did not close its output in ${killWaitMs}ms`
-              )
-            ),
-          killWaitMs
-        );
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
+  await within(
+    child.closed,
+    killWaitMs,
+    `server ${child.pid} did not close its output`
+  );
 }
 
 async function waitForPath(child: MainProcess, target: string) {

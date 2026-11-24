@@ -22,6 +22,7 @@ import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
+import { within } from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 import { attemptAll } from "@babojubot/contracts";
@@ -131,16 +132,11 @@ afterEach(async () => {
       spawned.length = 0;
       race = undefined;
     });
-    let limit: NodeJS.Timeout | undefined;
-    await Promise.race([
+    await within(
       Promise.allSettled(runs.splice(0)),
-      new Promise((_, reject) => {
-        limit = setTimeout(
-          () => reject(new Error("a run did not end within 10s after cleanup")),
-          10_000
-        );
-      }),
-    ]).finally(() => clearTimeout(limit));
+      10_000,
+      "a run did not end after cleanup"
+    );
   });
   // 실행이 모두 끝났을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 끝나지 않은 실행이
   // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다.

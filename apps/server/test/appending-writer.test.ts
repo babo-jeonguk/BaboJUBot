@@ -69,7 +69,7 @@ it("fails by name when an append in progress never finishes", async () => {
   await held.firstStarted;
   try {
     await expect(writer.stop()).rejects.toThrow(
-      "appends to run.log did not finish in 50ms"
+      "appends to run.log did not finish within 50 ms"
     );
   } finally {
     held.release();

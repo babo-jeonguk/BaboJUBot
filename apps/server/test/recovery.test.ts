@@ -469,27 +469,17 @@ async function crashAndRestart(
     });
   });
   // SIGKILL 뒤 종료가 보고되지 않으면 시험을 멈추지 않고 그 자식을 밝혀 실패한다.
-  const exitedWithin = async (ms: number) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        exited,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `crash server ${child.pid} did not exit in ${ms}ms after SIGKILL (exit code ${child.exitCode}, signal ${child.signalCode}): stderr=${JSON.stringify(stderr)}`
-                )
-              ),
-            ms
-          );
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
+  const exitedWithin = (ms: number) =>
+    within(
+      exited,
+      ms,
+      `crash server ${child.pid} did not exit after SIGKILL`
+    ).catch((error: unknown) => {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} (exit code ${child.exitCode}, signal ${child.signalCode}): stderr=${JSON.stringify(stderr)}`,
+        { cause: error }
+      );
+    });
   // 시험이 어디서 실패하든 서버 프로세스를 끄고 끝나기를 기다린다. 그 뒤에 같은 DB로 다시 띄워 복구를 본다.
   const orgId = await withCleanup(async (defer) => {
     defer(async () => {
@@ -498,18 +488,19 @@ async function crashAndRestart(
       await exitedWithin(10_000);
     });
     // 준비 줄은 조각나서 온다. 완전한 줄이 모이거나 프로세스가 끝나기를 기다리되 15초에서 멈춘다.
-    let startLimit: ReturnType<typeof setTimeout> | undefined;
-    const started = await Promise.race([
-      startLine.then(() => "line" as const),
-      exited.then(() => "exited" as const),
-      new Promise<"late">((resolve) => {
-        startLimit = setTimeout(() => resolve("late"), 15_000);
-      }),
-    ]).finally(() => clearTimeout(startLimit));
-    if (started === "late")
+    const started = await within(
+      Promise.race([
+        startLine.then(() => "line" as const),
+        exited.then(() => "exited" as const),
+      ]),
+      15_000,
+      "crash server was not ready"
+    ).catch((error: unknown) => {
       throw new Error(
-        `crash server was not ready in 15s: stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`
+        `${error instanceof Error ? error.message : String(error)}: stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`,
+        { cause: error }
       );
+    });
     if (started === "exited") {
       if (spawnError)
         throw new Error(`crash server could not start: ${spawnError.message}`);

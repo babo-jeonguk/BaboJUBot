@@ -6,7 +6,7 @@ import { probeEnding, runProbe, startProcess } from "./process.ts";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { killAndWait } from "@babojubot/process/testing";
 import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
-import { manualClock } from "@babojubot/process/test-support";
+import { manualClock, within } from "@babojubot/process/test-support";
 import { testFolders } from "./test-folders.ts";
 
 /**
@@ -143,15 +143,7 @@ it("finishes a run when its program ends without waiting on the clock for a chil
       frames.push(frame);
     },
   });
-  const exit = await Promise.race([
-    child.done,
-    new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new Error("the run did not finish within 20000 ms")),
-        20_000
-      )
-    ),
-  ]);
+  const exit = await within(child.done, 20_000, "the run did not finish");
   expect(frames).toEqual([{ n: 1 }]);
   expect(exit).toMatchObject({ code: 0, broken: false });
   await lifelines.closed("holder");
