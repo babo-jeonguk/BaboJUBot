@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { globSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  globSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { codeFormats } from "./test-files.mjs";
+import { importedSpecifiers } from "./module-imports.ts";
+import { codeFormatNames, codeFormats } from "./test-files.mjs";
 import { testSuites } from "./test-suites.ts";
 
 const workflow = parse(
@@ -790,4 +798,324 @@ test("runs every node:test suite through the counting runner and gives every Vit
       suite.name,
       `${suite.folder}/${suite.config}`
     );
+});
+
+/** 저장소 `base`의 스크립트가 (자기가 가져오는 저장소 파일을 거쳐) 가져오는 저장소 밖 패키지 이름. `node:` 기본 모듈은 뺀다. */
+function packagesImportedBy(base, script, seen = new Set()) {
+  if (seen.has(script)) return [];
+  seen.add(script);
+  const text = readFileSync(path.join(base, script), "utf8");
+  const specifiers = importedSpecifiers(script, text);
+  return specifiers.flatMap((specifier) => {
+    if (specifier.startsWith("node:")) return [];
+    if (!/^\.{1,2}\//.test(specifier)) return [specifier];
+    // 상대 경로는 ESM처럼 가져오는 파일에 대한 URL로 푼다. 없는 파일은 읽다가 실패한다.
+    const url = new URL(specifier, pathToFileURL(path.join(base, script)));
+    const file = path
+      .relative(base, fileURLToPath(url))
+      .split(path.sep)
+      .join("/");
+    return packagesImportedBy(base, file, seen);
+  });
+}
+
+/**
+ * 저장소 코드를 돌릴 수 있는 실행기. Node 자신(`node`, 파일을 돌림), Node·corepack이 주거나 pnpm/action-setup이 까는 패키지 관리자
+ * (`npm`·`npx`·`pnpm`·`pnpx`·`yarn`·`corepack`, package.json 스크립트와 패키지 실행 파일을 돌림), 저장소 코드를 바로 돌리는 TypeScript
+ * 실행기와 다른 JS 실행 환경(`tsx`·`ts-node`·`bun`·`bunx`·`deno`).
+ */
+const codeRunners = new Set([
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "pnpx",
+  "yarn",
+  "corepack",
+  "tsx",
+  "ts-node",
+  "bun",
+  "bunx",
+  "deno",
+]);
+const codeFile = new RegExp(`\\.(?:${codeFormatNames.join("|")})$`);
+
+/** 저장소 `base` 안 코드 파일이면 그 경로(`./` 접두 허용), 아니면 undefined. */
+function repositoryFile(base, word) {
+  const file = path.posix.normalize(word.replace(/^\.\//, ""));
+  return !file.startsWith("../") &&
+    codeFile.test(file) &&
+    existsSync(path.join(base, file))
+    ? file
+    : undefined;
+}
+
+/**
+ * `words[at]`이 `node`일 때 그 명령이 돌리는 저장소 스크립트와 node가 가져간 낱말의 끝(`end`), 또는 읽지 못하면 undefined. 아는
+ * 모양 `node <저장소 상대 경로 스크립트> [인수…]`만 읽는다. 스크립트 앞에 node 옵션(`-`로 시작하는 낱말)이 하나라도 있으면 무엇을
+ * 불러오는지(선적재, 글로 넣는 코드, 환경 파일 등) 읽지 않는다. 스크립트 뒤의 낱말은 node가 아니라 그 스크립트가 받는다.
+ */
+function nodeTargets(words, at, base) {
+  const entry = words[at + 1];
+  const file =
+    entry === undefined || entry.startsWith("-")
+      ? undefined
+      : repositoryFile(base, entry);
+  return file ? { targets: [{ script: file }], end: at + 2 } : undefined;
+}
+
+/**
+ * 단계 명령 `run`이 부르는 실행기마다: 읽어 낸 저장소 스크립트(`{ script }`), 또는 무엇을 돌리는지 읽지 못한 그 줄(`{ unread }`).
+ * 셸을 해석하지 않는다: 줄을 셸 구분 기호(공백·`|`·`;`·`&`·괄호·`$(`·백틱)로 낱말로 나눠 실행기 이름인 낱말을 찾는다. `node`는 아는
+ * 모양만 읽는다(nodeTargets). 다른 실행기는 대상을 읽지 않는다(`pnpm install`은 설치 자체).
+ */
+function runnersIn(run, base) {
+  /** @type {({ script: string } | { unread: string })[]} */
+  const found = [];
+  for (const line of run.split("\n")) {
+    const words = line
+      .split(/\$\(|[\s|;&()`]+/)
+      .map((word) => word.replace(/^["']+|["']+$/g, ""))
+      .filter(Boolean);
+    let unread = false;
+    // node가 진입점으로 가져간 낱말은 실행기로 다시 보지 않는다.
+    let taken = 0;
+    words.forEach((word, at) => {
+      if (at < taken || !codeRunners.has(word)) return;
+      if (word === "pnpm" && words[at + 1] === "install") return;
+      const read = word === "node" ? nodeTargets(words, at, base) : undefined;
+      if (read) {
+        found.push(...read.targets);
+        taken = read.end;
+      } else unread = true;
+    });
+    // 한 줄에서 읽지 못한 실행기가 여럿이어도 그 줄을 한 번 알린다.
+    if (unread) found.push({ unread: line.trim() });
+  }
+  return found;
+}
+
+/**
+ * workflow에서 설치 전에 저장소 `base`의 패키지를 가져오는 스크립트를 돌리는 단계, 또는 설치 전에 무엇을 돌리는지 읽지 못한 실행기를
+ * 부르는 단계. 실행기를 부르는 단계에 NODE_OPTIONS가 있거나(workflow·job·그 단계의 env, 그 단계의 셸) 그 job의 앞 단계가
+ * `$GITHUB_ENV`에 쓰면 node가 무엇을 불러오는지 읽지 않는다. 읽지 못한 것을 "패키지 없음"으로 접지 않는다.
+ */
+function installProblems(workflow, base) {
+  const problems = [];
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    const steps = job.steps ?? [];
+    steps.forEach((each, index) => {
+      const installed = steps
+        .slice(0, index)
+        .some((before) => /^pnpm install\b/.test(before.run ?? ""));
+      if (installed) return;
+      // 한 단계가 부르는 실행기를 모두 본다.
+      const runners = runnersIn(each.run ?? "", base);
+      if (runners.length > 0) {
+        const environment =
+          [workflow.env, job.env, each.env].some(
+            (env) => env?.NODE_OPTIONS !== undefined
+          ) || /NODE_OPTIONS/.test(each.run ?? "")
+            ? "NODE_OPTIONS is set"
+            : steps
+                  .slice(0, index)
+                  .some((before) => /GITHUB_ENV/.test(before.run ?? ""))
+              ? "a step before it writes $GITHUB_ENV"
+              : undefined;
+        if (environment)
+          problems.push(
+            `${id}: cannot tell what node loads (${environment}), and no pnpm install comes before it`
+          );
+      }
+      for (const runner of runners) {
+        if ("unread" in runner) {
+          problems.push(
+            `${id}: cannot tell what "${runner.unread}" runs, and no pnpm install comes before it`
+          );
+          continue;
+        }
+        const packages = [...new Set(packagesImportedBy(base, runner.script))];
+        if (packages.length > 0)
+          problems.push(
+            `${id}: ${runner.script} imports ${packages.join(", ")} without pnpm install before it`
+          );
+      }
+    });
+  }
+  return problems;
+}
+
+// 의존성을 설치하지 않는 job(판정만 하는 가벼운 job)이 돌리는 저장소 스크립트는 저장소 밖 패키지를 가져오지 않아야 한다. 가져오면 그
+// job에서만 패키지를 찾지 못하고 실패한다(#292 외부 리뷰 1회차 CI run 45297151227: check-e2e-report.mjs → exit-after-output.ts →
+// @babojubot/contracts). 스크립트의 가져오기를 구문 트리로 따라가, 패키지가 필요하면 그 단계 앞에 설치가 있어야 한다.
+test("a job installs the packages before it runs a repository script that imports them", () => {
+  assert.deepEqual(installProblems(workflow, root), []);
+});
+
+// 한 단계가 여러 스크립트를 돌리면 모두 본다. 따라갈 수 없는 불러오기(글자가 아닌 import() 등)는 "패키지 없음"으로 접지 않고 멈춘다
+// (#291 parent 점검의 같은 모양 수색).
+test("the install guard reads every script a step runs and fails on an import it cannot follow", (t) => {
+  const base = mkdtempSync(path.join(tmpdir(), "babojubot-install-guard-"));
+  t.after(() => removeFolder(base));
+  mkdirSync(path.join(base, "scripts"));
+  for (const [file, text] of Object.entries({
+    "first.mjs": 'import "node:path";\n',
+    "second.mjs": 'import "yaml";\n',
+    "computed.mjs": 'const name = "yaml";\nawait import(name);\n',
+  }))
+    writeFileSync(path.join(base, "scripts", file), text);
+  const job = (run) => ({ jobs: { judge: { steps: [{ run }] } } });
+  assert.deepEqual(
+    installProblems(
+      job("node scripts/first.mjs\nnode scripts/second.mjs"),
+      base
+    ),
+    ["judge: scripts/second.mjs imports yaml without pnpm install before it"]
+  );
+  assert.throws(() => installProblems(job("node scripts/computed.mjs"), base), {
+    name: "Error",
+    message:
+      "scripts/computed.mjs loads a module through import() with a name that is not a string literal, which this check does not follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)",
+  });
+});
+
+// 설치가 앞서지 않은 단계가 저장소 코드를 돌릴 수 있는 실행기를 부르면, 그 대상을 읽어 내거나 판정할 수 없다고 보고한다. 읽지 못한
+// 실행 모양을 "패키지 없음"으로 접지 않는다(#292 parent 점검).
+test("the install guard reads node's script past ./, and reports a runner whose target it cannot read", (t) => {
+  const base = mkdtempSync(path.join(tmpdir(), "babojubot-install-guard-"));
+  t.after(() => removeFolder(base));
+  mkdirSync(path.join(base, "scripts"));
+  writeFileSync(
+    path.join(base, "scripts", "first.mjs"),
+    'import "node:path";\n'
+  );
+  writeFileSync(path.join(base, "scripts", "second.mjs"), 'import "yaml";\n');
+  const job = (run) => ({ jobs: { judge: { steps: [{ run }] } } });
+  const imported = [
+    "judge: scripts/second.mjs imports yaml without pnpm install before it",
+  ];
+  assert.deepEqual(
+    installProblems(job("node ./scripts/second.mjs"), base),
+    imported
+  );
+  for (const run of [
+    "pnpm run check",
+    "pnpm exec vitest run",
+    "npx tsx scripts/first.mjs",
+    "tsx scripts/first.mjs",
+    'node -e "process.exit(0)"',
+  ])
+    assert.deepEqual(
+      installProblems(job(run), base),
+      [
+        `judge: cannot tell what "${run}" runs, and no pnpm install comes before it`,
+      ],
+      run
+    );
+  // 저장소 코드를 돌리지 않는 명령과, 설치 뒤의 실행기는 보지 않는다.
+  assert.deepEqual(
+    installProblems(job("echo done\nnode scripts/first.mjs"), base),
+    []
+  );
+  assert.deepEqual(
+    installProblems(
+      {
+        jobs: {
+          judge: {
+            steps: [
+              { run: "pnpm install --frozen-lockfile" },
+              { run: "pnpm run check" },
+            ],
+          },
+        },
+      },
+      base
+    ),
+    []
+  );
+});
+
+// node는 아는 모양(`node <저장소 스크립트> [인수…]`)만 따라간다. node 옵션, NODE_OPTIONS, 앞 단계의 $GITHUB_ENV 쓰기는 node가 무엇을
+// 불러오는지 바꿀 수 있어 읽지 못한다고 보고한다(#292 정리: node 옵션 해석을 흉내 내지 않는다).
+test("the install guard reads only node <script>, and fails on node options, NODE_OPTIONS or an earlier $GITHUB_ENV write", (t) => {
+  const base = mkdtempSync(path.join(tmpdir(), "babojubot-install-guard-"));
+  t.after(() => removeFolder(base));
+  mkdirSync(path.join(base, "scripts"));
+  writeFileSync(
+    path.join(base, "scripts", "first.mjs"),
+    'import "node:path";\n'
+  );
+  const job = (run) => ({ jobs: { judge: { steps: [{ run }] } } });
+  for (const run of [
+    "node --import ./scripts/first.mjs scripts/first.mjs",
+    "node -r ./scripts/first.mjs scripts/first.mjs",
+    "node --test-reporter=tap scripts/first.mjs",
+    "node --env-file=.env scripts/first.mjs",
+    "node --eval=1",
+  ])
+    assert.deepEqual(
+      installProblems(job(run), base),
+      [
+        `judge: cannot tell what "${run}" runs, and no pnpm install comes before it`,
+      ],
+      run
+    );
+  // 스크립트 뒤의 낱말은 그 스크립트의 인수다.
+  assert.deepEqual(
+    installProblems(job("node scripts/first.mjs --full"), base),
+    []
+  );
+  const run = "node scripts/first.mjs";
+  const environment = (reason) => [
+    `judge: cannot tell what node loads (${reason}), and no pnpm install comes before it`,
+  ];
+  for (const flow of [
+    {
+      env: { NODE_OPTIONS: "--no-warnings" },
+      jobs: { judge: { steps: [{ run }] } },
+    },
+    { jobs: { judge: { env: { NODE_OPTIONS: "" }, steps: [{ run }] } } },
+    {
+      jobs: {
+        judge: { steps: [{ run, env: { NODE_OPTIONS: "--no-warnings" } }] },
+      },
+    },
+    {
+      jobs: { judge: { steps: [{ run: `NODE_OPTIONS=--import=tsx ${run}` }] } },
+    },
+  ])
+    assert.deepEqual(
+      installProblems(flow, base),
+      environment("NODE_OPTIONS is set"),
+      JSON.stringify(flow)
+    );
+  assert.deepEqual(
+    installProblems(
+      {
+        jobs: {
+          judge: {
+            steps: [
+              {
+                run: 'echo "NODE_OPTIONS=--require=./preload.cjs" >> "$GITHUB_ENV"',
+              },
+              { run },
+            ],
+          },
+        },
+      },
+      base
+    ),
+    environment("a step before it writes $GITHUB_ENV")
+  );
+  // 실행기를 부르지 않는 단계에는 닿지 않는다.
+  assert.deepEqual(
+    installProblems(
+      {
+        env: { NODE_OPTIONS: "--no-warnings" },
+        jobs: { judge: { steps: [{ run: "echo done" }] } },
+      },
+      base
+    ),
+    []
+  );
 });

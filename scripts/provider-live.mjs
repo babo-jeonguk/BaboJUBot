@@ -24,6 +24,7 @@ import {
   usageFacts,
   verdict,
 } from "./live/provider-scenes.mjs";
+import { afterOutput } from "./exit-after-output.ts";
 
 const [provider, consent, ...flags] = process.argv.slice(2);
 const factories = {
@@ -47,19 +48,19 @@ if (
   console.error(
     "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-live.mjs <claude|codex|opencode|antigravity> --allow-live [--record] [--scenes=a,b]"
   );
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 // 장면·인자 오타는 기록 폴더를 만들거나 모델을 부르기 전에 거부한다. 연결의 기능이 필요한 장면은 연결을 만든 뒤 다시 본다.
-const refuse = (check) => {
+const refuse = async (check) => {
   try {
     return check();
   } catch (error) {
     if (!(error instanceof ScenesRefused)) throw error;
     console.error(error.message);
-    process.exit(2);
+    process.exit(await afterOutput(2));
   }
 };
-refuse(() => parseScenes(flags, null));
+await refuse(() => parseScenes(flags, null));
 const home = path.resolve(process.env.BABOJUBOT_HOME);
 const recordings =
   process.env.BABOJUBOT_RECORDINGS ?? path.resolve(".scratch/recordings");
@@ -67,7 +68,7 @@ const model =
   process.env.BABOJUBOT_SMOKE_MODEL ?? (provider === "claude" ? "haiku" : null);
 if (!model && provider !== "opencode") {
   console.error("Set BABOJUBOT_SMOKE_MODEL to the cheapest available model.");
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 const mode =
   process.env.BABOJUBOT_CODEX_MODE === "exec" ? "exec" : "app-server";
@@ -91,13 +92,13 @@ const connection = factories[provider]({
   command,
   ...(provider === "codex" ? { mode } : {}),
 });
-const chosen = refuse(() =>
+const chosen = await refuse(() =>
   parseScenes(flags, connection.adapter.capabilities)
 );
 const stop = new AbortController();
 const ready = await connection.adapter.checkReadiness(stop.signal);
 console.log(JSON.stringify({ readiness: ready }));
-if (ready.status === "not_ready") process.exit(1);
+if (ready.status === "not_ready") process.exit(await afterOutput(1));
 
 const busy = path.resolve("scripts/live/busy.mjs");
 // 실행이 끝나기를 기다리는 상한. 가장 긴 장면 명령(45초)과 모델의 답을 감당한다.
@@ -461,4 +462,4 @@ const passedAll = await withCheckServer(
   },
   runScenes
 );
-process.exit(passedAll ? 0 : 1);
+process.exit(await afterOutput(passedAll ? 0 : 1));

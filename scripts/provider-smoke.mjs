@@ -15,6 +15,7 @@ import {
 import { openEphemeralDatabase } from "@babojubot/db";
 import { startServer } from "@babojubot/server";
 import { withCheckServer } from "./live/check-server.mjs";
+import { afterOutput } from "./exit-after-output.ts";
 const [provider, consent] = process.argv.slice(2);
 const factories = {
   claude: createClaudeProvider,
@@ -34,7 +35,7 @@ if (
   console.error(
     "Requires product login and explicit permission to use subscription/model quota."
   );
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 const model =
   process.env.BABOJUBOT_SMOKE_MODEL ?? (provider === "claude" ? "haiku" : null);
@@ -42,7 +43,7 @@ if (!model && provider !== "opencode") {
   console.error(
     "Set BABOJUBOT_SMOKE_MODEL to the cheapest model available to your product account after checking its current catalog/pricing."
   );
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 const connection = factories[provider]({
   dataDir: path.resolve(process.env.BABOJUBOT_HOME),
@@ -56,7 +57,7 @@ const connection = factories[provider]({
 const controller = new AbortController();
 const ready = await connection.adapter.checkReadiness(controller.signal);
 console.log("readiness:", ready);
-if (ready.status === "not_ready") process.exit(1);
+if (ready.status === "not_ready") process.exit(await afterOutput(1));
 /** 서버를 띄운다. 임시 폴더·DB와 함께 withCheckServer가 확인 뒤에 모두 정리한다. */
 const startSmokeServer = ({ database, workspace }) =>
   startServer({

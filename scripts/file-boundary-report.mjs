@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { afterOutput } from "./exit-after-output.ts";
 
 export const caseIds = [
   ...Array.from({ length: 37 }, (_, i) => `C${String(i + 1).padStart(2, "0")}`),
@@ -158,7 +159,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const required = (option("require") ?? "").split(",").filter(Boolean);
   if (required.length === 0) {
     console.error("usage: --require <volume,...>");
-    process.exit(2);
+    process.exit(await afterOutput(2));
   }
   const load = (file) =>
     existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;

@@ -333,6 +333,8 @@ async function killServerAndExit() {
       console.log(
         `a server tree could not be confirmed stopped and may remain: ${result.reason instanceof Error ? result.reason.message : result.reason}`
       );
+  // 비상 종료: 출력이 다 닿기를 기다리지 않는다(afterOutput을 쓰지 않는다). 멈춤 시한이 지나 자기 시한 + 유예 안에 끝나는 것을
+  // 지키는 자리라, 표준 출력을 아무도 읽지 않을 때 출력을 기다리면 그 시한을 넘긴다.
   process.exit(1);
 }
 

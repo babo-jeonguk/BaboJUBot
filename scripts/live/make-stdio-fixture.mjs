@@ -5,6 +5,7 @@
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { orIfUnreadable } from "@babojubot/contracts";
+import { afterOutput } from "../exit-after-output.ts";
 
 const [provider, output, ...directories] = process.argv.slice(2);
 const versions = {
@@ -19,7 +20,7 @@ if (!provider || !Object.hasOwn(versions, provider) || !output) {
   console.error(
     "Usage: node scripts/live/make-stdio-fixture.mjs <claude|claude-background|codex-app-server|codex-exec|antigravity> <output file> <recording folder...>"
   );
-  process.exit(2);
+  process.exit(await afterOutput(2));
 }
 const keptStrings = new Set([
   "type",
@@ -115,7 +116,7 @@ if (provider === "claude-background") {
     ) + "\n"
   );
   console.log(`${provider}: ${steps.length} steps`);
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 const pick = {
   claude: (frames) =>
