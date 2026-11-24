@@ -66,7 +66,9 @@ async function holder(label: string, body = keep) {
   const folder = await folders.make("babojubot-launch-stop-");
   const pidFile = path.join(folder, "pid");
   folders.own(async () => {
-    if (lifelines.names().includes(name) && lifelines.open(name))
+    // 연결은 시험의 이벤트 루프가 처리한 뒤에야 보이므로 먼저 기다린다(오지 않으면 그 이유로 실패). 열려 있음을 본 직후에만 끈다.
+    await lifelines.connected(name);
+    if (lifelines.open(name))
       killUnlessGone(Number(await readFile(pidFile, "utf8")));
     await lifelines.closed(name);
   }, name);

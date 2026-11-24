@@ -23,6 +23,7 @@ import {
 } from "./launch.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { supervisorProtocol } from "./supervisor.ts";
+import { endChild } from "./process-test-support.ts";
 import { killUnlessGone } from "./test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -293,9 +294,7 @@ describe("launchTree", () => {
           env: { PATH: process.env.PATH, BABOJUBOT_PROCESS_LEASE: marker },
         }
       );
-      onTestFinished(() => {
-        killUnlessGone(stray.pid!);
-      });
+      onTestFinished(() => endChild(stray));
       await lifelines.connected(outside);
       server.killLeader();
       await server.exited;
@@ -423,6 +422,29 @@ describe("launchTree without a supervisor", () => {
     await chmod(file, 0o755);
     return file;
   }
+  /**
+   * 셸 가짜 실행기가 띄우는 Node 보유 프로그램의 셸 명령(#288 parent 점검: 번호 신원). 그 프로그램은 자기 번호를 파일에 남긴 뒤 연결을
+   * 쥐고, 물려받은 핸들(제어 통로)도 그대로 쥔다. 정리는 시험이 끝날 때 그 연결이 열려 있음을 본 직후에만 그 번호로 끄고, 끝은 연결의
+   * 닫힘으로 본다. `sleep`처럼 번호만 남기면 그 번호가 아직 그 프로그램인지 볼 수단이 없다.
+   */
+  async function shellHolder(label: string) {
+    const name = unique(label);
+    const pidFile = path.join(dataDir, `${name}.pid`);
+    const file = path.join(dataDir, `${name}.cjs`);
+    await writeFile(
+      file,
+      `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(name)} ${keep}`
+    );
+    // 시험이 `spawnSync`로 막혀 있는 동안 온 연결은 그 뒤에야 처리되므로, 정리는 먼저 연결을 기다린다(오지 않으면 그 이유로 실패).
+    onTestFinished(async () => {
+      await lifelines.connected(name);
+      if (lifelines.open(name))
+        killUnlessGone(Number(await readFile(pidFile, "utf8")));
+      await lifelines.closed(name);
+    });
+    const quote = (text: string) => `'${text.replaceAll("'", `'\\''`)}'`;
+    return `${quote(process.execPath)} ${quote(file)}`;
+  }
   const tryPrepare = (file: string) =>
     separately(`import { launchTree, prepareSupervisor } from ${launchModule};
        console.log(JSON.stringify(await prepareSupervisor({ file: ${JSON.stringify(file)} })));`);
@@ -449,13 +471,10 @@ describe("launchTree without a supervisor", () => {
   it.skipIf(windows)(
     "gives up a trial at its time limit when a child keeps the control channel open",
     async () => {
-      const pidFile = path.join(dataDir, "channel-holder-pid");
-      folders.own(async () => {
-        killUnlessGone(Number(await readFile(pidFile, "utf8")));
-      }, "the child that holds the control channel");
+      const holder = await shellHolder("channel-holder");
       const file = await fakeSupervisor(
         "leaky-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! > ${JSON.stringify(pidFile)}\nexit 0\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\n${holder} &\nexit 0\n`
       );
       const [prepared] = tryPrepare(file);
       expect(JSON.parse(prepared!)).toEqual({
@@ -471,14 +490,12 @@ describe("launchTree without a supervisor", () => {
   it.skipIf(windows)(
     "confirms the supervisor's end after the trial's time limit, and says when it cannot",
     async () => {
-      const pidFile = path.join(dataDir, "stuck-supervisor-pids");
-      folders.own(async () => {
-        for (const pid of (await readFile(pidFile, "utf8")).trim().split(/\s+/))
-          killUnlessGone(Number(pid));
-      }, "the stuck supervisor and its child");
+      // 실행기의 자식과, 끝나지 않는 실행기 자신(셸이 그 프로그램으로 바뀐다). 둘 다 연결을 쥐어 정리가 신원을 보고 끈다.
+      const child = await shellHolder("stuck-supervisor-child");
+      const supervisor = await shellHolder("stuck-supervisor");
       const file = await fakeSupervisor(
         "stuck-supervisor",
-        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\nsleep 600 &\necho $! >> ${JSON.stringify(pidFile)}\necho $$ >> ${JSON.stringify(pidFile)}\nexec sleep 600\n`
+        `${say(`babojubot-supervisor ${supervisorProtocol} -`)}\n${child} &\nexec ${supervisor}\n`
       );
       vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(() => true);
       onTestFinished(async () => {

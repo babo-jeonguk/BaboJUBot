@@ -1,10 +1,12 @@
 import type { ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { vi } from "vitest";
 import { killUnlessGone, processAlive } from "./test-cleanup.ts";
 import { attemptAll } from "@babojubot/contracts";
 import { psField } from "./ps.ts";
 import { statFields, statRuns } from "./proc-stat.ts";
+import { within } from "./test-support.ts";
 
 /**
  * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·시한이면 실패한다.
@@ -117,6 +119,18 @@ export async function untilExited(pids: number[], timeoutMs = 5000) {
     }),
     "processes did not all end"
   );
+}
+
+/**
+ * 시험이 띄운 자식을 끝내고 그 끝(`exit`)을 상한 안에서 확인한다(#288 parent 점검: 번호 신원). Node가 그 자식의 끝을 아직 보지
+ * 않았을 때만 SIGKILL을 보낸다: Node는 끝을 본 자식에는 신호하지 않으므로, 번호가 다른 프로그램에 다시 주어져도 그 프로그램에 가지
+ * 않는다. 번호로 끄는 `killAndWait`는 그 번호가 아직 그 프로세스임을 같은 순간에 본 곳에서만 쓴다.
+ */
+export async function endChild(child: ChildProcess, ms = 10_000) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const ended = once(child, "exit");
+  child.kill("SIGKILL");
+  await within(ended, ms, `process ${child.pid} did not end after SIGKILL`);
 }
 
 /** 시험 정리: 모두에게 SIGKILL을 보내고 끝날 때까지 기다린다. 한 대상에 보내지 못해도 나머지에 보내고 기다린 뒤 함께 알린다. */

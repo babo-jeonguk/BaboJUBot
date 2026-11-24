@@ -56,7 +56,9 @@ describe("runCommand", () => {
     const name = unique("holder");
     // 폴더를 지우기 전에 그 자식을 끄고 끝나기를 기다린다. 연결이 열려 있으면 그 번호의 프로세스는 아직 그 자식이다.
     folders.own(async () => {
-      if (lifelines.names().includes(name) && lifelines.open(name))
+      // 연결은 시험의 이벤트 루프가 처리한 뒤에야 보이므로 먼저 기다린다(오지 않으면 그 이유로 실패). 열려 있음을 본 직후에만 끈다.
+      await lifelines.connected(name);
+      if (lifelines.open(name))
         killUnlessGone(Number(await readFile(pidFile, "utf8")));
       await lifelines.closed(name);
     }, "the child holding the output");
