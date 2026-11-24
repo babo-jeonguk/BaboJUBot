@@ -290,3 +290,40 @@ test("fails as an unconfirmed end when the output does not end after the exit", 
   );
   stdout.destroy();
 });
+
+/** 이벤트 루프를 붙잡는 타이머 수. */
+const liveTimers = () =>
+  process.getActiveResourcesInfo().filter((kind) => kind === "Timeout").length;
+
+// 시작 줄로 끝난 대기는 그 뒤 서버가 끝나도 아무 자원도 새로 잡지 않는다. Promise 구독은 풀 수 없어 끝난 뒤에도 불린다(#291 외부
+// 리뷰 3회차 STD-4).
+test("a wait that took the ready line starts no timer when the server exits afterwards", async () => {
+  const { stdout, text } = fakeOutput();
+  let exit!: (ended: {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  }) => void;
+  const exited = new Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  }>((resolve) => (exit = resolve));
+  const ready = waitForReadyLine(
+    { stdout },
+    exited,
+    text,
+    "fake server",
+    text,
+    {
+      readyTimeoutMs: 10_000,
+      outputEndMs: 10_000,
+    }
+  );
+  stdout.write("BaboJUBot server on http://127.0.0.1:1234 (fake)\n");
+  await expect(ready).resolves.toBe("http://127.0.0.1:1234");
+  const before = liveTimers();
+  exit({ code: 0, signal: null });
+  // 대기가 먼저 건 구독이 이 await보다 먼저 불린다.
+  await exited;
+  expect(liveTimers()).toBe(before);
+  stdout.destroy();
+});
