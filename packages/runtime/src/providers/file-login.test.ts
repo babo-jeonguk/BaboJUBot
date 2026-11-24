@@ -7,7 +7,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { hasErrorCode } from "@babojubot/contracts";
+import {
+  attemptEach,
+  combinedFailure,
+  hasErrorCode,
+} from "@babojubot/contracts";
+import { fileLinks } from "@babojubot/process/test-support";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { fileLogin, type FileLoginShape } from "./file-login.ts";
 import { readRegularFile } from "./regular-file.ts";
@@ -69,7 +74,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       const missed = race.onOpenMissing;
       if (missed && hasErrorCode("ENOENT")(error)) {
         race.onOpenMissing = undefined;
-        await missed();
+        // 주입한 동작이 실패해도 원래 열기 실패를 잃지 않는다. 둘을 함께 던진다.
+        const failures = await attemptEach([missed]);
+        if (failures.length)
+          throw combinedFailure(
+            [error, ...failures],
+            "the open failed and the hook injected at that moment failed too"
+          );
       }
       throw error;
     }
@@ -253,7 +264,8 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
   // 격리를 끈 실행은 조직 자리의 자리 표시를 지우고 연결의 로그인 링크를 둔다. 자리 표시인지 확인한 뒤 그 이름에 그 조직의
   // 컨테이너가 다른 파일을 두면, 그 파일은 확인한 것이 아니므로 지우지 않는다(#286 항목 8과 같은 모양). 링크를 둘 때 그 자리의
   // 보통 파일은 연결 폴더의 set-aside로 옮겨진다.
-  it.skipIf(windows)(
+  // 링크를 만들 권한이 없는 Windows에서는 이유와 함께 건너뛴다. CI는 필수로 정한다(`fileLinks`, #286 항목 16).
+  it.skipIf(!fileLinks())(
     "does not remove a file put in place of the stand-in after it was checked, when a host run links the login",
     async () => {
       const root = await folders.make("babojubot-file-login-");
