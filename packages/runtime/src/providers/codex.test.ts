@@ -9,9 +9,14 @@ import type { Clock } from "@babojubot/process";
 import { manualClock } from "@babojubot/process/test-support";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
-import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
+import {
+  attemptEach,
+  combinedFailure,
+  hasErrorCode,
+  orIfMissing,
+} from "@babojubot/contracts";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
-import { killUnlessGone, processAlive } from "@babojubot/process/test-cleanup";
+import { killUnlessGone } from "@babojubot/process/test-cleanup";
 import { reportedPid } from "@babojubot/process/test-support";
 const folders = testFolders();
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
@@ -464,14 +469,18 @@ describe("one app-server connection per call (#145)", () => {
     const sent = async () =>
       (await lines()).filter((line) => line.pid === undefined);
     const methods = async () => (await sent()).map((line) => line.method);
-    /** The programs this provider started that are still running. */
-    const alive = async () =>
+    /**
+     * 이 프로바이더가 띄운 프로그램이 쥔 연결의 이름. 프로그램은 연결을 쥔 뒤에만 자기 번호를 기록하므로 기록된 프로그램마다 연결이
+     * 있다. 살아 있음·끝남은 이 연결로 보고, 번호는 정리의 신호를 보낼 곳으로만 쓴다.
+     */
+    const programs = async () =>
       (await lines())
         .filter((line) => line.pid !== undefined)
-        .map((line) => line.pid as number)
-        .filter(processAlive);
-    /** Whether any program this provider started is still running. */
-    const running = async () => (await alive()).length > 0;
+        .map((line) => `${prefix}${line.pid}`);
+    /** 띄운 프로그램이 모두 끝났다: 기록된 프로그램마다 연결이 닫힌 것을 상한 안에서 본다. */
+    const allEnded = async () => {
+      for (const name of await programs()) await lifelines.closed(name);
+    };
     /**
      * Waits until the program has received `count` requests of `method`. The bound covers starting the program on a slow machine;
      * a handshake that never finishes fails here, not as the limit under test.
@@ -495,28 +504,24 @@ describe("one app-server connection per call (#145)", () => {
     if (held.length)
       folders.own(async () => {
         await Promise.all(held.map(release));
-        const ended = await expect
-          .poll(running, { timeout: 10_000 })
-          .toBe(false)
-          .then(
-            () => true,
-            () => false
-          );
-        if (ended) return;
-        // 연결이 열려 있음을 본 직후(사이에 기다림 없이)에만 그 이름의 번호로 끄고, 끝은 연결의 닫힘으로 본다.
-        const left = lifelines
-          .names()
-          .filter((name) => name.startsWith(prefix) && lifelines.open(name));
-        for (const name of left)
-          killUnlessGone(
-            reportedPid(name.slice(prefix.length), `lifeline ${name}`)
-          );
+        const failures = await attemptEach([allEnded]);
+        if (failures.length === 0) return;
+        // 끝나지 않은 프로그램은 그 연결이 열려 있음을 본 직후(사이에 기다림 없이)에만 그 이름의 번호로 끄고, 끝은 연결의 닫힘으로 본다.
+        const left: string[] = [];
+        for (const name of await programs())
+          if (lifelines.open(name)) {
+            left.push(name);
+            killUnlessGone(
+              reportedPid(name.slice(prefix.length), `lifeline ${name}`)
+            );
+          }
         for (const name of left) await lifelines.closed(name);
-        throw new Error(
+        throw combinedFailure(
+          failures,
           `scripted programs ${left.join(", ")} still ran after their held answers were let go; stopped them`
         );
       }, "held scripted answers");
-    return { provider, sent, methods, running, arrived, release };
+    return { provider, sent, methods, allEnded, arrived, release };
   }
   /** Whether `promise` has settled by now. Settling is a step the test can see; time passing is not. */
   const settled = async (promise: Promise<unknown>) =>
@@ -558,7 +563,7 @@ describe("one app-server connection per call (#145)", () => {
         "model/list",
       ]);
       expect(sent[3]!.params.cursor).toBe("next");
-      expect(await t.running()).toBe(false);
+      await t.allEnded();
     });
 
     it.each([
@@ -579,7 +584,7 @@ describe("one app-server connection per call (#145)", () => {
           "model/list",
           "model/list",
         ]);
-        expect(await t.running()).toBe(false);
+        await t.allEnded();
       }
     );
 
@@ -613,7 +618,7 @@ describe("one app-server connection per call (#145)", () => {
         "model/list",
         "model/list",
       ]);
-      expect(await t.running()).toBe(false);
+      await t.allEnded();
     });
 
     it("stops at once when cancelled while waiting for a page", async () => {
@@ -626,7 +631,7 @@ describe("one app-server connection per call (#145)", () => {
       cancel.abort();
       // The default limit (60 s) is past the test limit, so returning at all is returning at once.
       expect(await listed).toEqual([]);
-      expect(await t.running()).toBe(false);
+      await t.allEnded();
     });
   });
 
@@ -700,7 +705,7 @@ describe("one app-server connection per call (#145)", () => {
         "initialized",
         "thread/start",
       ]);
-      expect(await t.running()).toBe(false);
+      await t.allEnded();
     });
 
     it("fails at once, not after the request limit, when the program dies while a request waits", async () => {
@@ -712,7 +717,7 @@ describe("one app-server connection per call (#145)", () => {
         emit: async () => {},
       });
       expect(result.stopReason).toBe("failed");
-      expect(await t.running()).toBe(false);
+      await t.allEnded();
     });
 
     it("keeps the run when a steer goes unanswered, and does not send the steer again", async () => {
@@ -954,7 +959,7 @@ describe("one app-server connection per call (#145)", () => {
           expect(result.stopReason).toBe(
             ending === "cancel" ? "cancelled" : "failed"
           );
-          expect(await t.running()).toBe(false);
+          await t.allEnded();
         }
       );
     });
@@ -1033,7 +1038,7 @@ describe("one app-server connection per call (#145)", () => {
           "thread/resume",
         ]);
         expect(w.progress).toEqual([]);
-        expect(await t.running()).toBe(false);
+        await t.allEnded();
       }
     );
 
@@ -1060,7 +1065,7 @@ describe("one app-server connection per call (#145)", () => {
         expect(methods).not.toContain("thread/start");
         expect(methods).not.toContain("turn/start");
         expect(w.progress).toEqual([]);
-        expect(await t.running()).toBe(false);
+        await t.allEnded();
         expect(w.late()).toBe(0);
       }
     );
