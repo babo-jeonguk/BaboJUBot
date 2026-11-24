@@ -665,47 +665,32 @@ describe("server start recovery barrier", () => {
     const [early, late] = await leftRunning(database.db, 2);
     const runtime = countingRuntime();
     // 뒤쪽 실행 시도의 행을 붙잡아 그 복구 저장을 늦춘다.
-    const held = createGate();
-    const holding = holdRow(database.db, late!.runId, held);
-    await held.reached;
-    // 서버는 복구가 끝나기 전에 듣기 시작한다. 시작이 끝나기 전에 그 주소가 필요하므로, 포트 0에서 듣게 하고 실제로 연 소켓의
-    // 주소를 읽는다.
-    const listening = nextHttpServerPort();
-    const starting = startServer({
-      db: database.db,
-      port: 0,
-      runtime: runtime.adapter,
-    });
-    const port = await within(
-      Promise.race([listening, starting.then(() => listening)]),
-      eventuallyMs,
-      "the server did not start listening"
+    const { stream, http } = await startWhileRowHeld(
+      database.db,
+      late!.runId,
+      () =>
+        startServer({ db: database!.db, port: 0, runtime: runtime.adapter }),
+      async (base) => {
+        const http = api(() => base);
+        await until(
+          async () => (await runStatus(early!.runId)) === "server_restart"
+        );
+        const stream = await listen(base);
+        // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
+        await http.say(early!.organizationId, "복구 중에 보낸 메시지");
+        // 시간을 기다리지 않는다. 복구가 끝나기 전의 촉진은 응답 전에 그 자리에서 버려지고(`kick`), 메시지의 Event는 응답 전에
+        // 나간다. 그래서 응답과 이 연결의 순서 표시 뒤에 보면 이 요청이 남긴 것은 모두 보인다. 붙잡아 둔 뒤쪽 복구는
+        // 행을 풀기 전에는 끝나지 않으므로, 그 알림도 이때까지 나갈 수 없다.
+        await stream.caughtUp();
+        expect(runtime.executions()).toEqual([]);
+        expect(stream.types().filter((t) => t !== "message.created")).toEqual(
+          []
+        );
+        expect(await runStatus(late!.runId)).toBe("running");
+        return { stream, http };
+      }
     );
-    const base = `http://127.0.0.1:${port}`;
-    const http = api(() => base);
-    // 붙잡은 행은 시험이 실패해도 풀고, 그 복구 저장이 끝나기를 기다린다.
-    const stream = await withCleanup(async (defer) => {
-      defer(async () => {
-        held.open();
-        await holding;
-      });
-      await until(
-        async () => (await runStatus(early!.runId)) === "server_restart"
-      );
-      const stream = await listen(base);
-      // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
-      await http.say(early!.organizationId, "복구 중에 보낸 메시지");
-      // 시간을 기다리지 않는다. 복구가 끝나기 전의 촉진은 응답 전에 그 자리에서 버려지고(`kick`), 메시지의 Event는 응답 전에
-      // 나간다. 그래서 응답과 이 연결의 순서 표시 뒤에 보면 이 요청이 남긴 것은 모두 보인다. 붙잡아 둔 뒤쪽 복구는
-      // `held`가 열기 전에는 끝나지 않으므로, 그 알림도 이때까지 나갈 수 없다.
-      await stream.caughtUp();
-      expect(runtime.executions()).toEqual([]);
-      expect(stream.types().filter((t) => t !== "message.created")).toEqual([]);
-      expect(await runStatus(late!.runId)).toBe("running");
-      return stream;
-    });
-    server = await starting;
-    await server.drain();
+    await server!.drain();
     stream.close();
 
     // 복구된 깨우기는 다시 처리되고, 복구 중에 보낸 메시지는 같은 조직의 다음 실행 시도가 받는다.
@@ -724,6 +709,33 @@ describe("server start recovery barrier", () => {
       ["completed", 2],
       ["server_restart", 1],
     ]);
+  });
+
+  // 행을 붙잡은 장면의 정리: 서버 시작이 듣기 전에 거절돼도 잠금을 풀고 그 transaction이 끝난다(#294 외부 리뷰 3회차 STD-3).
+  it("releases the held row and reports the refusal when the server start is refused before it listens", async () => {
+    database = await createTestDatabase();
+    const [left] = await leftRunning(database.db, 1);
+    const refused = new Error("the start was refused before listening");
+    const failure = await startWhileRowHeld(
+      database.db,
+      left!.runId,
+      () => Promise.reject(refused),
+      () => Promise.resolve()
+    ).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    // 잠금이 풀렸다: 다른 transaction이 기다리지 않고(`nowait`) 그 행을 잠근다. 잠금이 남았으면 바로 실패한다.
+    await database.db.transaction((tx) =>
+      tx.execute(
+        `select id from runs where id = '${left!.runId}' for update nowait`
+      )
+    );
+    // 시작의 거절은 듣기 대기의 실패(원래 실패)와 시작 작업 회수의 실패로 함께 알린다.
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toHaveLength(2);
+    expect((failure as AggregateError).errors[0]).toBe(refused);
+    expect((failure as AggregateError).errors[1]).toBe(refused);
   });
 
   it("starts no run when a later recovery save fails, and the next start ends only the rest", async () => {
@@ -809,6 +821,39 @@ function countingRuntime() {
       },
     } satisfies RuntimeAdapter,
   };
+}
+
+/**
+ * 실행 시도 행 하나를 붙잡은 채 서버를 띄우고, 듣기 시작한 주소로 `body`를 한다. 서버는 복구가 끝나기 전에 듣기 시작하고 시험은
+ * 시작이 끝나기 전에 그 주소가 필요하므로, `start`는 포트 0에서 듣게 하고 시험은 실제로 연 소켓의 주소를 읽는다. 시작된 서버는
+ * 파일의 `server`에 넘겨 afterEach가 닫는다.
+ */
+async function startWhileRowHeld<T>(
+  db: Database,
+  runId: string,
+  start: () => Promise<RunningServer>,
+  body: (base: string) => Promise<T>
+): Promise<T> {
+  const held = createGate();
+  const holding = holdRow(db, runId, held);
+  await held.reached;
+  const listening = nextHttpServerPort();
+  const starting = start();
+  const port = await within(
+    Promise.race([listening, starting.then(() => listening)]),
+    eventuallyMs,
+    "the server did not start listening"
+  );
+  // 붙잡은 행은 시험이 실패해도 풀고, 그 복구 저장이 끝나기를 기다린다.
+  const value = await withCleanup(async (defer) => {
+    defer(async () => {
+      held.open();
+      await holding;
+    });
+    return body(`http://127.0.0.1:${port}`);
+  });
+  server = await starting;
+  return value;
 }
 
 /** gate가 열릴 때까지 실행 시도 행을 잠근 transaction. */
