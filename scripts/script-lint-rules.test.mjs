@@ -1155,6 +1155,32 @@ const gitLists = [
     'execFileSync("git", ["ls-files", "-x", "*.tmp"]);',
     'execFileSync("git", ["ls-files", "-zx", "*.tmp"]);',
   ],
+  // 옵션은 있는지가 아니라 왼쪽부터 읽은 마지막 상태로 본다: 부정형(`git <명령> -h`의 `--[no-]…`)이나 같은 출력 형식을 정하는 뒤
+  // 옵션이 앞 옵션을 덮는다(#291 외부 리뷰 4회차 SPEC-4).
+  [
+    'execFileSync("git", ["status", "--porcelain", "-z", "--no-null"]);',
+    'execFileSync("git", ["status", "--porcelain", "--no-null", "-z"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "--porcelain", "--null", "--no-null"]);',
+    'execFileSync("git", ["status", "--porcelain", "--no-null", "--null"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "--no-porcelain", "--porcelain"]);',
+    'execFileSync("git", ["status", "--porcelain", "--no-porcelain"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "--no-short", "--short"]);',
+    'execFileSync("git", ["status", "--short", "--no-short"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "--long", "-s"]);',
+    'execFileSync("git", ["status", "-s", "--long"]);',
+  ],
+  [
+    'execFileSync("git", ["log", "--name-status"]);',
+    'execFileSync("git", ["log", "--name-status", "-s"]);',
+  ],
   [
     'execFileSync("git", ["ls-tree", "--name-only", "-r", "HEAD"]);',
     'execFileSync("git", ["ls-tree", "--name-only", "-r", "-z", "HEAD"]);',
@@ -1216,6 +1242,9 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     'execFileSync("git", ["diff", "--name-o", "HEAD"]);\n',
     'execFileSync("git", ["status", "--porc"]);\n',
     'execFileSync("git", ["status", "--porcelain", "--nu"]);\n',
+    // 부정형도 줄여 쓸 수 있다. 끄는 옵션의 앞부분이면 마지막 상태가 정해지지 않는다(#291 외부 리뷰 4회차 SPEC-4).
+    'execFileSync("git", ["status", "--porcelain", "-z", "--no-nu"]);\n',
+    'execFileSync("git", ["status", "--porcelain", "--no-porc"]);\n',
   ]) {
     const found = await lint(childProcess + code, place, gitListRule);
     assert.equal(found.length, 1, code);
