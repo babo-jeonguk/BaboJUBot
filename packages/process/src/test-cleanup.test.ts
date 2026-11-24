@@ -252,7 +252,7 @@ describe("processAlive", () => {
 });
 
 describe("killUnlessGone", () => {
-  it("signals a running process and passes over a finished one", async () => {
+  it("signals a running process", async () => {
     const running = spawn(
       process.execPath,
       ["-e", "setInterval(() => {}, 1000)"],
@@ -261,7 +261,13 @@ describe("killUnlessGone", () => {
     const exit = once(running, "exit");
     expect(killUnlessGone(running.pid!)).toBe(true);
     await exit;
-    expect(killUnlessGone(running.pid!)).toBe(false);
+  });
+
+  // 끝난 대상(ESRCH)은 넘어간다. 끝난 프로세스의 번호에 실제로 신호하면 그 번호를 받은 다른 프로그램에 갈 수 있어(#288 parent 점검),
+  // "없음" 답을 주입해 본다.
+  it("passes over a finished process", () => {
+    failKill("ESRCH");
+    expect(killUnlessGone(4242)).toBe(false);
   });
 
   it.each(["EPERM", "EIO"])(
