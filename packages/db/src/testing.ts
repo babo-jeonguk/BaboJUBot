@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import net from "node:net";
+import pg from "pg";
 import { inject } from "vitest";
 import type { TestProject } from "vitest/node";
 import {
@@ -31,6 +33,8 @@ import {
   toolOperations,
 } from "./schema.ts";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
+import { withCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 
 export type TestDatabase = DatabaseHandle;
 
@@ -110,6 +114,64 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
     ...handle,
     // 연결 닫기가 실패해도 DB를 지우고, 둘 다 실패하면 둘 다 알린다.
     close: () => attemptAll([() => handle.close(), drop]),
+  };
+}
+
+/**
+ * 시험이 여는 pg 연결. 연결의 소켓은 시험이 만든다(pg 설정 `stream`, `@types/pg` `ConnectionConfig.stream`). `close`는 `end()`를
+ * 부르고, `cut`이면 그 소켓을 끊은 뒤, 연결의 끝(`end()`의 이행, 소켓의 `close`)을 `limitMs` 안에서 확인한다. pg의 `end()`는 답 없는
+ * 질의가 있으면 소켓을 닫지만 연결 중이거나 쉬는 연결은 정중히 끝내며 상대의 끝을 기다리므로(pg 8.23 `lib/client.js` `end`), 상대가
+ * 답하지 않았거나 멈췄을 수 있으면 끊어야 끝난다. `end()`를 먼저 불러 pg가 이 끝을 예상한 끝으로 다룬다(예상하지 못한 끊김의 오류
+ * 이벤트를 내지 않는다). 제품 `withClient`는 시한을 두지 않으므로 시험의 연결에 쓰지 않는다.
+ */
+export function testConnection(url: string) {
+  const socket = new net.Socket();
+  const client = new pg.Client({ connectionString: url, stream: () => socket });
+  return {
+    client,
+    close: (cut: boolean, limitMs: number, what: string) => {
+      const ended = client.end();
+      if (cut) socket.destroy();
+      return within(ended, limitMs, what);
+    },
+  };
+}
+
+/**
+ * 시험이 서버(`url`)에 `ask`로 묻는다(`testConnection`). 연결과 묻기를 합쳐 `limitMs` 안에 끝나지 않으면 `what`으로 실패하고, 성공·실패
+ * 모두 그 연결을 끝내고 끝난 것을 확인한다(CODING_STANDARDS 「정리」). 상한이 거절만 하면 연결 시도나 묻기가 그대로 돌아 연결이 남는다.
+ * 답을 받았으면 정중히 끝내고, 받지 못했으면 끊는다.
+ */
+export function askServer<T>(
+  url: string,
+  ask: (client: pg.Client) => Promise<T>,
+  limitMs: number,
+  what: string
+) {
+  return withCleanup(async (defer) => {
+    const { client, close } = testConnection(url);
+    let answered = false;
+    defer(() =>
+      close(!answered, limitMs, `${what}, and its connection did not close`)
+    );
+    const answer = await within(
+      client.connect().then(() => ask(client)),
+      limitMs,
+      what
+    );
+    answered = true;
+    return answer;
+  });
+}
+
+/**
+ * 시험이 여는 pg pool. 돌려준 `close`는 pool을 끝내고 그 끝을 `limitMs` 안에서 확인한다.
+ */
+export function testPool(url: string, limitMs: number) {
+  const pool = new pg.Pool({ connectionString: url });
+  return {
+    pool,
+    close: (_cut: boolean, what: string) => within(pool.end(), limitMs, what),
   };
 }
 
