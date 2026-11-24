@@ -1132,6 +1132,15 @@ const gitLists = [
     'execFileSync("git", ["status", "--porcelain=v2"]);',
     'execFileSync("git", ["status", "--porcelain=v2", "-z"]);',
   ],
+  // 짧은 옵션 묶음은 왼쪽부터 읽는다: 값을 받지 않는 옵션만 넘고 z에 닿으면 -z다(#291 외부 리뷰 3회차 SPEC-4).
+  [
+    'execFileSync("git", ["status", "-bs"]);',
+    'execFileSync("git", ["status", "-bsz"]);',
+  ],
+  [
+    'execFileSync("git", ["ls-files", "-x", "*.tmp"]);',
+    'execFileSync("git", ["ls-files", "-zx", "*.tmp"]);',
+  ],
   [
     'execFileSync("git", ["ls-tree", "--name-only", "-r", "HEAD"]);',
     'execFileSync("git", ["ls-tree", "--name-only", "-r", "-z", "HEAD"]);',
@@ -1185,6 +1194,13 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     'execFileSync("git", ["ls-files", "-x", "-z"]);\n',
     'execFileSync("git", ["ls-files", "--exclude", "-z"]);\n',
     'execFileSync("git", ["log", "--name-only", "--author", "-z"]);\n',
+    // 짧은 옵션 묶음에서 값을 받는 옵션이나 모르는 글자 뒤는 그 옵션의 값이다(git parse-options, #291 외부 리뷰 3회차 SPEC-4):
+    // `-xz`의 z는 -x의 값이다. 값을 받지 않는 옵션 목록에 없는 글자 뒤는 판정할 수 없다.
+    'execFileSync("git", ["ls-files", "-xz"]);\n',
+    'execFileSync("git", ["ls-files", "-sxz"]);\n',
+    'execFileSync("git", ["status", "--porcelain", "-uz"]);\n',
+    // 값을 붙여 받는 -u 뒤의 s는 짧은 형식(-s)이 아니라 -u의 값이다.
+    'execFileSync("git", ["status", "-us"]);\n',
   ]) {
     const found = await lint(childProcess + code, place, gitListRule);
     assert.equal(found.length, 1, code);
