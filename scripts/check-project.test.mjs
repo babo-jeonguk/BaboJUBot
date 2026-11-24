@@ -138,3 +138,21 @@ test("check-project reads links by CommonMark: reference definitions count, code
     );
   });
 });
+
+// 문법이 태그로 읽지 못한 `<a/href=…>`를 건너뛰면 브라우저가 여는 링크를 검사하지 않는다. 판정할 수 없음으로 실패한다
+// (#286 병합분 감사 항목 1).
+test("check-project fails on an HTML link it cannot read", async () => {
+  await withCleanup(async (defer) => {
+    const fixture = createFixture(defer);
+    execFileSync("git", ["init"], { cwd: fixture, stdio: "ignore" });
+    fs.writeFileSync(
+      path.join(fixture, "docs/html.md"),
+      '<div>\n<a/href="./missing.md">예시</a>\n</div>\n'
+    );
+    const result = runCheckerFailure(fixture);
+    assert.match(
+      result.output,
+      /Cannot tell where an HTML link points .*docs\/html\.md:2: /
+    );
+  });
+});

@@ -22,9 +22,11 @@ import { readSettings } from "./shared-settings.ts";
 
 /** 안쪽 실행 하나의 시한. 브라우저 시작과 안쪽 테스트(시한 60초)·fixture 정리를 담는다. 바깥 테스트 시한은 여유를 더한다. */
 const runTimeoutMs = 120_000;
-// 바깥 시한은 안쪽 실행의 최악의 길(시한 + 끈 뒤 끝 확인, `runToEndStopMs`)에 바깥 정리의 여유(20초)를 더한다. 그 길에서도
+// 바깥 시한은 안쪽 실행의 최악의 길(시한 + 끈 뒤 종료·출력 닫힘 확인 둘, 각 `runToEndStopMs`)에 바깥 정리의 여유(20초)를 더한다. 그 길에서도
 // runPlaywright가 모은 원인이 바깥 시한보다 먼저 보고된다.
-test.describe.configure({ timeout: runTimeoutMs + runToEndStopMs + 20_000 });
+test.describe.configure({
+  timeout: runTimeoutMs + 2 * runToEndStopMs + 20_000,
+});
 
 const config = fileURLToPath(
   new URL("./shared-settings-run/playwright.config.ts", import.meta.url)

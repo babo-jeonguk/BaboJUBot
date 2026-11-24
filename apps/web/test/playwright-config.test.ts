@@ -8,7 +8,7 @@ import { runToEnd, runToEndStopMs } from "../e2e/support/playwright-run.ts";
 // globalSetup(e2e/global-setup.ts)이 띄우고 정리까지 기다리며, webServer에는 화면 preview만 둔다. 서버 정리 자체는
 // E2E의 수명 시험(e2e/support/shared-server.spec.ts)이 확인한다.
 // Playwright를 읽는 Node 프로세스를 새로 띄우므로 다른 패키지 검사와 함께 돌 때를 생각해 읽기 시한(`readMs`)을 넉넉히 둔다. 시험
-// 시한은 runToEnd의 최악의 길(읽기 시한 + 끈 뒤 끝 확인 `runToEndStopMs`)에 시험 정리의 여유(20초)를 더해, 그 길에서도 runToEnd가
+// 시한은 runToEnd의 최악의 길(읽기 시한 + 끈 뒤 종료·출력 닫힘 확인 둘, 각 `runToEndStopMs`)에 시험 정리의 여유(20초)를 더해, 그 길에서도 runToEnd가
 // 모은 원인이 시험 시한보다 먼저 보고되게 한다(#287 parent 점검).
 const readMs = 50_000;
 it(
@@ -43,5 +43,5 @@ it(
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatch(/^vite build && vite preview /);
   },
-  readMs + runToEndStopMs + 20_000
+  readMs + 2 * runToEndStopMs + 20_000
 );

@@ -47,7 +47,7 @@
 mattpocock-skills v1.3.2의 code-review 방식으로 Standards와 Spec을 분리해 검토해 주세요.
 https://github.com/mattpocock/skills/blob/v1.3.2/skills/engineering/code-review/SKILL.md
 Repository / PR: <주소>
-Spec·확정 결정 / 저장소 표준: <링크; 이슈 없는 작업은 승인된 요구를 기재>
+Spec·확정 결정 / 저장소 표준: <링크; 이슈 없는 작업은 승인된 요구를 기재> / CODING_STANDARDS.md 「anti-pattern」 절(<고정 SHA 링크>#anti-pattern)
 Base / Head SHA: <각 SHA>
 전체 diff: git diff <base>...<head>
 커밋: git log <base>..<head> --oneline
@@ -57,5 +57,9 @@ Base / Head SHA: <각 SHA>
 기존 finding: <ID·축·판정·수정 SHA/검사 또는 결정/반증 근거> / blocker: <내용 또는 없음>
 지적에는 위치·실패 조건·영향·명세/표준 근거를 포함하고 확정 위반과 설계 권고를 구분해 주세요.
 코드 모양만으로 판정할 수 있는 지적은 "자동 검사 후보"로 표시해 주세요.
+같은 원인에서 나오는 반례는 이번 회차에 모두 찾아 한꺼번에 적어 주세요. 하나씩 나눠 다음 회차로 넘기지 마세요.
+권장 수정은 같은 종류를 한 번에 닫는 단순한 설계(아는 모양만 통과, 나머지는 판정할 수 없음)로 제시해 주세요. 외부 도구의 문법을 더 흉내 내거나 예외를 하나 더 막는 덧붙이기는 권하지 마세요.
+리뷰 대응으로 늘어난 코드에 새 anti-pattern(외부 해석기 흉내, 전역·객체 바꿔치기, 공용 도움 복사본, 라이브러리 내부 동작에 기댄 판정)이나 범위 확장이 있는지 함께 판정해 주세요.
+저장소에 실제 호출·경로가 없는 이론상의 반례는 확정 위반과 따로 "이론상 경로"로 분류하고, 병합을 막는지 밝혀 주세요.
 재리뷰는 변경 diff·기존 지적을 먼저 확인하고, 권한·상태·공유 계약의 영향 경로와 검토 범위를 밝혀 주세요.
 `````

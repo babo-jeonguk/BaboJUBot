@@ -16,109 +16,29 @@ export function parseMarkdown(text) {
   });
 }
 
-// raw HTML의 태그는 CommonMark(0.31.2 §6.6 Raw HTML, https://spec.commonmark.org/0.31.2/#raw-html)가 정한 문법으로 읽는다.
-// 파서(micromark)가 HTML을 알아보는 규칙과 같다. 속성 이름은 그 문법의 이름 전체이고(`data-href`는 `href`가 아님), 값은 `=` 둘레의
-// 공백과 따옴표 없는 값도 받는다. 주석·처리 지시·선언·CDATA 안의 글과 raw text 요소(script·style·textarea·title)의 내용은 태그가 아니다.
-const attributeName = "[A-Za-z_:][A-Za-z0-9_.:-]*";
-const attributeValue = `(?:[^\\s"'=<>\`]+|'[^']*'|"[^"]*")`;
-const attribute = new RegExp(
-  `\\s+(${attributeName})(?:\\s*=\\s*(${attributeValue}))?`,
-  "gy"
-);
-const tagStart = /<([A-Za-z][A-Za-z0-9-]*)/y;
-const tagEnd = /\s*\/?>/y;
-/**
- * 태그가 아닌 `<` 구문: 주석, 처리 지시, CDATA, 선언, 닫는 태그. `end`는 그 구문을 끝내는 글이고, 빈 글이면 `start`가 구문 전체다.
- * @type {{ start: RegExp, end: string }[]}
- */
-const skipped = [
-  { start: /<!--(?:>|->)/y, end: "" },
-  { start: /<!--/y, end: "-->" },
-  { start: /<\?/y, end: "?>" },
-  { start: /<!\[CDATA\[/y, end: "]]>" },
-  { start: /<![A-Za-z]/y, end: ">" },
-  { start: /<\/[A-Za-z][A-Za-z0-9-]*\s*>/y, end: "" },
-];
-const rawTextElements = new Set(["script", "style", "textarea", "title"]);
-
-/** HTML 글의 여는 태그에서 `href` 속성 값과 그 글 안 위치(첫 글자 위치). */
-function htmlHrefs(html) {
-  const found = [];
-  let at = 0;
-  while ((at = html.indexOf("<", at)) !== -1) {
-    const skip = skipped.find(({ start }) => {
-      start.lastIndex = at;
-      return start.test(html);
-    });
-    if (skip) {
-      const close = skip.end
-        ? html.indexOf(skip.end, skip.start.lastIndex)
-        : -1;
-      if (!skip.end) at = skip.start.lastIndex;
-      else at = close === -1 ? html.length : close + skip.end.length;
-      continue;
-    }
-    tagStart.lastIndex = at;
-    const name = tagStart.exec(html)?.[1];
-    if (name === undefined) {
-      at += 1;
-      continue;
-    }
-    const attributes = [];
-    attribute.lastIndex = tagStart.lastIndex;
-    let position = attribute.lastIndex;
-    for (
-      let match;
-      (match = attribute.exec(html));
-      position = attribute.lastIndex
-    )
-      attributes.push({
-        match,
-        valueAt: attribute.lastIndex - (match[2]?.length ?? 0),
-      });
-    tagEnd.lastIndex = position;
-    if (!tagEnd.test(html)) {
-      at += 1;
-      continue;
-    }
-    for (const { match, valueAt } of attributes) {
-      const value = match[2];
-      if (match[1]?.toLowerCase() !== "href" || value === undefined) continue;
-      const quoted = /^["']/.test(value);
-      found.push({
-        url: quoted ? value.slice(1, -1) : value,
-        index: valueAt,
-      });
-    }
-    at = tagEnd.lastIndex;
-    if (rawTextElements.has(name.toLowerCase())) {
-      // 같은 이름의 닫는 태그에서 끝난다: 이름 뒤가 공백·`/`·`>`여야 한다(`</script-other>`는 아니다).
-      const close = new RegExp(`</${name}(?=[\\t\\n\\f\\r />])`, "gi");
-      close.lastIndex = at;
-      at = close.exec(html)?.index ?? html.length;
-    }
-  }
-  return found;
-}
+// raw HTML은 읽지 않는다. 브라우저는 HTML 문법으로 읽고, 그 문법을 손으로 흉내 내면 다르게 읽는 곳(같은 이름 속성, 문자 참조,
+// `--!>` 주석, NBSP)이 남는다. raw HTML 글에 `href`(대소문자 무관)가 있으면 그 자리는 판정할 수 없음이다. 링크는 Markdown으로 쓴다.
+const hrefText = /href/gi;
 
 /**
- * 트리 안의 링크 대상과 그 줄: 인라인 링크·이미지, 자동 링크(`<…>`, GFM의 맨 주소), 참조식 링크 정의(`[이름]: 대상`),
- * raw HTML 여는 태그의 `href`. 참조식 링크(`[글][이름]`)는 그 정의로 센다.
- * @returns {{ url: string, line: number }[]}
+ * 트리 안의 링크 대상과 그 줄: 인라인 링크·이미지, 자동 링크(`<…>`, GFM의 맨 주소), 참조식 링크 정의(`[이름]: 대상`).
+ * 참조식 링크(`[글][이름]`)는 그 정의로 센다. raw HTML 글의 `href`는 `undecidable`로 따로 낸다. 호출자는 그것을 실패로 다룬다.
+ * @returns {{ links: { url: string, line: number }[], undecidable: { reason: string, line: number }[] }}
  */
 export function linkTargets(tree) {
-  const targets = [];
+  const links = [];
+  const undecidable = [];
   visit(tree, (node) => {
     if (["link", "image", "definition"].includes(node.type))
-      targets.push({ url: node.url, line: node.position.start.line });
+      links.push({ url: node.url, line: node.position.start.line });
     else if (node.type === "html")
-      for (const { url, index } of htmlHrefs(node.value))
-        targets.push({
-          url,
+      for (const { index } of node.value.matchAll(hrefText))
+        undecidable.push({
+          reason: "href in raw HTML (write the link in Markdown)",
           line:
             node.position.start.line +
             (node.value.slice(0, index).match(/\n/g) ?? []).length,
         });
   });
-  return targets;
+  return { links, undecidable };
 }

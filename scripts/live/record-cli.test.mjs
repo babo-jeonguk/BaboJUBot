@@ -19,7 +19,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDisconnect } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { awaitedLater, withCleanup } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./record-cli.mjs", import.meta.url));
@@ -97,9 +97,11 @@ function recordCli(defer, args, env = {}) {
     if (stdout.includes("\n")) line.resolve(undefined);
   });
   child.stderr.on("data", (chunk) => (stderr += chunk));
-  const exited = once(child, "exit");
-  const stdoutEnded = once(child.stdout, "end");
-  const outputEnded = Promise.all([stdoutEnded, once(child.stderr, "end")]);
+  // 시작 실패(`error`)와 출력 오류는 기다리기 전에 올 수 있다. 그 거절은 `ended()`·`firstLine()`이나 정리가 받는다.
+  const exited = awaitedLater(once(child, "exit"));
+  const outputEnded = awaitedLater(
+    Promise.all([once(child.stdout, "end"), once(child.stderr, "end")])
+  );
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
     // 번호가 아니라 자식 객체로 끈다. Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시
@@ -119,7 +121,7 @@ function recordCli(defer, args, env = {}) {
     /** 표준 출력의 첫 줄. 줄 없이 출력이 끝나면 더 기다리지 않는다. 상한 안에 둘 다 오지 않으면 그렇게 알리고 실패한다. */
     firstLine: async () => {
       await within(
-        Promise.race([line.promise, stdoutEnded]),
+        Promise.race([line.promise, outputEnded]),
         runMs,
         "record-cli did not print an output line or end its output"
       );
@@ -181,11 +183,11 @@ async function proxyUrl(run, announced) {
 }
 
 /**
- * 시험이 연 프록시 연결. 연결이 실패하면 그 실패로 거절한다. 시험 쪽은 끝까지 닫지 않으므로(정리만 끊는다) `closed()`의 이행은
+ * 시험이 연 프록시 연결(`target`은 `net.connect`의 연결할 곳). 연결이 실패하면 그 실패로 거절한다. 시험 쪽은 끝까지 닫지 않으므로(정리만 끊는다) `closed()`의 이행은
  * 프록시가 끊었다는 뜻이다. `reply()`는 그때까지 받은 답이다.
  */
-async function openToProxy(defer, proxy) {
-  const socket = net.connect(Number(proxy.port), "127.0.0.1");
+async function openToProxy(defer, target) {
+  const socket = net.connect(target);
   defer(() => socket.destroy());
   let reply = "";
   socket.on("data", (chunk) => (reply += chunk));
@@ -214,30 +216,15 @@ async function openToProxy(defer, proxy) {
   };
 }
 
-/** 아무것도 듣지 않는 127.0.0.1의 포트. 운영체제가 고른 빈 포트를 잠깐 들은 뒤 닫는다. */
-async function refusingPort(defer) {
-  const server = net.createServer();
-  server.listen(0, "127.0.0.1");
-  defer(() => closeServer(server));
-  await within(
-    once(server, "listening"),
-    eventMs,
-    "the probe server did not start listening"
-  );
-  const address = server.address();
-  assert.ok(address !== null && typeof address === "object");
-  await closeServer(server);
-  return address.port;
-}
-
-// 시험의 프록시 연결 도움 자체(#287 리뷰 STD-2): 연결이 거절되면 그 거절로 실패하고, 닫힘을 기다리기 전에 실패해도 처리되지 않은
-// 거절을 남기지 않는다. 남기면 러너가 시험 밖의 오류로 실패를 알린다.
-test("the test's proxy connection fails with a refused connection and leaves no unhandled rejection", async () => {
+// 시험의 프록시 연결 도움 자체(#287 리뷰 STD-2): 연결이 실패하면 그 실패로 실패하고, 닫힘을 기다리기 전에 실패해도 처리되지 않은
+// 거절을 남기지 않는다. 남기면 러너가 시험 밖의 오류로 실패를 알린다. 실패할 곳은 이 시험의 폴더 안 소켓 경로다. 잠깐 듣고 닫은
+// 포트는 그 사이 다른 프로그램이 받을 수 있지만, 이 경로는 아무도 만들지 않는다.
+test("the test's proxy connection fails with a failed connection and leaves no unhandled rejection", async () => {
   await withCleanup(async (defer) => {
-    const port = await refusingPort(defer);
+    const { dir } = folders(defer);
     await assert.rejects(
-      openToProxy(defer, new URL(`http://127.0.0.1:${port}/`)),
-      { code: "ECONNREFUSED" }
+      openToProxy(defer, { path: path.join(dir, "nobody-listens.sock") }),
+      { code: "ENOENT" }
     );
   });
 });
@@ -405,7 +392,10 @@ test("record-cli cuts and records a reply that has no valid status line", async 
     const proxy = await proxyUrl(run, announced);
     // 연결을 이어 쓰는 요청(HTTP/1.1 기본)이라 프록시가 답을 마쳐도 스스로 닫지 않는다. 닫힘은 프록시가 끊은 것이고, 시험의 상한을
     // 넘기면 끊김으로 받지 않고 그렇게 알리고 실패한다. 상태 줄을 쓰기 전에 끊으므로 받은 답은 없다.
-    const connection = await openToProxy(defer, proxy);
+    const connection = await openToProxy(defer, {
+      host: "127.0.0.1",
+      port: Number(proxy.port),
+    });
     connection.socket.write("GET /x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
     await within(
       connection.closed(),
@@ -439,7 +429,10 @@ test("record-cli's proxy never takes a request that has no target", async () => 
       FAKE_URL: announced,
     });
     const proxy = await proxyUrl(run, announced);
-    const connection = await openToProxy(defer, proxy);
+    const connection = await openToProxy(defer, {
+      host: "127.0.0.1",
+      port: Number(proxy.port),
+    });
     connection.socket.write("GET HTTP/1.1\r\n\r\n");
     await within(
       connection.closed(),
