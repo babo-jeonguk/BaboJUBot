@@ -619,8 +619,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         });
         req.on("response", (res) => {
           let body = "";
-          // 첫 조각을 받은 뒤에 목적지가 형식에 맞지 않는 조각 길이를 보낸다.
-          res.once("data", () => answering[0]!.write("zz\r\n"));
+          // 첫 조각을 받은 뒤에 목적지가 형식에 맞지 않는 조각 길이를 보낸다(받은 연결 모두에서).
+          res.once("data", () => {
+            for (const socket of answering) socket.write("zz\r\n");
+          });
           res.on("data", (chunk) => (body += chunk));
           res.on("end", () => resolve({ body, ending: "ended" }));
           res.on("error", () => resolve({ body, ending: "broken" }));

@@ -393,8 +393,8 @@ describe("the credential relay", () => {
     const stream = await send(url, relay.grant(scope()).token, "/v1/stream");
     const reader = stream.body!.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("part");
-    // 첫 조각을 받은 뒤에 상류가 형식에 맞지 않는 조각 길이를 보낸다.
-    answering[0]!.write("zz\r\n");
+    // 첫 조각을 받은 뒤에 상류가 형식에 맞지 않는 조각 길이를 보낸다(받은 연결 모두에서).
+    for (const socket of answering) socket.write("zz\r\n");
     await expect(
       (async () => {
         for (;;) if ((await reader.read()).done) return "ended";
