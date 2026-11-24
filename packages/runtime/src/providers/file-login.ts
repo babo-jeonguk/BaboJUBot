@@ -4,7 +4,15 @@ import { credentialResidue, residueRefusalFor } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
 import { loginLink, readLogin } from "./login-link.ts";
 import { oneAtATime } from "./one-at-a-time.ts";
-import { inFolder, publishFile, removeConfirmed } from "@babojubot/files";
+import {
+  ConfirmFailed,
+  inFolder,
+  publishFile,
+  removeConfirmed,
+  type Kept,
+  type Removal,
+} from "@babojubot/files";
+import { failureCode } from "@babojubot/contracts";
 
 /**
  * 로그인을 파일로 같이 쓰는 연결(Codex·Antigravity)마다 다른 것. 나머지 준비 순서는 `fileLogin`이 맡는다(#146).
@@ -185,12 +193,24 @@ export function fileLogin(
           const at = folder.at(loginName);
           if (await shape.isStandIn(at)) {
             // 자리 표시인지 확인한 뒤 같은 이름에 그 조직의 컨테이너가 둔 파일은 확인한 것이 아니므로 지우지 않는다(#286 항목 8).
-            const removal = await removeConfirmed(at, shape.isStandIn);
-            if (typeof removal === "object") {
+            // 남긴 위치는 폴더 handle의 경로(Linux `/proc/self/fd/…`)가 아니라 조직 폴더 기준으로 적는다. handle을 닫은 뒤에도 찾을 수 있다.
+            const warnKept = (kept: Kept) =>
               console.warn(
-                `[provider] a file put in place of the ${shape.label} login stand-in was kept as ${removal.keptAs}`
+                `[provider] a file put in place of the ${shape.label} login stand-in was kept as ${JSON.stringify(path.join(...loginParts, kept.keptAs))} in the organization folder${kept.because === undefined ? "" : ` (${failureCode(kept.because)})`}`
               );
-            } else
+            let removal: Removal;
+            try {
+              removal = await removeConfirmed(at, shape.isStandIn);
+            } catch (error) {
+              if (
+                error instanceof ConfirmFailed &&
+                typeof error.kept === "object"
+              )
+                warnKept(error.kept);
+              throw error;
+            }
+            if (typeof removal === "object") warnKept(removal);
+            else
               switch (removal) {
                 case "removed":
                 case "missing":

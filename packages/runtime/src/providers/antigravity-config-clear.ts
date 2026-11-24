@@ -2,7 +2,8 @@
 // `antigravity-config.ts`의 `clearOwnedConfig`가 조직의 작업 폴더를 현재 폴더로 띄우고, 인수는 JSON `[우리 표시]`다.
 // 작업 폴더로 `.agents`를 붙들려고 별도 프로세스로 돈다(@babojubot/files `enterFolder`). 열기와 폴더 확인은 그 패키지가 한다.
 // 끝난 코드: 0 지움(또는 지울 것 없음), 3 지우지 못한 까닭이 있음. 까닭은 표준 오류에 한 줄에 JSON 하나로 남긴다:
-// `{"reason": …, "name": …}`(되돌리지 못해 옮긴 이름으로 남겼으면 `keptAs`, handle을 닫지 못했으면 `code`). 그 밖은 실패.
+// `{"reason": …, "name": …}`(되돌리지 못해 옮긴 이름으로 남겼으면 `.agents` 안의 그 이름 `keptAs`, 예상 밖의 실패로 남겼거나 handle을
+// 닫지 못했으면 `code`). 그 밖은 실패.
 import { lstat, readdir } from "node:fs/promises";
 import {
   continueAfterFailure,
@@ -12,9 +13,11 @@ import {
   orIfUnreadable,
 } from "@babojubot/contracts/failure";
 import {
+  ConfirmFailed,
   enterFolder,
   openRegularFile,
   removeConfirmed,
+  type Kept,
   type Removal,
 } from "@babojubot/files";
 import type { ScriptCleanupReason } from "./antigravity-config-reasons.ts";
@@ -59,7 +62,7 @@ async function owned(
   }
 }
 
-/** 옮긴 파일을 다시 확인하지 못한 까닭. `removeConfirmed`는 이 오류를 되돌린 뒤 그대로 던진다. */
+/** 옮긴 파일을 다시 확인하지 못한 까닭. `removeConfirmed`는 되돌린 뒤 이 오류를 `ConfirmFailed`의 `cause`로 던진다. */
 class Unconfirmed extends Error {
   readonly reason: "changed" | "not_regular";
   constructor(reason: "changed" | "not_regular") {
@@ -88,10 +91,16 @@ async function confirmOwned(moved: string): Promise<boolean> {
   }
 }
 
+/** 옮긴 이름에 남긴 파일의 위치(`.agents` 안의 이름)와, 예상 밖의 실패로 남겼으면 그 코드. 까닭 줄에 함께 담는다. */
+const keptFields = (kept: Kept) => ({
+  keptAs: kept.keptAs,
+  ...(kept.because === undefined ? {} : { code: failureCode(kept.because) }),
+});
+
 /** `removeConfirmed`의 결과를 빠짐없이 처리한다. 되돌렸으면 정리하지 못한 까닭이다. */
 function handled(name: string, removal: Removal) {
   if (typeof removal === "object") {
-    report("kept_aside", name, { keptAs: removal.keptAs });
+    report("kept_aside", name, keptFields(removal));
     return;
   }
   switch (removal) {
@@ -108,13 +117,17 @@ function handled(name: string, removal: Removal) {
   }
 }
 
-/** 우리 파일 하나를 확인해 지운다. 확인하지 못한 것은 되돌린 뒤 그 까닭을 남긴다. */
+/** 우리 파일 하나를 확인해 지운다. 확인하지 못한 것은 되돌린 뒤(되돌리지 못했으면 남긴 위치와 함께) 그 까닭을 남긴다. */
 async function removeOwned(name: string) {
   try {
     handled(name, await removeConfirmed(name, confirmOwned));
   } catch (error) {
-    if (error instanceof Unconfirmed) {
-      report(error.reason, name);
+    if (error instanceof ConfirmFailed && error.cause instanceof Unconfirmed) {
+      report(
+        error.cause.reason,
+        name,
+        error.kept === "restored" ? undefined : keptFields(error.kept)
+      );
       return;
     }
     throw error;
