@@ -718,7 +718,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await relay.ready;
     const answer = await connectVia(relay.directory, `127.0.0.1:${port}`);
     answer.socket.destroy();
-    expect(answer.head).toMatch(/^HTTP\/1\.1 502 /);
+    expect(answer.head).toBe(
+      "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    );
     expect(refusing.dialed.mock.calls).toEqual([[{ host: "127.0.0.1", port }]]);
     expect(warned.mock.calls).toEqual([
       [

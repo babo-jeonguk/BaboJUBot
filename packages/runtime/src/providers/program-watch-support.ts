@@ -191,13 +191,15 @@ export function watchProcessPackage<
         launch.started = "no";
       }
     );
-    const stop = tree.stop.bind(tree);
-    tree.stop = ((...stopArgs: never[]) => {
-      const stopping = stop(...stopArgs);
-      stopping.then(markStopped, markStopFailed);
-      return stopping;
-    }) as Tree["stop"];
-    return tree;
+    // 받은 트리는 고치지 않는다. 같은 트리에 끄기의 결과만 기록하는 `stop`을 붙인 사본을 돌려준다(원래 `stop`을 그대로 부른다).
+    return {
+      ...tree,
+      stop: ((...stopArgs: never[]) => {
+        const stopping = tree.stop(...stopArgs);
+        stopping.then(markStopped, markStopFailed);
+        return stopping;
+      }) as Tree["stop"],
+    };
   }) as M["launchTree"];
   const runTree = ((...args: Parameters<M["runTree"]>) => {
     const run = real.runTree(...args);

@@ -683,7 +683,12 @@ describe("server start recovery barrier", () => {
         held.open();
         await within(holding, eventuallyMs, "the row hold did not end");
       });
-      await held.reached;
+      // 잠그기 전에 transaction이 실패하면 `reached`는 오지 않으므로 그 실패로 끝낸다.
+      await within(
+        Promise.race([held.reached, holding]),
+        eventuallyMs,
+        "the row was not held"
+      );
       // 서버는 복구가 끝나기 전에 듣기 시작하므로, 포트 0에서 듣게 하고 듣기 시작할 때 알리는 주소를 받는다.
       let heard!: (url: string) => void;
       const listening = new Promise<string>((resolve) => (heard = resolve));
