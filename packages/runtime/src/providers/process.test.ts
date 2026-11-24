@@ -1,11 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { probeEnding, runProbe, startProcess } from "./process.ts";
 import { openLifelines } from "@babojubot/process/lifelines";
-import { killAndWait } from "@babojubot/process/testing";
-import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
+import { awaitedLater, lifelineHolder } from "@babojubot/process/test-cleanup";
 import { manualClock, within } from "@babojubot/process/test-support";
 import { testFolders } from "./test-folders.ts";
 
@@ -38,11 +36,6 @@ afterEach(() => {
 });
 
 const folders = testFolders();
-const alive = processAlive;
-/** 시험 프로그램이 `file`에 남긴 번호의 프로그램을 끝낸다. 번호를 남기기 전이면 할 일이 없다. */
-const stopRecorded = async (file: string) => {
-  if (existsSync(file)) await killAndWait([Number(readFileSync(file, "utf8"))]);
-};
 
 const run = async (
   script: string,
@@ -129,6 +122,7 @@ it("finishes a run when its program ends without waiting on the clock for a chil
   // 남긴 자식이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 마지막 줄을 쓰고 끝난다. 그 전에 끝나면 자식이 연결을 쥐기 전에 꺼진다.
   const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
   const frames: unknown[] = [];
+  const clock = manualClock();
   const child = startProcess({
     command: [
       process.execPath,
@@ -138,10 +132,18 @@ it("finishes a run when its program ends without waiting on the clock for a chil
     args: [],
     cwd: process.cwd(),
     env: { PATH: process.env.PATH },
-    clock: manualClock(),
+    clock,
     onFrame: async (frame) => {
       frames.push(frame);
     },
+  });
+  // 시험이 어디서 실패하든 실행 시도의 트리를 끄고 그 정리의 끝(done)을 상한 안에서 확인한다. 연결 서버는 그 뒤에 닫는다(등록
+  // 역순). 입력을 닫은 뒤 트리를 끄기까지의 유예는 가짜 시계 위라, 그 타이머까지 시계를 옮긴다(이미 끝났으면 타이머가 없다).
+  onTestFinished(async () => {
+    child.end();
+    const stop = clock.untilNext();
+    if (stop !== undefined) clock.advance(stop);
+    await within(child.done, 20_000, "the run did not end in the cleanup");
   });
   const exit = await within(child.done, 20_000, "the run did not finish");
   expect(frames).toEqual([{ n: 1 }]);
@@ -259,14 +261,22 @@ describe("runProbe", () => {
     "forces a cancelled program that ignores the stop signal to end",
     async () => {
       const folder = await folders.make("babojubot-probe-");
-      const ready = path.join(folder, "ready");
+      // 프로그램은 연결을 쥐고 돈다. 시험이 먼저 실패해도 정리가 연결이 열려 있음을 본 직후 그 번호로 끝낸 뒤 폴더를 지운다.
+      const lifelines = await openLifelines();
+      onTestFinished(() => lifelines.close());
+      const held = lifelineHolder(
+        lifelines,
+        "check program",
+        path.join(folder, "pid")
+      );
+      folders.own(held.end, "the check program");
       const controller = new AbortController();
       const probing = awaitedLater(
         runProbe(
           [
             process.execPath,
             "-e",
-            `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(ready)}, String(process.pid)); setInterval(() => {}, 1000);`,
+            `process.on("SIGTERM", () => {}); ${held.code} setInterval(() => {}, 1000);`,
           ],
           [],
           {
@@ -278,20 +288,16 @@ describe("runProbe", () => {
           }
         )
       );
-      // 시험이 먼저 실패해도 그 프로그램을 끝낸 뒤 폴더를 지운다.
-      folders.own(() => stopRecorded(ready), "the check program");
-      await vi.waitFor(() => expect(existsSync(ready)).toBe(true), {
-        timeout: 20_000,
-        interval: 25,
-      });
-      const pid = Number(readFileSync(ready, "utf8"));
+      // 연결이 보이면 SIGTERM을 무시하도록 정한 뒤다.
+      await lifelines.connected("check program", 20_000);
       controller.abort();
       await expect(probing).rejects.toSatisfy(
         // 이 프로그램은 SIGTERM을 무시하므로 유예 뒤의 SIGKILL로만 끝난다(packages/process/supervisor/src/unix.rs `end_tree`).
         // 예전 기대는 신호를 버린 문구를 고정했다(#286 리뷰 1회차 STD-2).
         (error) => probeEnding(error) === "stopped: aborted, signal SIGKILL"
       );
-      expect(alive(pid)).toBe(false);
+      // 끝은 번호가 아니라 그 프로그램이 쥔 연결의 닫힘으로 본다. 끝난 번호는 다른 프로그램에 다시 쓰일 수 있다.
+      await lifelines.closed("check program");
     },
     30_000
   );
@@ -318,17 +324,21 @@ describe("runProbe", () => {
       cancel.abort();
       return started.probe ?? Promise.resolve();
     }, "the probe");
-    folders.own(
-      () => stopRecorded(holderFile),
-      "the program holding the output"
-    );
     const lifelines = await openLifelines();
     onTestFinished(() => lifelines.close());
-    // 출력을 쥔 프로그램이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 끝난다.
-    const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
+    // 출력을 쥔 프로그램이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 끝난다. 시험이 먼저 실패하면 정리가 연결이 열려 있음을
+    // 본 직후 그 번호로 끝낸다.
+    const held = lifelineHolder(
+      lifelines,
+      "holder",
+      holderFile,
+      'require("node:fs").writeSync(3, "ready\\n");'
+    );
+    folders.own(held.end, "the program holding the output");
+    const holder = `${held.code} setInterval(() => {}, 1000);`;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const running = probe(
-      `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
+      `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
       // 가짜 시계 위의 실행 상한이라 지나지 않는다.
       5_000,
       cancel.signal
