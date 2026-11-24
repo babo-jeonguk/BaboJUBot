@@ -926,11 +926,22 @@ describe("channel replies", () => {
               listen: () => {
                 throw new Error("토큰 거부");
               },
-              close: () => Promise.reject(new Error("끊기 실패")),
+              close: () =>
+                Promise.reject(
+                  Object.assign(new Error("끊기 실패"), {
+                    code: "CHANNEL_CLOSE_FAILED",
+                  })
+                ),
             },
           ],
         })
       ).rejects.toThrow("토큰 거부");
+      // 끄다 난 오류는 원래 오류를 덮지 않고 원인 코드로 따로 남는다(CODING_STANDARDS.md#제품-코드).
+      expect(logged.mock.calls).toEqual([
+        [
+          "[server] stopping after a failed start failed (CHANNEL_CLOSE_FAILED)",
+        ],
+      ]);
     } finally {
       logged.mockRestore();
     }

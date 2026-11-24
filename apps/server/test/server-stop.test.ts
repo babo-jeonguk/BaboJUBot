@@ -163,7 +163,8 @@ async function stopWhileHeld(
   await within(stopping, 10_000, "stopping the server did not finish");
   await within(handled, 10_000, "the held save did not finish");
   expect(order).toEqual(["handled", "stopped"]);
-  expect(errors.mock.calls.filter(([tag]) => tag === "[server]")).toEqual([]);
+  // 멈추는 동안 끝난 요청은 실패하지 않는다. 서버는 어떤 진단도 남기지 않는다.
+  expect(errors.mock.calls).toEqual([]);
 }
 
 /** 연결 하나를 다시 쓰는 GET. 응답 header와 재사용 여부를 돌려준다. */

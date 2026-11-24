@@ -12,7 +12,11 @@ const event = (id: number): Event => ({
   createdAt: new Date().toISOString(),
 });
 
-/** 부른 순서를 남기는 가짜 hub·dispatcher. 조직 재개 처리는 `release`를 부를 때까지 끝나지 않는다. */
+/**
+ * 부른 순서를 남기는 가짜 hub·dispatcher. 조직 재개 처리는 `release`를 부를 때까지 끝나지 않는다.
+ * 동기 효과는 기록의 길이(`push`의 값)를 돌려준다. 타입은 `void`를 돌려주는 함수에 값을 돌려주는 함수를 받으므로, promise가 아닌
+ * 반환값은 끝난 동기 효과로 다뤄야 한다(promise인지는 thenable로 본다). 참인 값을 promise로 보면 `.catch`가 없어 실패로 남았다.
+ */
 const fakes = () => {
   const calls: string[] = [];
   let release = () => {};
@@ -46,6 +50,8 @@ const fakes = () => {
 describe("applyAfterCommit", () => {
   it("preserves committed results and delivers events and wakes when workspace preparation fails", async () => {
     const f = fakes();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    onTestFinished(() => errors.mockRestore());
     const result = await completeStored(
       {
         ...f.deps,
@@ -57,6 +63,12 @@ describe("applyAfterCommit", () => {
     );
     expect(result).toEqual({ kind: "ok", value: { id: "saved" } });
     expect(f.calls).toEqual(["publish 1", "kick lead"]);
+    // 진단에는 오류 문구 대신 원인 코드를 남긴다(CODING_STANDARDS.md#제품-코드).
+    expect(errors.mock.calls).toEqual([
+      [
+        "[workspace] folder preparation failed for organization A; the next run assembly will retry (Error)",
+      ],
+    ]);
   });
   it("publishes, cancels, waits for the resumed organization, then kicks", async () => {
     vi.useFakeTimers();
@@ -132,15 +144,19 @@ describe("applyAfterCommit when an effect fails", () => {
   ];
 
   it.each([
-    ["publish", "publish 5"],
-    ["settings", "settings changed"],
-    ["cancel", "cancel r1"],
-    ["resume", "resumed A"],
-    ["kick", "kick lead"],
-    ["kick waiting", "kick waiting for fake"],
+    ["publish", "publish 5", "publishing events 5"],
+    ["settings", "settings changed", "signalling a settings change"],
+    ["cancel", "cancel r1", "cancelling runs r1"],
+    ["resume", "resumed A", "kicking resumed organization A"],
+    ["kick", "kick lead", "kicking agent lead"],
+    [
+      "kick waiting",
+      "kick waiting for fake",
+      "kicking agents waiting for provider fake",
+    ],
   ] as const)(
     "keeps the saved result, reports the failed %s effect, and still applies the others in order",
-    async (_name, failing) => {
+    async (_name, failing, what) => {
       const f = fakes();
       f.release();
       const errors = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -170,8 +186,10 @@ describe("applyAfterCommit when an effect fails", () => {
         await completeStored(deps, stored({ id: "saved" }, { ...everything }))
       ).toEqual({ kind: "ok", value: { id: "saved" } });
       expect(f.calls).toEqual(all);
-      expect(errors).toHaveBeenCalledTimes(1);
-      expect(String(errors.mock.calls[0]![0])).toMatch(/\[after-commit\]/);
+      // 진단에는 오류 문구 대신 원인 코드를 남긴다(CODING_STANDARDS.md#제품-코드).
+      expect(errors.mock.calls).toEqual([
+        [`[after-commit] ${what} failed; the saved result stands (Error)`],
+      ]);
     }
   );
 

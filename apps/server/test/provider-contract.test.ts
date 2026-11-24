@@ -559,6 +559,10 @@ describe("usage numbers outside the contract (#140)", () => {
       expect(run!.error).toBe(
         "프로바이더가 계약 밖의 종료 결과를 돌려주었습니다."
       );
+      // 진단에는 프로바이더가 돌려준 값 대신 원인 코드만 남긴다(CODING_STANDARDS.md#제품-코드).
+      expect(error.mock.calls).toEqual([
+        ["[runs] runtime returned an invalid result (ZodError)"],
+      ]);
     } finally {
       error.mockRestore();
     }
