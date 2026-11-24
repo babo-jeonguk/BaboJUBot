@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -23,6 +22,7 @@ import {
 } from "@babojubot/runtime";
 import { z } from "zod";
 import { startServer } from "./app.ts";
+import { containerOwner } from "./isolation.ts";
 import { shutdownBudget } from "./shutdown-budget.ts";
 import { closeStarted } from "./shutdown.ts";
 import { onStopRequest } from "./stop-request.ts";
@@ -62,7 +62,7 @@ const containerSettings: ContainerSettings = {
     .array(destinationSchema)
     .parse(JSON.parse(env.BABOJUBOT_MODEL_DESTINATIONS || "[]")),
   // 같은 Docker를 쓰는 다른 제품 폴더의 컨테이너는 건드리지 않는다.
-  owner: createHash("sha256").update(productHome).digest("hex").slice(0, 16),
+  owner: containerOwner(productHome),
 };
 // Real connections are opt-in. `claude:work`처럼 쓰면 같은 프로그램의 다른 계정 연결이 된다.
 const enabled = (env.BABOJUBOT_PROVIDERS ?? "")
