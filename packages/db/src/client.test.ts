@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -282,7 +282,7 @@ describe("embedded Postgres lifetime", () => {
         const { readFileSync } = await import("node:fs");
         await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         const pid = Number(readFileSync(${JSON.stringify(path.join(dataDir, "postmaster.pid"))}, "utf8").split("\\n")[0]);
-        console.log(pid + " " + processIdentity(pid));
+        console.log(${reportPostgres});
         ${finish}
       `;
       const seen: { postgres?: Postgres } = {};
@@ -300,10 +300,7 @@ describe("embedded Postgres lifetime", () => {
       cluster.own(() => killHard(child));
       const exited = watchExit(child);
       const lines = lineReader(child);
-      const [pid, identity] = (await lines.next()).split(" ");
-      expect(Number(pid)).toBeGreaterThan(0);
-      expect(identity).not.toBe("undefined");
-      const started: Postgres = { pid: Number(pid), identity: identity! };
+      const started = postgresReport(await lines.next());
       seen.postgres = started;
       await lines.next();
       if (signal) child.kill(signal);
@@ -1049,6 +1046,18 @@ function readPostmaster(dataDir: string) {
  */
 type Postgres = { pid: number; identity: string };
 
+/**
+ * 자식이 띄운 Postgres를 부모에게 알리는 줄을 만드는 식(자식 코드에 그대로 넣는다. 자식에 `pid`와 `processIdentity`가 있어야
+ * 한다). 부모는 `postgresReport`로 읽는다. 두 쪽의 모양을 한곳에 둔다.
+ */
+const reportPostgres = `pid + " " + processIdentity(pid)`;
+
+/** 자식이 `reportPostgres`로 알린 줄의 Postgres. */
+function postgresReport(line: string): Postgres {
+  const [pid, identity] = line.split(" ");
+  return { pid: Number(pid), identity: identity! };
+}
+
 /** 지금 살아 있는 그 번호의 프로세스를 신원과 함께 잡는다. 신원을 읽지 못하면 던진다. */
 function identified(pid: number): Postgres {
   const identity = processIdentity(pid);
@@ -1114,6 +1123,44 @@ async function runningPostgresIn(
 async function postgresIn(dataDir: string, known: Postgres | undefined) {
   return known ?? (await runningPostgresIn(dataDir));
 }
+
+// 자식이 알린 Postgres의 번호와 신원은 프로세스 경계를 넘는다. 신원은 OS마다 모양이 달라 macOS(ps의 시작 시각)에는 공백이
+// 있다. 받은 쪽이 그 값을 통째로 받지 못하면 살아 있는 Postgres를 끝났다고 보고 정리가 건너뛴다(#288 외부 리뷰 3회차 STD-4/SPEC-1).
+// db 시험은 CI에서 Linux로만 돌므로, 신원을 주입한 실제 자식으로 그 줄을 만들어 Linux에서도 본다.
+describe("the line a child reports its Postgres on", () => {
+  /** `reportPostgres`를 `pid`·`processIdentity`가 주어진 식으로 정해진 자식에서 돌려 받은 줄. */
+  const reported = (pid: string, identity: string) => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        `const pid = ${pid}; const processIdentity = () => ${identity}; console.log(${reportPostgres});`,
+      ],
+      { encoding: "utf8", timeout: 10_000 }
+    );
+    expect(result.status, result.stderr).toBe(0);
+    return result.stdout.replace(/\n$/, "");
+  };
+
+  it("carries an identity with spaces whole, as macOS gives it", () => {
+    expect(
+      postgresReport(
+        reported("4321", JSON.stringify("Tue Nov 24 10:00:00 2026"))
+      )
+    ).toEqual({ pid: 4321, identity: "Tue Nov 24 10:00:00 2026" });
+  });
+
+  it.each([
+    { what: "no identity", pid: "4321", identity: "undefined" },
+    { what: "an empty identity", pid: "4321", identity: '""' },
+    { what: "no pid", pid: 'Number("")', identity: '"1234"' },
+  ])("fails when the child reports $what", ({ pid, identity }) => {
+    const line = reported(pid, identity);
+    expect(() => postgresReport(line)).toThrow(
+      `the child did not report its Postgres: ${line}`
+    );
+  });
+});
 
 // 남은 Postgres를 끄는 정리는 한 대상의 신호가 실패해도 다른 대상에 신호를 보내고 끝나기를 기다린 뒤, 그 실패를 함께 알린다
 // (#248 리뷰 SPEC-1). 대상은 신원과 함께 잡은 것이고, 신호 직전의 신원 확인은 `/proc`·ps로 하므로 신호 거부와 따로 돈다.

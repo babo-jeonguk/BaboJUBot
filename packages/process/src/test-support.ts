@@ -148,3 +148,11 @@ export function probeEnvironment<T>({
   console.log(`[${what}] 쓸 수 없어 건너뜁니다: ${found.missing}`);
   return undefined;
 }
+
+/**
+ * 다른 프로세스가 알린 프로세스 번호(pid 파일·출력 줄·서버 응답). 받은 그대로 숫자로 바꾼다.
+ */
+export function reportedPid(value: unknown, what: string): number {
+  void what;
+  return Number(value);
+}
