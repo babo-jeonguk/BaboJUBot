@@ -1212,6 +1212,10 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     // `-xz`의 z는 -x의 값이다. 값을 받지 않는 옵션 목록에 없는 글자 뒤는 판정할 수 없다.
     'execFileSync("git", ["ls-files", "-xz"]);\n',
     'execFileSync("git", ["ls-files", "-sxz"]);\n',
+    // git은 긴 옵션의 앞부분만 써도 받는다(parse-options의 줄여 쓰기). 경로 목록·-z를 정하는 옵션의 앞부분이면 판정할 수 없다.
+    'execFileSync("git", ["diff", "--name-o", "HEAD"]);\n',
+    'execFileSync("git", ["status", "--porc"]);\n',
+    'execFileSync("git", ["status", "--porcelain", "--nu"]);\n',
   ]) {
     const found = await lint(childProcess + code, place, gitListRule);
     assert.equal(found.length, 1, code);
