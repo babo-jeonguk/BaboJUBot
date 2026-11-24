@@ -844,7 +844,9 @@ const codeFile = new RegExp(`\\.(?:${codeFormatNames.join("|")})$`);
  * node 명령줄 옵션의 갈래(Node 문서 https://nodejs.org/api/cli.html). 값을 받는 옵션은 `--opt value`와 `--opt=value`로 받는다.
  * - 선적재 모듈을 받는 옵션: 진입점보다 먼저 그 모듈을 불러온다.
  * - 글로 넣는 코드를 받는 옵션: 무엇을 돌리는지 파일로 읽을 수 없다.
- * - 그 밖에 값을 받는 옵션과 값이 없는 옵션: 건너뛴다. 이 넷에 없는 옵션은 값을 받는지 몰라 판정할 수 없다.
+ * - 그 밖에 값을 받는 옵션과 값이 없는 옵션: 건너뛴다. 이 넷에 없는 옵션은 값을 받는지 몰라 판정할 수 없다. 환경 파일을 받는
+ *   옵션(`--env-file`·`--env-file-if-exists`)도 여기 두지 않는다: 그 파일의 NODE_OPTIONS도 적용되므로(Node 문서 `--env-file`) 무엇을
+ *   불러오는지 읽을 수 없다.
  */
 const nodePreloadOptions = new Set([
   "--import",
@@ -858,8 +860,6 @@ const nodeValueOptions = new Set([
   "--input-type",
   "-C",
   "--conditions",
-  "--env-file",
-  "--env-file-if-exists",
   "--test-reporter",
   "--test-reporter-destination",
   "--test-name-pattern",
@@ -898,34 +898,25 @@ const nodeFlags = new Set([
 ]);
 
 /**
- * `words[at]`이 `node`일 때 그 명령이 돌리는 것: 저장소 스크립트(`{ script }`)와 선적재하는 패키지(`{ package, via }`)의 목록과
- * node가 옵션·진입점으로 가져간 낱말의 끝(`end`), 또는 읽지 못하면 undefined. 진입점은 옵션 뒤 첫 낱말이고(`--` 뒤도), `--test`면 옵션 뒤 낱말이 모두 시험 파일이다. 진입점이 없으면
- * (`node --test`의 파일 찾기, REPL) 무엇을 돌리는지 모른다.
+ * node 옵션 낱말들을 `words[from]`부터 갈래대로 읽는다: 선적재하는 저장소 스크립트(`{ script }`)와 패키지(`{ package, via }`, `via`는
+ * `prefix`와 그 옵션·값), 옵션 뒤 첫 낱말의 자리(`next`, `--` 뒤 포함), `--test`가 있었는지(`test`). 글로 넣는 코드, 모르는 옵션,
+ * 저장소 밖이거나 없는 선적재 경로면 undefined.
  */
-function nodeTargets(words, at, base) {
-  /** 저장소 안 코드 파일이면 그 경로(`./` 접두 허용), 아니면 undefined. */
-  const repositoryFile = (word) => {
-    const file = path.posix.normalize(word.replace(/^\.\//, ""));
-    return !file.startsWith("../") &&
-      codeFile.test(file) &&
-      existsSync(path.join(base, file))
-      ? file
-      : undefined;
-  };
+function readNodeOptions(words, from, base, prefix) {
   const targets = [];
   /** 선적재 값: 경로면 저장소 스크립트, `node:`면 없음, 그 밖은 패키지. */
-  const preload = (value, via) => {
+  const preload = (value, option) => {
     if (value.startsWith("node:")) return true;
     if (/^\.{0,2}\//.test(value)) {
-      const file = repositoryFile(value);
+      const file = repositoryFile(base, value);
       if (file) targets.push({ script: file });
       return file !== undefined;
     }
-    targets.push({ package: value, via });
+    targets.push({ package: value, via: `${prefix} ${option} ${value}` });
     return true;
   };
   let test = false;
-  let next = at + 1;
+  let next = from;
   for (; next < words.length; next += 1) {
     const word = words[next];
     if (word === "--") {
@@ -944,15 +935,68 @@ function nodeTargets(words, at, base) {
     } else if (nodeFlags.has(option)) test ||= option === "--test";
     else return undefined;
   }
+  return { targets, next, test };
+}
+
+/** 저장소 `base` 안 코드 파일이면 그 경로(`./` 접두 허용), 아니면 undefined. */
+function repositoryFile(base, word) {
+  const file = path.posix.normalize(word.replace(/^\.\//, ""));
+  return !file.startsWith("../") &&
+    codeFile.test(file) &&
+    existsSync(path.join(base, file))
+    ? file
+    : undefined;
+}
+
+/**
+ * `words[at]`이 `node`일 때 그 명령이 돌리는 것: 저장소 스크립트(`{ script }`)와 선적재하는 패키지(`{ package, via }`)의 목록과
+ * node가 옵션·진입점으로 가져간 낱말의 끝(`end`), 또는 읽지 못하면 undefined. 진입점은 옵션 뒤 첫 낱말이고(`--` 뒤도), `--test`면 옵션 뒤 낱말이 모두 시험 파일이다. 진입점이 없으면
+ * (`node --test`의 파일 찾기, REPL) 무엇을 돌리는지 모른다.
+ */
+function nodeTargets(words, at, base) {
+  const options = readNodeOptions(words, at + 1, base, "node");
+  if (!options) return undefined;
+  const { targets, next, test } = options;
   const end = test ? words.length : next + 1;
   const entries = words.slice(next, end);
   if (entries.length === 0) return undefined;
   for (const entry of entries) {
-    const file = repositoryFile(entry);
+    const file = repositoryFile(base, entry);
     if (!file) return undefined;
     targets.push({ script: file });
   }
   return { targets, end };
+}
+
+/**
+ * 단계 `index`의 node가 받는 NODE_OPTIONS의 선적재 대상(`{ targets }`), 값이 없으면 `{ targets: [] }`, 읽어 낼 수 없으면
+ * `{ unread }`(그 까닭). 값은 같은 이름의 env 중 가장 좁은 것이다: 단계 > job > workflow(GitHub 문서 "Store information in
+ * variables": 같은 이름이 여럿이면 가장 구체적인 것을 쓴다, 단계의 것이 job·workflow의 것을 가린다). 읽어 낼 수 없는 것: 앞 단계가
+ * `$GITHUB_ENV`에 쓴 job(뒤 단계의 env를 바꿀 수 있다), 단계 셸이 NODE_OPTIONS를 정함, 표현식(`${{ }}`)이 든 값, 따옴표·역슬래시
+ * (Node가 푸는 인용)나 node 옵션 판정기(readNodeOptions)가 읽지 못하는 낱말이 든 값.
+ */
+function nodeOptionsOf(workflow, job, index, base) {
+  const steps = job.steps ?? [];
+  if (
+    steps.slice(0, index).some((before) => /GITHUB_ENV/.test(before.run ?? ""))
+  )
+    return { unread: "a step before it writes $GITHUB_ENV" };
+  if (/NODE_OPTIONS/.test(steps[index].run ?? ""))
+    return { unread: "the step sets NODE_OPTIONS in its shell" };
+  const value = [steps[index].env, job.env, workflow.env]
+    .map((env) => env?.NODE_OPTIONS)
+    .find((each) => each !== undefined);
+  if (value === undefined) return { targets: [] };
+  const text = String(value);
+  if (text.includes("${{"))
+    return { unread: `NODE_OPTIONS "${text}" holds an expression` };
+  const words = text.split(/\s+/).filter(Boolean);
+  const read = /["'\\]/.test(text)
+    ? undefined
+    : readNodeOptions(words, 0, base, "NODE_OPTIONS");
+  if (!read || read.test || read.next < words.length)
+    return { unread: `NODE_OPTIONS "${text}" has a part it cannot read` };
+  return { targets: read.targets };
 }
 
 /**
@@ -964,6 +1008,8 @@ function nodeTargets(words, at, base) {
 function runnersIn(run, base) {
   /** @type {({ script: string } | { package: string, via: string } | { unread: string })[]} */
   const found = [];
+  // node를 부르는가(NODE_OPTIONS는 node에만 닿는다).
+  let node = false;
   for (const line of run.split("\n")) {
     const words = line
       .split(/\$\(|[\s|;&()`]+/)
@@ -975,6 +1021,7 @@ function runnersIn(run, base) {
     words.forEach((word, at) => {
       if (at < taken || !codeRunners.has(word)) return;
       if (word === "pnpm" && words[at + 1] === "install") return;
+      node ||= word === "node";
       const read = word === "node" ? nodeTargets(words, at, base) : undefined;
       if (read) {
         found.push(...read.targets);
@@ -984,12 +1031,13 @@ function runnersIn(run, base) {
     // 한 줄에서 읽지 못한 실행기가 여럿이어도 그 줄을 한 번 알린다.
     if (unread) found.push({ unread: line.trim() });
   }
-  return found;
+  return { found, node };
 }
 
 /**
  * workflow에서 설치 전에 저장소 `base`의 패키지를 가져오는 스크립트를 돌리는 단계, 또는 설치 전에 무엇을 돌리는지 읽지 못한 실행기를
- * 부르는 단계. 읽지 못한 것을 "패키지 없음"으로 접지 않는다.
+ * 부르는 단계. node를 부르면 그 단계에 적용되는 NODE_OPTIONS의 선적재 모듈도 본다(nodeOptionsOf). 읽지 못한 것을 "패키지 없음"으로
+ * 접지 않는다.
  */
 function installProblems(workflow, base) {
   const problems = [];
@@ -1000,8 +1048,18 @@ function installProblems(workflow, base) {
         .slice(0, index)
         .some((before) => /^pnpm install\b/.test(before.run ?? ""));
       if (installed) return;
-      // 한 단계가 부르는 실행기를 모두 본다.
-      for (const runner of runnersIn(each.run ?? "", base)) {
+      // 한 단계가 부르는 실행기를 모두 본다. node는 환경의 선적재 모듈을 먼저 불러온다.
+      const { found, node } = runnersIn(each.run ?? "", base);
+      const runners = [...found];
+      if (node) {
+        const environment = nodeOptionsOf(workflow, job, index, base);
+        if ("unread" in environment)
+          problems.push(
+            `${id}: cannot tell what NODE_OPTIONS makes node load (${environment.unread}), and no pnpm install comes before it`
+          );
+        else runners.unshift(...environment.targets);
+      }
+      for (const runner of runners) {
         if ("unread" in runner) {
           problems.push(
             `${id}: cannot tell what "${runner.unread}" runs, and no pnpm install comes before it`
@@ -1010,7 +1068,7 @@ function installProblems(workflow, base) {
         }
         if ("package" in runner) {
           problems.push(
-            `${id}: node ${runner.via} ${runner.package} loads the package ${runner.package} without pnpm install before it`
+            `${id}: ${runner.via} loads the package ${runner.package} without pnpm install before it`
           );
           continue;
         }
