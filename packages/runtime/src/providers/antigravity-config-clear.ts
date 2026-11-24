@@ -117,20 +117,24 @@ function handled(name: string, removal: Removal) {
   }
 }
 
-/** 우리 파일 하나를 확인해 지운다. 확인하지 못한 것은 되돌린 뒤(되돌리지 못했으면 남긴 위치와 함께) 그 까닭을 남긴다. */
+/**
+ * 우리 파일 하나를 확인해 지운다. 확인하지 못한 것은 되돌린 뒤(되돌리지 못했으면 남긴 위치와 함께) 그 까닭을 남긴다. 확인이 바뀐
+ * 자리·일반 파일 아님이 아닌 이유(읽기 실패 등)로 던졌으면 확인할 수 없었던 것(`not_checkable`)으로 그 원인 코드와 함께 남긴다.
+ * 어느 쪽이든 정해진 까닭 줄로 남겨, 스크립트가 죽어 남긴 위치를 잃지 않게 한다.
+ */
 async function removeOwned(name: string) {
   try {
     handled(name, await removeConfirmed(name, confirmOwned));
   } catch (error) {
-    if (error instanceof ConfirmFailed && error.cause instanceof Unconfirmed) {
-      report(
-        error.cause.reason,
-        name,
-        error.kept === "restored" ? undefined : keptFields(error.kept)
-      );
-      return;
-    }
-    throw error;
+    if (!(error instanceof ConfirmFailed)) throw error;
+    const kept = error.kept === "restored" ? {} : keptFields(error.kept);
+    if (error.cause instanceof Unconfirmed)
+      report(error.cause.reason, name, kept);
+    else
+      report("not_checkable", name, {
+        ...kept,
+        code: failureCode(error.cause),
+      });
   }
 }
 const temporary = (name: string) =>
