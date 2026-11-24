@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 import { parse } from "yaml";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { codeFormats } from "./test-files.mjs";
@@ -790,4 +791,64 @@ test("runs every node:test suite through the counting runner and gives every Vit
       suite.name,
       `${suite.folder}/${suite.config}`
     );
+});
+
+/** 저장소 스크립트가 (자기가 가져오는 저장소 파일을 거쳐) 가져오는 저장소 밖 패키지 이름. `node:` 기본 모듈은 뺀다. */
+function packagesImportedBy(script, seen = new Set()) {
+  if (seen.has(script)) return [];
+  seen.add(script);
+  const text = readFileSync(path.join(root, script), "utf8");
+  const source = ts.createSourceFile(script, text, ts.ScriptTarget.Latest);
+  const specifiers = [];
+  const visit = (node) => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    )
+      specifiers.push(node.moduleSpecifier.text);
+    else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments[0] &&
+      ts.isStringLiteralLike(node.arguments[0])
+    )
+      specifiers.push(node.arguments[0].text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return specifiers.flatMap((specifier) => {
+    if (specifier.startsWith("node:")) return [];
+    if (!specifier.startsWith(".")) return [specifier];
+    const file = path.posix.normalize(
+      path.posix.join(path.posix.dirname(script), specifier)
+    );
+    return packagesImportedBy(file, seen);
+  });
+}
+
+// 의존성을 설치하지 않는 job(판정만 하는 가벼운 job)이 돌리는 저장소 스크립트는 저장소 밖 패키지를 가져오지 않아야 한다. 가져오면 그
+// job에서만 패키지를 찾지 못하고 실패한다(#292 외부 리뷰 1회차 CI run 45297151227: check-e2e-report.mjs → exit-after-output.ts →
+// @babojubot/contracts). 스크립트의 가져오기를 구문 트리로 따라가, 패키지가 필요하면 그 단계 앞에 설치가 있어야 한다.
+test("a job installs the packages before it runs a repository script that imports them", () => {
+  const problems = [];
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    const steps = job.steps ?? [];
+    steps.forEach((each, index) => {
+      const script =
+        /(?:^|\s)node\s+((?:scripts|\.agents)\/\S+\.(?:mjs|ts))/.exec(
+          each.run ?? ""
+        )?.[1];
+      if (!script) return;
+      const installed = steps
+        .slice(0, index)
+        .some((before) => /^pnpm install\b/.test(before.run ?? ""));
+      const packages = [...new Set(packagesImportedBy(script))];
+      if (!installed && packages.length > 0)
+        problems.push(
+          `${id}: ${script} imports ${packages.join(", ")} without pnpm install before it`
+        );
+    });
+  }
+  assert.deepEqual(problems, []);
 });
