@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   openCodexConnection,
   ProtocolClosed,
@@ -8,7 +8,8 @@ import {
   ProtocolTimeout,
 } from "./codex-connection.ts";
 import { testFolders } from "./test-folders.ts";
-import { killUnlessGone, processAlive } from "@babojubot/process/test-cleanup";
+import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
+import { lifelineHolder, processAlive } from "@babojubot/process/test-cleanup";
 
 // 합성 peer(replay.mjs)로 응답·종료를 정한다. 모델·네트워크는 쓰지 않는다.
 // 시험이 연 연결은 정리가 닫고 프로그램 정리(done)까지 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
@@ -24,6 +25,32 @@ function openOwned(options: Parameters<typeof openCodexConnection>[0]) {
 }
 const record = (value: unknown) => value as Record<string, unknown>;
 const alive = processAlive;
+// 프로그램이 남긴 자식은 연결을 쥐고 돈다. 끝은 번호가 아니라 연결의 닫힘으로 보고, 시험이 끄지 못한 것은 정리가 연결이 열려 있음을
+// 본 직후에만 그 번호로 끈다(`lifelineHolder`). 끝난 번호는 다른 프로그램에 다시 쓰일 수 있다.
+let lifelines: Lifelines;
+beforeAll(async () => {
+  lifelines = await openLifelines();
+});
+afterAll(() => lifelines.close());
+let leftCount = 0;
+/**
+ * 프로그램이 남기는 자식(`script`, 연결을 쥐고 돈다)과 그 정리(`end`). 자식은 연결을 쥔 뒤 넷째 핸들에 한 줄을 쓴다. 프로그램은 그
+ * 줄을 받은 뒤에 자식을 알려, 프로그램이 곧 끝나 자식이 함께 꺼져도 그 끝이 연결 닫힘으로 보인다.
+ */
+function leftChild(root: string) {
+  const name = `left-child-${++leftCount}`;
+  const held = lifelineHolder(
+    lifelines,
+    name,
+    path.join(root, `${name}.pid`),
+    'require("node:fs").writeSync(3, "connected\\n");'
+  );
+  return {
+    name,
+    script: `${held.code} setInterval(() => {}, 1000);`,
+    end: held.end,
+  };
+}
 async function peer(steps: unknown[]) {
   const root = await folders.make("codex-connection-");
   const file = path.join(root, "peer.json");
@@ -214,15 +241,15 @@ describe("a Codex app-server connection", () => {
     async () => {
       const root = await folders.make("codex-connection-");
       // The program starts a child that shares its output and never ends, answers one request, then exits with the other unanswered.
+      const left = leftChild(root);
       const program = `
-        const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"] });
-        console.log(JSON.stringify({ method: "child", params: { pid: child.pid } }));
+        const child = require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(left.script)}], { stdio: ["ignore", "inherit", "ignore", "pipe"] });
+        child.stdio[3].once("data", () => console.log(JSON.stringify({ method: "child", params: {} })));
         require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
           const frame = JSON.parse(line);
           if (frame.method === "answered")
             process.stdout.write(JSON.stringify({ id: frame.id, result: { which: "answered" } }) + "\\n", () => process.exit(3));
         });`;
-      let child = 0;
       let started!: () => void;
       const childStarted = new Promise<void>((resolve) => {
         started = resolve;
@@ -232,15 +259,10 @@ describe("a Codex app-server connection", () => {
         args: ["-e", program],
         cwd: root,
         env: { PATH: process.env.PATH },
-        onNotification: (frame) => {
-          child = record(frame.params).pid as number;
-          started();
-        },
+        onNotification: () => started(),
       });
-      // 프로그램이 남긴 자식을 시험 폴더를 지우기 전에 끈다. 이미 끝났으면 넘어간다.
-      folders.own(async () => {
-        if (child) killUnlessGone(child);
-      }, "the child the program left");
+      // 프로그램이 남긴 자식을 연결을 닫기 전에(등록 역순), 시험 폴더를 지우기 전에 끈다.
+      folders.own(left.end, "the child the program left");
 
       await childStarted;
       const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
@@ -250,7 +272,8 @@ describe("a Codex app-server connection", () => {
       ).toEqual({ which: "answered" });
       await failure;
       expect((await connection.done).code).toBe(3);
-      expect(alive(child)).toBe(false);
+      // 프로그램과 함께 꺼진다. 끝은 자식이 쥔 연결의 닫힘으로 본다.
+      await lifelines.closed(left.name);
     },
     30_000
   );
@@ -260,15 +283,15 @@ describe("a Codex app-server connection", () => {
   it("fails waiting requests when the program dies even if a child it cannot stop keeps its output open", async () => {
     const root = await folders.make("codex-connection-");
     // The child runs outside the test folder: on Windows a just-killed process can still hold its folder, which blocks removing it.
+    const left = leftChild(root);
     const program = `
-      const child = require("child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "ignore"], detached: true, cwd: require("os").tmpdir() });
-      console.log(JSON.stringify({ method: "child", params: { pid: child.pid } }));
+      const child = require("child_process").spawn(process.execPath, ["-e", ${JSON.stringify(left.script)}], { stdio: ["ignore", "inherit", "ignore", "pipe"], detached: true, cwd: require("os").tmpdir() });
+      child.stdio[3].once("data", () => console.log(JSON.stringify({ method: "child", params: {} })));
       require("readline").createInterface({ input: process.stdin }).on("line", (line) => {
         const frame = JSON.parse(line);
         if (frame.method === "answered")
           process.stdout.write(JSON.stringify({ id: frame.id, result: { which: "answered" } }) + "\\n", () => process.exit(3));
       });`;
-    let child = 0;
     let started!: () => void;
     const childStarted = new Promise<void>((resolve) => {
       started = resolve;
@@ -278,15 +301,10 @@ describe("a Codex app-server connection", () => {
       args: ["-e", program],
       cwd: root,
       env: { PATH: process.env.PATH },
-      onNotification: (frame) => {
-        child = record(frame.params).pid as number;
-        started();
-      },
+      onNotification: () => started(),
     });
-    // 프로그램이 남긴 자식을 시험 폴더를 지우기 전에 끈다. 이미 끝났으면 넘어간다.
-    folders.own(async () => {
-      if (child) killUnlessGone(child);
-    }, "the child the program left");
+    // 프로그램이 남긴 자식을 연결을 닫기 전에(등록 역순), 시험 폴더를 지우기 전에 끈다.
+    folders.own(left.end, "the child the program left");
 
     await childStarted;
     const waiting = connection.request("waiting", {}, { timeoutMs: 15_000 });
