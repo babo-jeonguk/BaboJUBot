@@ -526,6 +526,8 @@ describe("the credential relay", () => {
   });
 
   it("never returns the injected credential to the program when the upstream echoes it in a header, an error body or across stream chunks", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
     const { up, relay, url } = await setup();
     const grant = relay.grant(scope());
     const header = await send(url, grant.token, "/v1/echo-header");
@@ -543,6 +545,11 @@ describe("the credential relay", () => {
     );
     expect(stream.text).not.toContain("real-a");
     expect(stream.cut).toBe(true);
+    // 본문에서 찾은 반향마다 거르개가 멈춘 까닭을 한 번 남긴다(머리의 반향은 본문을 넘기기 전에 거부한다).
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the credential relay stopped passing an upstream answer (credential_echoed)",
+      "[provider] the credential relay stopped passing an upstream answer (credential_echoed)",
+    ]);
     // 상류의 반향은 로그인 거부가 아니다. 연결은 그대로 쓴다.
     expect(relay.failed()).toBe(false);
     expect((await send(url, grant.token)).status).toBe(200);
