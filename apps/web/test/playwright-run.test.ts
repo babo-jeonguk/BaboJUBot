@@ -55,7 +55,14 @@ it(
     );
     await within(ready, 10_000, "the child did not start");
     child.stdout.destroy(new Error("injected output failure"));
-    await expect(running).rejects.toEqual(new Error("injected output failure"));
+    const failure = await running.then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).cause).toEqual(
+      new Error("injected output failure")
+    );
     // 거절된 때에는 도움이 SIGKILL로 끈 자식의 끝이 이미 보였다.
     expectKilled(child);
   },
@@ -97,9 +104,11 @@ it(
       () => undefined,
       (error: unknown) => error
     );
-    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toBeInstanceOf(Error);
+    const cause = (failure as Error).cause;
+    expect(cause).toBeInstanceOf(AggregateError);
     expect(
-      (failure as AggregateError).errors.map((error: Error) => error.message)
+      (cause as AggregateError).errors.map((error: Error) => error.message)
     ).toEqual([
       "injected output failure",
       `the child: the output of the stopped child did not close within ${runToEndStopMs} ms`,
