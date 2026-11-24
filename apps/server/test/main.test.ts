@@ -14,7 +14,14 @@ import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import {
+  beforeEach,
+  expect,
+  it,
+  onTestFailed,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
@@ -468,6 +475,12 @@ function startMain(
   child.stderr!.on("data", (chunk) => (stderr += chunk));
   child.stdoutText = () => stdout;
   child.stderrText = () => stderr;
+  // 시험이 실패하면 그때 이 서버의 종료 상태와 출력 끝을 남긴다. 대기 시한뿐 아니라 이 서버가 있는 모든 실패에서 남는다.
+  onTestFailed(() => {
+    console.error(
+      `server ${child.pid} when the test failed (exit code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(stdout.slice(-2000))} stderr=${JSON.stringify(stderr.slice(-2000))}`
+    );
+  });
   child.dockerCalls = () =>
     orIfMissing(
       () => readFileSync(path.join(dockerConfig, "calls.jsonl"), "utf8"),
