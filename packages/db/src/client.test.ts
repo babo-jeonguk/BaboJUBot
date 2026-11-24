@@ -505,6 +505,44 @@ describe("a Postgres left by a killed process", () => {
     expect(isAlive(started)).toBe(false);
   }, 60_000);
 
+  // #288 parent 점검(번호 신원): Postgres가 이미 죽고 잠금 파일만 남은 뒤 그 번호를 무관한 프로그램이 받았으면, 정리는 그 번호로
+  // 신호하지 않고 확인하지 못한 이유로 실패한다. 잠금 파일의 번호만 믿으면 남의 프로그램에 신호한다.
+  it("does not signal the pid of a lock file left behind when an unrelated program has that pid", async () => {
+    const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
+    onTestFinished(() => removeCluster(dataDir));
+    const unrelated = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { stdio: "ignore" }
+    );
+    onTestFinished(() => killHard(unrelated));
+    // 듣는 쪽이 없는 port를 적은 남은 잠금 파일. 번호는 지금 도는 무관한 프로그램의 것이다.
+    fs.writeFileSync(
+      path.join(dataDir, "postmaster.pid"),
+      `${unrelated.pid}\n${dataDir}\n0\n${await candidatePort()}\n`
+    );
+    const kill = process.kill.bind(process);
+    const sent: [number, string | number | undefined][] = [];
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      sent.push([pid, signal]);
+      return kill(pid, signal);
+    });
+    onTestFinished(() => {
+      vi.restoreAllMocks();
+    });
+    const stopping: unknown = await (async () =>
+      stopPostgres(postmasterToStop(0, dataDir)))().then(
+      () => new Error("the cleanup passed without confirming the Postgres"),
+      (error: unknown) => error
+    );
+    expect(
+      sent.filter(([pid, signal]) => pid === unrelated.pid && signal !== 0)
+    ).toEqual([]);
+    expect(stopping).toMatchObject({
+      message: expect.stringContaining("could not be confirmed"),
+    });
+  }, 60_000);
+
   // 주인이 살아 있는지는 기록한 번호가 아니라 주인이 쥔 연결로 본다(#268). 번호는 주인이 죽은 뒤 다른 프로그램에 다시 주어지거나,
   // 거두지 않은 채(좀비) 남아 "살아 있음"으로 보일 수 있다. 연결은 주인이 죽으면 OS가 닫는다. 기록한 번호의 프로그램이 돌아도
   // 연결이 없으면 주인이 죽은 것이다. 주인 기록과 연결은 제품이 만든다(#286 항목 11): 그 기록으로 주인이 살아 있는 동안은 거부되고,
