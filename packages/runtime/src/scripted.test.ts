@@ -542,13 +542,16 @@ describe("demo Lead scenario", () => {
     ).toBe(leadReplyScript);
   });
 
-  it("holds the run until it is cancelled when the owner asks for a hold drill in any stage", async () => {
+  it("reads its context, then holds the run until it is cancelled when the owner asks for a hold drill in any stage", async () => {
     for (const stage of ["goal_setting", "researching"] as const) {
       const { steps } = demoLeadScript(
         at(stage, [message("실행 유지 연습 해 주세요")])
       );
-      expect(steps).toEqual([{ do: "hold", until: expect.any(Function) }]);
-      const hold = steps[0] as Extract<(typeof steps)[number], { do: "hold" }>;
+      expect(steps).toEqual([
+        { do: "read_context" },
+        { do: "hold", until: expect.any(Function) },
+      ]);
+      const hold = steps[1] as Extract<(typeof steps)[number], { do: "hold" }>;
       const controller = new AbortController();
       const held = hold.until(controller.signal);
       controller.abort("cancel");
@@ -765,8 +768,11 @@ describe("demo worker scenario", () => {
       },
     ]);
     const { steps } = demoWorkerScript(comment("실행 유지 연습"));
-    expect(steps).toEqual([{ do: "hold", until: expect.any(Function) }]);
-    const hold = steps[0] as Extract<(typeof steps)[number], { do: "hold" }>;
+    expect(steps).toEqual([
+      { do: "read_context" },
+      { do: "hold", until: expect.any(Function) },
+    ]);
+    const hold = steps[1] as Extract<(typeof steps)[number], { do: "hold" }>;
     const controller = new AbortController();
     const held = hold.until(controller.signal);
     controller.abort("cancel");

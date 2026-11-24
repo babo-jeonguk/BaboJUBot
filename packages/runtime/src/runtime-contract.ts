@@ -58,11 +58,6 @@ export type RuntimeContractOptions = {
    * 느린 실행기를 감당하게 잡고, 취소·완료 시한과 따로 잰다(#215).
    */
   startWithinMs?: number;
-  /**
-   * `worksUntilCancelled`가 취소될 때까지 일을 시작했다는 신호를 내지 않는 adapter(프로그램을 띄우지 않는 in-process 가짜)만 준다.
-   * 그때는 신호 대신 이 시간 뒤에 취소한다. 주지 않으면 신호를 `startWithinMs` 안에 기다린 뒤 취소한다.
-   */
-  quietStartMs?: number;
   /** 이 adapter가 이어 가지 못하는 세션(만료 등). 세션 이어가기를 선언한 adapter는 꼭 준다. */
   unusableSession?: SessionState;
   /**
@@ -91,7 +86,10 @@ export type RuntimeContractOptions = {
   readinessWithinMs?: number;
 };
 
-/** 가짜 도구 서버. 지금 실행 시도의 요청 하나로 답하고, 도구 호출을 받을 때마다 알린다. */
+/**
+ * 가짜 도구 서버. 지금 실행 시도의 요청 하나로 답하고, 도구 호출을 받을 때마다 알린다. 받은 요청이 모두 끝났는지(답을 다 쓰거나
+ * 연결이 닫힘)도 알린다(`settled`). 실행 시도의 프로그램이 낸 도구 호출이 이 서버에서 끝난 것을 보는 신호다.
+ */
 async function startFakeToolServer() {
   let current: RunRequest | undefined;
   let messages: string[] = [];
@@ -99,7 +97,15 @@ async function startFakeToolServer() {
   const route = (tool: "get_run_context" | "send_message") =>
     `${orgTools[tool].method} ${orgToolsBasePath}${orgTools[tool].path}`;
   let requests = 0;
+  // 받았지만 아직 끝나지 않은 요청 수와, 그 수가 0이 되기를 기다리는 쪽.
+  let open = 0;
+  const onSettled = new Set<() => void>();
   const server: Server = createServer((req, res) => {
+    open++;
+    res.once("close", () => {
+      open--;
+      if (open === 0) for (const notify of onSettled) notify();
+    });
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
     req.on("end", () => {
@@ -169,6 +175,16 @@ async function startFakeToolServer() {
       return messages;
     },
     onRequest,
+    /** 받은 요청이 모두 끝나면 이행한다. 지금 열린 요청이 없으면 바로 이행한다. */
+    settled: () =>
+      new Promise<void>((resolve) => {
+        if (open === 0) return resolve();
+        const notify = () => {
+          onSettled.delete(notify);
+          resolve();
+        };
+        onSettled.add(notify);
+      }),
     close: () =>
       new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -178,8 +194,6 @@ async function startFakeToolServer() {
   };
 }
 
-/** 돌아온 뒤 늦은 활동을 기다리는 시간. */
-const quietMs = 50;
 /** 기한 밖에서 검사 자체에 주는 여유(vitest 시간 제한). */
 const settleMs = 5_000;
 
@@ -194,7 +208,8 @@ const deadline = <T>(promise: Promise<T>, ms: number, what: string) =>
 /**
  * 프로바이더 adapter의 공통 검사를 등록한다. 두 장면에서 다음 약속을 확인한다.
  * 1. 취소를 받으면 정해진 시간 안에 `cancelled`로 끝난다.
- * 2. 돌아온 뒤 활동을 내지 않는다.
+ * 2. 돌아온 뒤 활동을 내지 않는다. 돌아온 뒤의 활동은 오는 순간 거절된다(언제 오든 그 adapter의 실패로 드러난다). 그 실행 시도의
+ *    도구 호출이 모두 끝난 뒤(프로그램이 낸 일의 끝 신호) 늦은 활동이 없는지 본다.
  * 3. 내는 활동은 모두 공개 활동 형식(`runtimeActivitySchema`)에 맞는다. 맞지 않으면 dispatcher가 버려 대시보드에서 사라진다.
  * 4. 종료 결과가 계약 형식(`runResultSchema`)에 맞는다.
  * 5. 실행 시도 토큰이 오류 문구·요약·활동에 나오지 않는다.
@@ -219,7 +234,6 @@ export function describeRuntimeContract(
     cancelWithinMs = 5_000,
     finishWithinMs = 10_000,
     startWithinMs = 30_000,
-    quietStartMs,
     unusableSession,
     resumes,
     steers,
@@ -245,7 +259,8 @@ export function describeRuntimeContract(
     afterAll(() => tools.close());
 
     /**
-     * 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. 돌아온 뒤 낸 활동은 `late`에 따로 모은다.
+     * 새 신원(또는 `agent`의 조직·에이전트에 새 실행 시도 ID)으로 장면 하나를 실행한다. 돌아온 뒤 낸 활동은 `late`에 따로 모으고
+     * 그 `emit`을 거절한다. adapter가 그 활동을 기다리지 않았으면 처리되지 않은 거절로 러너가 이 파일의 실패로 알린다.
      */
     function run(
       scene: RuntimeContractScene,
@@ -284,19 +299,17 @@ export function describeRuntimeContract(
         };
       });
       tools.onRequest.add(markWorking);
-      // 돌아온 뒤에 온 활동. 오는 순간 조용히 있어야 할 구간의 확인이 실패한다.
-      let markLate!: () => void;
-      const lateArrived = new Promise<void>((resolve) => {
-        markLate = resolve;
-      });
       const result = adapter
         .execute(request, {
           signal: controller.signal,
           emit: async (activity) => {
             if (returned) {
               late.push(activity);
-              markLate();
-            } else activities.push(activity);
+              throw new Error(
+                `${name} emitted an activity after the run returned: ${JSON.stringify(activity)}`
+              );
+            }
+            activities.push(activity);
             markWorking();
             await gate;
           },
@@ -327,7 +340,6 @@ export function describeRuntimeContract(
         controller,
         activities,
         late,
-        lateArrived,
         result,
         started,
         working,
@@ -349,13 +361,13 @@ export function describeRuntimeContract(
           runtimeActivitySchema.safeParse(activity).error,
           JSON.stringify(activity)
         ).toBeUndefined();
-      // 돌아온 뒤 quietMs 동안 활동이 오지 않아야 한다. 오면 그 순간 이 경주가 끝나 실패한다.
-      expect(
-        await Promise.race([
-          attempt.lateArrived.then(() => "late activity"),
-          new Promise((resolve) => setTimeout(() => resolve("quiet"), quietMs)),
-        ])
-      ).toBe("quiet");
+      // 프로바이더는 프로그램과 그 정리가 끝난 뒤에 돌아온다. 그 프로그램이 낸 도구 호출이 이 서버에서 모두 끝난 것을 신호로
+      // 기다린 뒤, 그때까지 돌아온 뒤의 활동이 없었는지 본다. 그 뒤에 오는 활동도 `emit`이 거절해 드러난다.
+      await deadline(
+        tools.settled(),
+        settleMs,
+        "did not settle its tool calls after it returned"
+      );
       expect(attempt.late).toEqual([]);
       const published = JSON.stringify({
         error: result.error,
@@ -385,18 +397,8 @@ export function describeRuntimeContract(
       "settles as cancelled soon after a cancel and stays quiet afterwards",
       async () => {
         const attempt = run(worksUntilCancelled);
-        // 시작 신호가 없는 in-process 가짜는 quietStartMs 동안 스스로 돌아오지 않았는지를 보고 취소한다.
-        if (quietStartMs === undefined) await attempt.started();
-        else
-          expect(
-            await Promise.race([
-              settled(attempt.result).then(() => "returned"),
-              new Promise((resolve) =>
-                setTimeout(() => resolve("still working"), quietStartMs)
-              ),
-            ]),
-            "returned before it was cancelled"
-          ).toBe("still working");
+        // 일을 시작했다는 신호(도구 호출·활동)를 본 뒤에 취소한다. 그 신호 없이 돌아오면 `started`가 실패한다.
+        await attempt.started();
         expect(attempt.returned, "returned before it was cancelled").toBe(
           false
         );
@@ -412,7 +414,7 @@ export function describeRuntimeContract(
         expect(result.stopReason).toBe("cancelled");
         await expectSettled(attempt, result);
       },
-      (quietStartMs ?? startWithinMs) + cancelWithinMs + settleMs
+      startWithinMs + cancelWithinMs + settleMs
     );
 
     const evidenceOf = (
