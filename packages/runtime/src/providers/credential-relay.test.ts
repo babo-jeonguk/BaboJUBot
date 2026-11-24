@@ -362,6 +362,49 @@ describe("the credential relay", () => {
     ]);
   });
 
+  // 답 중간에 HTTP 형식이 깨지면 상류 요청이 그 원인(파서 오류)을 알린다. 뒤따르는 연결 끊김(ECONNRESET)으로 바꿔 남기지 않는다
+  // (#286 병합분 항목 11).
+  it("leaves the parser's cause once when the upstream's answer turns malformed mid-way", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const answering: net.Socket[] = [];
+    const malformed = net.createServer((socket) => {
+      answering.push(socket);
+      socket.once("data", () =>
+        socket.write(
+          "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n4\r\npart\r\n"
+        )
+      );
+    });
+    await new Promise<void>((resolve) =>
+      malformed.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          for (const socket of answering) socket.destroy();
+          malformed.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (malformed.address() as net.AddressInfo).port;
+    const { relay, url } = await setup({
+      through: async (up) => `http://127.0.0.1:${port}${new URL(up).pathname}`,
+    });
+    const stream = await send(url, relay.grant(scope()).token, "/v1/stream");
+    const reader = stream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("part");
+    // 첫 조각을 받은 뒤에 상류가 형식에 맞지 않는 조각 길이를 보낸다.
+    answering[0]!.write("zz\r\n");
+    await expect(
+      (async () => {
+        for (;;) if ((await reader.read()).done) return "ended";
+      })()
+    ).rejects.toThrow();
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] an upstream answer broke off in the credential relay (HPE_INVALID_CHUNK_SIZE)",
+    ]);
+  });
+
   // 중계가 스스로 상류 요청을 끊은 것(프로그램이 떠남·실행 취소)은 답이다. 상류 장애로 남기지 않는다.
   it("leaves no upstream failure when it cuts the upstream itself, because the program hung up or the run was cancelled", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});

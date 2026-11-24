@@ -575,6 +575,69 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     }
   );
 
+  // 답 중간에 HTTP 형식이 깨지면 목적지 쪽 요청이 그 원인(파서 오류)을 알린다. 뒤따르는 연결 끊김(ECONNRESET)으로 바꿔 남기지 않는다
+  // (#286 병합분 항목 11).
+  it("leaves the parser's cause once when a plain HTTP destination's answer turns malformed mid-way", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const answering: net.Socket[] = [];
+    const server = net.createServer((socket) => {
+      answering.push(socket);
+      socket.once("data", () =>
+        socket.write(
+          "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n4\r\npart\r\n"
+        )
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          for (const socket of answering) socket.destroy();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    const { relays, refused, setResearch } = hub();
+    setResearch([
+      destination({
+        host: "localhost",
+        port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const received = await new Promise<{ body: string; ending: string }>(
+      (resolve, reject) => {
+        const req = http.request({
+          socketPath: path.join(relay.directory, "egress.sock"),
+          path: `http://localhost:${port}/page`,
+          agent: false,
+        });
+        req.on("response", (res) => {
+          let body = "";
+          // 첫 조각을 받은 뒤에 목적지가 형식에 맞지 않는 조각 길이를 보낸다.
+          res.once("data", () => answering[0]!.write("zz\r\n"));
+          res.on("data", (chunk) => (body += chunk));
+          res.on("end", () => resolve({ body, ending: "ended" }));
+          res.on("error", () => resolve({ body, ending: "broken" }));
+        });
+        req.on("error", reject);
+        req.end();
+      }
+    );
+    expect(received).toEqual({ body: "part", ending: "broken" });
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] an allowed destination's answer broke off in the relay (HPE_INVALID_CHUNK_SIZE)",
+    ]);
+    setResearch([]);
+    await relays.revalidate(identity.organizationId);
+    expect(refused).toEqual([]);
+  });
+
   // 요청자가 답을 다 받기 전에 떠난 것은 답이다. 원인을 남기지 않고, 목적지 쪽 연결도 닫아 정리한다.
   it("closes the destination side without a warning when the requester leaves mid-answer", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
