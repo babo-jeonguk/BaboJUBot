@@ -1179,9 +1179,9 @@ test("git path lists are read with -z, judged by the syntax tree of the call", a
     for (const [reported, kept] of gitLists) {
       const found = await lint(childProcess + reported, place, gitListRule);
       assert.equal(found.length, 1, `${place}: ${reported}`);
-      assert.match(
-        found[0]?.message ?? "",
-        /경로 목록을 -z 없이 읽습니다/,
+      assert.deepEqual(
+        [found[0]?.ruleId, found[0]?.messageId],
+        ["product/git-path-list-nul", "missing"],
         `${place}: ${reported}`
       );
       assert.deepEqual(
@@ -1213,7 +1213,11 @@ test("a git call whose subcommand or options the rule cannot read is reported, n
   ]) {
     const found = await lint(childProcess + code, place, gitListRule);
     assert.equal(found.length, 1, code);
-    assert.match(found[0]?.message ?? "", /판정할 수 없습니다/, code);
+    assert.deepEqual(
+      [found[0]?.ruleId, found[0]?.messageId],
+      ["product/git-path-list-nul", "unjudged"],
+      code
+    );
   }
   // 하위 명령 바로 다음의 -z, 경로 목록 옵션이 없는 조건부 하위 명령, 경로 목록이 아닌 하위 명령, 아무도 부르지 않는 감싸기.
   for (const code of [
@@ -1234,19 +1238,29 @@ test("a git call whose subcommand or options the rule cannot read is reported, n
 // 지난 외부 리뷰의 반례는 옵션을 해석하지 않아도 모두 보고되거나 판정할 수 없다(#291 외부 리뷰 2~5회차 SPEC-4).
 test("past counterexamples to the git option reading are all reported", async () => {
   const place = "scripts/provider-live.mjs";
-  for (const args of [
-    '["ls-files", "-x", "-z"]',
-    '["ls-files", "-xz"]',
-    '["ls-files", "-sxz"]',
-    '["status", "--porcelain", "-uz"]',
-    '["status", "--porcelain", "-z", "--no-null"]',
-    '["status", "--porcelain", "--null", "--no-null"]',
-    '["status", "--porcelain", "--nu"]',
-    '["log", "--name-only", "--author", "-z"]',
-    '["log", "--grep", "--end-of-options", "--name-only", "--format="]',
+  for (const [args, messageId] of [
+    ['["ls-files", "-x", "-z"]', "missing"],
+    ['["ls-files", "-xz"]', "missing"],
+    ['["ls-files", "-sxz"]', "missing"],
+    ['["status", "--porcelain", "-uz"]', "unjudged"],
+    ['["status", "--porcelain", "-z", "--no-null"]', "unjudged"],
+    ['["status", "--porcelain", "--null", "--no-null"]', "unjudged"],
+    ['["status", "--porcelain", "--nu"]', "missing"],
+    ['["log", "--name-only", "--author", "-z"]', "missing"],
+    [
+      '["log", "--grep", "--end-of-options", "--name-only", "--format="]',
+      "missing",
+    ],
   ]) {
     const code = `${childProcess}execFileSync("git", ${args});\n`;
-    assert.equal((await lint(code, place, gitListRule)).length, 1, args);
+    assert.deepEqual(
+      (await lint(code, place, gitListRule)).map((found) => [
+        found.ruleId,
+        found.messageId,
+      ]),
+      [["product/git-path-list-nul", messageId]],
+      args
+    );
   }
 });
 

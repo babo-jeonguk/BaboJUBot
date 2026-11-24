@@ -282,7 +282,11 @@ test("fails on a repository import of a check setting it cannot resolve or follo
         'import { a } from "./shared.js";\nimport "vitest/config";\nvoid a;\n',
       "shared.ts": "export const a = 1;\n",
     }),
-    /vitest\.config\.ts imports "\.\/shared\.js", which does not resolve to a repository file/
+    {
+      name: "Error",
+      message:
+        'vitest.config.ts imports "./shared.js", which does not resolve to a repository file; the files a check setting imports must resolve to protect them (.agents/scripts/protected-files.ts)',
+    }
   );
   assert.throws(
     sample({
@@ -292,40 +296,47 @@ test("fails on a repository import of a check setting it cannot resolve or follo
       }),
       "eslint.config.js": 'import "@babojubot/kit/hidden";\n',
     }),
-    /eslint\.config\.js imports "@babojubot\/kit\/hidden", which Node refuses \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/
+    {
+      name: "Error",
+      message:
+        'eslint.config.js imports "@babojubot/kit/hidden", which Node refuses (ERR_PACKAGE_PATH_NOT_EXPORTED); the files a check setting imports must resolve to protect them (.agents/scripts/protected-files.ts)',
+    }
   );
   // 이름을 글자로 적지 않은 import()와 require로 불러오는 길(node:module·CommonJS)은 따라가지 못하므로 건너뛰지 않고 멈춘다.
   for (const [setting, text, reason] of [
     [
       "vitest.config.ts",
       'const name = "./shared.ts";\nawait import(name);\n',
-      /vitest\.config\.ts loads a module through import\(\) with a name that is not a string literal/,
+      "vitest.config.ts loads a module through import() with a name that is not a string literal, which this check does not follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)",
     ],
     [
       "eslint.config.js",
       'import { createRequire } from "node:module";\ncreateRequire(import.meta.url)("./shared.ts");\n',
-      /eslint\.config\.js takes "createRequire" from "node:module", which can load a module by rules this check does not follow/,
+      'eslint.config.js takes "createRequire" from "node:module", which can load a module by rules this check does not follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)',
     ],
     [
       "eslint.config.js",
       'process.getBuiltinModule("module").createRequire(import.meta.url)("./shared.ts");\n',
-      /eslint\.config\.js loads "module" through getBuiltinModule, which can load a module by rules this check does not follow/,
+      'eslint.config.js loads "module" through getBuiltinModule, which can load a module by rules this check does not follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)',
     ],
     [
       "eslint.config.cjs",
       'require("./shared.ts");\n',
-      /eslint\.config\.cjs calls require, which this check does not follow/,
+      "eslint.config.cjs calls require, which this check does not follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)",
     ],
   ] as const)
     assert.throws(
       sample({ [setting]: text, "shared.ts": "export const a = 1;\n" }),
-      reason,
+      { name: "Error", message: reason },
       setting
     );
   // getBuiltinModule은 부르는 모양(속성 이름)이 아니라 출처로 알아본다: node:process의 이름 있는 가져오기·별칭, 구조 분해,
   // globalThis.process. 출처를 따라갈 수 없게 값으로 넘기면 따라가지 못한다고 멈춘다(#291 외부 리뷰 2회차 SPEC-3).
-  const viaModule =
-    /eslint\.config\.js loads "module" through getBuiltinModule, which can load a module by rules this check does not follow/;
+  const viaModule = {
+    name: "Error",
+    message:
+      'eslint.config.js loads "module" through getBuiltinModule, which can load a module by rules this check does not follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)',
+  };
   for (const text of [
     'import { getBuiltinModule } from "node:process";\ngetBuiltinModule("module").createRequire(import.meta.url)("./shared.ts");\n',
     'import { getBuiltinModule as load } from "node:process";\nload("module").createRequire(import.meta.url)("./shared.ts");\n',
@@ -346,7 +357,11 @@ test("fails on a repository import of a check setting it cannot resolve or follo
         'const loaders = [process.getBuiltinModule];\nloaders[0]("module").createRequire(import.meta.url)("./shared.ts");\n',
       "shared.ts": "export const a = 1;\n",
     }),
-    /eslint\.config\.js hands on a module loader \(process\.getBuiltinModule\) as a value, which this check cannot follow/
+    {
+      name: "Error",
+      message:
+        "eslint.config.js hands on a module loader (process.getBuiltinModule) as a value, which this check cannot follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)",
+    }
   );
   // 코드가 아닌 파일(JSON 등)도 설정이 읽으면 보호한다. 그 안은 따라가지 않는다.
   assert.deepEqual(

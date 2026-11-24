@@ -194,15 +194,15 @@ test("judges protected files by their names, not by OpenCode's patterns", (t) =>
       "src/vitest.d/eslint.config.js",
     ],
   });
-  assertProblem(
-    result,
-    /protected file changed: src\/vitest\.d\/eslint\.config\.js/
+  // 다시 연 폴더 안의 실제 설정 둘은 보고하고, 설정 이름이 아닌 파일은 보고하지 않는다.
+  assert.deepEqual(
+    [result.status, result.output],
+    [
+      1,
+      "problem: protected file changed: src/tsconfig-tools/tsconfig.json (check setting)\n" +
+        "problem: protected file changed: src/vitest.d/eslint.config.js (check setting)\n",
+    ]
   );
-  assert.match(
-    result.output,
-    /protected file changed: src\/tsconfig-tools\/tsconfig\.json/
-  );
-  assert.doesNotMatch(result.output, /src\/vitest-tools\/config\.ts/);
 });
 
 test("reports a staged change that the working tree no longer shows", (t) => {

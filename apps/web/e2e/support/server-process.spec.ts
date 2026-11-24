@@ -222,13 +222,23 @@ test("reports both the stop request deadline and the end check after SIGKILL whe
     () => undefined,
     (error: unknown) => error
   );
-  expect(failure).toBeInstanceOf(Error);
-  const message =
-    failure instanceof Error
-      ? `${failure.message} ${String(failure.cause)}`
-      : "";
-  expect(message).toMatch(/멈춤 요청 뒤 20ms 안에 끝나지 않아/);
-  expect(message).toMatch(/did not end after SIGKILL within 20 ms/);
+  // 두 실패를 묶은 AggregateError(combinedFailure): 멈춤 요청 시한 실패(원인은 그 시한)와 SIGKILL 뒤 끝 확인 실패.
+  expect(failure).toBeInstanceOf(AggregateError);
+  const combined = failure as AggregateError;
+  expect(combined.message).toBe(
+    "fake server could not be stopped: fake server가 멈춤 요청 뒤 20ms 안에 끝나지 않아 강제로 끝냈다:  — 그리고 fake server did not end after SIGKILL within 20 ms"
+  );
+  const [unstopped, unended, ...more] = combined.errors as Error[];
+  expect(more).toEqual([]);
+  expect(unstopped?.message).toBe(
+    "fake server가 멈춤 요청 뒤 20ms 안에 끝나지 않아 강제로 끝냈다: "
+  );
+  expect((unstopped?.cause as Error | undefined)?.message).toBe(
+    "fake server did not end after the stop request within 20 ms"
+  );
+  expect(unended?.message).toBe(
+    "fake server did not end after SIGKILL within 20 ms"
+  );
   expect(sent).toHaveLength(1);
   expect(signals).toEqual(["SIGKILL"]);
 });
@@ -271,7 +281,7 @@ test("fails as ended before start when the output ends after the exit without a 
   await new Promise((resolve) => setImmediate(resolve));
   stdout.end("starting\n");
   await expect(ready).rejects.toThrow(
-    /시작 전에 끝났다\(code 3, signal null\)/
+    new Error("fake server가 시작 전에 끝났다(code 3, signal null): starting\n")
   );
 });
 
@@ -286,7 +296,9 @@ test("fails as an unconfirmed end when the output does not end after the exit", 
     { readyTimeoutMs: 10_000, outputEndMs: 20 }
   );
   await expect(ready).rejects.toThrow(
-    /출력이 20ms 안에 끝나지 않아 끝을 확인하지 못했다/
+    new Error(
+      "fake server가 시작 줄 없이 끝났고(code 0, signal null) 출력이 20ms 안에 끝나지 않아 끝을 확인하지 못했다(출력을 물려받은 자손이 쥐고 있을 수 있다): "
+    )
   );
   stdout.destroy();
 });

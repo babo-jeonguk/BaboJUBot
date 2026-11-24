@@ -1795,300 +1795,301 @@ const laterImport = `import { awaitedLater } from "@babojubot/process/test-clean
 const laterHead = `const p = Promise.resolve(1);\nconst use = (value) => value;\nconst child = {};\n`;
 
 test("a promise marked with awaitedLater must be stored and awaited later in the same file", async () => {
-  /** @type {Record<string, [string, RegExp]>} */
+  /** @type {Record<string, [string, string]>} */
   const found = {
     "a dropped call": [
       `${laterImport}${laterHead}awaitedLater(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "an awaited call": [
       `${laterImport}${laterHead}await awaitedLater(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "a call passed on": [
       `${laterImport}${laterHead}use(awaitedLater(p));\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "a let": [
       `${laterImport}${laterHead}let later = awaitedLater(p);\nawait later;\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "a const never awaited": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nuse(later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a const only chained": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nlater.then(() => 1);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a property never awaited": [
       `${laterImport}${laterHead}child.exited = awaitedLater(p);\nuse(child.exited);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a same-name property of another object": [
       `${laterImport}${laterHead}const other = {};\nchild.exited = awaitedLater(p);\nawait other.exited;\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "the same object under another name": [
       `${laterImport}${laterHead}child.exited = awaitedLater(p);\nconst alias = child;\nawait alias.exited;\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a shorter path": [
       `${laterImport}${laterHead}child.run = {};\nchild.run.exited = awaitedLater(p);\nawait child.exited;\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a property of a call result": [
       `${laterImport}${laterHead}const make = () => child;\nmake().exited = awaitedLater(p);\nawait make().exited;\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a computed property": [
       `${laterImport}${laterHead}const key = "exited";\nchild[key] = awaitedLater(p);\nawait child[key];\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // 출처로 판정한다: 다른 이름, 상대 경로, 이름공간, 다시 받은 const.
     "an aliased import": [
       `import { awaitedLater as later } from "@babojubot/process/test-cleanup";\n${laterHead}later(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     // 상대 경로로 가져온 것은 자리마다 실제 test-cleanup.ts를 가리키는 경로로 아래 "awaitedLater is told by the file it comes from"이
     // 본다. 모든 자리에 같은 `../test-cleanup.ts`를 쓰면 다른 파일을 가리킨다(경로 철자로 보던 판정이 받던 모양, #266 리뷰 SPEC-5).
     "a namespace import": [
       `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}cleanup.awaitedLater(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "a const alias": [
       `${laterImport}${laterHead}const mark = awaitedLater;\nmark(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "the function passed as a value": [
       `${laterImport}${laterHead}[p].map(awaitedLater);\n`,
-      /부르지 않고/,
+      "notCalled",
     ],
     // 출처는 이름공간에서 꺼낸 const, 구조 분해, 이름공간의 별칭, 동적 가져오기까지 따라간다(#269).
     "a const taken from the namespace": [
       `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const mark = cleanup.awaitedLater;\nmark(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "a name destructured from the namespace": [
       `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const { awaitedLater: mark } = cleanup;\nmark(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "an alias of the namespace": [
       `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const tools = cleanup;\ntools.awaitedLater(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "a name destructured from a dynamic import": [
       `${laterHead}const { awaitedLater } = await import("@babojubot/process/test-cleanup");\nawaitedLater(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     // 출처로 본다: 이름공간에서 꺼낸 이름의 const 별칭(#266 리뷰 SPEC-4).
     "a const alias of a name taken from the namespace": [
       `import * as cleanup from "@babojubot/process/test-cleanup";\n${laterHead}const { awaitedLater } = cleanup;\nconst mark = awaitedLater;\nmark(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     // 공용 가져오기 판정: require·createRequire에서 꺼낸 이름도 같다(#266 리뷰 SPEC-1).
     "a name taken from a renamed createRequire": [
       `import { createRequire as make } from "node:module";\nconst load = make(import.meta.url);\nconst { awaitedLater: mark } = load("@babojubot/process/test-cleanup");\n${laterHead}mark(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     "a name taken from a createRequire function": [
       `import { createRequire } from "node:module";\nconst load = createRequire(import.meta.url);\nconst { awaitedLater: mark } = load("@babojubot/process/test-cleanup");\n${laterHead}mark(p);\n`,
-      /담지 않습니다/,
+      "notStored",
     ],
     // 다시 내보내면 다른 파일에서 부른 결과를 따라갈 수 없다.
     "a re-export": [
       `export { awaitedLater } from "@babojubot/process/test-cleanup";\n`,
-      /부르지 않고/,
+      "notCalled",
     ],
     // 상대 경로의 다시 내보내기는 자리마다 실제 파일을 가리키는 경로로 "awaitedLater is told by the file it comes from"이 본다.
     "a renamed re-export": [
       `export { awaitedLater as later } from "@babojubot/process/test-cleanup";\n`,
-      /부르지 않고/,
+      "notCalled",
     ],
     "a re-export of the whole module": [
       `export * from "@babojubot/process/test-cleanup";\n`,
-      /부르지 않고/,
+      "notCalled",
     ],
     // 기다림은 그 Promise의 결과를 받는 호출만이다. 무관한 호출의 인자로 넣고 그 호출을 기다려도 기다린 것이 아니다.
     "an await around an unrelated call": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Boolean(later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await around a global method": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait console.log(later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await around a local function that drops its argument": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst noop = (value) => value !== undefined;\nawait noop(later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // 내장·외부 패키지의 함수는 결과를 받는지 알 수 없다. 이 저장소의 시험 도움만 따라갈 수 없어도 기다림으로 본다.
     "an await around an imported built-in function": [
       `${laterImport}import { inspect } from "node:util";\n${laterHead}const later = awaitedLater(p);\nawait inspect(later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await around a method of a built-in namespace": [
       `${laterImport}import * as fsp from "node:fs/promises";\n${laterHead}const later = awaitedLater(p);\nawait fsp.readFile(later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // 결과를 받는 자리는 인자 위치까지 맞아야 한다. 조합 함수는 첫 인자 배열만, expect는 첫 인자만, 가져온 도움은 첫 인자만 받는다(#272 외부 리뷰 F1).
     "a second argument of Promise.all": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.all([], later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a second argument of Promise.race": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.race([p], later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a promise passed to Promise.all without an array": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.all(later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "the message argument of expect": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(p, later).resolves.toBe(1);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a later argument of an imported helper": [
       `${laterImport}import { within } from "./support.ts";\n${laterHead}const later = awaitedLater(p);\nawait within(1000, later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a later argument of a helper from a namespace import": [
       `${laterImport}import * as support from "./support.ts";\n${laterHead}const later = awaitedLater(p);\nawait support.within(1000, later);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await of an array that holds it": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait [later];\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a switch without default that awaits in every case": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nswitch (Math.random() > 0.5) {\n  case true:\n    await later;\n    break;\n  case false:\n    await later;\n}\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "nested ifs with one leaf that does not await": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nif (Math.random() > 0.5) {\n  if (Math.random() > 0.5) await later;\n  else use(1);\n} else await later;\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "an expect that neither rejects nor resolves": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(later).toBeInstanceOf(Promise);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a property read that is not then, catch or finally": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait later.constructor;\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // 한 분기에서만 기다리면 다른 길에서 거절이 감춰진다.
     "an await in one branch of an if": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nif (Math.random() > 0.5) await later;\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "an await behind &&": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wanted = Math.random() > 0.5;\nwanted && (await later);\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "an await in one arm of a conditional expression": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait (Math.random() > 0.5 ? later : p);\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "an await in a loop that may not run": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nfor (const _ of []) await later;\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "an await only in a catch": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\ntry {\n  use(1);\n} catch {\n  await later;\n}\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "a property awaited in one branch": [
       `${laterImport}${laterHead}child.exited = awaitedLater(p);\nif (Math.random() > 0.5) await child.exited;\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "a local function that awaits its argument in one branch": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wait = async (value) => {\n  if (Math.random() > 0.5) await value;\n};\nawait wait(later);\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     // 실행되지 않는 기다림은 기다림이 아니다(#286 항목 21): 아무도 부르지 않는 함수 안, 그런 함수만 부르는 함수 안, 조기 return 뒤.
     "an await in a function nobody calls": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst never = async () => {\n  await later;\n};\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await in a function only an uncalled function calls": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nconst outer = () => inner();\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // 함수를 읽기만 하는 것(인자로 넘기기·다른 이름에 담기)은 부르는 것이 아니다. 넘겨받은 쪽이 부르는지는 모른다(#291 외부 리뷰 1회차 STD-2).
     "an await in a function that is only logged": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst never = async () => {\n  await later;\n};\nconsole.log(never);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await in a function that is only given another name": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nasync function never() {\n  await later;\n}\nconst alias = never;\nuse(alias);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await in a named function handed to another function as a callback": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wait = async () => {\n  await later;\n};\nsetTimeout(wait, 0);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "an await after an early return": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nexport async function run() {\n  return 1;\n  await later;\n}\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // 다른 Promise가 먼저 이행할 수 있는 race·any는 표시한 Promise가 정해지기 전에 끝나, 그 뒤의 거절을 기다리지 않고 지나간다.
     // 시한은 거절로 설계한다(공용 within, @babojubot/process/test-support).
     "a Promise.race with a promise that may settle first": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.race([later, Promise.resolve()]);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a Promise.any with a promise that may fulfil first": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.any([p, later]);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // 한 분기에서만 부르는 함수 안의 기다림은 그 분기에서만 기다린다(#291 외부 리뷰 2회차 STD-3). 함수를 부르는 자리의 분기까지 본다.
     "an await in a function called in one branch": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wait = async () => {\n  await later;\n};\nif (Math.random() > 0.5) await wait();\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "an await in a callback written in one branch": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nif (Math.random() > 0.5)\n  test("waits", async () => {\n    await later;\n  });\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "an await in a function only a function called in one branch calls": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nconst outer = async () => {\n  await inner();\n};\nconst wanted = Math.random() > 0.5;\nwanted && (await outer());\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     // 다른 값이 거절만 하는 race·any도, 그 조합의 거절을 받아 성공으로 바꾸는 자리(expect(…).rejects, .catch, then의 거절 처리기,
     // try/catch)에서는 시한의 거절로 끝나 표시한 Promise를 보지 않고 통과한다(#291 외부 리뷰 2회차 SPEC-1).
     "a deadline race whose rejection an expect takes as success": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(Promise.race([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))])).rejects.toThrow("late");\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a deadline race whose rejection a catch handler takes": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.race([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))]).catch(() => undefined);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a deadline race whose rejection a then handler takes": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.any([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))]).then(use, () => undefined);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     // try/catch로 받으면 거절이 나지 않은 길만 덮는다. catch에서 다시 기다려야 모든 길이다.
     "a deadline race awaited in a try whose catch does not await again": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\ntry {\n  await Promise.race([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))]);\n} catch {\n  use(1);\n}\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     "a repository timeout helper whose rejection an expect takes as success": [
       `${laterImport}${laterHead}import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait expect(within(later, 1000)).rejects.toThrow();\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     "a local timeout helper that fulfils when the time runs out": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst within = async (value, ms) =>\n  Promise.race([value, new Promise((resolve) => setTimeout(() => resolve(undefined), ms))]);\nawait within(later, 1000);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
   };
   for (const [shape, [code, kind]] of Object.entries(found))
     for (const place of testPlaces) {
-      const [message, ...rest] = await lint(code, place, laterRules);
-      assert.ok(message, `${place}: ${shape} not reported`);
-      assert.deepEqual(rest, [], `${place}: ${shape}`);
-      assert.match(message.message, kind, shape);
-      assert.match(message.message, /CODING_STANDARDS\.md#단언/);
+      const messages = await lint(code, place, laterRules);
+      assert.deepEqual(
+        messages.map((message) => [message.ruleId, message.messageId]),
+        [["tests/no-unawaited-later", kind]],
+        `${place}: ${shape}`
+      );
     }
 });
 
@@ -2176,33 +2177,33 @@ test("a deadline wait gets the same verdict written directly or moved into a loc
       `const later = awaitedLater(p);\nconst wait = () => ${race};\nawait expect(wait()).rejects.toThrow("late");\n`,
       `const later = awaitedLater(p);\nasync function inner() {\n  await ${race};\n}\nasync function outer() {\n  return await inner();\n}\nawait expect(outer()).rejects.toThrow("late");\n`,
       `const later = awaitedLater(p);\nawait expect(\n  (async () => {\n    await ${race};\n  })()\n).rejects.toThrow("late");\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     [
       `const later = awaitedLater(p);\nawait ${race}.catch(() => undefined);\n`,
       `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\nawait wait().catch(() => undefined);\n`,
       `const later = awaitedLater(p);\nawait p\n  .then(async () => {\n    await ${race};\n  })\n  .catch(() => undefined);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     [
       `const later = awaitedLater(p);\nawait ${race}.then(use, () => undefined);\n`,
       `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\nawait wait().then(use, () => undefined);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     [
       `const later = awaitedLater(p);\nawait Promise.allSettled([${race}]);\n`,
       `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\nawait Promise.allSettled([wait()]);\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     [
       `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait expect(within(later, 1000)).rejects.toThrow();\n`,
       `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nconst wait = () => within(later, 1000);\nawait expect(wait()).rejects.toThrow();\n`,
-      /기다리지 않습니다/,
+      "notAwaited",
     ],
     [
       `const later = awaitedLater(p);\ntry {\n  await ${race};\n} catch {\n  use(1);\n}\n`,
       `const later = awaitedLater(p);\nconst wait = async () => {\n  await ${race};\n};\ntry {\n  await wait();\n} catch {\n  use(1);\n}\n`,
-      /한 분기/,
+      "awaitedInBranch",
     ],
     // 결과의 거절이 전파되는 자리면 직접 쓴 것처럼 통과한다.
     [
@@ -2225,7 +2226,7 @@ test("a deadline wait gets the same verdict written directly or moved into a loc
     ],
   ];
   for (const pair of pairs) {
-    const kind = /** @type {RegExp | null} */ (pair.at(-1));
+    const kind = /** @type {string | null} */ (pair.at(-1));
     for (const code of /** @type {string[]} */ (pair.slice(0, -1)))
       for (const place of testPlaces) {
         const messages = await lint(
@@ -2240,7 +2241,11 @@ test("a deadline wait gets the same verdict written directly or moved into a loc
         const [message, ...rest] = messages;
         assert.ok(message, `${place}: not reported: ${code}`);
         assert.deepEqual(rest, [], `${place}: ${code}`);
-        assert.match(message.message, kind, code);
+        assert.deepEqual(
+          [message.ruleId, message.messageId],
+          ["tests/no-unawaited-later", kind],
+          code
+        );
       }
   }
 });
