@@ -28,6 +28,8 @@ import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 /** apps/server/src/stop-request.ts의 `stopRequest`와 같은 모양. 서버 패키지 코드를 화면 시험에 들이지 않으려고 따로 적는다. */
 const stopRequest = { type: "babojubot:stop" };
 const readyTimeoutMs = 60_000;
+/** 서버가 끝난 뒤 그 출력이 끝나기를 기다리는 상한(시작 줄이 늦게 닿을 수 있다). */
+const readyOutputEndMs = 10_000;
 /** 서버의 정리 시한. 기다리는 쪽은 그보다 길게 기다려, 서버가 스스로 끝나며 내장 Postgres를 멈출 기회를 준다. */
 export const serverShutdownMs = 10_000;
 const exitWaitMs = serverShutdownMs + 5_000;
@@ -269,22 +271,35 @@ export async function startServerProcess({
 /** 시작 줄 기다리기가 자식에게서 쓰는 것만. */
 export type ReadyChild = { readonly stdout: Readable | null };
 
-/** 완전한 시작 줄(`BaboJUBot server on <url> (…)`)이 나올 때까지 기다려 그 주소를 돌려준다. */
+/**
+ * 완전한 시작 줄(`BaboJUBot server on <url> (…)`)이 나올 때까지 기다려 그 주소를 돌려준다. 서버가 끝난(`exit`) 뒤에도 출력이 끝나기
+ * (`end`) 전까지는 줄이 닿을 수 있어 계속 읽는다(CODING_STANDARDS.md, #288의 readyLine과 같은 기준). 출력이 줄 없이 끝나야 시작 전에
+ * 끝난 것이다. 출력을 물려받은 자손이 출력을 쥐고 있으면 끝이 오지 않으므로, exit 뒤 출력의 끝은 `outputEndMs` 안에서 확인하고 넘기면
+ * 끝을 확인하지 못했다고 실패한다(끝났다고 보지 않는다). 전체 시한(`readyTimeoutMs`)은 따로 둔다.
+ */
 export function waitForReadyLine(
   child: ReadyChild,
   exited: Promise<Exit>,
   stdout: () => string,
   label: string,
   output: () => string,
-  limits: { readyTimeoutMs: number } = { readyTimeoutMs }
+  {
+    readyTimeoutMs: readyMs = readyTimeoutMs,
+    outputEndMs = readyOutputEndMs,
+  }: { readyTimeoutMs?: number; outputEndMs?: number } = {}
 ) {
   return new Promise<string>((resolve, reject) => {
     let settled = false;
+    let exit: Exit | undefined;
+    let outputEnded = false;
+    let outputEnd: ReturnType<typeof setTimeout> | undefined;
     const finish = (done: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(outputEnd);
       child.stdout!.off("data", onData);
+      child.stdout!.off("end", onEnd);
       done();
     };
     const onData = () => {
@@ -293,27 +308,49 @@ export function waitForReadyLine(
       );
       if (match) finish(() => resolve(match[1]!));
     };
+    /** 끝났고 출력도 줄 없이 끝났다. */
+    const endedBeforeStart = (ended: Exit) =>
+      finish(() =>
+        reject(
+          new Error(
+            `${label}가 시작 전에 끝났다(code ${ended.code}, signal ${ended.signal}): ${output()}`
+          )
+        )
+      );
+    const onEnd = () => {
+      outputEnded = true;
+      // 출력이 끝보다 먼저 끝나면 끝(종료 코드)을 기다려 함께 알린다.
+      if (exit) endedBeforeStart(exit);
+    };
     const timer = setTimeout(
       () =>
         finish(() =>
           reject(
             new Error(
-              `${label}가 ${limits.readyTimeoutMs}ms 안에 시작하지 않았다: ${output()}`
+              `${label}가 ${readyMs}ms 안에 시작하지 않았다: ${output()}`
             )
           )
         ),
-      limits.readyTimeoutMs
+      readyMs
     );
     child.stdout!.on("data", onData);
+    child.stdout!.once("end", onEnd);
     exited.then(
-      ({ code, signal }) =>
-        finish(() =>
-          reject(
-            new Error(
-              `${label}가 시작 전에 끝났다(code ${code}, signal ${signal}): ${output()}`
-            )
-          )
-        ),
+      (ended) => {
+        exit = ended;
+        if (outputEnded) return endedBeforeStart(ended);
+        outputEnd = setTimeout(
+          () =>
+            finish(() =>
+              reject(
+                new Error(
+                  `${label}가 시작 줄 없이 끝났고(code ${ended.code}, signal ${ended.signal}) 출력이 ${outputEndMs}ms 안에 끝나지 않아 끝을 확인하지 못했다(출력을 물려받은 자손이 쥐고 있을 수 있다): ${output()}`
+                )
+              )
+            ),
+          outputEndMs
+        );
+      },
       (error: unknown) => finish(() => reject(error))
     );
     onData();

@@ -274,3 +274,19 @@ test("fails as ended before start when the output ends after the exit without a 
     /시작 전에 끝났다\(code 3, signal null\)/
   );
 });
+
+test("fails as an unconfirmed end when the output does not end after the exit", async () => {
+  const { stdout, text } = fakeOutput();
+  const ready = waitForReadyLine(
+    { stdout },
+    Promise.resolve({ code: 0, signal: null }),
+    text,
+    "fake server",
+    text,
+    { readyTimeoutMs: 10_000, outputEndMs: 20 }
+  );
+  await expect(ready).rejects.toThrow(
+    /출력이 20ms 안에 끝나지 않아 끝을 확인하지 못했다/
+  );
+  stdout.destroy();
+});
