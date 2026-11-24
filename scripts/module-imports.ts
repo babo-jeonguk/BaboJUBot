@@ -3,10 +3,20 @@
 // lint 규칙들과 같은 판정(scripts/eslint-imports.mjs의 importSites·loaderOf)으로 찾는다: 부르는 모양이 아니라 출처로(이름 있는
 // 가져오기·별칭·구조 분해·globalThis 포함). 따라갈 수 없는 불러오기(글자가 아닌 import()·불러오는 함수의 글자 아닌 이름, CommonJS 규칙으로
 // 푸는 require, node:module의 불러오는 이름, 불러오는 함수를 값으로 넘기기)는 "가져오는 것 없음"으로 접지 않고 던진다.
+import path from "node:path";
 import { Linter, type Rule } from "eslint";
 import tseslint from "typescript-eslint";
 import { importSites, loaderOf } from "./eslint-imports.mjs";
 import { codeFormatNames } from "./test-files.mjs";
+
+/** Formats Node reads as CommonJS (.cjs, and TypeScript's .cts that compiles to it): codeFormats' names that start with c. */
+const commonJsFormats = new Set(
+  codeFormatNames.filter((name) => name.startsWith("c"))
+);
+/** Formats that hold JSX: codeFormats' names that end with x. */
+const jsxFormats = new Set(
+  codeFormatNames.filter((name) => name.endsWith("x"))
+);
 
 const moduleLoader = new Set(["module", "node:module"]);
 /** What node:module exports that loads no module (https://nodejs.org/api/module.html). Its other exports can load one. */
@@ -155,6 +165,7 @@ export function importedSpecifiers(file: string, text: string): string[] {
       };
     },
   };
+  const format = path.extname(file).slice(1);
   const linter = new Linter({ configType: "flat" });
   const messages = linter.verify(
     text,
@@ -165,8 +176,8 @@ export function importedSpecifiers(file: string, text: string): string[] {
         languageOptions: {
           parser: tseslint.parser,
           ecmaVersion: "latest",
-          sourceType: /\.c[jt]s$/.test(file) ? "commonjs" : "module",
-          parserOptions: { ecmaFeatures: { jsx: /x$/.test(file) } },
+          sourceType: commonJsFormats.has(format) ? "commonjs" : "module",
+          parserOptions: { ecmaFeatures: { jsx: jsxFormats.has(format) } },
         },
         plugins: { imports: { rules: { collect } } },
         rules: { "imports/collect": "error" },
