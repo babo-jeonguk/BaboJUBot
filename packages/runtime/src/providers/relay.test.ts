@@ -725,7 +725,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         })
     );
     const port = (server.address() as net.AddressInfo).port;
-    /** 중계가 목적지 포트로 붙은 소켓들. */
+    /** 중계가 목적지 포트로 붙으려 한 소켓들. `localhost`가 두 주소로 풀리면 거부된 시도도 들어 있다. */
     const dialed = () =>
       connecting.mock.calls.flatMap((args, index) => {
         const options: unknown = args[0];
@@ -748,6 +748,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     ]);
     const relay = relays.open({ identity, required: [] });
     await relay.ready;
+    /** 오류를 넣을 때 살아 있던 소켓: 답을 나르는 연결이다. */
+    let carrying: net.Socket[] = [];
     const received = await new Promise<{ status: number; ending: string }>(
       (resolve, reject) => {
         const req = http.request({
@@ -762,7 +764,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         req.on("response", (res) => {
           const status = res.statusCode ?? 0;
           res.once("data", () => {
-            for (const socket of dialed())
+            carrying = dialed().filter((socket) => !socket.destroyed);
+            for (const socket of carrying)
               socket.destroy(
                 Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })
               );
@@ -775,7 +778,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }
     );
     expect(received).toEqual({ status: 200, ending: "broken" });
-    expect(dialed()).toHaveLength(1);
+    expect(carrying).toHaveLength(1);
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
       "[provider] an allowed destination's answer broke off in the relay (ETIMEDOUT)",
     ]);
