@@ -1,16 +1,18 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { leaseVariable } from "./lease.ts";
-import { exited, killAndWait, readyLine } from "./process-test-support.ts";
+import { attemptAll } from "@babojubot/contracts";
+import { endChild, exited, readyLine } from "./process-test-support.ts";
 import { cleanThroughSupervisor } from "./supervisor.ts";
 
 // 재시작 복구의 표식 정리(#268 PR 2): 감독 실행기에 정리만 청하면, 이 표식을 가진 프로그램만 찾아 끈다. 신호는 표식을 확인한 바로 그
 // 프로세스에만 간다(Linux 프로세스 핸들, macOS 신호 직전 시작 시각 재확인). 찾은 번호가 다른 프로그램에 다시 주어지는 장면은 실행기의
 // Rust 시험(`marked.rs`)이 본다. Windows는 묶음이 트리를 끄고 표식 정리가 없다.
-const started: number[] = [];
+// 띄운 프로그램은 Node 자식 객체로 끝낸다(끝을 본 자식에는 신호하지 않는다, #288 parent 점검: 번호 신원).
+const started: ChildProcess[] = [];
 afterEach(async () => {
-  await killAndWait(started.splice(0));
+  await attemptAll(started.splice(0).map((child) => () => endChild(child)));
 });
 
 /** 새 세션(`detached`)에서 오래 도는 프로그램. TERM을 무시한다. 준비 줄을 낸 뒤에 돌려준다. */
@@ -30,7 +32,7 @@ async function program(
       env: { PATH: process.env.PATH, ...options.env },
     }
   );
-  started.push(child.pid!);
+  started.push(child);
   await readyLine(child);
   return child.pid!;
 }

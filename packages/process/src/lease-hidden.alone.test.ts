@@ -1,18 +1,24 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { leaseVariable, processStartTicks } from "./lease.ts";
-import { exited, killAndWait, readyLine } from "./process-test-support.ts";
+import { attemptAll } from "@babojubot/contracts";
+import { endChild, exited, readyLine } from "./process-test-support.ts";
 import { cleanThroughSupervisor } from "./supervisor.ts";
-import { commandFailure, probeEnvironment } from "./test-support.ts";
+import {
+  commandFailure,
+  probeEnvironment,
+  reportedPid,
+} from "./test-support.ts";
 
 // 환경을 읽을 수 없게 막은 프로그램(gpg-agent·ssh-agent처럼 PR_SET_DUMPABLE 0)은 표식을 확인할 수 없다(#219, PR #220 외부 리뷰 SPEC-2).
 // 이 실행 시도가 시작한 뒤 실행기와 같은 cgroup에 생긴 같은 사용자의 산 프로그램이면 우리 것일 수 있어, 감독 실행기는 신호하지 않고
 // "확인하지 못함"으로 답한다(#268 PR 2). 여기서는 재시작 복구의 정리(`cleanThroughSupervisor`)로 본다.
 // 이 시험이 띄운 프로그램은 같은 시각의 다른 시험 실행 시도에도 그렇게 보이므로, 이 파일은 다른 시험과 겹치지 않게 따로 돈다.
-const pids: number[] = [];
+// 띄운 프로그램은 Node 자식 객체로 끝낸다(끝을 본 자식에는 신호하지 않는다, #288 parent 점검: 번호 신원).
+const children: ChildProcess[] = [];
 afterEach(async () => {
-  await killAndWait(pids.splice(0));
+  await attemptAll(children.splice(0).map((child) => () => endChild(child)));
 });
 
 const hide =
@@ -24,7 +30,7 @@ async function hidden(lease: string, prefix: string[] = []) {
     stdio: ["ignore", "pipe", "ignore"],
     env: { ...process.env, [leaseVariable]: lease },
   });
-  pids.push(child.pid!);
+  children.push(child);
   await readyLine(child);
   return child.pid!;
 }
@@ -94,13 +100,16 @@ describe.runIf(process.platform === "linux")(
         ],
         { detached: true, stdio: ["ignore", "pipe", "ignore"] }
       );
-      pids.push(parent.pid!);
+      children.push(parent);
       let line = "";
       for await (const chunk of parent.stdout!) {
         line += String(chunk);
         if (line.includes("\n")) break;
       }
-      const zombie = Number(line.trim());
+      const zombie = reportedPid(
+        line,
+        "the pid Python reported for its forked child"
+      );
       await vi.waitFor(
         () => {
           if (!exited(zombie)) throw new Error("the forked child did not exit");

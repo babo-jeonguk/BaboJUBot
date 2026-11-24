@@ -61,8 +61,7 @@ export async function openDatabase(
   } catch (error) {
     await stop().catch((stopError: unknown) =>
       console.error(
-        "[db] stopping Postgres after a failed start failed",
-        stopError
+        `[db] stopping Postgres after a failed start failed (${failureCode(stopError)})`
       )
     );
     throw error;
@@ -95,8 +94,7 @@ export async function withClient<T>(
       .end()
       .catch((endError: unknown) =>
         console.error(
-          "[db] closing the connection after a failed use failed",
-          endError
+          `[db] closing the connection after a failed use failed (${failureCode(endError)})`
         )
       );
     throw error;
@@ -112,7 +110,9 @@ async function connect(
 ): Promise<DatabaseHandle> {
   const pool = new pg.Pool({ connectionString: url });
   // 쉬는 연결이 끊기면(Postgres 재시작 등) pool이 그 연결을 버린다. listener가 없으면 프로세스가 죽는다.
-  pool.on("error", (error) => console.error("[db]", error.message));
+  pool.on("error", (error) =>
+    console.error(`[db] an idle connection failed (${failureCode(error)})`)
+  );
   // 쓰는 중인 연결이 끊기면 pool의 error로 오지 않고 그 연결에서 난다. 그 쿼리도 실패하지만, 원인을 여기서도 남긴다(listener가 없으면 프로세스가 죽는다).
   pool.on("connect", (client) =>
     client.on("error", (error) =>
@@ -152,8 +152,7 @@ async function connect(
   } catch (error) {
     await close().catch((closeError: unknown) =>
       console.error(
-        "[db] closing the database after a failed migration failed",
-        closeError
+        `[db] closing the database after a failed migration failed (${failureCode(closeError)})`
       )
     );
     throw error;
