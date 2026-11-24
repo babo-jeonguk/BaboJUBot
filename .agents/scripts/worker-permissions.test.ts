@@ -8,7 +8,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { isTestFile, testFiles } from "../../scripts/test-files.mjs";
 import { editRules, isProtected } from "./worker-permissions.ts";
-import { openCodeSettingBlock, protectedReason } from "./protected-files.ts";
+import {
+  openCodeSettingBlock,
+  protectedReason,
+  repositorySettingModules,
+} from "./protected-files.ts";
 
 const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -231,5 +235,27 @@ test("protects the repository modules the check settings import, in the permissi
       `${file} is editable in the permissions`
     );
     assert.ok(protectedReason(file), `${file} has no protection reason`);
+  }
+});
+
+// 닫힘 전체: 검사 설정이 가져오는 저장소 안 모듈(제품 코드에서 멈춤)은 모두 권한이 막고 사후 확인이 사유를 낸다. 하나도 없으면 이 시험이
+// 아무것도 보지 않는 것이다.
+test("every repository module a check setting imports is denied and protected, and there are some", () => {
+  const modules = [...repositorySettingModules().keys()];
+  assert.ok(modules.includes("vitest.reports.ts"), modules.join(", "));
+  assert.deepEqual(
+    modules.filter(
+      (file) => !isProtected(rules, file) || !protectedReason(file)
+    ),
+    []
+  );
+  // 닫힘은 제품 코드에서 멈춘다: 설정이 시험 도움을 거쳐 가져오는 제품 코드는 시험 대상이고 worker가 고친다.
+  for (const file of [
+    "packages/contracts/src/failure.ts",
+    "packages/process/src/remove-folder.ts",
+  ]) {
+    assert.ok(!modules.includes(file), file);
+    assert.equal(protectedReason(file), undefined, file);
+    assert.ok(!isProtected(rules, file), file);
   }
 });

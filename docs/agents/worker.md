@@ -14,7 +14,7 @@
 - worker는 시험·단언·검사 설정·검사 명령을 고치거나 끄지 않습니다. 시험이 틀려 보이거나 brief 밖 변경·설계 판단·허용되지 않은 명령이 필요하면 멈추고 보고합니다.
 - 인수·커밋·push·PR과 추가 agent 생성은 parent만 합니다.
 
-시험·검사 설정 수정 거부와 허용 명령은 [dev-worker](../../.opencode/agents/dev-worker.md) 권한이 강제하고, 실제 변경은 §6의 확인 스크립트가 다시 확인합니다. 거부하는 시험 파일은 시험 범위([test-files.mjs](../../scripts/test-files.mjs) `testFiles`) 전부이고 제품 코드는 막지 않습니다. 시험 도움 이름(`testing`·`*-support` 등)은 시험 범위가 가리키는 패키지·폴더에서만 거부해, 다른 곳의 같은 이름 제품 파일은 고칠 수 있습니다. 보호할 파일(시험 파일·비밀 파일·도구가 읽는 이름의 검사 설정·설정 폴더)의 정의는 [protected-files.ts](../../.agents/scripts/protected-files.ts) 한 곳입니다. 권한 파일의 검사 설정 묶음은 그 정의에서 만들고, 권한 파일이 가져올 수 없는 시험 범위는 [권한 범위 검사](../../.agents/scripts/worker-permissions.test.ts)가 맞춥니다. OpenCode의 `*`는 `/`를 넘으므로 권한은 정의보다 더 막을 수는 있어도 덜 막지 않게 짜고, 그 검사가 확인합니다. 나머지는 이 계약과 parent의 diff 검토로 지킵니다.
+시험·검사 설정 수정 거부와 허용 명령은 [dev-worker](../../.opencode/agents/dev-worker.md) 권한이 강제하고, 실제 변경은 §6의 확인 스크립트가 다시 확인합니다. 거부하는 시험 파일은 시험 범위([test-files.mjs](../../scripts/test-files.mjs) `testFiles`) 전부이고 제품 코드는 막지 않습니다. 시험 도움 이름(`testing`·`*-support` 등)은 시험 범위가 가리키는 패키지·폴더에서만 거부해, 다른 곳의 같은 이름 제품 파일은 고칠 수 있습니다. 보호할 파일(시험 파일·비밀 파일·도구가 읽는 이름의 검사 설정과 그 설정이 가져오는 저장소 안 모듈(제품 코드에서 멈춤)·설정 폴더)의 정의는 [protected-files.ts](../../.agents/scripts/protected-files.ts) 한 곳입니다. 권한 파일의 검사 설정 묶음은 그 정의에서 만들고, 권한 파일이 가져올 수 없는 시험 범위는 [권한 범위 검사](../../.agents/scripts/worker-permissions.test.ts)가 맞춥니다. OpenCode의 `*`는 `/`를 넘으므로 권한은 정의보다 더 막을 수는 있어도 덜 막지 않게 짜고, 그 검사가 확인합니다. 나머지는 이 계약과 parent의 diff 검토로 지킵니다.
 
 ## 2. 모델
 

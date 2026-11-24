@@ -664,6 +664,72 @@ permissions:
     resource: "*/paseo.json"
     effect: deny
   - action: edit
+    resource: "apps/web/e2e/global-setup.ts"
+    effect: deny
+  - action: edit
+    resource: "*/apps/web/e2e/global-setup.ts"
+    effect: deny
+  - action: edit
+    resource: "apps/web/e2e/support/server-process.ts"
+    effect: deny
+  - action: edit
+    resource: "*/apps/web/e2e/support/server-process.ts"
+    effect: deny
+  - action: edit
+    resource: "packages/process/src/test-cleanup.ts"
+    effect: deny
+  - action: edit
+    resource: "*/packages/process/src/test-cleanup.ts"
+    effect: deny
+  - action: edit
+    resource: "packages/process/src/test-support.ts"
+    effect: deny
+  - action: edit
+    resource: "*/packages/process/src/test-support.ts"
+    effect: deny
+  - action: edit
+    resource: "scripts/eslint-imports.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/scripts/eslint-imports.mjs"
+    effect: deny
+  - action: edit
+    resource: "scripts/eslint-product-rules.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/scripts/eslint-product-rules.mjs"
+    effect: deny
+  - action: edit
+    resource: "scripts/eslint-test-rules.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/scripts/eslint-test-rules.mjs"
+    effect: deny
+  - action: edit
+    resource: "scripts/package-exports.ts"
+    effect: deny
+  - action: edit
+    resource: "*/scripts/package-exports.ts"
+    effect: deny
+  - action: edit
+    resource: "scripts/test-files.mjs"
+    effect: deny
+  - action: edit
+    resource: "*/scripts/test-files.mjs"
+    effect: deny
+  - action: edit
+    resource: "scripts/test-suites.ts"
+    effect: deny
+  - action: edit
+    resource: "*/scripts/test-suites.ts"
+    effect: deny
+  - action: edit
+    resource: "vitest.reports.ts"
+    effect: deny
+  - action: edit
+    resource: "*/vitest.reports.ts"
+    effect: deny
+  - action: edit
     resource: "vitest.*/*vitest.*.config.ts"
     effect: deny
   - action: edit
