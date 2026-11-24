@@ -293,8 +293,11 @@ describe("runProbe", () => {
   );
 
   // 프로그램이 끝났는데 그 출력을 물려받은 다른 프로그램이 남으면, 출력이 닫히기를 기다리지 않고 바로 트리를 끈다(공용 실행의 트리
-  // 끄기). 출력을 쥔 그 프로그램까지 끝나 출력이 닫히고, 결과는 프로그램의 결과다. 시한(500ms)이 지나기를 기다리지 않는다. 예전에는
-  // 출력 닫힘을 1초 기다리다 시한에 닿아 실패로 돌려주었다(#268, 시간 기다림 제거).
+  // 끄기). 출력을 쥔 그 프로그램까지 끝나 출력이 닫히고, 결과는 프로그램의 결과다. 예전에는 출력 닫힘을 1초 기다리다 시한에 닿아
+  // 실패로 돌려주었다(#268, 시간 기다림 제거). 판정은 결과에 끈 이유(`stopped`)가 없다는 것과 출력을 쥔 프로그램이 끝났다는 연결
+  // 신호다. 출력을 쥔 프로그램은 스스로 끝나지 않으므로, 출력 닫힘을 기다리는 회귀는 시한에 닿아 "stopped (limit)"으로 실패한다.
+  // 시한은 그 회귀를 끊는 상한일 뿐이고 프로그램 둘을 띄우는 준비도 그 안에 든다. 그래서 느린 실행기를 감당하게 잡는다. 예전의
+  // 500ms는 결함 없이도 부하가 큰 실행에서 준비만으로 닿았다(#213, #286 이월분).
   it("stops what the program left holding its output as soon as the program ends, and returns the program's result", async () => {
     const folder = await folders.make("babojubot-probe-");
     const holderFile = path.join(folder, "holder");
@@ -308,9 +311,9 @@ describe("runProbe", () => {
     const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
     const result = await probe(
       `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
-      500
+      20_000
     );
     expect(result.stdout).toBe("done\n");
     await lifelines.closed("holder");
-  }, 30_000);
+  }, 40_000);
 });
