@@ -391,11 +391,15 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
   ]);
   let survivors = [];
   const commands = await attemptEach([
-    // 이미 끝난 명령(ESRCH)은 넘어가고, 끄지 못한 명령은 세고 알린 뒤 나머지 정리를 이어 간다.
+    // 이미 끝난 명령(ESRCH)은 넘어가고, 끄지 못한 명령은 세고 알린 뒤 나머지 정리를 이어 간다. 목록을 만든 뒤 다른 정리를
+    // 기다렸으므로, 그 번호가 아직 이 장면의 명령인지(명령줄의 장면 표시) 신호 바로 앞에서 다시 보고, 보기와 신호 사이에 기다림을
+    // 두지 않는다. 다른 프로세스에 다시 쓰인 번호에는 보내지 않는다.
     ...(left ?? []).map((pid) =>
       step(
         (error) => `could not stop test command ${pid} (${code(error)})`,
-        () => killUnlessGone(pid)
+        () => {
+          if (busyPids(marker).includes(pid)) killUnlessGone(pid);
+        }
       )
     ),
     // 신호만 보내고 떠나지 않는다. 끈 명령이 실제로 끝났는지 상한 안에서 확인하고, 남은 것은 세고 알린다.

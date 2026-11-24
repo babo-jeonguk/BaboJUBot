@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { test } from "node:test";
-import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 import { matchingPids, pidsFromPgrep, stillRunning } from "./processes.mjs";
 
 const pattern = "busy\\.mjs [0-9]+ marker$";
@@ -68,10 +69,11 @@ test(
         { stdio: "ignore" }
       );
       const exited = once(child, "exit");
+      // 시험이 띄운 자식은 자식 객체로 끈다: Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시
+      // 쓰였어도 그쪽으로 가지 않는다(#287 리뷰 STD-4). 띄우지 못했으면 보낼 곳이 없고 `exited`가 그 실패로 거절한다.
       defer(async () => {
-        // 띄우지 못했으면(번호 없음) 끌 프로세스가 없다.
-        if (child.pid !== undefined) killUnlessGone(child.pid);
-        await exited;
+        child.kill("SIGKILL");
+        await within(exited, 10_000, "a killed child did not exit");
       });
       await once(child, "spawn");
       assert.deepEqual(matchingPids(`${marker}$`), [child.pid]);
@@ -99,10 +101,11 @@ test("a stopped process is no longer running, and one left alive is named", asyn
         }
       );
       const exited = once(child, "exit");
+      // 시험이 띄운 자식은 자식 객체로 끈다: Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시
+      // 쓰였어도 그쪽으로 가지 않는다(#287 리뷰 STD-4). 띄우지 못했으면 보낼 곳이 없고 `exited`가 그 실패로 거절한다.
       defer(async () => {
-        // 띄우지 못했으면(번호 없음) 끌 프로세스가 없다.
-        if (child.pid !== undefined) killUnlessGone(child.pid);
-        await exited;
+        child.kill("SIGKILL");
+        await within(exited, 10_000, "a killed child did not exit");
       });
       return once(child, "spawn").then(() => child);
     };
@@ -110,7 +113,7 @@ test("a stopped process is no longer running, and one left alive is named", asyn
     const alive = await spawnIdle();
     if (stopped.pid === undefined)
       throw new Error("the stopped child has no pid");
-    killUnlessGone(stopped.pid);
+    stopped.kill("SIGKILL");
     // 끝난 것은 상한 안에서 빠지고, 끄지 않은 것은 상한(0.5초)이 지나도 남은 것으로 나온다.
     assert.deepEqual(await stillRunning([stopped.pid, alive.pid], 500), [
       alive.pid,

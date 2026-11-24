@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { openLifelines } from "@babojubot/process/lifelines";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import {
@@ -190,43 +191,42 @@ test(
       process.platform === "win32" &&
       "Windows finds the folder's processes only through its postmaster.pid files",
   },
-  async () => {
-    const script = `
+  () =>
+    withCleanup(async (defer) => {
+      // 남긴 프로세스는 시작하자마자 연결을 쥔다. 그 번호로 끌 때는 연결이 열려 있음을 본 직후에만 신호한다.
+      const lifelines = await openLifelines();
+      defer(() => lifelines.close());
+      const script = `
       const { spawn } = require("node:child_process");
-      const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", require("node:os").tmpdir()], {
+      const escaped = spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold("escaped")} setInterval(() => {}, 1000);`)}, require("node:os").tmpdir()], {
         detached: true,
         stdio: "ignore",
       });
       escaped.unref();
       console.log(JSON.stringify({ escaped: escaped.pid }));
     `;
-    // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
-    /** @type {{ result?: Supervised, error?: unknown }} */
-    const outcome = await supervise(["-e", script], process.env).then(
-      (result) => ({ result }),
-      (error) => ({ error })
-    );
-    const reported = outcome.error instanceof Error ? outcome.error : undefined;
-    const escaped = Number(
-      /"escaped":(\d+)/.exec(
-        reported?.message ?? outcome.result?.stdout ?? ""
-      )?.[1]
-    );
-    const scope = /could not clean up (\S+)/.exec(reported?.message ?? "")?.[1];
-    // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
-    await withCleanup(async (defer) => {
+      // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
+      /** @type {{ result?: Supervised, error?: unknown }} */
+      const outcome = await supervise(["-e", script], process.env).then(
+        (result) => ({ result }),
+        (error) => ({ error })
+      );
+      const reported =
+        outcome.error instanceof Error ? outcome.error : undefined;
+      const escaped = Number(
+        /"escaped":(\d+)/.exec(
+          reported?.message ?? outcome.result?.stdout ?? ""
+        )?.[1]
+      );
+      const scope = /could not clean up (\S+)/.exec(
+        reported?.message ?? ""
+      )?.[1];
+      // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
       const folder = folderCleanup(async () => {
         if (scope) await removeFolder(scope);
       });
       defer(folder.cleanUp);
-      folder.own(async () => {
-        if (!escaped) return;
-        killUnlessGone(escaped);
-        if (!(await waitUntil(() => !isAlive(escaped), 10_000)))
-          throw new Error(
-            `the escaped process (pid ${escaped}) did not end in 10s`
-          );
-      });
+      folder.own(() => stopReported(lifelines, "escaped", escaped));
       assert.ok(
         reported,
         `the supervisor did not report the running process: ${String(outcome.error)}`
@@ -240,8 +240,7 @@ test(
       );
       assert.ok(messages.includes(`kept ${scope}`), messages);
       assert.equal(existsSync(scope), true, `${scope} was removed`);
-    });
-  }
+    })
 );
 
 // 명령줄에 폴더 이름이 없어도, 끝난 실행의 출력 통로를 아직 쥔 프로세스는 그 폴더를 쓰고 있을 수 있다. 출력이 닫힌 것을
@@ -254,10 +253,14 @@ test(
       process.platform === "win32" &&
       "POSIX process groups only; Windows ends the whole tree while the parent is alive",
   },
-  async () => {
-    const script = `
+  () =>
+    withCleanup(async (defer) => {
+      // 남긴 프로세스는 시작하자마자 연결을 쥔다. 그 번호로 끌 때는 연결이 열려 있음을 본 직후에만 신호한다.
+      const lifelines = await openLifelines();
+      defer(() => lifelines.close());
+      const script = `
       const { spawn } = require("node:child_process");
-      const held = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      const held = spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold("held")} setInterval(() => {}, 1000);`)}], {
         cwd: require("node:os").tmpdir(),
         detached: true,
         stdio: ["ignore", "inherit", "ignore"],
@@ -265,33 +268,28 @@ test(
       held.unref();
       console.log(JSON.stringify({ held: held.pid }));
     `;
-    // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
-    /** @type {{ result?: Supervised, error?: unknown }} */
-    const outcome = await supervise(["-e", script], process.env).then(
-      (result) => ({ result }),
-      (error) => ({ error })
-    );
-    const reported = outcome.error instanceof Error ? outcome.error : undefined;
-    const held = Number(
-      /"held":(\d+)/.exec(
-        reported?.message ?? outcome.result?.stdout ?? ""
-      )?.[1]
-    );
-    const scope = /could not clean up (\S+)/.exec(reported?.message ?? "")?.[1];
-    // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
-    await withCleanup(async (defer) => {
+      // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
+      /** @type {{ result?: Supervised, error?: unknown }} */
+      const outcome = await supervise(["-e", script], process.env).then(
+        (result) => ({ result }),
+        (error) => ({ error })
+      );
+      const reported =
+        outcome.error instanceof Error ? outcome.error : undefined;
+      const held = Number(
+        /"held":(\d+)/.exec(
+          reported?.message ?? outcome.result?.stdout ?? ""
+        )?.[1]
+      );
+      const scope = /could not clean up (\S+)/.exec(
+        reported?.message ?? ""
+      )?.[1];
+      // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
       const folder = folderCleanup(async () => {
         if (scope) await removeFolder(scope);
       });
       defer(folder.cleanUp);
-      folder.own(async () => {
-        if (!held) return;
-        killUnlessGone(held);
-        if (!(await waitUntil(() => !isAlive(held), 10_000)))
-          throw new Error(
-            `the process holding the output (pid ${held}) did not end in 10s`
-          );
-      });
+      folder.own(() => stopReported(lifelines, "held", held));
       assert.ok(
         reported,
         `the supervisor did not report the held output: ${String(outcome.error)}`
@@ -303,9 +301,25 @@ test(
         reported.cause.message
       );
       assert.equal(existsSync(scope), true, `${scope} was removed`);
-    });
-  }
+    })
 );
+
+/**
+ * 감독 실행이 알린 번호(`pid`)의 프로세스를 끈다. 그 프로세스는 시작하자마자 `name` 연결을 쥔다. 번호는 끝난 뒤 다른 프로세스에 다시
+ * 쓰일 수 있으므로 신호는 그 연결이 열려 있음을 본 직후에만 보내고(보기와 신호 사이에 기다림이 없다), 끝남은 연결이 닫히는 것으로
+ * 본다(#287 리뷰 STD-4, CODING_STANDARDS.md#정리). 번호를 알렸는데 연결이 오지 않으면 그 번호가 그 프로세스인지 볼 수 없어 신호하지
+ * 않고 실패로 알린다. 번호가 없으면 띄우지 못한 것이고, 그런데 연결이 왔으면 끌 번호를 몰라 실패로 알린다.
+ */
+async function stopReported(lifelines, name, pid) {
+  if (!(pid > 0)) {
+    if (lifelines.names().includes(name))
+      throw new Error(`${name} connected but its pid was not reported`);
+    return;
+  }
+  await lifelines.connected(name, 10_000);
+  if (lifelines.open(name)) killUnlessGone(pid);
+  await lifelines.closed(name, 10_000);
+}
 
 const noLeftovers = { folders: [], processes: [] };
 
@@ -546,20 +560,21 @@ function killTree(child) {
 
 /**
  * 폴더 안의 postmaster.pid가 가리키는 Postgres를 멈춘다. pg_ctl이 띄운 Postgres는 자기 세션을 만들어 그룹을 벗어난다.
- * pid는 재사용될 수 있으므로 그 프로세스의 명령줄에 이 감독자의 폴더가 있을 때만 신호를 보낸다(POSIX). Windows는 명령줄을
- * 싸게 확인할 수 없어 신호를 보내지 않는다. 그 Postgres가 살아 있으면 남은 것으로 드러난다.
- * pid마다 따로 시도한다. 한 pid의 신호나 조회가 실패해도 다른 pid를 멈추고, 그 실패를 함께 알린다.
+ * pid는 재사용될 수 있으므로 신호마다 바로 앞에서 그 프로세스의 명령줄에 이 감독자의 폴더가 있는지 보고(보기와 신호 사이에 기다림을
+ * 두지 않는다), 끝남도 번호가 아니라 그 번호의 명령줄에 이 폴더가 더는 없음으로 본다(POSIX). SIGQUIT 뒤 기다리는 동안 그 번호가
+ * 다른 프로세스에 다시 쓰였으면 SIGKILL을 보내지 않는다. Windows는 명령줄을 싸게 확인할 수 없어 신호를 보내지 않는다. 그 Postgres가
+ * 살아 있으면 남은 것으로 드러난다. pid마다 따로 시도한다. 한 pid의 신호나 조회가 실패해도 다른 pid를 멈추고, 그 실패를 함께 알린다.
  */
 async function stopPostmasters(scope) {
   if (process.platform === "win32") return;
   await attemptAll(
     postmasterPids(scope).map((pid) => async () => {
-      if (!commandLine(pid).includes(scope)) return;
+      const ours = () => commandLine(pid).includes(scope);
       /** @type {NodeJS.Signals[]} */
       const signals = ["SIGQUIT", "SIGKILL"];
       for (const signal of signals) {
-        if (!killUnlessGone(pid, signal)) return;
-        if (await waitUntil(() => !isAlive(pid), 10_000)) return;
+        if (!ours() || !killUnlessGone(pid, signal)) return;
+        if (await waitUntil(() => !ours(), 10_000)) return;
       }
     })
   );
