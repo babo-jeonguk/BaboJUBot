@@ -19,7 +19,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDisconnect } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { awaitedLater, withCleanup } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./record-cli.mjs", import.meta.url));
@@ -97,9 +97,12 @@ function recordCli(defer, args, env = {}) {
     if (stdout.includes("\n")) line.resolve(undefined);
   });
   child.stderr.on("data", (chunk) => (stderr += chunk));
-  const exited = once(child, "exit");
-  const stdoutEnded = once(child.stdout, "end");
-  const outputEnded = Promise.all([stdoutEnded, once(child.stderr, "end")]);
+  // 시작 실패(`error`)와 출력 오류는 기다리기 전에 올 수 있다. 그 거절은 `ended()`·`firstLine()`이나 정리가 받는다.
+  const exited = awaitedLater(once(child, "exit"));
+  const stdoutEnded = awaitedLater(once(child.stdout, "end"));
+  const outputEnded = awaitedLater(
+    Promise.all([stdoutEnded, once(child.stderr, "end")])
+  );
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
     // 번호가 아니라 자식 객체로 끈다. Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시
