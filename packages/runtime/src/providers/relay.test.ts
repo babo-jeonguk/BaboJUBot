@@ -3,7 +3,13 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { destinationSchema, type Destination } from "@babojubot/contracts";
+import {
+  destinationSchema,
+  egressRefusalMessages,
+  type Destination,
+  type EgressRefusal,
+} from "@babojubot/contracts";
+import { within } from "@babojubot/process/test-support";
 import { refusing, resetRefusing } from "./connect-failure-support.ts";
 import { createRelayHub, type RelayHooks } from "./relay.ts";
 
@@ -79,7 +85,10 @@ const identity = {
   runId: "00000000-0000-4000-8000-00000000000c",
 };
 
-/** 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 응답 머리를 받는다. */
+/**
+ * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 응답 머리(빈 줄까지)를 받는다. 연 터널은 머리 뒤로 상대가 먼저 보내는 것이 없어
+ * 받은 것이 머리뿐이어야 한다. 머리 뒤가 함께 오면 그것까지 `head`에 남겨 단언이 드러내게 한다.
+ */
 function connectVia(directory: string, target: string) {
   return new Promise<{ head: string; socket: net.Socket }>(
     (resolve, reject) => {
@@ -91,16 +100,46 @@ function connectVia(directory: string, target: string) {
       );
       const onData = (chunk: Buffer) => {
         buffer += chunk.toString("latin1");
-        const end = buffer.indexOf("\r\n\r\n");
-        if (end < 0) return;
+        if (buffer.indexOf("\r\n\r\n") < 0) return;
         socket.off("data", onData);
-        resolve({
-          head: buffer.slice(0, end + 4) + buffer.slice(end + 4),
-          socket,
-        });
+        resolve({ head: buffer, socket });
       };
       socket.on("data", onData);
     }
+  );
+}
+
+/** egress.sock에 CONNECT를 보내고 중계가 연결을 끝낼 때까지 받은 응답 전체(UTF-8)를 상한 안에서 받는다. 거부의 답을 본다. */
+function answerVia(directory: string, target: string) {
+  const socket = net.connect(path.join(directory, "egress.sock"));
+  onTestFinished(() => void socket.destroy());
+  const chunks: Buffer[] = [];
+  socket.on("data", (chunk: Buffer) => chunks.push(chunk));
+  socket.on("connect", () =>
+    socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`)
+  );
+  return within(
+    new Promise<string>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    }),
+    5_000,
+    `the relay did not end its answer to CONNECT ${target}`
+  );
+}
+
+/** 중계가 연 터널의 답. */
+const established = "HTTP/1.1 200 Connection Established\r\n\r\n";
+/** 중계가 `reason`으로 거부할 때 보내는 답 전체: 403 머리와 사용자 안내 본문. */
+function refusal(reason: EgressRefusal) {
+  const body = `${egressRefusalMessages[reason]}\n`;
+  return (
+    "HTTP/1.1 403 Forbidden\r\n" +
+    `X-BaboJUBot-Refusal: ${reason}\r\n` +
+    "Content-Type: text/plain; charset=utf-8\r\n" +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    "Connection: close\r\n\r\n" +
+    body
   );
 }
 
@@ -139,24 +178,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
     await relay.ready;
     const ok = await connectVia(relay.directory, `localhost:${target.port}`);
-    expect(ok.head).toMatch(/^HTTP\/1\.1 200/);
+    expect(ok.head).toBe(established);
     expect(await roundTrip(ok.socket, "ping")).toBe("ping");
     ok.socket.destroy();
 
     const before = target.accepted.length;
-    const denied = await connectVia(
-      relay.directory,
-      `127.0.0.1:${target.port}`
+    expect(await answerVia(relay.directory, `127.0.0.1:${target.port}`)).toBe(
+      refusal("destination_not_allowed")
     );
-    expect(denied.head).toMatch(/^HTTP\/1\.1 403/);
-    expect(denied.head).toMatch(
-      /x-babojubot-refusal: destination_not_allowed/i
-    );
-    const otherPort = await connectVia(
-      relay.directory,
-      `localhost:${target.port + 1}`
-    );
-    expect(otherPort.head).toMatch(/destination_not_allowed/);
+    expect(
+      await answerVia(relay.directory, `localhost:${target.port + 1}`)
+    ).toBe(refusal("destination_not_allowed"));
     expect(target.accepted.length).toBe(before);
     expect(refused).toEqual([
       {
@@ -180,11 +212,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       required: [destination({ host: "localhost", port: target.port })],
     });
     await relay.ready;
-    const denied = await connectVia(
-      relay.directory,
-      `localhost:${target.port}`
+    expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
+      refusal("address_not_allowed")
     );
-    expect(denied.head).toMatch(/address_not_allowed/);
     expect(target.accepted.length).toBe(0);
   });
 
@@ -202,11 +232,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ],
     });
     await relay.ready;
-    const denied = await connectVia(
-      relay.directory,
-      `localhost:${target.port}`
+    expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
+      refusal("address_not_allowed")
     );
-    expect(denied.head).toMatch(/address_not_allowed/);
     expect(target.accepted.length).toBe(0);
   });
 
@@ -313,12 +341,12 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       port: target.port,
       addresses: ["127.0.0.1", "::1"],
     });
-    expect(
-      (await connectVia(relay.directory, `localhost:${target.port}`)).head
-    ).toMatch(/403/);
+    expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
+      refusal("destination_not_allowed")
+    );
     setResearch([entry]);
     const open = await connectVia(relay.directory, `localhost:${target.port}`);
-    expect(open.head).toMatch(/^HTTP\/1\.1 200/);
+    expect(open.head).toBe(established);
     setResearch([]);
     await relays.revalidate(identity.organizationId);
     await closed(open.socket);
@@ -342,7 +370,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }),
     ]);
     const open = await connectVia(relay.directory, `localhost:${target.port}`);
-    expect(open.head).toMatch(/^HTTP\/1\.1 200/);
+    expect(open.head).toBe(established);
     // 이름·포트는 그대로 두고 내부 주소 예외만 지운다. 새 연결은 거부되므로 열린 연결도 닫혀야 한다.
     setResearch([destination({ host: "localhost", port: target.port })]);
     await relays.revalidate(identity.organizationId);
@@ -352,9 +380,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       port: target.port,
       reason: "policy_changed",
     });
-    expect(
-      (await connectVia(relay.directory, `localhost:${target.port}`)).head
-    ).toMatch(/address_not_allowed/);
+    expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
+      refusal("address_not_allowed")
+    );
   });
 
   it("closes a connection admitted under the old policy when the user narrowed it while that connection was opening", async () => {
@@ -390,7 +418,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       `CONNECT localhost:${target.port} HTTP/1.1\r\nHost: localhost:${target.port}\r\n\r\n`
     );
     expect(await closedWithin(socket)).toBe("closed");
-    expect(answer).not.toMatch(/^HTTP\/1\.1 200/);
+    // 판정 뒤 정책이 바뀌어 다시 본 연결은 열지 않고 그 이유로 거부한다(200을 보내지 않는다).
+    expect(Buffer.from(answer, "latin1").toString("utf8")).toBe(
+      refusal("policy_changed")
+    );
     expect(env.refused.at(-1)).toEqual({
       host: "localhost",
       port: target.port,
@@ -956,9 +987,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ],
     });
     await relay.ready;
-    expect(
-      (await connectVia(relay.directory, `localhost:${target.port}`)).head
-    ).toMatch(/policy_unavailable/);
+    expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
+      refusal("policy_unavailable")
+    );
     expect(target.accepted.length).toBe(0);
   });
 
