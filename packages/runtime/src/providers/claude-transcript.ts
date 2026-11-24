@@ -54,9 +54,24 @@ async function sessionTranscripts<T>(
         `[provider] the Claude session folders could not be read (${failureCode(error)})`
       )
   );
-  // Transcripts are read for usage facts, not to allow anything: both absent and unverifiable are skipped,
-  // so no facts are found and no maintenance request is scheduled.
-  if (listed?.state !== "reached") return;
+  // Transcripts are read for usage facts, not to allow anything. A folder we cannot look into is not the same as
+  // no transcript, so say why before skipping.
+  if (listed === undefined) return;
+  switch (listed.state) {
+    case "reached":
+      break;
+    case "absent":
+      return;
+    case "unverifiable":
+      console.warn(
+        `[provider] a Claude session transcript folder could not be checked (${listed.found})`
+      );
+      return;
+    default: {
+      const unhandled: never = listed;
+      throw new Error(`unhandled folder state ${String(unhandled)}`);
+    }
+  }
   const folders = listed.value;
   if (!folders) return;
   for (const entry of folders) {
@@ -67,14 +82,20 @@ async function sessionTranscripts<T>(
           let file: OpenedRegularFile | undefined;
           try {
             const opened = await openRegularFile(folder.at(`${id}.jsonl`));
-            if (typeof opened === "string") return;
+            if (typeof opened === "string") {
+              // 확인한 폴더 안에서 열었으므로, 여는 사이 자리가 바뀐 것만 알린다. 없음·일반 파일 아님은 기록이 없는 것이다.
+              if (opened === "changed")
+                console.warn(
+                  "[provider] a Claude session transcript changed while it was opened"
+                );
+              return;
+            }
             file = opened;
             return await read(opened.handle, Number(opened.info.size));
           } catch (error) {
-            if (!hasErrorCode("ENOENT", "ELOOP", "ENOTDIR")(error))
-              console.warn(
-                `[provider] a Claude session transcript could not be read (${failureCode(error)})`
-              );
+            console.warn(
+              `[provider] a Claude session transcript could not be read (${failureCode(error)})`
+            );
             /* Missing/unsupported transcript cannot schedule a guessed maintenance request. */
           } finally {
             const opened = file;
@@ -93,8 +114,23 @@ async function sessionTranscripts<T>(
           `[provider] a Claude session transcript could not be read (${failureCode(error)})`
         )
     );
-    if (found?.state !== "reached") continue;
-    if (found.value !== undefined) return found.value;
+    if (found === undefined) continue;
+    switch (found.state) {
+      case "reached":
+        if (found.value !== undefined) return found.value;
+        break;
+      case "absent":
+        break;
+      case "unverifiable":
+        console.warn(
+          `[provider] a Claude session transcript folder could not be checked (${found.found})`
+        );
+        break;
+      default: {
+        const unhandled: never = found;
+        throw new Error(`unhandled folder state ${String(unhandled)}`);
+      }
+    }
   }
 }
 

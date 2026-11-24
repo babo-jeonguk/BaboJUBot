@@ -17,6 +17,7 @@ import {
   removeConfirmed,
   type Removal,
 } from "@babojubot/files";
+import type { ScriptCleanupReason } from "./antigravity-config-reasons.ts";
 import { record } from "./record.ts";
 
 const unsafe = 3;
@@ -26,20 +27,11 @@ const ownerMark: unknown = Array.isArray(given) ? given.at(0) : undefined;
 if (typeof ownerMark !== "string")
   throw new Error("the configuration script was started without our mark");
 
-/** 지우지 못한 까닭. 서버가 정해진 값만 기록한다. */
-type Reason =
-  | "not_checkable"
-  | "unmarked"
-  | "not_regular"
-  | "changed"
-  | "restored"
-  | "kept_aside"
-  | "handle_not_closed";
 /** 지우지 못한 까닭이 있었는가. 하나라도 남기면 끝남 코드 3이다. */
 let unsafeReason = false;
 /** 까닭 하나를 표준 오류에 JSON 한 줄로 남긴다. 사람이 읽을 글은 쓰지 않는다(서버가 정해진 값만 기록한다). */
 function report(
-  reason: Reason,
+  reason: ScriptCleanupReason,
   name: string,
   extra?: { keptAs?: string; code?: string }
 ) {
@@ -67,6 +59,35 @@ async function owned(
   }
 }
 
+/** 옮긴 파일을 다시 확인하지 못한 까닭. `removeConfirmed`는 이 오류를 되돌린 뒤 그대로 던진다. */
+class Unconfirmed extends Error {
+  readonly reason: "changed" | "not_regular";
+  constructor(reason: "changed" | "not_regular") {
+    super(`the moved file could not be confirmed (${reason})`);
+    this.reason = reason;
+  }
+}
+
+/** `removeConfirmed`에 넘기는 확인. 우리 것 아님은 `false`, 확인하지 못한 것은 `Unconfirmed`다. */
+async function confirmOwned(moved: string): Promise<boolean> {
+  const state = await owned(moved);
+  switch (state) {
+    case "owned":
+      return true;
+    case "unmarked":
+      return false;
+    case "not_regular":
+      throw new Unconfirmed("not_regular");
+    case "changed":
+    case "missing":
+      throw new Unconfirmed("changed");
+    default: {
+      const unhandled: never = state;
+      throw new Error(`unhandled owned result ${String(unhandled)}`);
+    }
+  }
+}
+
 /** `removeConfirmed`의 결과를 빠짐없이 처리한다. 되돌렸으면 정리하지 못한 까닭이다. */
 function handled(name: string, removal: Removal) {
   if (typeof removal === "object") {
@@ -86,6 +107,19 @@ function handled(name: string, removal: Removal) {
     }
   }
 }
+
+/** 우리 파일 하나를 확인해 지운다. 확인하지 못한 것은 되돌린 뒤 그 까닭을 남긴다. */
+async function removeOwned(name: string) {
+  try {
+    handled(name, await removeConfirmed(name, confirmOwned));
+  } catch (error) {
+    if (error instanceof Unconfirmed) {
+      report(error.reason, name);
+      return;
+    }
+    throw error;
+  }
+}
 const temporary = (name: string) =>
   name.startsWith(".babojubot-") && name.endsWith(".tmp");
 
@@ -101,26 +135,30 @@ if (!agents.isDirectory() || !(await enterFolder(".agents", agents))) {
 }
 for (const name of await readdir(".")) {
   if (!temporary(name)) continue;
-  // 임시 파일은 우리 것일 때만 지운다. 그 밖은 건드리지 않고 까닭도 남기지 않는다.
-  if ((await owned(name)) !== "owned") continue;
-  handled(
-    name,
-    await removeConfirmed(
-      name,
-      async (moved) => (await owned(moved)) === "owned"
-    )
-  );
+  const state = await owned(name);
+  switch (state) {
+    case "owned":
+      await removeOwned(name);
+      break;
+    case "missing":
+    case "unmarked":
+      // 우리 것 아님(이미 없거나 표시가 없다). 건드리지 않는다.
+      break;
+    case "not_regular":
+    case "changed":
+      // 우리 임시 파일 이름인데 확인하지 못했다. 설정 파일 쪽과 같은 기준으로 지우지 않고 그 까닭을 남긴다.
+      report(state, name);
+      break;
+    default: {
+      const unhandled: never = state;
+      throw new Error(`unhandled owned result ${String(unhandled)}`);
+    }
+  }
 }
 const config = await owned(file);
 switch (config) {
   case "owned":
-    handled(
-      file,
-      await removeConfirmed(
-        file,
-        async (moved) => (await owned(moved)) === "owned"
-      )
-    );
+    await removeOwned(file);
     break;
   case "unmarked":
   case "not_regular":

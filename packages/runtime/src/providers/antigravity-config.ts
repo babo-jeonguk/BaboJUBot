@@ -1,6 +1,10 @@
 import { fileURLToPath } from "node:url";
 import { orIfUnreadable } from "@babojubot/contracts";
 import { runTree } from "@babojubot/process";
+import {
+  cleanupReasons,
+  type ScriptCleanupReason,
+} from "./antigravity-config-reasons.ts";
 
 export const ownerMark = "babojubot-antigravity-v1";
 
@@ -17,31 +21,15 @@ export const configScriptFile = fileURLToPath(
 
 /** 정리 스크립트가 지우지 못한 까닭. 스크립트의 정해진 값과 직렬화한 이름만 담는다(사람이 읽을 글은 옮기지 않는다). */
 export type CleanupReason = {
-  reason:
-    | "not_checkable"
-    | "unmarked"
-    | "not_regular"
-    | "changed"
-    | "restored"
-    | "kept_aside"
-    | "handle_not_closed"
-    | "unreadable_output";
+  reason: ScriptCleanupReason | "unreadable_output";
   name: string;
   keptAs?: string;
   code?: string;
 };
 
-const reasonNames: readonly string[] = [
-  "not_checkable",
-  "unmarked",
-  "not_regular",
-  "changed",
-  "restored",
-  "kept_aside",
-  "handle_not_closed",
-];
-const isReasonName = (value: unknown): value is CleanupReason["reason"] =>
-  typeof value === "string" && reasonNames.includes(value);
+const reasonNames = new Set<string>(cleanupReasons);
+const isReasonName = (value: unknown): value is ScriptCleanupReason =>
+  typeof value === "string" && reasonNames.has(value);
 
 /** 정리하지 못한 까닭. 서버 기록에는 이 까닭들만 남는다. */
 export class ConfigNotCleared extends Error {
@@ -90,6 +78,23 @@ function cleanupReason(line: string): CleanupReason | undefined {
   };
 }
 
+/**
+ * 정리 스크립트의 표준 오류를 까닭으로 읽는다. 한 줄에 JSON 하나이며, 정해진 모양이 아닌 줄이 있으면 내용 없이
+ * `unreadable_output` 하나를 더한다(사람이 읽을 글은 옮기지 않는다).
+ */
+export function readCleanupReasons(stderr: string): CleanupReason[] {
+  const reasons: CleanupReason[] = [];
+  let unreadable = false;
+  for (const line of stderr.split("\n")) {
+    if (!line.trim()) continue;
+    const reason = cleanupReason(line);
+    if (reason) reasons.push(reason);
+    else unreadable = true;
+  }
+  if (unreadable) reasons.push({ reason: "unreadable_output", name: "" });
+  return reasons;
+}
+
 /** 설정을 다루는 Node.js 프로세스를 공용 실행으로 끝까지 돌린다. 상한(30초)에 닿으면 그 트리를 끄고 확인한 뒤 실패로 던진다. */
 async function run(cwd: string) {
   const result = await runTree({
@@ -118,16 +123,10 @@ async function run(cwd: string) {
       `the configuration script ended by ${result.signal ?? "an unknown cause"}`
     );
   // 표준 오류는 한 줄에 JSON 하나다. 정해진 모양이 아닌 줄은 내용 없이 하나로 센다(사람이 읽을 글은 옮기지 않는다).
-  const reasons: CleanupReason[] = [];
-  let unreadable = false;
-  for (const line of result.stderr.toString("utf8").split("\n")) {
-    if (!line.trim()) continue;
-    const reason = cleanupReason(line);
-    if (reason) reasons.push(reason);
-    else unreadable = true;
-  }
-  if (unreadable) reasons.push({ reason: "unreadable_output", name: "" });
-  if (result.code === 3) throw new ConfigNotCleared(reasons);
+  if (result.code === 3)
+    throw new ConfigNotCleared(
+      readCleanupReasons(result.stderr.toString("utf8"))
+    );
   if (result.code !== 0)
     throw new Error(`the configuration script failed (exit ${result.code})`);
 }

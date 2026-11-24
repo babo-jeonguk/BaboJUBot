@@ -103,10 +103,22 @@ export function fileLogin(
         },
         { create: true }
       );
-      if (placed.state !== "reached")
-        throw new Error(
-          "the login place in the organization folder is not a folder; the stand-in was not placed"
-        );
+      switch (placed.state) {
+        case "reached":
+          break;
+        case "absent":
+          throw new Error(
+            "the login place in the organization folder disappeared while it was prepared; the stand-in was not placed"
+          );
+        case "unverifiable":
+          throw new Error(
+            "the login place in the organization folder is not a folder; the stand-in was not placed"
+          );
+        default: {
+          const unhandled: never = placed;
+          throw new Error(`unhandled folder state ${String(unhandled)}`);
+        }
+      }
     });
   };
   /**
@@ -117,7 +129,18 @@ export function fileLogin(
     const checked = await inFolder(organization, loginParts, (folder) =>
       shape.isStandIn(folder.at(loginName))
     );
-    return checked.state === "reached" ? checked.value : false;
+    switch (checked.state) {
+      case "reached":
+        return checked.value;
+      case "absent":
+      case "unverifiable":
+        // 확인한 흔적만 면제한다. 확인할 수 없으면 자리 표시가 아니라는 fail-closed 답이다.
+        return false;
+      default: {
+        const unhandled: never = checked;
+        throw new Error(`unhandled folder state ${String(unhandled)}`);
+      }
+    }
   };
   const prepare = async (
     organizationId: string,
@@ -187,10 +210,22 @@ export function fileLogin(
         },
         { create: true }
       );
-      if (placed.state !== "reached")
-        throw new Error(
-          "the login place in the organization folder is not a folder; the run was not started"
-        );
+      switch (placed.state) {
+        case "reached":
+          break;
+        case "absent":
+          throw new Error(
+            "the login place in the organization folder disappeared while it was prepared; the run was not started"
+          );
+        case "unverifiable":
+          throw new Error(
+            "the login place in the organization folder is not a folder; the run was not started"
+          );
+        default: {
+          const unhandled: never = placed;
+          throw new Error(`unhandled folder state ${String(unhandled)}`);
+        }
+      }
       return placed.value;
     });
     const productHome = linked ? organization : home;
