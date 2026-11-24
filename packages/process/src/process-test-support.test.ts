@@ -195,7 +195,13 @@ it("rejects the wait for a descendant's number with what the program reported in
     { stdio: ["ignore", "ignore", "pipe"] }
   );
   onTestFinished(() => endChild(child));
-  await expect(reportedDescendant(child.stderr!)).rejects.toThrow(
+  await expect(
+    within(
+      reportedDescendant(child.stderr!),
+      10_000,
+      "the wait for the descendant's number did not settle"
+    )
+  ).rejects.toThrow(
     'the descendant the program reported is not a process number: "undefined"'
   );
 });
@@ -225,10 +231,14 @@ async function lateReadyLine(
         })
       )
     );
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
-    });
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolve());
+      }),
+      limitMs,
+      "the test's server did not start listening"
+    );
     // 서버는 받은 연결이 모두 끝나야 닫히므로, 받은 연결을 먼저 끊고 닫는다(한 단계).
     defer(async () => {
       for (const socket of sockets) socket.destroy();
@@ -282,6 +292,13 @@ async function lateReadyLine(
     // 상한은 AbortSignal.timeout이 진다(가짜 시계와 무관). 끝내라고 하기 전에 기다리기 시작한다.
     const exited = once(child, "exit", {
       signal: AbortSignal.timeout(limitMs),
+    }).catch((error: unknown) => {
+      throw new Error(
+        `the program did not exit within ${limitMs} ms after it was told to`,
+        {
+          cause: error,
+        }
+      );
     });
     child.stdin!.write("exit\n");
     await exited;

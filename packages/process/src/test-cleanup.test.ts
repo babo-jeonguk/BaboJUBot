@@ -13,6 +13,7 @@ import {
 } from "./test-cleanup.ts";
 import { endChild } from "./process-test-support.ts";
 import { removeFolder } from "./remove-folder.ts";
+import { within } from "./test-support.ts";
 import { attemptAll } from "@babojubot/contracts";
 
 // 정리 실패가 시험의 원래 실패를 가리지 않고, 한 정리가 실패해도 나머지 정리를 한다.
@@ -323,7 +324,7 @@ describe("lifelineHolder", () => {
           return seen;
         },
         closed: async () => {
-          await exit;
+          await within(exit, 10_000, "the holder program did not end");
         },
       },
       "holder",

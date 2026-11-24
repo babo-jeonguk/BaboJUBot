@@ -129,7 +129,11 @@ describe("embedded Postgres lifetime", () => {
     const closed = awaitedLater(close());
     expect(handle.progress()).toBe("closing connections");
     giveBack();
-    await borrowed;
+    await within(
+      borrowed,
+      30_000,
+      "the borrowed connection was not given back"
+    );
     await within(stop.reached, 30_000, "closing did not stop Postgres");
     expect(handle.progress()).toBe("stopping Postgres (fast)");
     stop.release();
@@ -140,7 +144,7 @@ describe("embedded Postgres lifetime", () => {
     );
     expect(handle.progress()).toBe("removing its temporary folder");
     remove.release();
-    await closed;
+    await within(closed, 30_000, "closing the database did not finish");
     expect(handle.progress()).toBe("closed");
   }, 60_000);
 
@@ -194,12 +198,16 @@ describe("embedded Postgres lifetime", () => {
     // 연결을 받은 서버에게 번호를 묻는다. 그 서버가 도는 동안 신원을 함께 잡는다.
     const started = identified(
       reportedPid(
-        await withClient(handle.url, async (client) => {
-          const { rows } = await client.query<{ pid: string }>(
-            "select split_part(pg_read_file('postmaster.pid'), E'\\n', 1) as pid"
-          );
-          return rows[0]!.pid;
-        }),
+        await within(
+          withClient(handle.url, async (client) => {
+            const { rows } = await client.query<{ pid: string }>(
+              "select split_part(pg_read_file('postmaster.pid'), E'\\n', 1) as pid"
+            );
+            return rows[0]!.pid;
+          }),
+          10_000,
+          "the server did not tell its pid"
+        ),
         "the pid the server read from its lock file"
       )
     );
@@ -1120,9 +1128,8 @@ async function runningPostgresIn(
   if (lock === undefined) return undefined;
   const [, , , port] = lock.split("\n");
   try {
-    return await withClient(
-      clusterUrl(Number(port), "postgres"),
-      async (client) => {
+    return await within(
+      withClient(clusterUrl(Number(port), "postgres"), async (client) => {
         const { rows } = await client.query<{ dir: string; pid: number }>(
           "select current_setting('data_directory') as dir, pg_backend_pid() as pid"
         );
@@ -1133,7 +1140,9 @@ async function runningPostgresIn(
         if (!(parent > 1))
           throw new Error(`the parent of backend ${pid} could not be read`);
         return identified(parent);
-      }
+      }),
+      10_000,
+      `the server on port ${port} did not answer`
     );
   } catch (error) {
     throw new Error(

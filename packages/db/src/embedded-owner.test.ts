@@ -461,7 +461,7 @@ describe.runIf(posix)(
         "the socket holder did not get ready"
       );
       holder.kill("SIGKILL");
-      await ended;
+      await within(ended, 10_000, "the socket holder did not end");
       expect(fs.lstatSync(stale).isSocket()).toBe(true);
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
       const owners = `${dataDir}.owner`;
