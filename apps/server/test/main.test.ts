@@ -1,11 +1,19 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
+import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { stopRequest } from "../src/stop-request.ts";
@@ -20,10 +28,11 @@ import {
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 /**
- * 서버 시작의 남은 컨테이너 정리가 부르는 docker. 이 컴퓨터의 Docker 유무·권한에 따라 시작 출력이 달라지지 않게 늘 "남은 것 없음"으로
- * 답하는 가짜를 쓴다(Windows는 그 정리가 Docker를 부르지 않는다). 실제 Docker는 runtime의 실제 Docker 묶음만 쓴다.
+ * 서버 시작의 남은 컨테이너 정리가 부르는 docker. 이 컴퓨터의 Docker 유무·권한에 따라 시작 출력이 달라지지 않게, 이 제품 폴더의
+ * 컨테이너 목록 명령 하나만 받아 "남은 것 없음"으로 답하는 가짜를 쓴다(Windows는 그 정리가 Docker를 부르지 않는다). 받은 명령은
+ * 서버마다 따로 둔 Docker 설정 폴더에 남는다(`startMain`). 실제 Docker는 runtime의 실제 Docker 묶음만 쓴다.
  */
-const noLeftoverDocker = fileURLToPath(
+const fakeDocker = fileURLToPath(
   new URL("fixtures/no-leftover-docker.mjs", import.meta.url)
 );
 /** DB 닫기를 실패시키는 preload(`startMain`의 `preload`). */
@@ -99,6 +108,21 @@ it("ignores the parent's server settings that the test did not choose", async ()
   const child = startMain({ DATABASE_URL: external.url });
   onTestFinished(() => stopMain(child));
   await child.ready();
+});
+
+// 서버 시작은 지난 실행이 남긴 컨테이너 가운데 이 제품 폴더의 것(주인 표식)만 골라 지운다. 같은 Docker를 쓰는 다른 제품 폴더의
+// 컨테이너는 건드리지 않는다. 가짜 docker가 받은 명령을 그대로 본다. 시작 정리는 듣기 전에 끝나므로 시작 줄 뒤에는 기록이 다 있다.
+// Windows는 격리 실행이 컨테이너를 띄우지 않아 그 정리가 Docker를 부르지 않는다(isolation.ts `removeOrphans`).
+it("lists only this product folder's leftover containers at startup", async () => {
+  const child = startMain({ DATABASE_URL: external.url });
+  onTestFinished(() => stopMain(child));
+  await child.ready();
+  const owner = containerOwner(process.env.BABOJUBOT_HOME!);
+  expect(child.dockerCalls()).toEqual(
+    process.platform === "win32"
+      ? []
+      : [["ps", "-aq", "--filter", `label=babojubot.owner=${owner}`]]
+  );
 });
 
 // 종료 신호는 서버 진입점 하나가 받아, 서버 정리를 끝낸 뒤 DB를 닫고 성공으로 끝난다.
@@ -361,6 +385,8 @@ type MainProcess = ChildProcess & {
   exited: Promise<Exit>;
   closed: Promise<void>;
   ready: () => Promise<void>;
+  /** 가짜 docker가 받은 명령의 인수. 받은 차례대로다. */
+  dockerCalls: () => unknown[];
 };
 
 /**
@@ -372,6 +398,8 @@ const serverSettings = [
   "HOST",
   "PORT",
   "EMBEDDED_POSTGRES_PORT",
+  // 서버가 docker 클라이언트에 넘기는 Docker 설정 폴더(container.ts `dockerClientEnv`). 시험이 서버마다 정한다.
+  "DOCKER_CONFIG",
 ];
 function inheritedEnv() {
   const env = { ...process.env };
@@ -387,6 +415,17 @@ function inheritedEnv() {
   return env;
 }
 
+/**
+ * 서버가 자기 컨테이너에 붙이고 시작 정리에서 고르는 주인 표식(main.ts `owner`): 제품 폴더 절대 경로의 SHA-256 앞 16자.
+ * 같은 Docker를 쓰는 다른 제품 폴더의 컨테이너는 이 값이 달라 건드리지 않는다.
+ */
+function containerOwner(home: string) {
+  return createHash("sha256")
+    .update(path.resolve(home))
+    .digest("hex")
+    .slice(0, 16);
+}
+
 /** `ipc`면 부모와의 IPC 채널을 열어 띄운다(멈춤 메시지·채널 끊김 시험). `preload`는 서버보다 먼저 불러올 모듈이다. */
 function startMain(
   env: Record<string, string>,
@@ -399,15 +438,30 @@ function startMain(
   const args = preload
     ? ["--import", pathToFileURL(preload).href, main]
     : [main];
+  const inherited = inheritedEnv();
+  const home = env.BABOJUBOT_HOME ?? inherited.BABOJUBOT_HOME;
+  if (home === undefined)
+    throw new Error("BABOJUBOT_HOME is not set (test/product-home.ts sets it)");
+  // 서버는 docker 클라이언트에 자기 환경을 넘기지 않고 Docker 설정 폴더(DOCKER_CONFIG)만 넘긴다. 서버마다 그 폴더를 따로 두어
+  // 가짜 docker에 이 서버의 주인 표식을 알리고, 가짜가 받은 명령을 그 폴더에서 읽는다. 서버를 끈 뒤에 지운다(정리는 역순).
+  const dockerConfig = mkdtempSync(
+    path.join(tmpdir(), "babojubot-fake-docker-")
+  );
+  onTestFinished(() => removeFolder(dockerConfig));
+  writeFileSync(
+    path.join(dockerConfig, "fake-docker.json"),
+    JSON.stringify({ owner: containerOwner(home) })
+  );
   const child = spawn(process.execPath, args, {
     env: {
-      ...inheritedEnv(),
+      ...inherited,
       HOST: "127.0.0.1",
       PORT: "0",
       BABOJUBOT_PROVIDERS: "",
       BABOJUBOT_FAKE_PROVIDERS: "1",
       BABOJUBOT_FAKE_PROVIDER_SETTINGS: "{}",
-      BABOJUBOT_DOCKER_COMMAND: noLeftoverDocker,
+      BABOJUBOT_DOCKER_COMMAND: fakeDocker,
+      DOCKER_CONFIG: dockerConfig,
       ...env,
     },
     stdio: ipc ? ["ignore", "pipe", "pipe", "ipc"] : ["ignore", "pipe", "pipe"],
@@ -419,6 +473,15 @@ function startMain(
   child.stderr!.on("data", (chunk) => (stderr += chunk));
   child.stdoutText = () => stdout;
   child.stderrText = () => stderr;
+  child.dockerCalls = () =>
+    orIfMissing(
+      () => readFileSync(path.join(dockerConfig, "calls.jsonl"), "utf8"),
+      hasErrorCode("ENOENT"),
+      ""
+    )
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line): unknown => JSON.parse(line));
   // 정리(stopMain)가 늘 기다린다. 시작하자마자 spawn 오류로 거절돼도 그 전에 처리되지 않은 거절이 되지 않는다.
   child.exited = awaitedLater(
     new Promise<Exit>((resolve, reject) => {
