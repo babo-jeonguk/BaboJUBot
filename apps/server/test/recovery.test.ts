@@ -537,14 +537,11 @@ async function crashAndRestart(
       ? await insertLegacyOrganization(database!.db, "crash 조직")
       : await before.createOrganization("crash 조직");
     if (say) await before.say(org.id, say);
-    await vi
-      .waitUntil(() => committed(before, org.id), {
-        timeout: 5_000,
-        interval: 25,
-      })
-      .catch(() => {
-        throw new Error(`${stopAfter} never committed in 5s`);
-      });
+    await until(
+      () => committed(before, org.id),
+      `${stopAfter} to be committed`,
+      5_000
+    );
     if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
     await exitedWithin(10_000);
@@ -729,7 +726,8 @@ describe("server start recovery barrier", () => {
       "the server did not start listening"
     );
     await until(
-      async () => (await runStatus(early!.runId)) === "server_restart"
+      async () => (await runStatus(early!.runId)) === "server_restart",
+      "the early run to end with server_restart"
     );
     const stream = await listen(base);
     // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
@@ -861,15 +859,33 @@ function holdRow(db: Database, runId: string, gate: Gate) {
   });
 }
 
-async function until(check: () => Promise<boolean>) {
+/**
+ * `check`가 참이 될 때까지 다시 묻는다. 확인이 실패하면(조회 오류) 다시 묻지 않고 그 실패로 끝난다. 실패를 "아직"으로 세면 원인을
+ * 버리고 상한까지 기다렸다(#286). 상한이 지나면 무엇(`what`)을 기다렸는지 밝힌다.
+ */
+async function until(
+  check: () => Promise<boolean>,
+  what: string,
+  timeoutMs = 10_000
+) {
+  let failed: { error: unknown } | undefined;
   await vi
-    .waitUntil(() => check().catch(() => false), {
-      timeout: 10_000,
-      interval: 25,
-    })
+    .waitUntil(
+      async () => {
+        try {
+          return await check();
+        } catch (error) {
+          failed = { error };
+          return true;
+        }
+      },
+      { timeout: timeoutMs, interval: 25 }
+    )
+    // 확인의 실패는 위에서 받아 대기를 끝내므로, 여기 오는 것은 상한뿐이다.
     .catch(() => {
-      throw new Error("condition never held in 10s");
+      throw new Error(`waited ${timeoutMs}ms for ${what}`);
     });
+  if (failed) throw failed.error;
 }
 
 type Stream = {
@@ -879,24 +895,37 @@ type Stream = {
   close: () => void;
 };
 
-/** 전체 Event stream을 구독해 받은 Event 종류를 순서대로 모은다. 서버가 듣기 시작할 때까지 다시 시도한다. */
+/**
+ * 전체 Event stream을 구독해 받은 Event 종류를 순서대로 모은다. 서버가 듣기 시작한 뒤(`onListening`)에 부르므로 다시 시도하지 않는다.
+ * 연결 오류나 읽을 수 없는 frame은 "아직"이 아니라 실패다. 준비 뒤에 온 읽을 수 없는 frame은 받은 Event를 볼 때(`types`) 드러낸다.
+ * 연결은 서버를 닫을 때 함께 끊긴다.
+ */
 async function listen(base: string): Promise<Stream> {
   const types: string[] = [];
-  let socket!: WebSocket;
-  await until(
-    () =>
-      new Promise<boolean>((resolve) => {
-        socket = new WebSocket(base.replace(/^http/, "ws") + eventStreamPath);
-        socket.once("error", () => resolve(false));
-        socket.on("message", (data) => {
+  let unreadable: { error: unknown } | undefined;
+  const socket = new WebSocket(base.replace(/^http/, "ws") + eventStreamPath);
+  await within(
+    new Promise<void>((resolve, reject) => {
+      socket.once("error", reject);
+      socket.on("message", (data) => {
+        try {
           const frame = streamFrameSchema.parse(JSON.parse(String(data)));
-          if (frame.type === "ready") resolve(true);
+          if (frame.type === "ready") resolve();
           if (frame.type === "event") types.push(frame.event.type);
-        });
-      })
+        } catch (error) {
+          unreadable ??= { error };
+          reject(error);
+        }
+      });
+    }),
+    eventuallyMs,
+    "the Event stream did not get ready"
   );
   return {
-    types: () => [...types],
+    types: () => {
+      if (unreadable) throw unreadable.error;
+      return [...types];
+    },
     caughtUp: () =>
       within(
         new Promise<void>((resolve) => {
