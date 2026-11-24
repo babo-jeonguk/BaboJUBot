@@ -5,7 +5,10 @@
 // 실패는 `AggregateError`로 묶는다. Vitest·Playwright는 목록을 펼쳐 하나씩 보이고, 목록을 펼치지 않는 출력(node:test의 TAP)을
 // 위해 메시지에도 모든 실패를 이어 적는다.
 
+import { readFile } from "node:fs/promises";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
+import type { Lifelines } from "./lifeline-support.ts";
+import { reportedPid } from "./test-support.ts";
 
 /** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. 모두 시도하기는 `attemptAll`(`@babojubot/contracts`)이 한다. */
 export type CleanupStep = () => unknown;
@@ -113,4 +116,30 @@ export function killUnlessGone(
 export function awaitedLater<T>(promise: Promise<T>): Promise<T> {
   promise.catch(() => {});
   return promise;
+}
+
+/**
+ * 연결 `name`을 쥐고 도는 시험 프로그램의 시작 코드(`code`, 프로그램 안에 넣는 문장)와 정리(`end`). 프로그램은 자기 번호를 `pidFile`에
+ * 쓴 뒤 연결하므로, 연결이 보이면 번호가 있다(#286). 시험이 끄지 못한 프로그램은 `end`가 그 번호로 끈다: 연결이 오기를 기다리고(오지
+ * 않으면 그 이유로 실패), 번호를 먼저 읽어 확인한 뒤, 연결이 열려 있음을 본 직후(사이에 기다림 없이) 그 번호로 끄고, 끝은 연결의
+ * 닫힘으로 본다. 열려 있음은 본 순간에만 그 번호가 아직 그 프로그램이라는 근거라, 그 뒤에 기다림이 끼면 그 사이 프로그램이 끝날 수
+ * 있다(#288 외부 리뷰 4회차 STD-6/SPEC-3).
+ */
+export function lifelineHolder(
+  lifelines: Pick<Lifelines, "hold" | "connected" | "open" | "closed">,
+  name: string,
+  pidFile: string
+) {
+  return {
+    code: `process.getBuiltinModule("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${lifelines.hold(name)}`,
+    end: async () => {
+      await lifelines.connected(name);
+      const pid = reportedPid(
+        await readFile(pidFile, "utf8"),
+        `the pid file of ${name}`
+      );
+      if (lifelines.open(name)) killUnlessGone(pid);
+      await lifelines.closed(name);
+    },
+  };
 }

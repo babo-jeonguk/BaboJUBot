@@ -1,12 +1,19 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   folderCleanup,
   killUnlessGone,
+  lifelineHolder,
   processAlive,
   withCleanup,
 } from "./test-cleanup.ts";
+import { endChild } from "./process-test-support.ts";
+import { removeFolder } from "./remove-folder.ts";
+import { within } from "./test-support.ts";
 import { attemptAll } from "@babojubot/contracts";
 
 // 정리 실패가 시험의 원래 실패를 가리지 않고, 한 정리가 실패해도 나머지 정리를 한다.
@@ -252,7 +259,7 @@ describe("processAlive", () => {
 });
 
 describe("killUnlessGone", () => {
-  it("signals a running process and passes over a finished one", async () => {
+  it("signals a running process", async () => {
     const running = spawn(
       process.execPath,
       ["-e", "setInterval(() => {}, 1000)"],
@@ -261,7 +268,13 @@ describe("killUnlessGone", () => {
     const exit = once(running, "exit");
     expect(killUnlessGone(running.pid!)).toBe(true);
     await exit;
-    expect(killUnlessGone(running.pid!)).toBe(false);
+  });
+
+  // 끝난 대상(ESRCH)은 넘어간다. 끝난 프로세스의 번호에 실제로 신호하면 그 번호를 받은 다른 프로그램에 갈 수 있어(#288 parent 점검),
+  // "없음" 답을 주입해 본다.
+  it("passes over a finished process", () => {
+    failKill("ESRCH");
+    expect(killUnlessGone(4242)).toBe(false);
   });
 
   it.each(["EPERM", "EIO"])(
@@ -280,4 +293,55 @@ describe("killUnlessGone", () => {
       expect((error as Error).cause).toBe(failure);
     }
   );
+});
+
+// #288 외부 리뷰 4회차 STD-6/SPEC-3: 연결이 열려 있음은 그 번호가 아직 그 프로그램이라는 근거다. 그 근거는 본 순간에만 맞으므로,
+// 열림을 본 뒤 신호까지 다른 기다림(파일 읽기 등)이 끼면 그 사이 프로그램이 끝나 닫힘이 처리될 수 있다. 대역 연결은 열림을 알린
+// 직후 다음 기다림에서 닫히게 해, 신호가 그보다 먼저(열린 동안) 갔는지 본다.
+describe("lifelineHolder", () => {
+  it("signals the holder right after it sees the connection open, with nothing awaited in between", async () => {
+    const folder = await mkdtemp(path.join(os.tmpdir(), "babojubot-holder-"));
+    onTestFinished(() => removeFolder(folder));
+    const program = spawn(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      {
+        stdio: "ignore",
+      }
+    );
+    onTestFinished(() => endChild(program));
+    const exit = once(program, "exit");
+    const pidFile = path.join(folder, "pid");
+    await writeFile(pidFile, String(program.pid));
+    let open = true;
+    const holder = lifelineHolder(
+      {
+        hold: () => "",
+        connected: async () => {},
+        open: () => {
+          const seen = open;
+          queueMicrotask(() => (open = false));
+          return seen;
+        },
+        closed: async () => {
+          await within(exit, 10_000, "the holder program did not end");
+        },
+      },
+      "holder",
+      pidFile
+    );
+    const kill = process.kill.bind(process);
+    const openAtSignal: boolean[] = [];
+    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === program.pid) openAtSignal.push(open);
+      return kill(pid, signal);
+    });
+    onTestFinished(() => {
+      vi.restoreAllMocks();
+    });
+
+    await holder.end();
+
+    expect(openAtSignal).toEqual([true]);
+  });
 });

@@ -1,32 +1,35 @@
 import type { ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { vi } from "vitest";
 import { killUnlessGone, processAlive } from "./test-cleanup.ts";
 import { attemptAll } from "@babojubot/contracts";
 import { psField } from "./ps.ts";
 import { statFields, statRuns } from "./proc-stat.ts";
+import { within } from "./test-support.ts";
 
 /**
- * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·종료·시한이면 실패한다.
- * 종료는 `exit`로 본다. 출력을 물려받은 자손이 출력을 쥐고 있으면 `close`는 늦게 오기 때문이다.
- * 종료 직전에 쓴 줄은 `exit` 뒤에 도착할 수 있어 잠깐(`drainMs`) 더 읽은 뒤 실패로 본다.
+ * 시험이 띄운 프로그램의 준비 줄. 완전한 줄이 `line`과 같을 때 끝나고, 그 전에 오류·시한이면 실패한다.
+ * 프로그램이 끝난(`exit`) 뒤에도 출력이 끝나기(`end`) 전까지는 줄이 닿을 수 있어 계속 읽는다(#286). 출력이 줄 없이 끝나면 준비 전에
+ * 끝난 것이다. 출력을 물려받은 자손이 출력을 쥐고 있으면 끝이 오지 않으므로, exit 뒤 출력의 끝은 `outputEndMs` 안에서 확인하고
+ * 넘기면 끝을 확인하지 못했다고 실패한다(끝났다고 보지 않는다). 전체 시한(`timeoutMs`)은 따로 둔다.
  */
 export function readyLine(
   child: ChildProcess,
   line = "ready",
   timeoutMs = 10_000,
-  drainMs = 1000
+  outputEndMs = 10_000
 ) {
   return new Promise<void>((resolve, reject) => {
     let buffer = "";
-    let drain: ReturnType<typeof setTimeout> | undefined;
+    let outputEnd: ReturnType<typeof setTimeout> | undefined;
     const done = (error?: Error) => {
       clearTimeout(timer);
-      clearTimeout(drain);
+      clearTimeout(outputEnd);
       child.stdout!.off("data", read);
+      child.stdout!.off("end", ended);
       child.off("error", fail);
       child.off("exit", exited);
-      child.off("close", closed);
       if (error) reject(error);
       else resolve();
     };
@@ -38,19 +41,26 @@ export function readyLine(
       }
     };
     const fail = (error: Error) => done(error);
-    const early = () => new Error(`exited before printing ${line}`);
+    const ended = () => done(new Error(`exited before printing ${line}`));
     const exited = () => {
-      drain ??= setTimeout(() => done(early()), drainMs);
+      outputEnd = setTimeout(
+        () =>
+          done(
+            new Error(
+              `exited without printing ${line}, and its output did not end within ${outputEndMs} ms (a descendant may hold it)`
+            )
+          ),
+        outputEndMs
+      );
     };
-    const closed = () => done(early());
     const timer = setTimeout(
       () => done(new Error(`no ${line} line within ${timeoutMs} ms`)),
       timeoutMs
     );
     child.stdout!.on("data", read);
+    child.stdout!.once("end", ended);
     child.once("error", fail);
     child.once("exit", exited);
-    child.once("close", closed);
   });
 }
 
@@ -109,6 +119,18 @@ export async function untilExited(pids: number[], timeoutMs = 5000) {
     }),
     "processes did not all end"
   );
+}
+
+/**
+ * 시험이 띄운 자식을 끝내고 그 끝(`exit`)을 상한 안에서 확인한다(#288 parent 점검: 번호 신원). Node가 그 자식의 끝을 아직 보지
+ * 않았을 때만 SIGKILL을 보낸다: Node는 끝을 본 자식에는 신호하지 않으므로, 번호가 다른 프로그램에 다시 주어져도 그 프로그램에 가지
+ * 않는다. 번호로 끄는 `killAndWait`는 그 번호가 아직 그 프로세스임을 같은 순간에 본 곳에서만 쓴다.
+ */
+export async function endChild(child: ChildProcess, ms = 10_000) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const ended = once(child, "exit");
+  child.kill("SIGKILL");
+  await within(ended, ms, `process ${child.pid} did not end after SIGKILL`);
 }
 
 /** 시험 정리: 모두에게 SIGKILL을 보내고 끝날 때까지 기다린다. 한 대상에 보내지 못해도 나머지에 보내고 기다린 뒤 함께 알린다. */
