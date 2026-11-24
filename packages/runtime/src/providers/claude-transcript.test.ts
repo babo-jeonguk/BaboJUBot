@@ -63,6 +63,50 @@ describe.each(readers)(
       expect(await readTranscript(home, session)).toBeDefined();
     });
 
+    // 에이전트가 쓸 수 있는 폴더라 기록 자리가 폴더나 링크로 바뀔 수 있다. 그것은 "기록 없음"이 아니라 확인하지 못한 것이다.
+    // 사용량 사실 읽기라 건너뛰되 그 까닭을 남긴다. 실제로 없는 기록만 말없이 넘긴다(#286 PR 1 parent 점검).
+    it("skips a folder in place of the transcript, saying it is not a regular file", async () => {
+      const home = await folders.make("babojubot-transcript-");
+      const projects = path.join(home, "config", "projects", "project");
+      await mkdir(path.join(projects, `${session}.jsonl`), { recursive: true });
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      expect(await readTranscript(home, session)).toBeUndefined();
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] a Claude session transcript is not a regular file",
+      ]);
+    });
+
+    it.skipIf(windows)(
+      "skips a link in place of the transcript, saying it is not a regular file",
+      async () => {
+        const home = await folders.make("babojubot-transcript-");
+        const projects = path.join(home, "config", "projects", "project");
+        await mkdir(projects, { recursive: true });
+        const elsewhere = path.join(home, "elsewhere.jsonl");
+        await writeFile(elsewhere, transcript);
+        await symlink(elsewhere, path.join(projects, `${session}.jsonl`));
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+        expect(await readTranscript(home, session)).toBeUndefined();
+        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+          "[provider] a Claude session transcript is not a regular file",
+        ]);
+      }
+    );
+
+    // 실제로 없는 기록은 기록이 없는 것이다. 말없이 넘긴다.
+    it("says nothing when the transcript is simply missing", async () => {
+      const home = await folders.make("babojubot-transcript-");
+      await mkdir(path.join(home, "config", "projects", "project"), {
+        recursive: true,
+      });
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      expect(await readTranscript(home, session)).toBeUndefined();
+      expect(warned).not.toHaveBeenCalled();
+    });
+
     // 기록을 여는 사이 자리가 바뀌었으면 읽지 못한 것이다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
     it("skips a transcript that changed while it was opened, saying so", async () => {
       const home = await folders.make("babojubot-transcript-");
@@ -122,7 +166,13 @@ describe.each(readers)(
             if (!hasErrorCode("ENXIO")(error)) throw error;
           }
         }, "fifo writer");
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
         expect(await readTranscript(home, session)).toBeUndefined();
+        // 기록 자리의 특수 파일은 기록이 없는 것이 아니라 확인하지 못한 것이다. 건너뛰되 그 까닭을 남긴다(#286 PR 1 parent 점검).
+        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+          "[provider] a Claude session transcript is not a regular file",
+        ]);
       }
     );
   }
