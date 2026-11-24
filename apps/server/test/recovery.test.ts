@@ -501,7 +501,9 @@ async function crashAndRestart(
       );
     });
   // 시험이 어디서 실패하든 서버 프로세스를 끄고 끝나기를 기다린다. 그 뒤에 같은 DB로 다시 띄워 복구를 본다.
-  databaseUsers.push(() => exitedWithin(10_000));
+  databaseUsers.push(() =>
+    within(exited, 10_000, `crash server ${child.pid} did not exit`)
+  );
   const orgId = await withCleanup(async (defer) => {
     defer(async () => {
       if (child.exitCode === null && child.signalCode === null)

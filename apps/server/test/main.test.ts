@@ -572,19 +572,9 @@ async function startOutcome(child: MainProcess) {
   }
 }
 
-/**
- * 이미 붙여 둔 종료 관찰을 시한 안에서 기다린다. 시한은 기다리기 시작할 때부터 센다. 실패하면 그때의 종료 상태와 출력 끝을
- * 덧붙여 알린다.
- */
-async function waitExit(child: MainProcess, ms: number): Promise<Exit> {
-  return within(child.exited, ms, `server ${child.pid} did not exit`).catch(
-    (error: unknown) => {
-      throw new Error(
-        `${error instanceof Error ? error.message : String(error)} (exit code ${child.exitCode}, signal ${child.signalCode}): stdout=${JSON.stringify(child.stdoutText().slice(-2000))} stderr=${JSON.stringify(child.stderrText().slice(-2000))}`,
-        { cause: error }
-      );
-    }
-  );
+/** 이미 붙여 둔 종료 관찰을 시한 안에서 기다린다. 시한은 기다리기 시작할 때부터 센다. */
+function waitExit(child: MainProcess, ms: number): Promise<Exit> {
+  return within(child.exited, ms, `server ${child.pid} did not exit`);
 }
 
 /** 자식이 살아 있으면 끝내고, 이미 끝났으면 그 종료를 기다린다. 그룹 테스트는 남은 그룹까지 정리한다. */
@@ -592,12 +582,8 @@ async function endServer(child: MainProcess, { group }: { group: boolean }) {
   if (group) killGroup(child);
   else if (child.exitCode === null && child.signalCode === null)
     child.kill("SIGKILL");
-  try {
-    await waitExit(child, killWaitMs);
-  } catch (error) {
-    // spawn 오류는 시작 실패로 이미 드러났다. 끝나지 않는 자식만 실패로 알린다.
-    if (child.exitCode === null && child.signalCode === null) throw error;
-  }
+  // 끝을 확인한다. 종료 관찰이 `error`로 끝나면(띄우지 못함, 신호를 보내지 못함) 확인하지 못한 것으로 알린다.
+  await within(child.exited, killWaitMs, `server ${child.pid} did not exit`);
   // 폴더를 지우기 전에 stdio 닫힘까지 확인한다.
   await within(
     child.closed,
