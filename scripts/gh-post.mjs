@@ -96,6 +96,8 @@ export function loadContext(root = scriptRoot) {
     if (real !== undefined) roots.add(real);
   }
   const refs = new Map();
+  /** @type {string[] | undefined} origin 브랜치 이름. 처음 물을 때 한 번 읽는다. */
+  let originBranches;
   let origin;
   return {
     root,
@@ -113,30 +115,40 @@ export function loadContext(root = scriptRoot) {
       };
       return origin.repository;
     },
-    refExists(ref) {
+    /**
+     * GitHub가 아는 것으로 확인한 ref: origin 브랜치 이름(원격 추적 ref `refs/remotes/origin/<이름>`, HEAD 제외)이나, origin 원격
+     * 추적 ref 가운데 하나에서 닿는 전체 커밋 SHA. 로컬에서만 풀리는 revision(로컬 브랜치·태그, `origin/…`, 짧은 SHA, push 안 된
+     * 커밋, ORIG_HEAD 같은 상태 이름)은 GitHub가 모를 수 있어 인정하지 않는다. 원격을 묻지 않으므로 마지막으로 내려받은 origin 기준이다.
+     */
+    knownRef(ref) {
       if (!refs.has(ref))
         refs.set(
           ref,
-          [ref, `origin/${ref}`].some(
-            (candidate) =>
-              // 없는 ref는 종료 코드 1이다.
+          /^[0-9a-f]{40}$/.test(ref)
+            ? // 이 checkout에 없는 커밋은 종료 코드 129다.
               gitOutput(
                 root,
-                ["rev-parse", "--verify", "--quiet", `${candidate}^{commit}`],
-                { absent: [1] }
+                [
+                  "for-each-ref",
+                  "--contains",
+                  ref,
+                  "--format=%(refname)",
+                  "refs/remotes/origin",
+                ],
+                { absent: [129] }
               ) !== ""
-          )
+            : ref !== "HEAD" &&
+                (originBranches ??= gitOutput(root, [
+                  "for-each-ref",
+                  "--format=%(refname:lstrip=3)",
+                  "refs/remotes/origin",
+                ]).split("\n")).includes(ref)
         );
       return refs.get(ref);
     },
+    /** 저장소 기준 경로가 `.gitignore`에 걸리는지. 경로는 `unknownPathShape`를 지난 아는 모양이다. 빈 경로는 저장소 자체다. */
     isIgnored(relative) {
-      // 저장소 밖(..)이나 `:`가 든 표기는 git이 오류로 멈추므로 판정하지 않는다.
-      if (
-        !relative ||
-        relative.split("/").includes("..") ||
-        relative.includes(":")
-      )
-        return false;
+      if (!relative) return false;
       return [relative, `${relative.replace(/\/$/, "")}/`].some((candidate) =>
         gitIgnores(root, candidate)
       );
@@ -144,49 +156,92 @@ export function loadContext(root = scriptRoot) {
   };
 }
 
-// 이 저장소의 GitHub 파일 주소(blob/tree/raw)를 저장소 기준 경로로 바꾼다. 다른 저장소·다른 주소는 null.
+// 이 저장소의 GitHub 파일 주소(blob/tree/raw)를 저장소 기준 경로로 바꾼다. github.com이 아닌 주소, 다른 저장소, 파일 주소가 아닌
+// 것은 null. 주소 해석기가 읽지 못한 주소, origin을 모름, 잘못된 퍼센트 인코딩, 아는 ref가 없음은 판정할 수 없음이다.
+/** @returns {string | null | { undecidable: string }} */
 function repositoryPathFromUrl(url, context) {
-  // 주소로 읽을 수 없는 글자는 이 저장소의 파일 주소가 아니다.
-  if (!URL.canParse(url)) return null;
+  if (!URL.canParse(url))
+    return { undecidable: "address the URL parser cannot read" };
   const parsed = new URL(url);
-  if (parsed.hostname !== "github.com" || !context.repository) return null;
-  const segments = parsed.pathname
-    .split("/")
-    .filter(Boolean)
-    .map(decodedOrAsIs);
+  if (parsed.hostname !== "github.com") return null;
+  if (!context.repository)
+    return {
+      undecidable: "to GitHub while this checkout has no GitHub origin",
+    };
+  const segments = parsed.pathname.split("/").filter(Boolean).map(decoded);
+  if (segments.includes(undefined))
+    return { undecidable: "path with invalid percent-encoding" };
   const [owner, name, kind, ...rest] = segments;
   if (
     owner?.toLowerCase() !== context.repository.owner.toLowerCase() ||
     name?.toLowerCase() !== context.repository.name.toLowerCase() ||
+    kind === undefined ||
     !["blob", "tree", "raw", "edit", "blame"].includes(kind) ||
     rest.length < 2
   )
     return null;
-  // 브랜치 이름에 `/`가 들어갈 수 있어 실제로 있는 가장 짧은 ref를 찾는다. 모르면 첫 마디를 ref로 본다.
-  for (let index = 1; index < rest.length; index++)
-    if (context.refExists(rest.slice(0, index).join("/")))
-      return rest.slice(index).join("/");
-  return rest.slice(1).join("/");
+  // 브랜치 이름에 `/`가 들어갈 수 있어 어디까지가 ref인지는 아는 ref로 정한다. 맞는 경계가 정확히 하나일 때만 경로가 정해진다.
+  const bounds = rest
+    .slice(1)
+    .map((_, index) => index + 1)
+    .filter((index) => context.knownRef(rest.slice(0, index).join("/")));
+  const advice = "(write it with a full commit SHA or an origin branch name)";
+  if (bounds.length === 1) return rest.slice(bounds[0]).join("/");
+  return {
+    undecidable:
+      bounds.length === 0
+        ? `to a GitHub branch or commit not known here ${advice}`
+        : `to a GitHub ref that splits the path more than one way ${advice}`,
+  };
 }
 
-/** URL 인코딩을 푼 글자. 잘못된 인코딩(URIError)은 그대로 판정한다. */
-function decodedOrAsIs(text) {
-  return orIfUnreadable(() => decodeURIComponent(text), text);
+/** URL 인코딩을 푼 글자. 잘못된 인코딩(URIError)이면 undefined다. */
+function decoded(text) {
+  return orIfUnreadable(() => decodeURIComponent(text), undefined);
 }
 
+/**
+ * 아는 단순한 모양이 아닌 경로의 까닭. 아는 모양이면 undefined. 앞뒤 공백·제어 문자(탭·개행 포함)·역슬래시·`//`로 시작·`..` 조각·`:`는
+ * GitHub·브라우저와 git이 다르게 풀 수 있어(주소 해석기는 공백을 떼고 역슬래시를 `/`로 읽고, git은 `:`를 pathspec 표기로 읽는다)
+ * 판정하지 않는다.
+ */
+function unknownPathShape(relative) {
+  if (relative !== relative.trim()) return "path with space at either end";
+  if (/\p{Cc}/u.test(relative)) return "path with a control character";
+  if (relative.includes("\\")) return "path with a backslash";
+  if (relative.startsWith("//")) return "path that starts with //";
+  if (relative.split("/").includes("..")) return "path with a .. segment";
+  if (relative.includes(":")) return "path with a colon";
+  return undefined;
+}
+
+/**
+ * 링크가 가리키는 이 저장소 기준 경로(`{ path }`), 판정할 수 없는 경로(`{ undecidable }`), 저장소 파일이 아닌 대상(null).
+ * http(s) 주소는 Node의 WHATWG 주소 해석기로 읽는다.
+ * @returns {{ path: string } | { undecidable: string } | null}
+ */
 function linkedRepositoryPath(target, context) {
-  if (/^https?:/i.test(target)) return repositoryPathFromUrl(target, context);
-  if (target.startsWith("#") || /^[a-z][\w+.-]*:/i.test(target)) return null;
-  let local = decodedOrAsIs(target.split(/[?#]/)[0]);
-  local = local.replace(/^(\.\/)+/, "");
+  const local = /^https?:/i.test(target)
+    ? repositoryPathFromUrl(target, context)
+    : target.startsWith("#") || /^[a-z][\w+.-]*:/i.test(target)
+      ? null
+      : (decoded(target.split(/[?#]/)[0]) ?? {
+          undecidable: "path with invalid percent-encoding",
+        });
+  if (local === null) return null;
+  if (typeof local !== "string")
+    return { undecidable: `a link ${local.undecidable}: ${target}` };
+  const shape = unknownPathShape(local);
+  if (shape) return { undecidable: `a link ${shape}: ${target}` };
+  const relative = local.replace(/^(\.\/)+/, "");
   // 떼어낸 뒤에도 `/`로 시작하면 저장소 밖 절대 경로다.
-  return local.startsWith("/") ? null : local;
+  return relative.startsWith("/") ? null : { path: relative };
 }
 
 /**
  * 게시문에서 독자가 열 수 없는 경로를 찾는다. 점 폴더 경로는 글자로(코드 표기 안 포함), 링크는 CommonMark·GFM 구문 트리로 본다
- * (인라인 링크·이미지·자동 링크·맨 주소·참조식 링크 정의·raw HTML의 href, 코드 안 글은 링크가 아님). 이 컴퓨터의 저장소 절대 경로는
- * 먼저 뗀다. 줄마다 같은 대상은 한 번만 낸다.
+ * (인라인 링크·이미지·자동 링크·맨 주소·참조식 링크 정의, 코드 안 글은 링크가 아님). 이 컴퓨터의 저장소 절대 경로는 먼저 뗀다.
+ * 줄마다 같은 대상은 한 번만 낸다. raw HTML의 href와 아는 모양이 아닌 링크 경로는 판정할 수 없음(`undecidable`)으로 낸다.
  */
 export function findLocalOnlyReferences(text, context) {
   let stripped = text;
@@ -201,15 +256,25 @@ export function findLocalOnlyReferences(text, context) {
     for (const match of line.matchAll(context.dotFolderPath))
       add(index + 1, match[0].trim().replace(/^[`'"(]/, ""));
   });
-  for (const { url, line } of linkTargets(parseMarkdown(stripped))) {
-    const relative = linkedRepositoryPath(url, context);
-    if (relative && context.isIgnored(relative)) add(line, url);
+  const targets = linkTargets(parseMarkdown(stripped));
+  const undecidable = targets.undecidable.map(({ line, reason }) => ({
+    line,
+    undecidable: reason,
+  }));
+  for (const { url, line } of targets.links) {
+    const linked = linkedRepositoryPath(url, context);
+    if (linked && "undecidable" in linked)
+      undecidable.push({ line, undecidable: linked.undecidable });
+    else if (linked && context.isIgnored(linked.path)) add(line, url);
   }
-  return [...byLine.keys()]
-    .sort((a, b) => a - b)
-    .flatMap((line) =>
-      [...byLine.get(line)].map((reference) => ({ line, reference }))
-    );
+  return [
+    ...[...byLine.keys()]
+      .sort((a, b) => a - b)
+      .flatMap((line) =>
+        [...byLine.get(line)].map((reference) => ({ line, reference }))
+      ),
+    ...undecidable,
+  ];
 }
 
 // gh issue/pr 하위 명령에서 게시되는 글을 받는 옵션. 값이 파일이면 "file".
@@ -282,12 +347,14 @@ export function postToGitHub(args, { context, cwd, readStdin, runGh, report }) {
     }))
   );
   if (findings.length) {
-    for (const { source, line, reference } of findings)
+    for (const finding of findings)
       report(
-        `Local-only path in published text ${source}:${line}: ${reference}`
+        "undecidable" in finding
+          ? `Cannot tell where a link points in published text ${finding.source}:${finding.line}: ${finding.undecidable}`
+          : `Local-only path in published text ${finding.source}:${finding.line}: ${finding.reference}`
       );
     report(
-      "Nothing was posted. Readers cannot open Git-ignored paths: summarize the content in the text or link a committed file instead."
+      "Nothing was posted. Readers cannot open Git-ignored paths: summarize the content in the text or link a committed file instead. Write a link that cannot be judged as a Markdown link with a plain repository path."
     );
     return 1;
   }
