@@ -15,7 +15,6 @@ import {
   openDatabase,
   processIdentity,
   startEmbeddedCluster,
-  withClient,
 } from "./client.ts";
 import { candidatePort } from "./ports.ts";
 import { psField } from "@babojubot/process";
@@ -166,10 +165,14 @@ describe("embedded Postgres lifetime", () => {
         embedded: { dataDir, persistent },
       });
       cluster.own(() => handle.close());
-      const { rows } = await withClient(handle.url, (client) =>
-        client.query<{ name: string; setting: string }>(
-          "select name, setting from pg_settings where name in ('fsync', 'synchronous_commit', 'full_page_writes') order by name"
-        )
+      const { rows } = await askServer(
+        handle.url,
+        (client) =>
+          client.query<{ name: string; setting: string }>(
+            "select name, setting from pg_settings where name in ('fsync', 'synchronous_commit', 'full_page_writes') order by name"
+          ),
+        10_000,
+        "Postgres did not tell its settings"
       );
       expect(rows).toEqual([
         { name: "fsync", setting },
@@ -745,17 +748,30 @@ describe("a Postgres left by a killed process", () => {
     const postgres = identified(readPostmaster(dataDir));
     seen.postgres = postgres;
     const postmaster = postgres.pid;
-    const client = new pg.Client({
-      connectionString: clusterUrl(Number(held.line), "postgres"),
-    });
-    client.on("error", () => {});
-    await client.connect();
-    // pg의 end는 연결이 이미 끊겼으면 바로 이행하고, 아니면 연결의 끝을 기다린다. 그 끝을 상한 안에서 확인한다.
-    cluster.own(() =>
-      within(client.end(), 10_000, "the test's Postgres client did not close")
+    // 시험 끝까지 쥐는 연결(`testConnection`). 정리는 그 소켓을 끊고 끝을 확인한다: 그 연결의 backend를 멈춰 두므로 정중한 끝(상대의
+    // 끝을 기다림)은 오지 않을 수 있다. Postgres가 정지를 시작하며 이 연결을 끊는 것은 이 시험의 대상이 아니라 오류 이벤트는 받기만 한다.
+    const connection = testConnection(
+      clusterUrl(Number(held.line), "postgres")
     );
-    const { rows } = await client.query<{ pid: number }>(
-      "select pg_backend_pid() as pid"
+    connection.client.on("error", () => {});
+    cluster.own(() =>
+      connection.close(
+        true,
+        10_000,
+        "the test's Postgres connection did not close"
+      )
+    );
+    // 연결과 첫 질의는 한 상한 안에서 끝난다.
+    const { rows } = await within(
+      connection.client
+        .connect()
+        .then(() =>
+          connection.client.query<{ pid: number }>(
+            "select pg_backend_pid() as pid"
+          )
+        ),
+      10_000,
+      "Postgres did not tell the backend of the test's connection"
     );
     // 연결이 열려 있어 그 backend는 돈다. 그때 신원을 잡는다.
     const backend = identified(rows[0]!.pid);
@@ -765,6 +781,12 @@ describe("a Postgres left by a killed process", () => {
       if (stateOf(backend) === "running")
         killUnlessGone(backend.pid, "SIGCONT");
     });
+    // 멈춤은 OS가 보이는 그 프로세스의 상태(T: 멈춤)로 확인한 뒤 다음으로 간다. 이 뒤로 시험은 멈춘 backend에 묻지 않는다. 시작이
+    // 그 Postgres를 멈추지 못하고 포기하는 것은 제품의 정지 시한(10초, 아래 실패 문구)이 정하고, 그 거절이 기다림의 끝이다.
+    await vi.waitUntil(
+      () => psField(backend.pid, "state", 5_000)?.startsWith("T") === true,
+      { timeout: 10_000, interval: 20 }
+    );
     await killHard(held.child);
 
     await expect(
@@ -1156,12 +1178,29 @@ async function runningPostgresIn(
 }
 
 /**
- * 시험이 서버(`url`)에 `ask`로 묻는다. 연결과 묻기를 합쳐 `limitMs` 안에 끝나지 않으면 `what`으로 실패하고, 성공·실패 모두 그 연결을
- * 끝내고 끝난 것을 확인한다(CODING_STANDARDS 「정리」). 상한이 거절만 하면 연결 시도나 묻기가 그대로 돌아 연결이 남는다.
- * 연결의 소켓은 시험이 만든다(pg 설정 `stream`, `@types/pg` `ConnectionConfig.stream`). pg의 `end()`는 답 없는 질의가 있으면 소켓을
- * 닫지만 연결 중에는 정중히 끝내며 상대의 끝을 기다리므로(pg 8.23 `lib/client.js` `end`), 답을 받지 못했으면 그 소켓을 직접 끊는다.
- * `end()`를 먼저 불러 pg가 이 끝을 예상한 끝으로 다룬다(예상하지 못한 끊김의 오류 이벤트를 내지 않는다). 끝은 `end()`의 이행(소켓의
- * `close`)으로 본다. 제품 `withClient`는 시한을 두지 않으므로 쓰지 않는다.
+ * 시험이 여는 pg 연결. 연결의 소켓은 시험이 만든다(pg 설정 `stream`, `@types/pg` `ConnectionConfig.stream`). `close`는 `end()`를
+ * 부르고, `cut`이면 그 소켓을 끊은 뒤, 연결의 끝(`end()`의 이행, 소켓의 `close`)을 `limitMs` 안에서 확인한다. pg의 `end()`는 답 없는
+ * 질의가 있으면 소켓을 닫지만 연결 중이거나 쉬는 연결은 정중히 끝내며 상대의 끝을 기다리므로(pg 8.23 `lib/client.js` `end`), 상대가
+ * 답하지 않았거나 멈췄을 수 있으면 끊어야 끝난다. `end()`를 먼저 불러 pg가 이 끝을 예상한 끝으로 다룬다(예상하지 못한 끊김의 오류
+ * 이벤트를 내지 않는다). 제품 `withClient`는 시한을 두지 않으므로 시험의 연결에 쓰지 않는다.
+ */
+function testConnection(url: string) {
+  const socket = new net.Socket();
+  const client = new pg.Client({ connectionString: url, stream: () => socket });
+  return {
+    client,
+    close: (cut: boolean, limitMs: number, what: string) => {
+      const ended = client.end();
+      if (cut) socket.destroy();
+      return within(ended, limitMs, what);
+    },
+  };
+}
+
+/**
+ * 시험이 서버(`url`)에 `ask`로 묻는다(`testConnection`). 연결과 묻기를 합쳐 `limitMs` 안에 끝나지 않으면 `what`으로 실패하고, 성공·실패
+ * 모두 그 연결을 끝내고 끝난 것을 확인한다(CODING_STANDARDS 「정리」). 상한이 거절만 하면 연결 시도나 묻기가 그대로 돌아 연결이 남는다.
+ * 답을 받았으면 정중히 끝내고, 받지 못했으면 끊는다.
  */
 function askServer<T>(
   url: string,
@@ -1170,21 +1209,11 @@ function askServer<T>(
   what: string
 ) {
   return withCleanup(async (defer) => {
-    const socket = new net.Socket();
-    const client = new pg.Client({
-      connectionString: url,
-      stream: () => socket,
-    });
+    const { client, close } = testConnection(url);
     let answered = false;
-    defer(() => {
-      const ended = client.end();
-      if (!answered) socket.destroy();
-      return within(
-        ended,
-        limitMs,
-        `${what}, and its connection did not close`
-      );
-    });
+    defer(() =>
+      close(!answered, limitMs, `${what}, and its connection did not close`)
+    );
     const answer = await within(
       client.connect().then(() => ask(client)),
       limitMs,
@@ -1629,20 +1658,29 @@ it("fails only the work on a connection cut while in use, without crashing the p
     const { rows } = await tx.execute<{ pid: number }>(
       sql`select pg_backend_pid() as pid`
     );
-    await withClient(database.url, (client) =>
-      client.query("select pg_terminate_backend($1)", [rows[0]!.pid])
+    await askServer(
+      database.url,
+      (client) =>
+        client.query("select pg_terminate_backend($1)", [rows[0]!.pid]),
+      10_000,
+      "Postgres did not end the backend"
     );
     // 끊은 backend가 끝날 때까지 기다린 뒤 같은 연결로 쓴다.
     await expect
       .poll(
         () =>
-          withClient(database.url, async (client) => {
-            const { rowCount } = await client.query(
-              "select 1 from pg_stat_activity where pid = $1",
-              [rows[0]!.pid]
-            );
-            return rowCount;
-          }),
+          askServer(
+            database.url,
+            async (client) => {
+              const { rowCount } = await client.query(
+                "select 1 from pg_stat_activity where pid = $1",
+                [rows[0]!.pid]
+              );
+              return rowCount;
+            },
+            5_000,
+            "Postgres did not tell whether the backend still runs"
+          ),
         { timeout: 15_000, interval: 20 }
       )
       .toBe(0);
