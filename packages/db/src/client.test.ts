@@ -17,6 +17,7 @@ import {
   withClient,
 } from "./client.ts";
 import { candidatePort } from "./ports.ts";
+import { psField } from "@babojubot/process";
 import { createTestDatabase } from "./testing.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
@@ -176,7 +177,7 @@ describe("embedded Postgres lifetime", () => {
 
   it("closes and removes a non-persistent dataDir after Postgres died on its own", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    let pid = 0;
+    const seen: { postgres?: Postgres } = {};
     let closed = false;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
@@ -187,20 +188,26 @@ describe("embedded Postgres lifetime", () => {
     cluster.own(async () => {
       if (!closed) await handle.close();
     });
-    cluster.own(() => killPostgres(pid));
-    pid = Number(
-      await withClient(handle.url, async (client) => {
-        const { rows } = await client.query<{ pid: string }>(
-          "select split_part(pg_read_file('postmaster.pid'), E'\\n', 1) as pid"
-        );
-        return rows[0]!.pid;
-      })
+    cluster.own(() =>
+      seen.postgres ? killPostgres(seen.postgres) : undefined
     );
+    // 연결을 받은 서버에게 번호를 묻는다. 그 서버가 도는 동안 신원을 함께 잡는다.
+    const started = identified(
+      Number(
+        await withClient(handle.url, async (client) => {
+          const { rows } = await client.query<{ pid: string }>(
+            "select split_part(pg_read_file('postmaster.pid'), E'\\n', 1) as pid"
+          );
+          return rows[0]!.pid;
+        })
+      )
+    );
+    seen.postgres = started;
 
-    process.kill(pid, "SIGKILL");
+    process.kill(started.pid, "SIGKILL");
     await expect
-      .poll(() => isAlive(pid), { timeout: 15_000, interval: 50 })
-      .toBe(false);
+      .poll(() => stateOf(started), { timeout: 15_000, interval: 50 })
+      .toBe("ended");
 
     await handle.close();
     closed = true;
@@ -268,18 +275,23 @@ describe("embedded Postgres lifetime", () => {
         // 신호 handler를 먼저 설치한 뒤 알리므로, 준비를 본 쪽이 보내는 신호를 놓치지 않는다.
         "a stop signal its program handles": `process.once("SIGHUP", () => process.exit(129)); console.log("started"); setInterval(() => {}, 1000);`,
       }[end];
-      // Postgres 번호는 자식이 알린다. 자식은 알린 직후 끝나며 Postgres를 멈추므로, 시험이 그 뒤에 잠금 파일을 읽으면 이미 없을 수 있다.
+      // Postgres 번호와 그 신원은 자식이 알린다(그때 Postgres는 자식이 쥐고 있어 살아 있다). 자식은 알린 직후 끝나며 Postgres를
+      // 멈추므로, 시험이 그 뒤에 잠금 파일을 읽거나 신원을 보면 이미 없을 수 있다.
       const script = `
-        const { openDatabase } = await import(${JSON.stringify(clientModule)});
+        const { openDatabase, processIdentity } = await import(${JSON.stringify(clientModule)});
         const { readFileSync } = await import("node:fs");
         await openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
-        console.log(readFileSync(${JSON.stringify(path.join(dataDir, "postmaster.pid"))}, "utf8").split("\\n")[0]);
+        const pid = Number(readFileSync(${JSON.stringify(path.join(dataDir, "postmaster.pid"))}, "utf8").split("\\n")[0]);
+        console.log(pid + " " + processIdentity(pid));
         ${finish}
       `;
-      let pid = 0;
+      const seen: { postgres?: Postgres } = {};
       const cluster = folderCleanup(() => removeCluster(dataDir));
       onTestFinished(cluster.cleanUp);
-      cluster.own(() => killPostgres(postmasterToStop(pid, dataDir)));
+      cluster.own(async () => {
+        const target = await postgresIn(dataDir, seen.postgres);
+        if (target) await killPostgres(target);
+      });
       const child = spawn(
         process.execPath,
         ["--input-type=module", "-e", script],
@@ -288,16 +300,19 @@ describe("embedded Postgres lifetime", () => {
       cluster.own(() => killHard(child));
       const exited = watchExit(child);
       const lines = lineReader(child);
-      pid = Number(await lines.next());
-      expect(pid).toBeGreaterThan(0);
+      const [pid, identity] = (await lines.next()).split(" ");
+      expect(Number(pid)).toBeGreaterThan(0);
+      expect(identity).not.toBe("undefined");
+      const started: Postgres = { pid: Number(pid), identity: identity! };
+      seen.postgres = started;
       await lines.next();
       if (signal) child.kill(signal);
       await exited.within(30_000);
       expect(child.exitCode).toBe(code);
 
       await expect
-        .poll(() => isAlive(pid), { timeout: 15_000, interval: 50 })
-        .toBe(false);
+        .poll(() => stateOf(started), { timeout: 15_000, interval: 50 })
+        .toBe("ended");
 
       const handle = await openDatabase({
         embedded: { dataDir, persistent: true },
@@ -349,13 +364,15 @@ describe("embedded Postgres lifetime", () => {
           setTimeout(() => process.exit(1), 1000);
         });
       `;
-      let postmaster = 0;
-      let backend = 0;
+      const seen: { postmaster?: Postgres; backend?: Postgres } = {};
       const cluster = folderCleanup(() => removeCluster(dataDir));
       onTestFinished(cluster.cleanUp);
-      cluster.own(() =>
-        killPostgres(backend, postmasterToStop(postmaster, dataDir))
-      );
+      cluster.own(async () => {
+        const left = await postgresIn(dataDir, seen.postmaster);
+        await killPostgres(
+          ...[seen.backend, left].filter((target) => target !== undefined)
+        );
+      });
       const child = spawn(
         process.execPath,
         ["--input-type=module", "-e", script],
@@ -365,20 +382,19 @@ describe("embedded Postgres lifetime", () => {
       child.stdin!.on("error", () => {});
       const exited = watchExit(child);
       const lines = lineReader(child);
-      backend = Number((await lines.next()).trim());
-      postmaster = Number(
-        fs
-          .readFileSync(path.join(dataDir, "postmaster.pid"), "utf8")
-          .split("\n")[0]
-      );
-      process.kill(backend, "SIGSTOP");
+      // 자식이 연결을 쥐고 기다리는 동안이라 둘 다 돈다. 그때 신원을 잡는다.
+      const stopped = identified(Number((await lines.next()).trim()));
+      seen.backend = stopped;
+      const started = identified(readPostmaster(dataDir));
+      seen.postmaster = started;
+      process.kill(stopped.pid, "SIGSTOP");
       child.stdin!.write("end\n");
       await exited.within(30_000);
       expect(child.exitCode).toBe(1);
 
       await expect
-        .poll(() => isAlive(postmaster), { timeout: 20_000, interval: 50 })
-        .toBe(false);
+        .poll(() => stateOf(started), { timeout: 20_000, interval: 50 })
+        .toBe("ended");
     },
     60_000
   );
@@ -429,17 +445,21 @@ describe("embedded Postgres lifetime", () => {
 describe("a Postgres left by a killed process", () => {
   it("is stopped normally by the next start, which keeps its data", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    let postmaster = 0;
+    const seen: { postgres?: Postgres } = {};
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
+    cluster.own(async () =>
+      stopPostgres(await postgresIn(dataDir, seen.postgres))
+    );
     const { child } = await holdDatabase(`
       const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
       await handle.db.$client.query("create table kept (value int); insert into kept values (7)");
       console.log("ready");
     `);
     cluster.own(() => killHard(child));
-    postmaster = readPostmaster(dataDir);
+    const postgres = identified(readPostmaster(dataDir));
+    seen.postgres = postgres;
+    const postmaster = postgres.pid;
     await killHard(child);
     expect(isAlive(postmaster)).toBe(true);
 
@@ -462,16 +482,20 @@ describe("a Postgres left by a killed process", () => {
 
   it("is left alone while the process that opened it still runs", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    let postmaster = 0;
+    const seen: { postgres?: Postgres } = {};
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
+    cluster.own(async () =>
+      stopPostgres(await postgresIn(dataDir, seen.postgres))
+    );
     const { child } = await holdDatabase(`
       await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
       console.log("ready");
     `);
     cluster.own(() => killHard(child));
-    postmaster = readPostmaster(dataDir);
+    const postgres = identified(readPostmaster(dataDir));
+    seen.postgres = postgres;
+    const postmaster = postgres.pid;
     await expect(
       openDatabase({
         embedded: { dataDir, persistent: true },
@@ -489,20 +513,18 @@ describe("a Postgres left by a killed process", () => {
   // Postgres의 번호를 받지 못한다. 정리는 그래도 그 Postgres를 끄고 나서 폴더를 지운다.
   it("stops the Postgres a child started when the child dies before its ready line", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    const postmaster = 0;
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
+    cluster.own(async () => stopPostgres(await postgresIn(dataDir, undefined)));
     await expect(
       holdDatabase(`
         await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         process.kill(process.pid, "SIGKILL");
       `)
     ).rejects.toThrow(/child ended before its next line/);
-    const started = readPostmaster(dataDir);
-    expect(isAlive(started)).toBe(true);
+    const started = identified(readPostmaster(dataDir));
     await cluster.cleanUp();
-    expect(isAlive(started)).toBe(false);
+    expect(stateOf(started)).toBe("ended");
   }, 60_000);
 
   // #288 parent 점검(번호 신원): Postgres가 이미 죽고 잠금 파일만 남은 뒤 그 번호를 무관한 프로그램이 받았으면, 정리는 그 번호로
@@ -531,7 +553,7 @@ describe("a Postgres left by a killed process", () => {
       vi.restoreAllMocks();
     });
     const stopping: unknown = await (async () =>
-      stopPostgres(postmasterToStop(0, dataDir)))().then(
+      stopPostgres(await postgresIn(dataDir, undefined)))().then(
       () => new Error("the cleanup passed without confirming the Postgres"),
       (error: unknown) => error
     );
@@ -549,10 +571,12 @@ describe("a Postgres left by a killed process", () => {
   // 같은 기록을 둔 채 주인이 죽은 뒤에야 넘겨받는다. 손으로 쓴 기록이면 해석기가 그 기록을 버려도 같은 결과라 인과를 보지 못한다.
   it("takes over a folder whose recorded owner no longer holds its connection, even when its process id belongs to a running program", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    let postmaster = 0;
+    const seen: { postgres?: Postgres } = {};
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
+    cluster.own(async () =>
+      stopPostgres(await postgresIn(dataDir, seen.postgres))
+    );
     const unrelated = spawn(
       process.execPath,
       ["-e", "setInterval(() => {}, 1000)"],
@@ -564,7 +588,8 @@ describe("a Postgres left by a killed process", () => {
       console.log("ready");
     `);
     cluster.own(() => killHard(owner));
-    postmaster = readPostmaster(dataDir);
+    const postgres = identified(readPostmaster(dataDir));
+    seen.postgres = postgres;
     const owners = `${dataDir}.owner`;
     const [generation, ...others] = fs.readdirSync(owners);
     expect(others).toEqual([]);
@@ -696,16 +721,20 @@ describe("a Postgres left by a killed process", () => {
   // 정상 정지는 연결 프로세스가 모두 끝나기를 기다린다. 멈춘(SIGSTOP) 연결 프로세스 하나로 끝나지 않는 상황을 만든다.
   it("halts the start with how to stop it when it does not stop in time", async () => {
     const dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-pg-"));
-    let postmaster = 0;
+    const seen: { postgres?: Postgres } = {};
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
+    cluster.own(async () =>
+      stopPostgres(await postgresIn(dataDir, seen.postgres))
+    );
     const held = await holdDatabase(`
         const handle = await db.openDatabase({ embedded: { dataDir: ${JSON.stringify(dataDir)}, persistent: true } });
         console.log(new URL(handle.url).port);
       `);
     cluster.own(() => killHard(held.child));
-    postmaster = readPostmaster(dataDir);
+    const postgres = identified(readPostmaster(dataDir));
+    seen.postgres = postgres;
+    const postmaster = postgres.pid;
     const client = new pg.Client({
       connectionString: clusterUrl(Number(held.line), "postgres"),
     });
@@ -718,11 +747,13 @@ describe("a Postgres left by a killed process", () => {
     const { rows } = await client.query<{ pid: number }>(
       "select pg_backend_pid() as pid"
     );
-    const backend = rows[0]!.pid;
-    process.kill(backend, "SIGSTOP");
-    // 멈춘 연결 프로세스를 먼저 풀어야 Postgres가 정지한다.
+    // 연결이 열려 있어 그 backend는 돈다. 그때 신원을 잡는다.
+    const backend = identified(rows[0]!.pid);
+    process.kill(backend.pid, "SIGSTOP");
+    // 멈춘 연결 프로세스를 먼저 풀어야 Postgres가 정지한다. 같은 신원으로 돌 때만 그 번호로 신호한다.
     cluster.own(() => {
-      killUnlessGone(backend, "SIGCONT");
+      if (stateOf(backend) === "running")
+        killUnlessGone(backend.pid, "SIGCONT");
     });
     await killHard(held.child);
 
@@ -749,7 +780,7 @@ describe("a Postgres left by a killed process", () => {
     onTestFinished(() => {
       vi.unstubAllEnvs();
     });
-    let postmaster = 0;
+    const seen: { postgres?: Postgres } = {};
     let dataDir = "";
     const cluster = folderCleanup(() => removeFolder(base));
     onTestFinished(cluster.cleanUp);
@@ -760,9 +791,12 @@ describe("a Postgres left by a killed process", () => {
           .filter((name) => name.startsWith("babojubot-pg-"))
           .map((name) => path.join(base, name))
           .map(
-            (folder) => () =>
+            (folder) => async () =>
               stopPostgres(
-                postmasterToStop(folder === dataDir ? postmaster : 0, folder)
+                await postgresIn(
+                  folder,
+                  folder === dataDir ? seen.postgres : undefined
+                )
               )
           )
       )
@@ -774,7 +808,9 @@ describe("a Postgres left by a killed process", () => {
     `);
     cluster.own(() => killHard(held.child));
     dataDir = held.line;
-    postmaster = readPostmaster(dataDir);
+    const postgres = identified(readPostmaster(dataDir));
+    seen.postgres = postgres;
+    const postmaster = postgres.pid;
     await killHard(held.child);
     expect(isAlive(postmaster)).toBe(true);
 
@@ -817,10 +853,12 @@ describe("a Postgres left by a killed process", () => {
     const exits = children.map(watchExit);
     const readers = children.map((child) => lineReader(child, 45_000));
     for (const child of children) child.stdin!.on("error", () => {});
-    let postmaster = 0;
+    const seen: { postgres?: Postgres } = {};
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
+    cluster.own(async () =>
+      stopPostgres(await postgresIn(dataDir, seen.postgres))
+    );
     cluster.own(() =>
       attemptAll(children.map((child) => () => killHard(child)))
     );
@@ -833,7 +871,8 @@ describe("a Postgres left by a killed process", () => {
       await exits[index]!.within(30_000);
     }
 
-    postmaster = readPostmaster(dataDir);
+    const postgres = identified(readPostmaster(dataDir));
+    seen.postgres = postgres;
     const winner = children[winnerIndex]!;
     winner.stdin!.write("query\n");
     expect(await readers[winnerIndex]!.next()).toBe("query 1");
@@ -862,15 +901,19 @@ describe("a Postgres left by a killed process", () => {
     child.stdin!.on("error", () => {});
     // Node는 SIGQUIT를 무시하므로 기본 동작으로 끝나는 프로세스를 쓴다.
     const unrelated = spawn("sleep", ["60"], { stdio: "ignore" });
-    let postmaster = 0;
+    const seen: { postgres?: Postgres } = {};
     const cluster = folderCleanup(() => removeCluster(dataDir));
     onTestFinished(cluster.cleanUp);
-    cluster.own(() => stopPostgres(postmasterToStop(postmaster, dataDir)));
+    cluster.own(async () =>
+      stopPostgres(await postgresIn(dataDir, seen.postgres))
+    );
     cluster.own(() => killHard(unrelated));
     cluster.own(() => killHard(child));
     const lines = lineReader(child);
     await lines.next();
-    postmaster = readPostmaster(dataDir);
+    const postgres = identified(readPostmaster(dataDir));
+    seen.postgres = postgres;
+    const postmaster = postgres.pid;
     process.kill(postmaster, "SIGKILL");
     await expect
       .poll(() => isAlive(postmaster), { timeout: 10_000, interval: 50 })
@@ -1000,18 +1043,81 @@ function readPostmaster(dataDir: string) {
 }
 
 /**
- * 정리가 끌 Postgres 번호(#288 리뷰 2회차 STD-2와 같은 모양). 시험이 받은 번호(`known`)가 있으면 그것이고, 아직 받지 못했으면 그 폴더의
- * 잠금 파일에서 읽는다: 자식이 Postgres를 띄운 뒤 준비 줄 전에 실패해도 정리가 그 Postgres를 찾는다. 잠금 파일은 Postgres가 켜지자마자
- * 쓰는 자기 기록이다. 없으면(ENOENT) 켜진 Postgres가 없다(0). 잠금 파일을 바꾸는 시험은 번호를 받은 뒤에만 바꾸므로 받은 번호가 먼저다.
+ * 시험이 끌 Postgres 프로세스: 번호와 그 번호를 받은 때(살아 있을 때) 본 OS 생성 신원(`processIdentity`, 제품의 즉시 정지가 번호
+ * 재사용을 가리는 데 쓰는 신원). 정리는 신호 직전에 같은 신원인지 다시 보고, 같을 때만 그 번호로 신호한다. 번호만 보관해 두면 그
+ * 프로세스가 끝난 뒤 같은 번호를 받은 다른 프로그램에 신호한다(#288 parent 점검, #287 리뷰 2회차 STD-4와 같은 모양).
  */
-function postmasterToStop(known: number, dataDir: string) {
-  if (known) return known;
-  return orIfMissing(() => readPostmaster(dataDir), hasErrorCode("ENOENT"), 0);
+type Postgres = { pid: number; identity: string };
+
+/** 지금 살아 있는 그 번호의 프로세스를 신원과 함께 잡는다. 신원을 읽지 못하면 던진다. */
+function identified(pid: number): Postgres {
+  const identity = processIdentity(pid);
+  if (identity === undefined)
+    throw new Error(`process ${pid} could not be identified while it ran`);
+  return { pid, identity };
 }
 
-// 남은 Postgres를 끄는 정리는 한 대상의 조회·신호가 실패해도 다른 대상에 신호를 보내고 끝나기를 기다린 뒤, 그 실패를 함께
-// 알린다. 대상을 미리 한꺼번에 조회하면 첫 조회의 실패가 나머지 대상의 신호까지 막는다(#248 리뷰 SPEC-1).
-it("signals every leftover Postgres even when one of them cannot be looked up", async () => {
+/**
+ * 그 Postgres가 지금도 같은 프로세스로 도는가. 신원이 같으면 돈다. 번호의 프로세스가 없거나(ESRCH) 신원이 다르면(번호를 다른
+ * 프로그램이 받음) 끝났다. 살아 있는데 신원을 읽지 못하면 모르는 것이라 던진다(끝남으로 접지 않는다).
+ */
+function stateOf(target: Postgres): "running" | "ended" {
+  const identity = processIdentity(target.pid);
+  if (identity === target.identity) return "running";
+  if (identity !== undefined || !isAlive(target.pid)) return "ended";
+  throw new Error(
+    `whether Postgres ${target.pid} still runs could not be told`
+  );
+}
+
+/**
+ * 시험이 번호를 받지 못한 채 남은 그 폴더의 Postgres(#288 리뷰 2회차 STD-2와 같은 모양: 자식이 Postgres를 띄운 뒤 준비 줄 전에 실패).
+ * 잠금 파일이 없으면(ENOENT) 켜진 Postgres가 없다. 있으면 그 포트의 서버에 연결해, 이 폴더를 쓰는지와 연결을 받은 backend의 부모를
+ * 묻는다. 연결이 열려 있는 동안 그 부모(postmaster)는 살아 있으므로 그때 번호와 신원을 잡는다. 연결하지 못하거나 이 폴더의 서버가
+ * 아니면 신호하지 않고 그 이유로 던진다(잠금 파일의 번호만 믿지 않는다: 서버가 죽은 뒤 그 번호를 다른 프로그램이 받았을 수 있다).
+ */
+async function runningPostgresIn(
+  dataDir: string
+): Promise<Postgres | undefined> {
+  const lock = orIfMissing(
+    () => fs.readFileSync(path.join(dataDir, "postmaster.pid"), "utf8"),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
+  if (lock === undefined) return undefined;
+  const [, , , port] = lock.split("\n");
+  try {
+    return await withClient(
+      clusterUrl(Number(port), "postgres"),
+      async (client) => {
+        const { rows } = await client.query<{ dir: string; pid: number }>(
+          "select current_setting('data_directory') as dir, pg_backend_pid() as pid"
+        );
+        const { dir, pid } = rows[0]!;
+        if (fs.realpathSync(dir) !== fs.realpathSync(dataDir))
+          throw new Error(`the server on port ${port} serves ${dir}`);
+        const parent = Number(psField(pid, "ppid", 5_000));
+        if (!(parent > 1))
+          throw new Error(`the parent of backend ${pid} could not be read`);
+        return identified(parent);
+      }
+    );
+  } catch (error) {
+    throw new Error(
+      `a Postgres may still run in ${dataDir}, but it could not be confirmed, so it was not signalled`,
+      { cause: error }
+    );
+  }
+}
+
+/** 이미 잡았으면 그것, 아니면 그 폴더에 남은 것(`runningPostgresIn`). */
+async function postgresIn(dataDir: string, known: Postgres | undefined) {
+  return known ?? (await runningPostgresIn(dataDir));
+}
+
+// 남은 Postgres를 끄는 정리는 한 대상의 신호가 실패해도 다른 대상에 신호를 보내고 끝나기를 기다린 뒤, 그 실패를 함께 알린다
+// (#248 리뷰 SPEC-1). 대상은 신원과 함께 잡은 것이고, 신호 직전의 신원 확인은 `/proc`·ps로 하므로 신호 거부와 따로 돈다.
+it("signals every leftover Postgres even when one of them refuses its signal", async () => {
   const sleeper = () =>
     spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
@@ -1022,7 +1128,8 @@ it("signals every leftover Postgres even when one of them cannot be looked up", 
     attemptAll([() => killHard(refused), () => killHard(other)])
   );
   const otherExit = watchExit(other);
-  // `refused`에 대한 신호 0과 끄기는 권한 거부로 실패한다. 다른 대상의 신호는 그대로 보낸다.
+  const targets = [identified(refused.pid!), identified(other.pid!)];
+  // `refused`에 대한 신호는 권한 거부로 실패한다. 다른 대상의 신호는 그대로 보낸다.
   const kill = process.kill.bind(process);
   const sent: [number, string | number | undefined][] = [];
   const failure = Object.assign(new Error("kill EPERM"), { code: "EPERM" });
@@ -1035,7 +1142,7 @@ it("signals every leftover Postgres even when one of them cannot be looked up", 
     vi.restoreAllMocks();
   });
 
-  const outcome = await killPostgres(refused.pid!, other.pid!).then(
+  const outcome = await killPostgres(...targets).then(
     () => undefined,
     (error: unknown) => error
   );
@@ -1044,7 +1151,7 @@ it("signals every leftover Postgres even when one of them cannot be looked up", 
     code: null,
     signal: "SIGKILL",
   });
-  // 보내지 못한 첫 신호와 끝났는지 확인하지 못한 것을 함께 알린다.
+  // 보내지 못한 첫 신호와, 그 대상이 시한 안에 끝나지 않은 것을 함께 알린다.
   const first = process.platform === "win32" ? "SIGKILL" : "SIGCONT";
   expect(outcome).toBeInstanceOf(AggregateError);
   expect(
@@ -1054,43 +1161,57 @@ it("signals every leftover Postgres even when one of them cannot be looked up", 
     ])
   ).toEqual([
     [`프로세스 ${refused.pid}에 ${first}을 보내지 못했다`, failure],
-    [`프로세스 ${refused.pid}가 있는지 확인하지 못했다`, failure],
+    [
+      `Postgres ${refused.pid} did not end after SIGKILL; its folder is kept`,
+      undefined,
+    ],
   ]);
 });
 
-/** 남은 postgres를 즉시 정지로 멈추고 끝날 때까지 기다린다. */
-async function stopPostgres(pid: number) {
+/** 남은 postgres를 즉시 정지로 멈추고 끝날 때까지 기다린다. 신호는 같은 신원으로 도는 것을 본 직후에만 보낸다. */
+async function stopPostgres(target: Postgres | undefined) {
+  if (target === undefined || stateOf(target) === "ended") return;
   // 이미 끝났으면(ESRCH) 할 일이 없다. 그 밖의 실패는 pid와 함께 알린다.
-  if (!pid || !killUnlessGone(pid, "SIGQUIT")) return;
-  // 시한 안에 끝나지 않으면 아래 강제 정지로 넘어간다.
+  if (!killUnlessGone(target.pid, "SIGQUIT")) return;
+  // 시한 안에 끝나지 않으면 아래 강제 정지로 넘어간다. 끝은 신원으로 본다.
   await vi
-    .waitUntil(() => !isAlive(pid), { timeout: 10_000, interval: 50 })
+    .waitUntil(() => stateOf(target) === "ended", {
+      timeout: 10_000,
+      interval: 50,
+    })
     .catch(() => {});
-  await killPostgres(pid);
+  await killPostgres(target);
 }
 
 /**
  * 남은 Postgres를 강제로 끝내고 사라진 것을 확인한다. 모두에게 신호를 먼저 보낸 뒤 하나씩 기다린다. 시한 안에 끝나지 않으면 실패하므로,
  * 뒤따르는 폴더 삭제는 일어나지 않고 폴더가 남는다(쓰는 중인 폴더를 지워 원인을 가리지 않는다).
- * 대상마다 따로 시도한다. 한 대상의 신호나 조회가 실패해도 다른 대상에 보내고 기다린 뒤 그 실패를 함께 알린다.
+ * 대상마다 따로 시도한다. 한 대상의 신호나 조회가 실패해도 다른 대상에 보내고 기다린 뒤 그 실패를 함께 알린다. 신호는 같은 신원으로
+ * 도는 것을 본 직후에만 보내고, 끝은 신원으로 본다(`stateOf`).
  */
-async function killPostgres(...pids: number[]) {
-  const targets = pids.filter((pid) => pid > 0);
+async function killPostgres(...targets: Postgres[]) {
   await attemptAll([
-    ...targets.map((pid) => () => {
+    ...targets.map((target) => () => {
+      if (stateOf(target) === "ended") return;
       // 멈춰 둔(SIGSTOP) 프로세스도 끝나게 한다. 이미 끝났으면(ESRCH) 넘어간다.
-      if (process.platform !== "win32" && !killUnlessGone(pid, "SIGCONT"))
+      if (
+        process.platform !== "win32" &&
+        !killUnlessGone(target.pid, "SIGCONT")
+      )
         return;
-      killUnlessGone(pid);
+      killUnlessGone(target.pid);
     }),
-    ...targets.map((pid) => async () => {
+    ...targets.map((target) => async () => {
       // 시한이 지났으면 남은 것으로, 조회가 실패했으면 다시 물어 그 원인으로 알린다.
       await vi
-        .waitUntil(() => !isAlive(pid), { timeout: 10_000, interval: 50 })
+        .waitUntil(() => stateOf(target) === "ended", {
+          timeout: 10_000,
+          interval: 50,
+        })
         .catch(() => {
-          if (isAlive(pid))
+          if (stateOf(target) === "running")
             throw new Error(
-              `Postgres ${pid} did not end after SIGKILL; its folder is kept`
+              `Postgres ${target.pid} did not end after SIGKILL; its folder is kept`
             );
         });
     }),
