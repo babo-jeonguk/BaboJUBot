@@ -19,6 +19,11 @@ const repository = path.resolve(
   ".."
 );
 
+const unknownRef =
+  "a link to a GitHub branch or commit not known here (write it with a full commit SHA or an origin branch name)";
+const ambiguousRef =
+  "a link to a GitHub ref that splits the path more than one way (write it with a full commit SHA or an origin branch name)";
+
 function git(cwd, ...args) {
   return execFileSync(
     "git",
@@ -27,7 +32,7 @@ function git(cwd, ...args) {
   );
 }
 
-// 실제 .gitignore와 스크립트를 담은 저장소를 만든다. origin은 acme/demo, 슬래시가 든 브랜치 fix/1-x가 있다.
+// 실제 .gitignore와 스크립트를 담은 저장소를 만든다. origin은 acme/demo, origin에 슬래시가 든 브랜치 fix/1-x가 있다.
 function createFixture() {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "babojubot-gh-post-"));
   for (const relative of [
@@ -54,6 +59,15 @@ function createFixture() {
   git(fixture, "add", ".");
   git(fixture, "commit", "-q", "-m", "init");
   git(fixture, "branch", "fix/1-x");
+  // 내려받은 origin처럼 원격 추적 ref를 둔다: 브랜치 main·fix/1-x와 origin의 HEAD.
+  git(fixture, "update-ref", "refs/remotes/origin/main", "HEAD");
+  git(fixture, "update-ref", "refs/remotes/origin/fix/1-x", "HEAD");
+  git(
+    fixture,
+    "symbolic-ref",
+    "refs/remotes/origin/HEAD",
+    "refs/remotes/origin/main"
+  );
   // 복사한 스크립트가 저장소의 Markdown 파서를 가져가도록 node_modules를 잇는다(커밋 뒤라 fixture의 Git에는 들지 않는다).
   fs.symlinkSync(
     path.join(repository, "node_modules"),
@@ -255,7 +269,7 @@ test("published text rejects a link path it cannot judge", async () => {
       ],
       [
         "https://github.com/acme/demo/blob/no-such-ref/docs/a.md",
-        "a link to a GitHub branch or commit not known here",
+        unknownRef,
         "https://github.com/acme/demo/blob/no-such-ref/docs/a.md",
       ],
       [
@@ -269,6 +283,65 @@ test("published text rejects a link path it cannot judge", async () => {
         findLocalOnlyReferences(text, context),
         [{ line: 1, undecidable: `${reason}: ${url}` }],
         text
+      );
+  });
+});
+
+// GitHub 파일 주소의 ref는 GitHub가 아는 것만 인정한다: origin 브랜치 이름(원격 추적 ref, HEAD 제외)과, origin 원격 추적 ref에서
+// 닿는 전체 커밋 SHA. 로컬에서 풀리는 revision(origin/main, refs/remotes/origin/main, ORIG_HEAD, 로컬 브랜치·태그, 짧은 SHA, push 안 된
+// 커밋)은 GitHub가 모를 수 있다. ref 경계가 둘 이상 맞아도 어느 경로인지 모른다(#295 외부 리뷰 2회차 STD-3·SPEC-2·REC-4).
+test("published text judges a GitHub file link only by an origin branch or a full commit SHA reachable from origin", async () => {
+  await withFixture((fixture) => {
+    const head = git(fixture, "rev-parse", "HEAD").trim();
+    git(fixture, "update-ref", "ORIG_HEAD", "HEAD");
+    git(fixture, "branch", "local-only");
+    git(fixture, "tag", "fix");
+    const unpushed = git(
+      fixture,
+      "commit-tree",
+      "HEAD^{tree}",
+      "-p",
+      "HEAD",
+      "-m",
+      "unpushed"
+    ).trim();
+    git(fixture, "update-ref", `refs/remotes/origin/${head}/x`, "HEAD");
+    const context = loadContext(fixture);
+    const file = (ref, rest) =>
+      `https://github.com/acme/demo/blob/${ref}/${rest}`;
+    for (const [url, reason] of [
+      [file("origin/main", "docs/a.md"), unknownRef],
+      [file("refs/remotes/origin/main", "docs/a.md"), unknownRef],
+      [file("ORIG_HEAD", "docs/a.md"), unknownRef],
+      [file("HEAD", "docs/a.md"), unknownRef],
+      [file("local-only", "docs/a.md"), unknownRef],
+      [file(head.slice(0, 7), "docs/a.md"), unknownRef],
+      [file(unpushed, "docs/a.md"), unknownRef],
+      [file(head, "x/docs/a.md"), ambiguousRef],
+    ])
+      assert.deepEqual(
+        findLocalOnlyReferences(url, context),
+        [{ line: 1, undecidable: `${reason}: ${url}` }],
+        url
+      );
+    // 태그 fix는 ref가 아니므로 origin 브랜치 fix/1-x로 경로(data/a.md)를 정한다.
+    for (const url of [
+      file("fix/1-x", "data/a.md"),
+      file(head, "test-results/a/trace.zip"),
+    ])
+      assert.deepEqual(
+        findLocalOnlyReferences(url, context),
+        [{ line: 1, reference: url }],
+        url
+      );
+    for (const ref of ["main", head])
+      assert.deepEqual(
+        findLocalOnlyReferences(
+          file(ref, "docs/research/issue-1-references.md"),
+          context
+        ),
+        [],
+        ref
       );
   });
 });
