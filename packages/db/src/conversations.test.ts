@@ -29,7 +29,7 @@ import {
   loadRunContext,
 } from "./runs.ts";
 import { conversations, organizations, wakes } from "./schema.ts";
-import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import { createTestDatabase, testPool, type TestDatabase } from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
@@ -340,12 +340,14 @@ async function withDatabaseBefore(
     defer(() => t.db.execute(sql.raw(`drop database ${name}`)));
     const url = new URL(t.url);
     url.pathname = `/${name}`;
-    const pool = new pg.Pool({ connectionString: url.toString() });
-    // 연결을 닫은 뒤에 그 DB를 지운다.
-    defer(() => pool.end());
+    // 연결을 닫은 뒤에 그 DB를 지운다. 다 쓰기 전에 실패했으면 연결을 끊는다(`testPool`).
+    const { pool, close } = testPool(url.toString(), 30_000);
+    let used = false;
+    defer(() => close(!used, "the migration test's pool did not end"));
     const db = drizzle(pool);
     await migrate(db, { migrationsFolder: before });
     await fn(pool, () => migrate(db, { migrationsFolder: migrations }));
+    used = true;
   });
 }
 

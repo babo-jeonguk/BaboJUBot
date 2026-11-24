@@ -4,8 +4,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { withClient } from "./client.ts";
 import { clusterUrl, startEmbeddedCluster } from "./embedded.ts";
+import { askServer } from "./testing.ts";
 
 // 테스트가 정한 후보 번호를 먼저 내주고, 목록이 비면 실제 candidatePort를 부른다.
 const ports = vi.hoisted(() => ({
@@ -59,10 +59,12 @@ describe("embedded Postgres port", () => {
     const cluster = await startEmbeddedCluster({ dataDir, persistent: false });
     onTestFinished(() => cluster.stop());
     expect(cluster.port).not.toBe(taken.port);
-    const { rows } = await withClient(
+    const { rows } = await askServer(
       clusterUrl(cluster.port, "postgres"),
       (client) =>
-        client.query<{ data_directory: string }>("show data_directory")
+        client.query<{ data_directory: string }>("show data_directory"),
+      10_000,
+      "Postgres did not tell its data folder"
     );
     expect(fs.realpathSync(rows[0]!.data_directory)).toBe(
       fs.realpathSync(dataDir)

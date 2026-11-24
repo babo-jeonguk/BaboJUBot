@@ -8,7 +8,6 @@ import { planOrganizationCreation } from "@babojubot/core";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import pg from "pg";
 import {
   afterAll,
   beforeAll,
@@ -26,7 +25,13 @@ import {
 import { migrateDatabase } from "./client.ts";
 import { updateAgentProfile } from "./agents.ts";
 import { findAgentInstructions } from "./harness.ts";
-import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import {
+  createTestDatabase,
+  testConnection,
+  testPool,
+  type TestDatabase,
+} from "./testing.ts";
+import { within } from "@babojubot/process/test-support";
 import { updateProviderLimit } from "./providers.ts";
 import { listAgentsWithPendingWakes } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
@@ -330,14 +335,26 @@ describe("agent names", () => {
     // 조직 행을 잠그지 않는 쓰기가 같은 이름을 먼저 잡고 아직 commit하지 않았다. 이름 변경은 그 이름을 보지 못한 채
     // 저장하다 unique index에서 기다리고, 그 쓰기가 commit하면 index 위반을 같은 name_taken으로 돌려준다.
     await withCleanup(async (defer) => {
-      const other = new pg.Client({ connectionString: t.url });
-      await other.connect();
-      defer(() => other.end());
-      await other.query("begin");
-      await other.query("update agents set name = $1 where id = $2", [
-        "Statistician",
-        worker.id,
-      ]);
+      // 다른 연결(`testConnection`). 연결과 질의는 상한 안에서 끝나고, 정리는 연결의 끝을 확인한다. commit까지 마치지 못했으면(열린
+      // transaction) 소켓을 끊는다.
+      const other = testConnection(t.url);
+      let committed = false;
+      defer(() =>
+        other.close(!committed, 10_000, "the other connection did not close")
+      );
+      await within(
+        other.client
+          .connect()
+          .then(() => other.client.query("begin"))
+          .then(() =>
+            other.client.query("update agents set name = $1 where id = $2", [
+              "Statistician",
+              worker.id,
+            ])
+          ),
+        10_000,
+        "the other connection did not take the name"
+      );
       const renaming = updateAgentProfile(t.db, orgId, lead.id, {
         name: "statistician",
       });
@@ -354,7 +371,12 @@ describe("agent names", () => {
           { timeout: 15_000, interval: 20 }
         )
         .toBeGreaterThan(0);
-      await other.query("commit");
+      await within(
+        other.client.query("commit"),
+        10_000,
+        "the other connection did not commit"
+      );
+      committed = true;
       expect(await renaming).toEqual({ kind: "refused", reason: "name_taken" });
     });
     expect(await namesOf(orgId)).toEqual(["Research Lead", "Statistician"]);
@@ -386,9 +408,10 @@ describe("agent names", () => {
     });
     const url = new URL(t.url);
     url.pathname = `/${name}`;
-    const pool = new pg.Pool({ connectionString: url.toString() });
-    // 연결을 닫은 뒤에 그 DB를 지운다.
-    onTestFinished(() => pool.end());
+    // 연결을 닫은 뒤에 그 DB를 지운다. 다 쓰기 전에 실패했으면 연결을 끊는다(`testPool`).
+    const { pool, close } = testPool(url.toString(), 30_000);
+    let used = false;
+    onTestFinished(() => close(!used, "the migration test's pool did not end"));
     const db = drizzle(pool);
     await migrate(db, { migrationsFolder: before });
     const orgA = randomUUID();
@@ -447,5 +470,6 @@ describe("agent names", () => {
         [randomUUID(), orgA]
       )
     ).rejects.toMatchObject({ code: "23505" });
+    used = true;
   });
 });

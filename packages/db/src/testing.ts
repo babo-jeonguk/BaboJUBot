@@ -12,7 +12,6 @@ import {
   ephemeralCluster,
   openDatabase,
   startEmbeddedCluster,
-  withClient,
   type Database,
   type DatabaseHandle,
 } from "./client.ts";
@@ -58,8 +57,11 @@ export async function startTestCluster(
   const options = await ephemeralCluster();
   const { port, stop } = await startEmbeddedCluster(options, testSettings);
   try {
-    await withClient(clusterUrl(port, "postgres"), (client) =>
-      client.query(`create database ${templateName}`)
+    await askServer(
+      clusterUrl(port, "postgres"),
+      (client) => client.query(`create database ${templateName}`),
+      60_000,
+      "the test cluster did not create the template database"
     );
     // 원본에 연결이 남으면 복제할 수 없으므로 migration 뒤 바로 닫는다.
     await (await openDatabase({ url: clusterUrl(port, templateName) })).close();
@@ -93,12 +95,19 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   const port = testClusterPort();
   const admin = clusterUrl(port, "postgres");
   const name = `test_${randomUUID().replaceAll("-", "")}`;
-  await withClient(admin, (client) =>
-    client.query(`create database ${name} template ${templateName}`)
+  await askServer(
+    admin,
+    (client) =>
+      client.query(`create database ${name} template ${templateName}`),
+    60_000,
+    `the test cluster did not create ${name}`
   );
   const drop = () =>
-    withClient(admin, (client) =>
-      client.query(`drop database if exists ${name} with (force)`)
+    askServer(
+      admin,
+      (client) => client.query(`drop database if exists ${name} with (force)`),
+      60_000,
+      `the test cluster did not drop ${name}`
     );
   let handle: DatabaseHandle;
   try {
@@ -165,13 +174,31 @@ export function askServer<T>(
 }
 
 /**
- * 시험이 여는 pg pool. 돌려준 `close`는 pool을 끝내고 그 끝을 `limitMs` 안에서 확인한다.
+ * 시험이 여는 pg pool(`testConnection`과 같은 기준). 연결마다 pg-pool의 연결 상한(`connectionTimeoutMillis`: 넘기면 그 연결의 소켓을
+ * 끊는다)과 pg의 질의 상한(`query_timeout`: 넘긴 질의는 실패하고, pool은 오류와 함께 돌려받은 연결을 끝낸다. pg의 `end()`는 답 없는
+ * 질의가 남은 연결의 소켓을 닫는다)을 `limitMs`로 둔다(pg-pool 3.14 `index.js` `newClient`·`_release`, pg 8.23 `lib/client.js`). 연결의
+ * 소켓은 시험이 만든다(pg 설정 `stream`). 돌려준 `close`는 pool을 끝내고, `cut`이면(시험이 다 쓰지 못함: 상대가 멈췄을 수 있다) 그
+ * 소켓들을 끊은 뒤, pool의 끝(`end()`의 이행: 모든 연결이 끝남)을 `limitMs` 안에서 확인한다.
  */
 export function testPool(url: string, limitMs: number) {
-  const pool = new pg.Pool({ connectionString: url });
+  const sockets = new Set<net.Socket>();
+  const pool = new pg.Pool({
+    connectionString: url,
+    connectionTimeoutMillis: limitMs,
+    query_timeout: limitMs,
+    stream: () => {
+      const socket = new net.Socket();
+      sockets.add(socket);
+      return socket;
+    },
+  });
   return {
     pool,
-    close: (_cut: boolean, what: string) => within(pool.end(), limitMs, what),
+    close: (cut: boolean, what: string) => {
+      const ended = pool.end();
+      if (cut) for (const socket of sockets) socket.destroy();
+      return within(ended, limitMs, what);
+    },
   };
 }
 
