@@ -8,16 +8,25 @@ export type ObservedChild = {
   stderrText: () => string;
 };
 
-export async function waitForPostmaster(
+/**
+ * 서버가 띄운 Postgres가 pid 파일에 번호를 쓸 때까지 기다린다. `observe`는 번호를 읽은 같은 동기 단계에서 그 프로세스를 관찰해
+ * (시작 시각 등) 그 결과를 돌려준다. 읽은 뒤 기다림을 거쳐 관찰하면 그사이 그 번호가 다른 프로세스에 쓰였을 수 있다.
+ */
+export async function waitForPostmaster<T = number>(
   child: ObservedChild,
   pidFile: string,
   {
     timeoutMs,
     read = (file: string) => readFileSync(file, "utf8"),
-  }: { timeoutMs: number; read?: (file: string) => string }
-) {
-  // 확인은 바로 한 번 하고, 그 뒤 간격마다 다시 한다. 준비·자식 종료·읽기 오류 중 하나를 보면 끝낸다.
-  let seen: { pid: number } | { error: unknown } | undefined;
+    observe = (pid: number) => pid as T,
+  }: {
+    timeoutMs: number;
+    read?: (file: string) => string;
+    observe?: (pid: number) => T;
+  }
+): Promise<T> {
+  // 확인은 바로 한 번 하고, 그 뒤 간격마다 다시 한다. 준비·자식 종료·읽기나 관찰의 오류 중 하나를 보면 끝낸다.
+  let seen: { observed: T } | { error: unknown } | undefined;
   await vi
     .waitUntil(
       () => {
@@ -30,7 +39,7 @@ export async function waitForPostmaster(
         else
           try {
             const pid = readPid(pidFile, read);
-            if (pid !== undefined) seen = { pid };
+            if (pid !== undefined) seen = { observed: observe(pid) };
           } catch (error) {
             seen = { error };
           }
@@ -44,7 +53,7 @@ export async function waitForPostmaster(
       );
     });
   if ("error" in seen!) throw seen.error;
-  return seen!.pid;
+  return seen!.observed;
 }
 
 /**

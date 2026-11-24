@@ -25,7 +25,8 @@ import {
 import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
-import { within } from "@babojubot/process/test-support";
+import { psField } from "@babojubot/process";
+import { reportedPid, within } from "@babojubot/process/test-support";
 import {
   awaitedLater,
   folderCleanup,
@@ -159,7 +160,7 @@ posix.each(["SIGINT", "SIGHUP"] as const)(
   async (signal) => {
     const child = startMain({ BABOJUBOT_EPHEMERAL_DB: "1" }, { group: true });
     await child.ready();
-    process.kill(-child.pid!, signal);
+    signalGroup(child, signal);
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(0);
     expect(child.stderrText()).toBe("");
@@ -178,20 +179,25 @@ it.each(stopRequests)(
       { BABOJUBOT_HOME: home, EMBEDDED_POSTGRES_PORT: "0" },
       { ipc }
     );
-    let postgresPid = 0;
+    // 정리는 Postgres를 찾기 전에 등록한다. 찾은 뒤에는 그 Postgres를 맡는다.
+    const leftover: { postgres?: ObservedPostgres } = {};
     const folder = folderCleanup(() => removeFolder(home));
     onTestFinished(folder.cleanUp);
-    folder.own(() => stopLeftover(postgresPid));
+    folder.own(() => stopLeftover(leftover.postgres));
     folder.own(child.stop);
-    postgresPid = await waitForPostmaster(child, pidFile, {
-      timeoutMs: readyTimeoutMs,
-    });
-    expect(postgresPid).toBeGreaterThan(0);
+    const postgres = (leftover.postgres = await waitForPostmaster(
+      child,
+      pidFile,
+      {
+        timeoutMs: readyTimeoutMs,
+        observe: observePostgres,
+      }
+    ));
     send(child);
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(0);
     expect(child.stdoutText()).not.toContain("BaboJUBot server on");
-    await expectGone(postgresPid);
+    await expectGone(postgres);
     expect(existsSync(pidFile)).toBe(false);
   },
   60_000
@@ -269,18 +275,17 @@ posix.each(posixStopRequests)(
       },
       { ipc }
     );
-    let postgresPid = 0;
+    // 정리는 Postgres를 찾기 전에 등록한다. 찾은 뒤에는 그 Postgres를 맡는다.
+    const leftover: { postgres?: ObservedPostgres } = {};
     const folder = folderCleanup(() => removeFolder(home));
     onTestFinished(folder.cleanUp);
-    folder.own(() => stopLeftover(postgresPid));
+    folder.own(() => stopLeftover(leftover.postgres));
     folder.own(child.stop);
     await child.ready();
-    postgresPid = Number(
-      readFileSync(path.join(home, "postgres", "postmaster.pid"), "utf8").split(
-        "\n"
-      )[0]
-    );
-    process.kill(postgresPid, "SIGSTOP");
+    const postgres = (leftover.postgres = lockedPostgres(
+      path.join(home, "postgres")
+    ));
+    expect(signalPostgres(postgres, "SIGSTOP")).toBe(true);
     send(child);
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(1);
@@ -288,10 +293,9 @@ posix.each(posixStopRequests)(
     // 시한을 정리 몫과 비상 정지 몫으로 나누는 계산은 shutdown-budget.test.ts가 본다. 걸린 시간은 재지 않는다(CODING_STANDARDS.md#시간).
     expect(child.stderrText()).toContain("did not finish in 2s");
 
-    process.kill(postgresPid, "SIGCONT");
-    await expect
-      .poll(() => isAlive(postgresPid), { timeout: 15_000, interval: 50 })
-      .toBe(false);
+    // 멈춰 둔 Postgres는 끝날 수 없으므로 그대로 그 프로세스다. 다시 움직이면 받아 둔 정지 신호로 끝난다.
+    expect(signalPostgres(postgres, "SIGCONT")).toBe(true);
+    await expectGone(postgres, 15_000);
   },
   60_000
 );
@@ -309,13 +313,13 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
   folder.own(child.stop);
   await child.ready();
   const postgres = temporaryPostgres(temp.dir);
-  folder.own(() => stopLeftover(postgres.pid));
-  expect(isAlive(postgres.pid)).toBe(true);
+  folder.own(() => stopLeftover(postgres));
+  expect(running(postgres)).toBe(true);
   child.send(stopRequest);
   const { code } = await waitExit(child, shutdownWaitMs);
   expect(code, child.stderrText()).toBe(0);
   expect(child.stderrText()).toBe("");
-  await expectGone(postgres.pid);
+  await expectGone(postgres);
   expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
 }, 60_000);
 
@@ -332,12 +336,12 @@ it("finishes its own shutdown when the parent's channel closes", async () => {
   folder.own(child.stop);
   await child.ready();
   const postgres = temporaryPostgres(temp.dir);
-  folder.own(() => stopLeftover(postgres.pid));
+  folder.own(() => stopLeftover(postgres));
   child.disconnect();
   const { code } = await waitExit(child, shutdownWaitMs);
   expect(code, child.stderrText()).toBe(0);
   expect(child.stderrText()).toBe("");
-  await expectGone(postgres.pid);
+  await expectGone(postgres);
   expect(temporaryPostgresEntries(temp.dir)).toEqual([]);
 }, 60_000);
 
@@ -385,8 +389,13 @@ it.each(["-1", "0", "1.5", "Infinity", "2147483648", "soon"])(
       DATABASE_URL: external.url,
       BABOJUBOT_SHUTDOWN_TIMEOUT_MS: value,
     });
-    expect(await startOutcome(child)).toEqual({ code: 1 });
-    expect(child.stderrText()).toContain("BABOJUBOT_SHUTDOWN_TIMEOUT_MS");
+    // 설정을 읽다 던지고 끝난다. 끝나지 않으면 시한의 실패가 그대로 이 시험의 실패다.
+    const { code } = await waitExit(child, shutdownWaitMs);
+    expect(code, child.stderrText()).toBe(1);
+    expect(child.stdoutText()).not.toContain("BaboJUBot server on");
+    expect(stderrLines(child)).toContain(
+      `Error: BABOJUBOT_SHUTDOWN_TIMEOUT_MS must be a whole number of milliseconds from 1 to 2147483647, got "${value}"`
+    );
   },
   60_000
 );
@@ -581,17 +590,6 @@ function waitForReady(
   });
 }
 
-/** 시작도 종료도 하지 못한 경우를 구분해 돌려준다. 시작했다면 finally가 끝낸다. */
-async function startOutcome(child: MainProcess) {
-  try {
-    await child.ready();
-    return { started: true };
-  } catch (error) {
-    const exit = await waitExit(child, 1_000).catch(() => undefined);
-    return exit ? { code: exit.code } : { error: String(error) };
-  }
-}
-
 /** 서버가 stderr에 남긴 줄. */
 function stderrLines(child: MainProcess) {
   return child.stderrText().split(/\r?\n/);
@@ -602,11 +600,15 @@ function waitExit(child: MainProcess, ms: number): Promise<Exit> {
   return within(child.exited, ms, `server ${child.pid} did not exit`);
 }
 
-/** 자식이 살아 있으면 끝내고, 이미 끝났으면 그 종료를 기다린다. 그룹 테스트는 남은 그룹까지 정리한다. */
+/**
+ * 자식이 살아 있으면 끝내고, 이미 끝났으면 그 종료를 기다린다. 그룹으로 띄운 서버는 아직 거두지 않았으면 그룹 전체를 끄고, 끝난 뒤
+ * 그룹에 남은 프로세스가 없는지 본다(남았으면 끄지 않고 그 그룹과 함께 알린다).
+ */
 async function endServer(child: MainProcess, { group }: { group: boolean }) {
-  if (group) killGroup(child);
-  else if (child.exitCode === null && child.signalCode === null)
-    child.kill("SIGKILL");
+  if (child.exitCode === null && child.signalCode === null) {
+    if (group) signalGroup(child, "SIGKILL");
+    else child.kill("SIGKILL");
+  }
   // 끝을 확인한다. 종료 관찰이 `error`로 끝나면(띄우지 못함, 신호를 보내지 못함) 확인하지 못한 것으로 알린다.
   await within(child.exited, killWaitMs, `server ${child.pid} did not exit`);
   // 폴더를 지우기 전에 stdio 닫힘까지 확인한다.
@@ -615,6 +617,7 @@ async function endServer(child: MainProcess, { group }: { group: boolean }) {
     killWaitMs,
     `server ${child.pid} did not close its output`
   );
+  if (group) await groupEnded(child);
 }
 
 async function waitForPath(child: MainProcess, target: string) {
@@ -639,8 +642,29 @@ async function waitForPath(child: MainProcess, target: string) {
   if (ended) throw ended;
 }
 
-function killGroup(child: ChildProcess) {
-  killUnlessGone(-child.pid!);
+/**
+ * 그룹으로 띄운 서버(그룹 번호 = 서버 번호)의 그룹 전체에 신호한다. Node가 서버를 아직 거두지 않았으면 그 번호는 이 그룹이다(거두기 전의
+ * 프로세스는 번호를 쥐고 있다). 거둔 뒤에는 그 번호가 다른 그룹에 쓰였을 수 있어 보내지 않고 실패한다.
+ */
+function signalGroup(child: ChildProcess, signal: NodeJS.Signals) {
+  if (child.exitCode !== null || child.signalCode !== null)
+    throw new Error(
+      `server ${child.pid} already ended (code ${child.exitCode}, signal ${child.signalCode}); its group number is not signalled`
+    );
+  killUnlessGone(-child.pid!, signal);
+}
+
+/**
+ * 거둔 서버의 그룹에 남은 프로세스가 없다. 구성원이 하나라도 살아 있으면 그 그룹 번호는 이 그룹이므로 신호 0으로 본다. 신호는 보내지
+ * 않는다. macOS는 거두기 전의 프로세스만 남은 그룹에 EPERM으로 답해(`processAlive`가 던짐) 그것이 거두어질 때까지 다시 본다.
+ */
+async function groupEnded(child: ChildProcess) {
+  await expect
+    .poll(() => processAlive(-child.pid!), {
+      timeout: killWaitMs,
+      message: `the process group of server ${child.pid} still has members after the server ended`,
+    })
+    .toBe(false);
 }
 
 /** 서버의 임시 폴더. 임시 내장 Postgres(`openEphemeralDatabase`)는 이 안에 dataDir를 만든다. */
@@ -650,20 +674,62 @@ function temporaryFolder() {
   return { dir, env: { TMPDIR: dir, TEMP: dir, TMP: dir } };
 }
 
-type TemporaryPostgres = { pid: number };
-
 /** 준비된 서버가 임시 폴더에 띄운 임시 내장 Postgres 하나를 찾는다. */
-function temporaryPostgres(temp: string): TemporaryPostgres {
+function temporaryPostgres(temp: string): ObservedPostgres {
   const dirs = temporaryPostgresEntries(temp).filter(
     (name) => !name.endsWith(".owner")
   );
   expect(dirs).toHaveLength(1);
-  const dataDir = path.join(temp, dirs[0]!);
-  const pid = Number(
-    readFileSync(path.join(dataDir, "postmaster.pid"), "utf8").split("\n")[0]
+  return lockedPostgres(path.join(temp, dirs[0]!));
+}
+
+/**
+ * 서버가 띄운 Postgres 하나. 잠금 파일(postmaster.pid)의 번호와, 그 번호를 읽은 같은 동기 단계에서 읽은 시작 시각(POSIX `ps` lstart)이다.
+ * 번호는 그 프로세스가 끝나면 다른 프로세스에 다시 쓰이므로, 신호하거나 끝났다고 볼 때마다 시작 시각을 다시 읽어 같은 프로세스인지
+ * 본다. Windows는 시작 시각을 읽지 못해 `started`가 없고, 번호로 신호하지 않는다. `ended`는 시험이 끝남을 확인했는지다.
+ */
+type ObservedPostgres = { pid: number; started?: string; ended: boolean };
+/** `ps` 한 번의 시한. */
+const psWaitMs = 5_000;
+
+function observePostgres(pid: number): ObservedPostgres {
+  if (process.platform === "win32") return { pid, ended: false };
+  const started = psField(pid, "lstart", psWaitMs);
+  if (started === undefined)
+    throw new Error(`Postgres ${pid} named in its lock file is not running`);
+  return { pid, started, ended: false };
+}
+
+/** 그 dataDir의 잠금 파일에 적힌 Postgres. 읽기와 관찰 사이에 기다림이 없다. */
+function lockedPostgres(dataDir: string): ObservedPostgres {
+  return observePostgres(
+    reportedPid(
+      readFileSync(path.join(dataDir, "postmaster.pid"), "utf8").split("\n")[0],
+      `the lock file of ${dataDir}`
+    )
   );
-  expect(pid).toBeGreaterThan(0);
-  return { pid };
+}
+
+/**
+ * 그 Postgres가 아직 도는가. POSIX는 그 번호의 시작 시각이 같을 때만 그 프로세스다. Windows는 번호가 살아 있는지만 본다. 그 번호를
+ * 다른 프로세스가 쓰면 끝나지 않은 것으로 보아 기다림이 실패한다(신호는 보내지 않는다).
+ */
+function running(postgres: ObservedPostgres): boolean {
+  if (postgres.started === undefined) return processAlive(postgres.pid);
+  return psField(postgres.pid, "lstart", psWaitMs) === postgres.started;
+}
+
+/**
+ * 그 Postgres에 신호한다. 같은 프로세스임을 본 직후(사이에 기다림 없이)에만 보내고, 이미 끝났으면 보내지 않고 false다. 시작 시각을
+ * 읽을 수 없는 시스템(Windows)에서는 그 번호가 아직 그 Postgres인지 알 수 없어 보내지 않고 실패한다.
+ */
+function signalPostgres(postgres: ObservedPostgres, signal: NodeJS.Signals) {
+  if (postgres.started === undefined)
+    throw new Error(
+      `Postgres ${postgres.pid} cannot be identified on this system; it is not signalled by number`
+    );
+  if (!running(postgres)) return false;
+  return killUnlessGone(postgres.pid, signal);
 }
 
 /** 임시 내장 Postgres가 임시 폴더에 남기는 항목(dataDir와 그 주인 기록 `.owner`). 정상 정지 뒤에는 없다. */
@@ -675,17 +741,24 @@ function temporaryPostgresEntries(temp: string) {
  * 서버가 멈춘 Postgres 프로세스가 사라졌다. pg_ctl의 정지 대기는 postmaster.pid가 지워지면 끝나고 프로세스는 그 뒤 잠시
  * 남을 수 있어(Windows는 완전히 끝날 때까지 살아 있다고 답함) 짧은 시한 안에서 기다린다.
  */
-async function expectGone(pid: number) {
-  await expect.poll(() => isAlive(pid), { timeout: 5_000 }).toBe(false);
+async function expectGone(postgres: ObservedPostgres, timeout = 5_000) {
+  await expect
+    .poll(() => running(postgres), {
+      timeout,
+      message: `Postgres ${postgres.pid} did not end`,
+    })
+    .toBe(false);
+  postgres.ended = true;
 }
 
-/** 시험이 실패해 남은 Postgres만 끝내고, 끝난 것을 확인한다. 그 뒤에야 폴더를 지운다. */
-async function stopLeftover(pid: number | undefined) {
-  if (!pid || !isAlive(pid)) return;
-  // 확인과 신호 사이에 끝났으면(ESRCH) 넘어간다. 그 밖의 실패는 pid와 함께 알린다.
-  if (process.platform !== "win32") killUnlessGone(pid, "SIGCONT");
-  killUnlessGone(pid);
-  await expectGone(pid);
+/**
+ * 시험이 끝남을 확인하지 못한 Postgres만 끝내고, 끝난 것을 확인한다. 그 뒤에야 폴더를 지운다. 확인한 뒤에는 그 번호를 다시 보지
+ * 않는다(다른 프로세스가 썼을 수 있다).
+ */
+async function stopLeftover(postgres: ObservedPostgres | undefined) {
+  if (!postgres || postgres.ended || !running(postgres)) return;
+  // 멈춰 둔 Postgres는 다시 움직여야 끝난다. 그사이 끝났으면 보내지 않는다.
+  signalPostgres(postgres, "SIGCONT");
+  signalPostgres(postgres, "SIGKILL");
+  await expectGone(postgres);
 }
-
-const isAlive = processAlive;
