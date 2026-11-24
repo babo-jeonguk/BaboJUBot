@@ -266,7 +266,7 @@ test("every repository module a check setting imports is denied and protected, a
 // 검사 설정이 가져오는데 풀지 못한 저장소 안 모듈은 "보호할 것 없음"이 아니라 "확인 못함"이다. 말없이 닫힘에서 빼면 그 모듈이 worker에게
 // 열린 채 시험이 통과한다(parent 자체 점검, #291 외부 리뷰 1회차 뒤). 저장소 안을 가리키는 지정자(상대 경로, 작업 공간 패키지)를 풀지
 // 못하면 그 지정자·가져온 파일과 함께 실패한다. 저장소 밖 패키지는 닫힘 밖이다.
-test("fails on a repository import of a check setting it cannot resolve, naming the specifier and the importing file", (context) => {
+test("fails on a repository import of a check setting it cannot resolve or follow, naming the specifier and the importing file", (context) => {
   const sample = (files: Record<string, string>) => {
     const root = mkdtempSync(path.join(tmpdir(), "protected-files-"));
     context.after(() => removeFolder(root));
@@ -293,6 +293,45 @@ test("fails on a repository import of a check setting it cannot resolve, naming 
       "eslint.config.js": 'import "@babojubot/kit/hidden";\n',
     }),
     /eslint\.config\.js imports "@babojubot\/kit\/hidden", which Node refuses \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/
+  );
+  // 이름을 글자로 적지 않은 import()와 require로 불러오는 길(node:module·CommonJS)은 따라가지 못하므로 건너뛰지 않고 멈춘다.
+  for (const [setting, text, reason] of [
+    [
+      "vitest.config.ts",
+      'const name = "./shared.ts";\nawait import(name);\n',
+      /vitest\.config\.ts loads a module through import\(\) with a name that is not a string literal/,
+    ],
+    [
+      "eslint.config.js",
+      'import { createRequire } from "node:module";\ncreateRequire(import.meta.url)("./shared.ts");\n',
+      /eslint\.config\.js takes "createRequire" from "node:module", which can load a module by rules this check does not follow/,
+    ],
+    [
+      "eslint.config.js",
+      'process.getBuiltinModule("module").createRequire(import.meta.url)("./shared.ts");\n',
+      /eslint\.config\.js loads "module" through getBuiltinModule, which can load a module by rules this check does not follow/,
+    ],
+    [
+      "eslint.config.cjs",
+      'require("./shared.ts");\n',
+      /eslint\.config\.cjs calls require, which this check does not follow/,
+    ],
+  ] as const)
+    assert.throws(
+      sample({ [setting]: text, "shared.ts": "export const a = 1;\n" }),
+      reason,
+      setting
+    );
+  // 코드가 아닌 파일(JSON 등)도 설정이 읽으면 보호한다. 그 안은 따라가지 않는다.
+  assert.deepEqual(
+    [
+      ...sample({
+        "vitest.config.ts":
+          'import data from "./suites.json" with { type: "json" };\nvoid data;\n',
+        "suites.json": "{}\n",
+      })().keys(),
+    ],
+    ["suites.json"]
   );
   // 저장소 밖 패키지와 기본 모듈은 닫힘 밖이다.
   assert.deepEqual(
