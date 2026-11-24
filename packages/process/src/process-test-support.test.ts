@@ -83,11 +83,30 @@ it("still reads a ready line written just before the program exits", async () =>
 // (자식의 입력은 자식이 끝날 때 Node가 닫으므로 신호 통로로 쓰지 않는다). 자손은 따로 떼어 띄운다: Windows의 libuv는 떼지 않은 자식을
 // 부모가 끝나면 함께 끝나는 묶음에 넣는다. 프로그램은 자손이 연결한 뒤 시험이 시킬 때 끝난다. readyLine의 시계는 가짜라 exit 뒤
 // 시간이 얼마나 지나도(아래 5초) 출력이 열려 있는 동안은 기다린다.
+/** 시험이 시킬 때 준비 줄을 쓰고, 연결을 닫고 스스로 끝나는 자손. */
+const answering = (port: number) =>
+  `const s = require("node:net").connect(${port}, "127.0.0.1"); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`;
+
 it("keeps reading after the program exits until its output ends", async () => {
-  await lateReadyLine(
-    (port) =>
-      `const s = require("node:net").connect(${port}, "127.0.0.1"); s.once("data", () => { console.log("ready"); s.destroy(); }); s.once("error", () => s.destroy());`
-  );
+  await lateReadyLine(answering);
+});
+
+// #288 parent 점검(번호 신원): 자손이 준비 줄을 쓰고 스스로 끝났으면, 정리는 그 번호에 신호하지 않는다. 끝난 프로세스의 번호는 다른
+// 프로그램이 받을 수 있다.
+it("does not signal the descendant after it ended by itself", async () => {
+  const kill = process.kill.bind(process);
+  const sent: [number, string | number | undefined][] = [];
+  vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    sent.push([pid, signal]);
+    return kill(pid, signal);
+  });
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
+  const descendant = await lateReadyLine(answering);
+  expect(
+    sent.filter(([pid, signal]) => pid === descendant && signal !== 0)
+  ).toEqual([]);
 });
 
 // #288 리뷰 2회차 STD-2: 자손이 연결만 하고 아무 답도 하지 않아도(멈춤), 정리는 받은 연결을 닫고 자손과 프로그램의 끝을 확인한다.
@@ -114,7 +133,7 @@ async function lateReadyLine(
   descendant: (port: number) => string,
   limitMs = 10_000
 ) {
-  await withCleanup(async (defer) => {
+  return withCleanup(async (defer) => {
     const server = createServer();
     // 받은 연결은 받는 즉시 정리 대상이다(#288 리뷰 2회차 STD-2). 연결의 정보(무엇을 보냈는지)를 기다리지 않는다.
     const sockets = new Set<Socket>();
@@ -214,6 +233,11 @@ async function lateReadyLine(
     vi.useRealTimers();
     output.write("go");
     await within(ready, limitMs, "readyLine did not take the late ready line");
+    return within(
+      descendantPid,
+      limitMs,
+      "the program did not report its descendant"
+    );
   });
 }
 
