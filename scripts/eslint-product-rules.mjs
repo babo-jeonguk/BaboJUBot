@@ -1869,103 +1869,119 @@ const functionNodeTypes = new Set([
   "ArrowFunctionExpression",
 ]);
 
+/** 공백으로 나눈 옵션 이름들. */
+const optionNames = (text) => new Set(text.split(/\s+/).filter(Boolean));
 /**
- * 경로 목록 하위 명령(ls-files·ls-tree·diff 계열·log·show·status)의 옵션 중 값을 받지 않는 것(각 명령의 git 문서: 값이 없거나 값을
- * 붙여서만 받는 선택 값 옵션). 값을 받는 옵션은 다음 낱말을 값으로 받을 수 있다(gitcli: 필수 값을 받는 긴 옵션은 `--opt value`도
- * 된다, 짧은 옵션은 `-x value`). 그래서 `-z` 바로 앞 옵션이 이 목록에 없으면 그 `-z`는 값일 수 있다.
+ * 경로 목록 하위 명령마다(같은 글자가 명령마다 다르다: `ls-files -u`는 값이 없고 `status -u`는 값을 붙여 받는다) 옵션을 git이 읽는
+ * 방식(parse-options)대로 나눈다. 근거는 각 명령의 git 문서와 `git <명령> -h`(git 2.43)다.
+ * - `free`: 값을 받지 않는 옵션. 긴 옵션은 값을 `=`로 붙여서만 받는 선택 값 옵션(`--porcelain[=<version>]`)도 다음 낱말을 받지 않아
+ *   여기 둔다.
+ * - `optional`: 값을 붙여서만 받는 짧은 선택 값 옵션(`-u[<mode>]`, `-M[<n>]`). 묶음의 나머지가 그 값이고, 다음 낱말은 받지 않는다.
+ * - `nul`: NUL 구분 출력을 켜는 긴 옵션(짧은 옵션은 모두 `-z`).
+ * 그 밖의 옵션(값을 받는 옵션, 모르는 옵션)은 묶음의 나머지나 다음 낱말을 값으로 받을 수 있다.
  */
-const gitValueFreeOptions = new Set([
-  // ls-files
-  "-c",
-  "--cached",
-  "-d",
-  "--deleted",
-  "-m",
-  "--modified",
-  "-o",
-  "--others",
-  "-i",
-  "--ignored",
-  "-s",
-  "--stage",
-  "-u",
-  "--unmerged",
-  "-k",
-  "--killed",
-  "--directory",
-  "--no-empty-directory",
-  "--eol",
-  "--exclude-standard",
-  "--error-unmatch",
-  "--recurse-submodules",
-  "--deduplicate",
-  "--full-name",
-  "--sparse",
-  "--resolve-undo",
-  "-t",
-  "-v",
-  "-f",
-  // ls-tree
-  "-r",
-  "-l",
-  "--long",
-  "--name-only",
-  "--name-status",
-  "--object-only",
-  "--full-tree",
-  // diff 계열·log·show
-  "--no-renames",
-  "--staged",
-  "--merge-base",
-  "--raw",
-  "-p",
-  "--patch",
-  "--no-patch",
-  "--stat",
-  "--numstat",
-  "--shortstat",
-  "--summary",
-  "-M",
-  "--find-renames",
-  "-C",
-  "--find-copies",
-  "-R",
-  "--no-color",
-  "--binary",
-  "--full-index",
-  "--no-ext-diff",
-  "--no-textconv",
-  "-w",
-  "--ignore-all-space",
-  "--relative",
-  "-a",
-  "--text",
-  "--no-prefix",
-  "--root",
-  "--first-parent",
-  "--no-merges",
-  "--merges",
-  "--reverse",
-  "--all",
-  "--oneline",
-  "--no-walk",
-  // status
-  "--porcelain",
-  "--short",
-  "-b",
-  "--branch",
-  "--untracked-files",
-  "--renames",
-  "--ahead-behind",
-  "--no-ahead-behind",
-  "--show-stash",
-  "--long",
+const diffFree =
+  "-z -p -u --patch -s --no-patch --raw --patch-with-raw --stat --numstat --shortstat --summary --patch-with-stat --name-only --name-status --full-index --binary -R --staged --cached --merge-base --no-renames --find-renames --find-copies --find-copies-harder --no-color --no-ext-diff --no-textconv -w --ignore-all-space -a --text --relative --no-prefix -r -t -m -c --cc --root --no-commit-id --stdin -v";
+const diffOptional = optionNames("-M -C -B");
+const logFree =
+  "--first-parent --no-merges --merges --reverse --all --oneline --no-walk -q --quiet --source --use-mailmap --mailmap";
+const gitListOptions = new Map([
+  [
+    "ls-files",
+    {
+      free: optionNames(
+        "-z -t -v -f -c --cached -d --deleted -m --modified -o --others -i --ignored -s --stage -k --killed --directory --eol --empty-directory -u --unmerged --resolve-undo --exclude-standard --full-name --recurse-submodules --error-unmatch --abbrev --debug --deduplicate --sparse"
+      ),
+      optional: new Set(),
+      nul: new Set(),
+    },
+  ],
+  [
+    "ls-tree",
+    {
+      free: optionNames(
+        "-d -r -t -z -l --long --name-only --name-status --object-only --full-name --full-tree --abbrev"
+      ),
+      optional: new Set(),
+      nul: new Set(),
+    },
+  ],
+  [
+    "status",
+    {
+      free: optionNames(
+        "-v --verbose -s --short -b --branch --show-stash --ahead-behind --porcelain --long -z --null --untracked-files --ignored --ignore-submodules --column --no-renames --renames --find-renames"
+      ),
+      optional: optionNames("-u -M"),
+      nul: new Set(["--null"]),
+    },
+  ],
+  ...[...gitDiffCommands].map((command) => [
+    command,
+    {
+      free: optionNames(
+        ["diff", "diff-tree", "diff-index", "diff-files"].includes(command)
+          ? diffFree
+          : `${diffFree} ${logFree}`
+      ),
+      optional: diffOptional,
+      nul: new Set(),
+    },
+  ]),
 ]);
 
 /**
+ * 하위 명령 `known`의 옵션 낱말들(`--` 앞)을 git parse-options처럼 왼쪽부터 읽어, 짧은 옵션 글자 `letter`나 긴 옵션 `names`가 옵션으로
+ * 쓰였는지 판정한다: "yes", 앞 옵션의 값일 수 있으면 "maybe", 없으면 "no". 짧은 옵션 묶음(`-sz`)은 왼쪽부터 읽어 값을 받지 않는 옵션만
+ * 넘는다. 값을 받는 옵션이나 모르는 글자를 만나면 묶음의 나머지가 그 값이고(git parse-options), 나머지가 없으면 다음 낱말이 값일 수 있다.
+ * 값을 붙여서만 받는 선택 값 옵션은 나머지를 값으로 받고 다음 낱말은 받지 않는다. 긴 옵션은 `--opt=value`(값을 붙여 받음)와 부정형
+ * `--no-…`(값을 받지 않음)이면 다음 낱말을 받지 않고, 값을 받지 않는 옵션이 아니면 다음 낱말이 값일 수 있다. 모르는 인수(글자가
+ * 아님)도 다음 낱말을 값으로 받을 수 있다.
+ */
+function gitOptionUse(options, known, letter, names) {
+  let found = "no";
+  // 앞 낱말이 이 낱말을 값으로 받을 수 있는가.
+  let mayBeValue = false;
+  for (const part of options) {
+    if (!("value" in part)) {
+      mayBeValue = true;
+      continue;
+    }
+    const word = part.value;
+    let here = "no";
+    let takesNext = false;
+    if (word.startsWith("--")) {
+      if (names.includes(word.split("=")[0])) here = "yes";
+      takesNext =
+        !word.includes("=") &&
+        !word.startsWith("--no-") &&
+        !known.free.has(word);
+    } else if (word.startsWith("-") && word !== "-")
+      for (let at = 1; at < word.length; at += 1) {
+        const option = `-${word[at]}`;
+        if (word[at] === letter) here = "yes";
+        if (known.free.has(option)) continue;
+        if (known.optional.has(option)) break;
+        const rest = word.slice(at + 1);
+        if (letter && rest.includes(letter) && here === "no") here = "maybe";
+        takesNext = rest === "";
+        break;
+      }
+    // 앞 낱말의 값일 수 있으면, 옵션으로 읽은 결과는 "그럴 수 있다"다. 다음 낱말의 판정은 옵션으로 읽은 쪽을 따른다(값이었다면 다음은
+    // 값이 아니므로, 옵션으로 읽어 값을 받지 않을 때만 다음을 옵션으로 확정한다).
+    if (here !== "no" && mayBeValue) here = "maybe";
+    if (here === "yes") found = "yes";
+    else if (here === "maybe" && found === "no") found = "maybe";
+    mayBeValue = takesNext;
+  }
+  return found;
+}
+
+/**
  * git 인수(`{ value }`는 글자, `{ unknown }`은 모르는 인수)를 판정한다: 경로 목록을 -z 없이 읽으면 `{ command }`, 하위 명령을
- * 모르면(전역 옵션 뒤 첫 인수가 모르는 값) `{ unjudged: true }`, 아니면 undefined. 경로 목록: `ls-files`, `ls-tree`, diff 계열·`log`·
- * `show`의 `--name-only`·`--name-status`, `status`의 `--porcelain`·`--short`·`-s`. -z는 따로 적거나 짧은 옵션 묶음(`-sz`)에 든다.
+ * 모르거나(전역 옵션 뒤 첫 인수가 모르는 값) 경로 목록인지·-z가 옵션인지가 앞 옵션의 값일 수 있어 정해지지 않으면 `{ unjudged: true }`,
+ * 아니면 undefined. 경로 목록: `ls-files`, `ls-tree`, diff 계열·`log`·`show`의 `--name-only`·`--name-status`, `status`의
+ * `--porcelain`·`--short`·`-s`. -z(`status`는 `--null`도)는 따로 적거나 짧은 옵션 묶음(`-sz`)에 든다(gitOptionUse).
  */
 function gitPathListWithoutNul(parts) {
   let at = 0;
@@ -1978,53 +1994,28 @@ function gitPathListWithoutNul(parts) {
   }
   const command = parts[at];
   if (!command || "unknown" in command) return { unjudged: true };
+  const known = gitListOptions.get(command.value);
+  if (!known) return undefined;
   // 옵션 끝(`--`) 뒤는 경로다.
   const afterCommand = parts.slice(at + 1);
   const end = afterCommand.findIndex(
     (part) => "value" in part && part.value === "--"
   );
   const options = end === -1 ? afterCommand : afterCommand.slice(0, end);
-  const flags = options.flatMap((part) =>
-    "value" in part ? [part.value] : []
-  );
-  const has = (...names) =>
-    flags.some((flag) =>
-      names.some((name) => flag === name || flag.startsWith(`${name}=`))
-    );
-  const short = (letter) =>
-    flags.some((flag) =>
-      new RegExp(`^-[A-Za-z]*${letter}[A-Za-z]*$`).test(flag)
-    );
-  /** `-z`(짧은 옵션 묶음 포함)가 옵션으로 쓰였는가: "yes", 바로 앞 옵션의 값일 수 있으면 "maybe", 없으면 "no". */
-  const nul = () => {
-    let found = "no";
-    options.forEach((part, index) => {
-      if (!("value" in part) || !/^-[A-Za-z]*z[A-Za-z]*$/.test(part.value))
-        return;
-      const before = options[index - 1];
-      const free =
-        index === 0 ||
-        ("value" in before &&
-          (!before.value.startsWith("-") ||
-            before.value.includes("=") ||
-            gitValueFreeOptions.has(before.value) ||
-            /^-[A-Za-z]*z[A-Za-z]*$/.test(before.value)));
-      if (free) found = "yes";
-      else if (found === "no") found = "maybe";
-    });
-    return found;
-  };
   const lists =
-    command.value === "ls-files" ||
-    command.value === "ls-tree" ||
-    (gitDiffCommands.has(command.value) &&
-      has("--name-only", "--name-status")) ||
-    (command.value === "status" &&
-      (has("--porcelain", "--short") || short("s")));
-  if (!lists) return undefined;
-  const z = nul();
-  if (z === "maybe") return { unjudged: true };
-  return z === "no" ? { command: command.value } : undefined;
+    command.value === "ls-files" || command.value === "ls-tree"
+      ? "yes"
+      : command.value === "status"
+        ? gitOptionUse(options, known, "s", ["--porcelain", "--short"])
+        : gitOptionUse(options, known, undefined, [
+            "--name-only",
+            "--name-status",
+          ]);
+  if (lists === "no") return undefined;
+  const nul = gitOptionUse(options, known, "z", [...known.nul]);
+  if (nul === "yes") return undefined;
+  if (lists === "maybe" || nul === "maybe") return { unjudged: true };
+  return { command: command.value };
 }
 
 /**

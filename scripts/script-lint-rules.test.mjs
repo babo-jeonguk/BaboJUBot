@@ -1137,6 +1137,20 @@ const gitLists = [
     'execFileSync("git", ["status", "-bs"]);',
     'execFileSync("git", ["status", "-bsz"]);',
   ],
+  // 값을 붙여서만 받는 선택 값 옵션(status의 -u[<mode>])은 묶음의 나머지를 값으로 받는다. 같은 글자도 명령마다 다르다(ls-files -u는
+  // 값이 없다).
+  [
+    'execFileSync("git", ["status", "--porcelain", "-uz"]);',
+    'execFileSync("git", ["status", "--porcelain", "-uz", "-z"]);',
+  ],
+  [
+    'execFileSync("git", ["ls-files", "-x", "*.tmp"]);',
+    'execFileSync("git", ["ls-files", "-uz"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "--porcelain"]);',
+    'execFileSync("git", ["status", "--porcelain", "--null"]);',
+  ],
   [
     'execFileSync("git", ["ls-files", "-x", "*.tmp"]);',
     'execFileSync("git", ["ls-files", "-zx", "*.tmp"]);',
@@ -1198,9 +1212,6 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     // `-xz`의 z는 -x의 값이다. 값을 받지 않는 옵션 목록에 없는 글자 뒤는 판정할 수 없다.
     'execFileSync("git", ["ls-files", "-xz"]);\n',
     'execFileSync("git", ["ls-files", "-sxz"]);\n',
-    'execFileSync("git", ["status", "--porcelain", "-uz"]);\n',
-    // 값을 붙여 받는 -u 뒤의 s는 짧은 형식(-s)이 아니라 -u의 값이다.
-    'execFileSync("git", ["status", "-us"]);\n',
   ]) {
     const found = await lint(childProcess + code, place, gitListRule);
     assert.equal(found.length, 1, code);
@@ -1211,6 +1222,8 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     'const git = (...args) => execFileSync("git", args);\ngit("rev-parse", "HEAD");\n',
     'const git = (...args) => execFileSync("git", args);\n',
     'execFileSync("git", ["-C", process.cwd(), "rev-parse", "HEAD"]);\n',
+    // status의 -u는 값을 붙여 받으므로 `-us`의 s는 짧은 형식(-s)이 아니라 그 값이다. 경로 목록이 아니다.
+    'execFileSync("git", ["status", "-us"]);\n',
   ])
     assert.deepEqual(
       await lint(childProcess + code, place, gitListRule),
