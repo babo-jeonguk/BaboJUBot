@@ -17,9 +17,10 @@ vi.mock("node:net", async (importOriginal) => {
   const real = await importOriginal<typeof netModule>();
   const connect = ((...args: Parameters<typeof real.connect>) => {
     const socket = real.connect(...args);
-    const options = args[0];
+    const options: unknown = args[0];
     if (
       typeof options === "object" &&
+      options !== null &&
       "port" in options &&
       Number(options.port) === dialing.port
     )

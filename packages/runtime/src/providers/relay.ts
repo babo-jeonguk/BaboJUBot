@@ -145,7 +145,7 @@ function splitAuthority(value: string): { host: string; port: number } | null {
 function dial(
   addresses: string[],
   port: number
-): Promise<{ socket: net.Socket; address: string }> {
+): Promise<{ socket: net.Socket; address: string; release: () => void }> {
   return new Promise((resolve, reject) => {
     const next = (index: number, last?: Error) => {
       if (index >= addresses.length)
@@ -157,9 +157,12 @@ function dial(
         socket.setTimeout(0);
         socket.removeAllListeners("error");
         // 돌려주는 소켓에는 늘 오류 리스너가 있다. 부르는 쪽이 기다리는 사이 난 오류는 이 연결만 닫는다.
-        // 부르는 쪽은 자기 처리를 따로 붙인다.
-        closeOnError(socket, "a relay connection to an allowed destination");
-        resolve({ socket, address });
+        // 부르는 쪽은 자기 처리를 따로 붙이고, 소켓의 오류를 모두 맡게 되면 `release`로 이 처리를 뗀다.
+        const release = closeOnError(
+          socket,
+          "a relay connection to an allowed destination"
+        );
+        resolve({ socket, address, release });
       });
       socket.once("error", (error) => next(index + 1, error));
     };
@@ -167,15 +170,20 @@ function dial(
   });
 }
 
-/** 소켓 오류로 그 연결만 닫는다. 상대가 끊어 난 오류는 답이고, 그 밖의 오류는 무엇이 실패했는지 남긴다. */
-function closeOnError(socket: net.Socket, what: string) {
-  socket.on("error", (error) => {
+/**
+ * 소켓 오류로 그 연결만 닫는다. 상대가 끊어 난 오류는 답이고, 그 밖의 오류는 무엇이 실패했는지 남긴다. 이 처리를 떼는 함수를
+ * 돌려준다(소켓을 넘겨받은 쪽이 오류를 맡을 때).
+ */
+function closeOnError(socket: net.Socket, what: string): () => void {
+  const onError = (error: Error) => {
     if (!isDisconnect(error))
       console.warn(
         `[provider] ${what} failed; the connection is closed (${failureCode(error)})`
       );
     socket.destroy();
-  });
+  };
+  socket.on("error", onError);
+  return () => socket.off("error", onError);
 }
 
 const hopByHop = new Set([
@@ -448,6 +456,8 @@ export function createRelayHub(): RelayHub {
         });
         // 중계가 이 연결을 끊을 때(정책 변경·중계 닫기) 소켓을 닫기 전에 답 흐름을 취소로 끝낸다.
         tunnel.cancel = answer.cancel;
+        // 요청이 소켓을 받으면(Node 문서 `'socket'`) 그 소켓의 오류는 요청의 오류로 답 흐름 한 곳이 알린다. 연결 단계의 처리를 뗀다.
+        outgoing.once("socket", dialed.release);
         req.pipe(outgoing);
       });
     });

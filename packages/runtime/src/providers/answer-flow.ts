@@ -33,7 +33,8 @@ export type PassedAnswer<By extends string> = {
 
 /**
  * 중계가 목적지로 보낸 요청(`request`) 하나의 끝을 처음부터 한 곳에서 한 번만 알린다. 목적지 쪽 요청의 오류(연결 실패, 답 중간의 HTTP
- * 형식 오류·소켓 오류), 넘기는 흐름의 오류·중간 닫힘, 요청자의 떠남, 중계의 취소 가운데 먼저 온 것 하나가 원인이다. 답이 시작된 뒤의
+ * 형식 오류·소켓 오류), 넘길 답 없이 닫힌 요청, 넘기는 흐름의 오류·중간 닫힘, 요청자의 떠남, 중계의 거부·취소 가운데 먼저 온 것
+ * 하나가 원인이다. 답이 시작된 뒤의
  * 목적지 쪽 요청 오류도 버리지 않는다: Node는 그 원인을 요청에 알리고, 답 흐름에는 뒤따르는 연결 끊김(`aborted`)만 남긴다.
  * 끝나면 목적지 쪽 요청과 흐름을 닫는다. 머리를 이미 보낸 비정상 끝이면 새 상태를 쓰지 않고 요청자 연결을 끊어, 받은 조각이 끝난
  * 답으로 보이지 않게 한다. 머리 전의 실패면 요청자 응답은 `ended`에서 부른 쪽이 쓴다(502 등). 다른 흐름을 닫는 것은 알린 뒤다.
@@ -56,6 +57,18 @@ export function passAnswer<By extends string>(
   const fail = (by: By | "upstream" | "requester", error: Error) =>
     settle({ by, error }, requester.headersSent);
   request.on("error", (error) => fail("upstream", error));
+  // 넘길 답(`pass`)도 중계의 거부(`refuse`)도 없이 목적지 쪽 요청이 닫히면 답 없이 닫힌 것이다. 왜 닫혔든(요청하지 않은 101 답처럼
+  // 오류도 답도 없이 닫혀도) 같은 끝이다. 이미 끝났으면 `fail`이 아무것도 하지 않는다.
+  request.once("close", () => {
+    if (stages.length === 0)
+      fail(
+        "upstream",
+        Object.assign(
+          new Error("the destination closed the request without an answer"),
+          { code: "closed_without_answer" }
+        )
+      );
+  });
   finished(requester, (error) => {
     if (error) fail("requester", error);
     else settle({ by: "complete" }, false);
