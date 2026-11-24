@@ -969,7 +969,6 @@ test("the install guard reads node's script past options and ./, and reports a r
     "npx tsx scripts/first.mjs",
     "tsx scripts/first.mjs",
     'node -e "process.exit(0)"',
-    "node --import tsx scripts/first.mjs",
   ])
     assert.deepEqual(
       installProblems(job(run), base),
@@ -999,4 +998,47 @@ test("the install guard reads node's script past options and ./, and reports a r
     ),
     []
   );
+});
+
+// node 옵션 중 값을 받는 것의 값을 진입점으로 고르지 않는다. 선적재 모듈(--import·--require·-r·--loader)과 진입점을 모두 따라가고,
+// 글로 넣는 코드(-e·-p)와 모르는 옵션은 판정할 수 없다(#292 외부 리뷰 2회차 SPEC-2).
+test("the install guard follows node's preloaded modules and its entry past options that take a value", (t) => {
+  const base = mkdtempSync(path.join(tmpdir(), "babojubot-install-guard-"));
+  t.after(() => removeFolder(base));
+  mkdirSync(path.join(base, "scripts"));
+  writeFileSync(
+    path.join(base, "scripts", "first.mjs"),
+    'import "node:path";\n'
+  );
+  writeFileSync(path.join(base, "scripts", "second.mjs"), 'import "yaml";\n');
+  const job = (run) => ({ jobs: { judge: { steps: [{ run }] } } });
+  const imported = [
+    "judge: scripts/second.mjs imports yaml without pnpm install before it",
+  ];
+  for (const run of [
+    "node --import ./scripts/first.mjs scripts/second.mjs",
+    "node --require ./scripts/first.mjs scripts/second.mjs",
+    "node -r ./scripts/second.mjs scripts/first.mjs",
+    "node --import=./scripts/second.mjs scripts/first.mjs",
+    "node --conditions development scripts/second.mjs",
+  ])
+    assert.deepEqual(installProblems(job(run), base), imported, run);
+  assert.deepEqual(
+    installProblems(job("node --import tsx scripts/first.mjs"), base),
+    [
+      "judge: node --import tsx loads the package tsx without pnpm install before it",
+    ]
+  );
+  for (const run of [
+    "node --frobnicate scripts/first.mjs",
+    "node --eval=1",
+    'node -p "1"',
+  ])
+    assert.deepEqual(
+      installProblems(job(run), base),
+      [
+        `judge: cannot tell what "${run}" runs, and no pnpm install comes before it`,
+      ],
+      run
+    );
 });
