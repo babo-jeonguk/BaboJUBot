@@ -45,31 +45,6 @@ const stopRecorded = async (file: string) => {
   if (existsSync(file)) await killAndWait([Number(readFileSync(file, "utf8"))]);
 };
 
-/**
- * `running`이 끝나기를 `deadline`(`AbortSignal.timeout`, 가짜 시계와 무관한 실제 시간)까지 기다린다. 지나면 `why`로 실패한다.
- * `setTimeout`을 가짜 시계로 둔 동안의 상한이라 `within`(그 시계 위의 타이머)을 쓰지 않는다.
- */
-const endedBefore = <T>(
-  running: Promise<T>,
-  deadline: AbortSignal,
-  why: string
-) =>
-  new Promise<T>((resolve, reject) => {
-    const expire = () => reject(new Error(why));
-    if (deadline.aborted) return expire();
-    deadline.addEventListener("abort", expire, { once: true });
-    running.then(
-      (value) => {
-        deadline.removeEventListener("abort", expire);
-        resolve(value);
-      },
-      (error: unknown) => {
-        deadline.removeEventListener("abort", expire);
-        reject(error);
-      }
-    );
-  });
-
 const run = async (
   script: string,
   options: {
@@ -322,7 +297,7 @@ describe("runProbe", () => {
   // 끄기). 출력을 쥔 그 프로그램까지 끝나 출력이 닫히고, 결과는 프로그램의 결과다. 예전에는 출력 닫힘을 1초 기다린 뒤 트리를 껐다
   // (#268, 시간 기다림 제거). 그 기다림이 돌아오는지를 시간이 아니라 시계로 가린다: probe가 도는 동안 이 시험 프로세스의
   // `setTimeout`을 가짜 시계로 두고 옮기지 않는다(#288 `lateReadyLine`과 같은 방식). 출력 닫힘을 시간으로 기다리는 어떤 대기도 지나지
-  // 않으므로, 그런 회귀는 끝나지 않고 가짜 시계와 무관한 실제 시간 상한(`AbortSignal.timeout`)에서 그 이유로 실패한다. 공용 실행의
+  // 않으므로, 그런 회귀는 끝나지 않고 가짜 시계와 무관한 실제 시간 상한(공용 `within`)에서 그 이유로 실패한다. 공용 실행의
   // 끄기 길에 있는 타이머(`runTree`의 `limitMs`, `within`, 실행기 끝 확인)는 모두 넘기면 실패하는 상한이라, 올바른 실행은 시계가
   // 흐르지 않아도 끝난다. 실행 상한(`limitMs`)도 가짜 시계 위라 결과에 끼어들지 않는다. probe가 끝나면 바로 실제 시계로 돌리고 그 뒤의
   // 대기(출력을 쥔 프로그램의 끝)는 자기 상한으로 기다린다. 예전의 500ms 실제 시한은 결함 없이도 부하가 큰 실행에서 프로그램 둘을
@@ -345,17 +320,15 @@ describe("runProbe", () => {
     // 출력을 쥔 프로그램이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 끝난다.
     const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    // 상한은 가짜 시계와 무관한 실제 시간이다. probe를 띄우기 전에 잰다.
-    const deadline = AbortSignal.timeout(20_000);
     const running = probe(
       `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
       // 가짜 시계 위의 실행 상한이라 지나지 않는다.
       5_000
     );
     started.probe = running;
-    const result = await endedBefore(
+    const result = await within(
       running,
-      deadline,
+      20_000,
       "the probe did not end with the clock still; it may wait for the held output by time"
     ).finally(() => {
       vi.useRealTimers();
