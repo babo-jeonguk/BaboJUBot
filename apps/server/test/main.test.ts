@@ -86,7 +86,7 @@ it("starts against an external Postgres URL and leaves that Postgres running on 
   // 서버를 끈 뒤에 외부 DB가 남았는지 본다.
   await withCleanup(async (defer) => {
     const child = startMain({ DATABASE_URL: external.url });
-    defer(() => stopMain(child));
+    defer(child.stop);
     await child.ready();
     expect(child.stdoutText()).toContain("external Postgres");
     const url = child.stdoutText().match(/BaboJUBot server on (\S+)/)![1]!;
@@ -113,7 +113,6 @@ it("ignores the parent's server settings that the test did not choose", async ()
     vi.unstubAllEnvs();
   });
   const child = startMain({ DATABASE_URL: external.url });
-  onTestFinished(() => stopMain(child));
   await child.ready();
 });
 
@@ -122,7 +121,6 @@ it("ignores the parent's server settings that the test did not choose", async ()
 // Windows는 격리 실행이 컨테이너를 띄우지 않아 그 정리가 Docker를 부르지 않는다(isolation.ts `removeOrphans`).
 it("lists only this product folder's leftover containers at startup", async () => {
   const child = startMain({ DATABASE_URL: external.url });
-  onTestFinished(() => stopMain(child));
   await child.ready();
   const owner = containerOwner(path.resolve(process.env.BABOJUBOT_HOME!));
   expect(child.dockerCalls()).toEqual(
@@ -138,7 +136,6 @@ posix.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
   "finishes its own shutdown on %s with an external Postgres",
   async (signal) => {
     const child = startMain({ DATABASE_URL: external.url });
-    onTestFinished(() => stopMain(child));
     await child.ready();
     child.kill(signal);
     const { code } = await waitExit(child, shutdownWaitMs);
@@ -154,7 +151,6 @@ posix.each(["SIGINT", "SIGHUP"] as const)(
   "closes the embedded Postgres only after its own shutdown when the terminal sends %s to the whole group",
   async (signal) => {
     const child = startMain({ BABOJUBOT_EPHEMERAL_DB: "1" }, { group: true });
-    onTestFinished(() => stopMain(child, { group: true }));
     await child.ready();
     process.kill(-child.pid!, signal);
     const { code } = await waitExit(child, shutdownWaitMs);
@@ -179,7 +175,7 @@ it.each(stopRequests)(
     const folder = folderCleanup(() => removeFolder(home));
     onTestFinished(folder.cleanUp);
     folder.own(() => stopLeftover(postgresPid));
-    folder.own(() => stopMain(child));
+    folder.own(child.stop);
     postgresPid = await waitForPostmaster(child, pidFile, {
       timeoutMs: readyTimeoutMs,
     });
@@ -206,7 +202,7 @@ it.each(stopRequests)(
     );
     const folder = folderCleanup(() => removeFolder(home));
     onTestFinished(folder.cleanUp);
-    folder.own(() => stopMain(child));
+    folder.own(child.stop);
     await waitForPath(child, path.join(home, "postgres"));
     send(child);
     const { code } = await waitExit(child, shutdownWaitMs);
@@ -236,7 +232,6 @@ it("ends with the HTTP start error and records the database close failure when b
     { DATABASE_URL: external.url, PORT: String(port) },
     { preload: failDatabaseClose }
   );
-  onTestFinished(() => stopMain(child));
   const { code } = await waitExit(child, shutdownWaitMs);
   expect(code, child.stderrText()).toBe(1);
   expect(child.stderrText()).toContain("EADDRINUSE");
@@ -264,7 +259,7 @@ posix.each(posixStopRequests)(
     const folder = folderCleanup(() => removeFolder(home));
     onTestFinished(folder.cleanUp);
     folder.own(() => stopLeftover(postgresPid));
-    folder.own(() => stopMain(child));
+    folder.own(child.stop);
     await child.ready();
     postgresPid = Number(
       readFileSync(path.join(home, "postgres", "postmaster.pid"), "utf8").split(
@@ -297,7 +292,7 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
   );
   const folder = folderCleanup(() => removeFolder(temp.dir));
   onTestFinished(folder.cleanUp);
-  folder.own(() => stopMain(child));
+  folder.own(child.stop);
   await child.ready();
   const postgres = temporaryPostgres(temp.dir);
   folder.own(() => stopLeftover(postgres.pid));
@@ -320,7 +315,7 @@ it("finishes its own shutdown when the parent's channel closes", async () => {
   );
   const folder = folderCleanup(() => removeFolder(temp.dir));
   onTestFinished(folder.cleanUp);
-  folder.own(() => stopMain(child));
+  folder.own(child.stop);
   await child.ready();
   const postgres = temporaryPostgres(temp.dir);
   folder.own(() => stopLeftover(postgres.pid));
@@ -335,7 +330,6 @@ it("finishes its own shutdown when the parent's channel closes", async () => {
 // 멈춤 요청이 겹쳐도(같은 메시지 여러 번, 신호와 메시지) 정리는 한 번이다. 두 번 닫으면 DB 연결 닫기가 오류를 낸다.
 it("cleans up once when stop requests repeat", async () => {
   const child = startMain({ DATABASE_URL: external.url }, { ipc: true });
-  onTestFinished(() => stopMain(child));
   await child.ready();
   child.send(stopRequest);
   child.send(stopRequest);
@@ -350,7 +344,6 @@ it("cleans up once when stop requests repeat", async () => {
 // 여기서는 실제 채널로 받은 다른 메시지 뒤에도 API가 응답하고 마지막 멈춤 메시지로 정상 종료하는지 본다.
 it("keeps serving after messages that are not a stop request", async () => {
   const child = startMain({ DATABASE_URL: external.url }, { ipc: true });
-  onTestFinished(() => stopMain(child));
   await child.ready();
   const url = child.stdoutText().match(/BaboJUBot server on (\S+)/)![1]!;
   for (const message of ["shutdown", { type: "stop" }, { id: 1 }])
@@ -378,7 +371,6 @@ it.each(["-1", "0", "1.5", "Infinity", "2147483648", "soon"])(
       DATABASE_URL: external.url,
       BABOJUBOT_SHUTDOWN_TIMEOUT_MS: value,
     });
-    onTestFinished(() => stopMain(child));
     expect(await startOutcome(child)).toEqual({ code: 1 });
     expect(child.stderrText()).toContain("BABOJUBOT_SHUTDOWN_TIMEOUT_MS");
   },
@@ -392,6 +384,11 @@ type MainProcess = ChildProcess & {
   exited: Promise<Exit>;
   closed: Promise<void>;
   ready: () => Promise<void>;
+  /**
+   * 이 서버를 끝내고 그 끝과 출력 닫힘을 확인한다. 서버마다 한 번만 하고 그 결과를 나눈다: 그 서버가 쓰는 폴더·DB의 정리와 시험
+   * 본문이 모두 같은 끝을 기다리고, 끄지 못한 실패는 한 번 원인과 함께 보인다. 그룹으로 띄운 서버는 그룹 전체를 끈다.
+   */
+  stop: () => Promise<void>;
   /** 가짜 docker가 받은 명령의 인수. 받은 차례대로다. */
   dockerCalls: () => unknown[];
 };
@@ -480,7 +477,7 @@ function startMain(
       .split("\n")
       .filter((line) => line !== "")
       .map((line): unknown => JSON.parse(line));
-  // 정리(stopMain)가 늘 기다린다. 시작하자마자 spawn 오류로 거절돼도 그 전에 처리되지 않은 거절이 되지 않는다.
+  // 정리(`stop`)가 늘 기다린다. 시작하자마자 spawn 오류로 거절돼도 그 전에 처리되지 않은 거절이 되지 않는다.
   child.exited = awaitedLater(
     new Promise<Exit>((resolve, reject) => {
       child.once("exit", (code, signal) => resolve({ code, signal }));
@@ -505,11 +502,11 @@ function startMain(
       () => stdout,
       () => stderr
     ));
-  // 이 서버가 쓰는 폴더와 그 시험의 DB는 이 서버가 끝난 뒤에 정리한다. 시험이 따로 끄는 것(그룹 끄기 포함)과 겹쳐도 된다:
-  // `stopMain`은 이미 끝난 자식에 신호하지 않고 그 끝을 다시 확인한다.
-  const stop = () => stopMain(child);
-  dockerFolder.own(stop);
-  databaseUsers.own(stop);
+  // 서버의 끝은 한 작업이 맡는다. 이 서버가 쓰는 폴더와 그 시험의 DB는 그 끝을 기다린 뒤에 정리한다.
+  let ending: Promise<void> | undefined;
+  child.stop = () => (ending ??= endServer(child, { group }));
+  dockerFolder.own(child.stop);
+  databaseUsers.own(child.stop);
   return child;
 }
 
@@ -591,7 +588,7 @@ async function waitExit(child: MainProcess, ms: number): Promise<Exit> {
 }
 
 /** 자식이 살아 있으면 끝내고, 이미 끝났으면 그 종료를 기다린다. 그룹 테스트는 남은 그룹까지 정리한다. */
-async function stopMain(child: MainProcess, { group = false } = {}) {
+async function endServer(child: MainProcess, { group }: { group: boolean }) {
   if (group) killGroup(child);
   else if (child.exitCode === null && child.signalCode === null)
     child.kill("SIGKILL");
