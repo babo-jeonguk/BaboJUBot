@@ -33,7 +33,7 @@ const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
  * 서버마다 따로 둔 Docker 설정 폴더에 남는다(`startMain`). 실제 Docker는 runtime의 실제 Docker 묶음만 쓴다.
  */
 const fakeDocker = fileURLToPath(
-  new URL("fixtures/no-leftover-docker.mjs", import.meta.url)
+  new URL("fixtures/fake-docker.ts", import.meta.url)
 );
 /** DB 닫기를 실패시키는 preload(`startMain`의 `preload`). */
 const failDatabaseClose = fileURLToPath(
