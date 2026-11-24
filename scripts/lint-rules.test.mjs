@@ -2041,6 +2041,19 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.any([p, later]);\n`,
       /기다리지 않습니다/,
     ],
+    // 한 분기에서만 부르는 함수 안의 기다림은 그 분기에서만 기다린다(#291 외부 리뷰 2회차 STD-3). 함수를 부르는 자리의 분기까지 본다.
+    "an await in a function called in one branch": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nconst wait = async () => {\n  await later;\n};\nif (Math.random() > 0.5) await wait();\n`,
+      /한 분기/,
+    ],
+    "an await in a callback written in one branch": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nif (Math.random() > 0.5)\n  test("waits", async () => {\n    await later;\n  });\n`,
+      /한 분기/,
+    ],
+    "an await in a function only a function called in one branch calls": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nconst outer = async () => {\n  await inner();\n};\nconst wanted = Math.random() > 0.5;\nwanted && (await outer());\n`,
+      /한 분기/,
+    ],
     // 다른 값이 거절만 하는 race·any도, 그 조합의 거절을 받아 성공으로 바꾸는 자리(expect(…).rejects, .catch, then의 거절 처리기,
     // try/catch)에서는 시한의 거절로 끝나 표시한 Promise를 보지 않고 통과한다(#291 외부 리뷰 2회차 SPEC-1).
     "a deadline race whose rejection an expect takes as success": [
@@ -2108,6 +2121,12 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     `const later = awaitedLater(p);\nexport async function run() {\n  await later;\n}\n`,
     `const later = awaitedLater(p);\ntest("waits", async () => {\n  await later;\n});\n`,
     `const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nexport const outer = () => inner();\n`,
+    // 시한 race를 try에서 기다리고 catch에서 표시한 Promise를 다시 기다리면 모든 길이다(#291 외부 리뷰 2회차 SPEC-1).
+    `const later = awaitedLater(p);\ntry {\n  await Promise.race([later, ${rejectsLate}]);\n} catch {\n  await later.catch(() => undefined);\n}\n`,
+    // 돌려준 함수(반환값, 반환하는 객체 식의 속성 값)는 내보내기처럼 받은 쪽이 부른다.
+    `export function start() {\n  const later = awaitedLater(p);\n  const stop = async () => {\n    await later;\n  };\n  return { stop };\n}\n`,
+    // 함수를 부르는 자리가 모든 분기를 덮으면 된다(#291 외부 리뷰 2회차 STD-3).
+    `const later = awaitedLater(p);\nconst wait = async () => {\n  await later;\n};\nif (Math.random() > 0.5) await wait();\nelse await wait();\n`,
     // 경계(CODING_STANDARDS.md#단언): 이름 없는 콜백은 넘겨받은 함수가 부른다고 본다. 그 함수가 부르지 않아도 lint는 세고, 리뷰가 본다.
     `const later = awaitedLater(p);\nconst ignore = () => undefined;\nignore(async () => {\n  await later;\n});\n`,
     `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait within(later, 1000);\n`,
