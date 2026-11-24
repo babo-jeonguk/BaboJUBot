@@ -41,64 +41,45 @@ test("hands back the exit code once everything written to stdout and stderr has 
   assert.equal(result.stderr.length, size);
 });
 
-// 시험은 checkout 경로에 공백·`%`가 있어도 돌아야 한다. URL의 pathname은 퍼센트 인코딩된 글이라 그것을 다시 파일 URL로 만들면 `%20`이
-// `%2520`이 되어 도움 파일을 찾지 못한다(#292 외부 리뷰 1회차 STD-1). 이 시험 파일과 도움을 그런 폴더에 옮겨 위 시험을 거기서 돌린다.
-test("runs from a checkout path holding a space and a percent sign", (context) => {
+// checkout 경로에 공백·`%`가 있어도 도움을 찾아야 한다. URL의 pathname은 퍼센트 인코딩된 글이라 그것을 다시 파일 URL로 만들면
+// `%20`이 `%2520`이 되어 도움 파일을 찾지 못한다(#292 외부 리뷰 1회차 STD-1). 그런 폴더에 도움을 두고, 같은 폴더의 스크립트가 이 시험
+// 파일처럼 자기 URL에서 도움을 풀어 가져와 쓰고 끝내게 한다. 안쪽 시험 러너의 보고 글은 판마다 바뀔 수 있어 판정에 쓰지 않는다(#292
+// 외부 리뷰 5회차 STD-5). 종료 코드와 출력을 정확한 값으로 본다.
+test("resolves the helper by URL from a path holding a space and a percent sign", (context) => {
   const folder = path.join(
     mkdtempSync(path.join(tmpdir(), "exit-after-output-")),
     "a dir %25 here"
   );
   context.after(() => removeFolder(path.dirname(folder)));
   mkdirSync(folder);
-  for (const file of ["exit-after-output.ts", "exit-after-output.test.ts"])
-    copyFileSync(
-      fileURLToPath(new URL(`./${file}`, import.meta.url)),
-      path.join(folder, file)
-    );
-  // 옮긴 시험이 저장소의 패키지를 가져가도록 node_modules를 잇는다.
+  copyFileSync(
+    fileURLToPath(new URL("./exit-after-output.ts", import.meta.url)),
+    path.join(folder, "exit-after-output.ts")
+  );
+  // 옮긴 도움이 저장소의 패키지를 가져가도록 node_modules를 잇는다.
   symlinkSync(
     fileURLToPath(new URL("../node_modules", import.meta.url)),
     path.join(folder, "node_modules"),
     "junction"
   );
-  const result = spawnSync(
-    process.execPath,
-    [
-      "--test",
-      "--test-reporter=tap",
-      "--test-name-pattern=hands back the exit code",
-      path.join(folder, "exit-after-output.test.ts"),
-    ],
-    {
-      encoding: "utf8",
-      timeout: 120_000,
-      killSignal: "SIGKILL",
-      env: Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([name]) => name !== "NODE_TEST_CONTEXT"
-        )
-      ),
-    }
+  const script = path.join(folder, "driver.mjs");
+  writeFileSync(
+    script,
+    `const { afterOutput } = await import(new URL("./exit-after-output.ts", import.meta.url).href);
+process.stdout.write("o".repeat(${size}));
+process.stderr.write("e".repeat(${size}));
+process.exit(await afterOutput(3));
+`
   );
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  // TAP 요약의 줄들(걸린 시간 duration_ms는 실행마다 달라 뺀다): 고른 시험 하나가 통과하고 실패·취소·건너뜀이 없다.
-  assert.deepEqual(
-    result.stdout
-      .split("\n")
-      .filter(
-        (line) => line.startsWith("# ") && !line.startsWith("# duration_ms ")
-      ),
-    [
-      "# Subtest: hands back the exit code once everything written to stdout and stderr has reached the pipe",
-      "# tests 1",
-      "# suites 0",
-      "# pass 1",
-      "# fail 0",
-      "# cancelled 0",
-      "# skipped 0",
-      "# todo 0",
-    ]
-  );
+  const result = spawnSync(process.execPath, [script], {
+    encoding: "utf8",
+    maxBuffer: 64 << 20,
+    timeout: 60_000,
+    killSignal: "SIGKILL",
+  });
+  assert.equal(result.status, 3, result.stderr.slice(-200));
+  assert.equal(result.stdout, "o".repeat(size));
+  assert.equal(result.stderr, "e".repeat(size));
 });
 
 // 출력을 다 쓰지 못하면 성공 코드(0)로 끝내지 않고 1로 끝내며, 0이 아닌 코드는 그대로 둔다(#292 외부 리뷰 1회차 권고). 부모가 자식
