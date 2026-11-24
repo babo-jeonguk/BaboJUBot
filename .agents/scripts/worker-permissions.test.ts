@@ -2,9 +2,11 @@
 // test scope (scripts/test-files.mjs); this test keeps the denied files in line with it.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { fileURLToPath } from "node:url";
 import { isTestFile, testFiles } from "../../scripts/test-files.mjs";
 import { editRules, isProtected } from "./worker-permissions.ts";
@@ -12,6 +14,7 @@ import {
   openCodeSettingBlock,
   protectedReason,
   repositorySettingModules,
+  settingModules,
 } from "./protected-files.ts";
 
 const root = path.resolve(
@@ -258,4 +261,46 @@ test("every repository module a check setting imports is denied and protected, a
     assert.equal(protectedReason(file), undefined, file);
     assert.ok(!isProtected(rules, file), file);
   }
+});
+
+// 검사 설정이 가져오는데 풀지 못한 저장소 안 모듈은 "보호할 것 없음"이 아니라 "확인 못함"이다. 말없이 닫힘에서 빼면 그 모듈이 worker에게
+// 열린 채 시험이 통과한다(parent 자체 점검, #291 외부 리뷰 1회차 뒤). 저장소 안을 가리키는 지정자(상대 경로, 작업 공간 패키지)를 풀지
+// 못하면 그 지정자·가져온 파일과 함께 실패한다. 저장소 밖 패키지는 닫힘 밖이다.
+test("fails on a repository import of a check setting it cannot resolve, naming the specifier and the importing file", (context) => {
+  const sample = (files: Record<string, string>) => {
+    const root = mkdtempSync(path.join(tmpdir(), "protected-files-"));
+    context.after(() => removeFolder(root));
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(path.join(root, path.dirname(file)), { recursive: true });
+      writeFileSync(path.join(root, file), text);
+    }
+    return () => settingModules(root, Object.keys(files));
+  };
+  assert.throws(
+    sample({
+      "vitest.config.ts":
+        'import { a } from "./shared.js";\nimport "vitest/config";\nvoid a;\n',
+      "shared.ts": "export const a = 1;\n",
+    }),
+    /vitest\.config\.ts imports "\.\/shared\.js", which does not resolve to a repository file/
+  );
+  assert.throws(
+    sample({
+      "packages/kit/package.json": JSON.stringify({
+        name: "@babojubot/kit",
+        exports: { "./hidden": null },
+      }),
+      "eslint.config.js": 'import "@babojubot/kit/hidden";\n',
+    }),
+    /eslint\.config\.js imports "@babojubot\/kit\/hidden", which Node refuses \(ERR_PACKAGE_PATH_NOT_EXPORTED\)/
+  );
+  // 저장소 밖 패키지와 기본 모듈은 닫힘 밖이다.
+  assert.deepEqual(
+    [
+      ...sample({
+        "vitest.config.ts": 'import "vitest/config";\nimport "node:path";\n',
+      })().keys(),
+    ],
+    []
+  );
 });
