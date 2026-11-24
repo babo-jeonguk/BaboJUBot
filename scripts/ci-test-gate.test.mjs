@@ -841,13 +841,128 @@ const codeRunners = new Set([
 const codeFile = new RegExp(`\\.(?:${codeFormatNames.join("|")})$`);
 
 /**
- * 단계 명령 `run`이 부르는 실행기마다: 읽어 낸 저장소 스크립트(`{ script }`), 또는 무엇을 돌리는지 읽지 못한 그 줄(`{ unread }`).
- * 셸을 해석하지 않는다: 줄을 셸 구분 기호(공백·`|`·`;`·`&`·괄호·`$(`·백틱)로 낱말로 나눠 실행기 이름인 낱말을 찾는다. `node` 뒤
- * 옵션(`-`로 시작)을 건너뛴 첫 낱말이 저장소의 코드 파일(`./` 접두 허용)일 때만 읽은 것으로 본다. 다른 실행기는 대상을 읽지 않는다
+ * node 명령줄 옵션의 갈래(Node 문서 https://nodejs.org/api/cli.html). 값을 받는 옵션은 `--opt value`와 `--opt=value`로 받는다.
+ * - 선적재 모듈을 받는 옵션: 진입점보다 먼저 그 모듈을 불러온다.
+ * - 글로 넣는 코드를 받는 옵션: 무엇을 돌리는지 파일로 읽을 수 없다.
+ * - 그 밖에 값을 받는 옵션과 값이 없는 옵션: 건너뛴다. 이 넷에 없는 옵션은 값을 받는지 몰라 판정할 수 없다.
+ */
+const nodePreloadOptions = new Set([
+  "--import",
+  "--require",
+  "-r",
+  "--loader",
+  "--experimental-loader",
+]);
+const nodeCodeOptions = new Set(["-e", "--eval", "-p", "--print"]);
+const nodeValueOptions = new Set([
+  "--input-type",
+  "-C",
+  "--conditions",
+  "--env-file",
+  "--env-file-if-exists",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--test-name-pattern",
+  "--test-skip-pattern",
+  "--test-concurrency",
+  "--test-timeout",
+  "--test-shard",
+  "--title",
+  "--disable-warning",
+  "--watch-path",
+  "--redirect-warnings",
+  "--unhandled-rejections",
+]);
+const nodeFlags = new Set([
+  "--test",
+  "--test-only",
+  "--watch",
+  "--experimental-strip-types",
+  "--no-experimental-strip-types",
+  "--experimental-transform-types",
+  "--experimental-test-coverage",
+  "--experimental-vm-modules",
+  "--no-warnings",
+  "--enable-source-maps",
+  "--trace-warnings",
+  "--trace-uncaught",
+  "--expose-gc",
+  "--inspect",
+  "--inspect-brk",
+  "--preserve-symlinks",
+  "--pending-deprecation",
+  "--throw-deprecation",
+  "--no-deprecation",
+  "--abort-on-uncaught-exception",
+  "--frozen-intrinsics",
+]);
+
+/**
+ * `words[at]`이 `node`일 때 그 명령이 돌리는 것: 저장소 스크립트(`{ script }`)와 선적재하는 패키지(`{ package, via }`)의 목록과
+ * node가 옵션·진입점으로 가져간 낱말의 끝(`end`), 또는 읽지 못하면 undefined. 진입점은 옵션 뒤 첫 낱말이고(`--` 뒤도), `--test`면 옵션 뒤 낱말이 모두 시험 파일이다. 진입점이 없으면
+ * (`node --test`의 파일 찾기, REPL) 무엇을 돌리는지 모른다.
+ */
+function nodeTargets(words, at, base) {
+  /** 저장소 안 코드 파일이면 그 경로(`./` 접두 허용), 아니면 undefined. */
+  const repositoryFile = (word) => {
+    const file = path.posix.normalize(word.replace(/^\.\//, ""));
+    return !file.startsWith("../") &&
+      codeFile.test(file) &&
+      existsSync(path.join(base, file))
+      ? file
+      : undefined;
+  };
+  const targets = [];
+  /** 선적재 값: 경로면 저장소 스크립트, `node:`면 없음, 그 밖은 패키지. */
+  const preload = (value, via) => {
+    if (value.startsWith("node:")) return true;
+    if (/^\.{0,2}\//.test(value)) {
+      const file = repositoryFile(value);
+      if (file) targets.push({ script: file });
+      return file !== undefined;
+    }
+    targets.push({ package: value, via });
+    return true;
+  };
+  let test = false;
+  let next = at + 1;
+  for (; next < words.length; next += 1) {
+    const word = words[next];
+    if (word === "--") {
+      next += 1;
+      break;
+    }
+    if (!word.startsWith("-")) break;
+    const [option, ...rest] = word.split("=");
+    const attached = rest.length > 0 ? rest.join("=") : undefined;
+    if (nodeCodeOptions.has(option)) return undefined;
+    if (nodePreloadOptions.has(option)) {
+      const value = attached ?? words[(next += 1)];
+      if (value === undefined || !preload(value, option)) return undefined;
+    } else if (nodeValueOptions.has(option)) {
+      if (attached === undefined) next += 1;
+    } else if (nodeFlags.has(option)) test ||= option === "--test";
+    else return undefined;
+  }
+  const end = test ? words.length : next + 1;
+  const entries = words.slice(next, end);
+  if (entries.length === 0) return undefined;
+  for (const entry of entries) {
+    const file = repositoryFile(entry);
+    if (!file) return undefined;
+    targets.push({ script: file });
+  }
+  return { targets, end };
+}
+
+/**
+ * 단계 명령 `run`이 부르는 실행기마다: 읽어 낸 저장소 스크립트(`{ script }`)·선적재 패키지(`{ package, via }`), 또는 무엇을 돌리는지
+ * 읽지 못한 그 줄(`{ unread }`). 셸을 해석하지 않는다: 줄을 셸 구분 기호(공백·`|`·`;`·`&`·괄호·`$(`·백틱)로 낱말로 나눠 실행기 이름인
+ * 낱말을 찾는다. `node`는 옵션을 갈래대로 읽어(nodeTargets) 진입점과 선적재 모듈을 찾는다. 다른 실행기는 대상을 읽지 않는다
  * (`pnpm install`은 설치 자체).
  */
 function runnersIn(run, base) {
-  /** @type {({ script: string } | { unread: string })[]} */
+  /** @type {({ script: string } | { package: string, via: string } | { unread: string })[]} */
   const found = [];
   for (const line of run.split("\n")) {
     const words = line
@@ -855,19 +970,16 @@ function runnersIn(run, base) {
       .map((word) => word.replace(/^["']+|["']+$/g, ""))
       .filter(Boolean);
     let unread = false;
+    // node가 옵션 값·진입점으로 가져간 낱말(`--import tsx`의 tsx)은 실행기로 다시 보지 않는다.
+    let taken = 0;
     words.forEach((word, at) => {
-      if (!codeRunners.has(word)) return;
+      if (at < taken || !codeRunners.has(word)) return;
       if (word === "pnpm" && words[at + 1] === "install") return;
-      if (word === "node") {
-        let next = at + 1;
-        while (words[next]?.startsWith("-")) next += 1;
-        const file = words[next]?.replace(/^\.\//, "");
-        if (file && codeFile.test(file) && existsSync(path.join(base, file))) {
-          found.push({ script: file });
-          return;
-        }
-      }
-      unread = true;
+      const read = word === "node" ? nodeTargets(words, at, base) : undefined;
+      if (read) {
+        found.push(...read.targets);
+        taken = read.end;
+      } else unread = true;
     });
     // 한 줄에서 읽지 못한 실행기가 여럿이어도 그 줄을 한 번 알린다.
     if (unread) found.push({ unread: line.trim() });
@@ -893,6 +1005,12 @@ function installProblems(workflow, base) {
         if ("unread" in runner) {
           problems.push(
             `${id}: cannot tell what "${runner.unread}" runs, and no pnpm install comes before it`
+          );
+          continue;
+        }
+        if ("package" in runner) {
+          problems.push(
+            `${id}: node ${runner.via} ${runner.package} loads the package ${runner.package} without pnpm install before it`
           );
           continue;
         }
