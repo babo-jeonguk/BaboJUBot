@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { finished } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
-import { sql } from "drizzle-orm";
+import { DrizzleQueryError, sql } from "drizzle-orm";
 import pg from "pg";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import {
@@ -1553,6 +1553,8 @@ it("fails an exit wait at its deadline and names the child", async () => {
 it("fails only the work on a connection cut while in use, without crashing the process", async () => {
   const database = await createTestDatabase();
   onTestFinished(() => database.close());
+  // 준비(backend 번호 묻기, 끊기, 끊긴 것 확인)는 성공해야 한다. 끊긴 연결에서 낸 마지막 질의만 기대한 실패다.
+  let lastQuery: Promise<unknown> | undefined;
   const work = database.db.transaction(async (tx) => {
     const { rows } = await tx.execute<{ pid: number }>(
       sql`select pg_backend_pid() as pid`
@@ -1583,7 +1585,37 @@ it("fails only the work on a connection cut while in use, without crashing the p
         { timeout: 15_000, interval: 20 }
       )
       .toBe(0);
-    await tx.execute(sql`select 1`);
+    lastQuery = tx.execute(sql`select 1`);
+    await lastQuery;
   });
-  await expect(work).rejects.toThrow();
+  const failure = await work.then(
+    () => new Error("the work on the cut connection did not fail"),
+    (error: unknown) => error
+  );
+  // 마지막 질의에 닿지 않았으면 준비가 실패한 것이다. 그 실패가 이 시험의 실패다.
+  if (!lastQuery) throw failure;
+  // 끊긴 연결의 pg Client는 질의를 받지 않는다(pg 8.23 `lib/client.js` `query`: "Client has encountered a connection error and is
+  // not queryable"). drizzle은 그 실패를 질의와 함께 감싸고(drizzle-orm 0.45 `errors.js` `DrizzleQueryError`), transaction은
+  // 실패한 뒤 rollback을 부르는데 그것도 같은 이유로 실패해 그 실패로 거절된다(`node-postgres/session.js` `transaction`).
+  const lastError = await lastQuery.then(
+    () => new Error("the last query on the cut connection did not fail"),
+    (error: unknown) => error
+  );
+  expect(lastError).toBeInstanceOf(DrizzleQueryError);
+  expect(failure).toBeInstanceOf(DrizzleQueryError);
+  expect(
+    [lastError, failure].map((error) => [
+      (error as Error).message,
+      ((error as Error).cause as Error).message,
+    ])
+  ).toEqual([
+    [
+      "Failed query: select 1\nparams: ",
+      "Client has encountered a connection error and is not queryable",
+    ],
+    [
+      "Failed query: rollback\nparams: ",
+      "Client has encountered a connection error and is not queryable",
+    ],
+  ]);
 });
