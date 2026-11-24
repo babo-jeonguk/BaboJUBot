@@ -55,7 +55,7 @@ for (const relative of repositoryFiles) {
   const targets = linkTargets(parseMarkdown(content));
   for (const { reason, line } of targets.undecidable)
     assert.fail(
-      `Cannot tell where an HTML link points ${location}:${line}: ${reason}. Write it as a Markdown link or a single plain href.`
+      `Cannot tell where an HTML link points ${location}:${line}: ${reason}. Write it as a Markdown link.`
     );
   for (const { url, line } of targets.links) {
     if (/^(https?:|mailto:|#)/.test(url)) continue;

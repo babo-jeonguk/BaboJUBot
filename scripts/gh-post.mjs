@@ -129,14 +129,9 @@ export function loadContext(root = scriptRoot) {
         );
       return refs.get(ref);
     },
+    /** 저장소 기준 경로가 `.gitignore`에 걸리는지. 경로는 `unknownPathShape`를 지난 아는 모양이다. 빈 경로는 저장소 자체다. */
     isIgnored(relative) {
-      // 저장소 밖(..)이나 `:`가 든 표기는 git이 오류로 멈추므로 판정하지 않는다.
-      if (
-        !relative ||
-        relative.split("/").includes("..") ||
-        relative.includes(":")
-      )
-        return false;
+      if (!relative) return false;
       return [relative, `${relative.replace(/\/$/, "")}/`].some((candidate) =>
         gitIgnores(root, candidate)
       );
@@ -174,19 +169,44 @@ function decodedOrAsIs(text) {
   return orIfUnreadable(() => decodeURIComponent(text), text);
 }
 
+/**
+ * 아는 단순한 모양이 아닌 경로의 까닭. 아는 모양이면 undefined. 앞뒤 공백·제어 문자(탭·개행 포함)·역슬래시·`//`로 시작·`..` 조각·`:`는
+ * GitHub·브라우저와 git이 다르게 풀 수 있어(주소 해석기는 공백을 떼고 역슬래시를 `/`로 읽고, git은 `:`를 pathspec 표기로 읽는다)
+ * 판정하지 않는다.
+ */
+function unknownPathShape(relative) {
+  if (relative !== relative.trim()) return "with space at either end";
+  if (/\p{Cc}/u.test(relative)) return "with a control character";
+  if (relative.includes("\\")) return "with a backslash";
+  if (relative.startsWith("//")) return "that starts with //";
+  if (relative.split("/").includes("..")) return "with a .. segment";
+  if (relative.includes(":")) return "with a colon";
+  return undefined;
+}
+
+/**
+ * 링크가 가리키는 이 저장소 기준 경로(`{ path }`), 판정할 수 없는 경로(`{ undecidable }`), 저장소 파일이 아닌 대상(null).
+ * http(s) 주소는 Node의 WHATWG 주소 해석기로 읽는다.
+ * @returns {{ path: string } | { undecidable: string } | null}
+ */
 function linkedRepositoryPath(target, context) {
-  if (/^https?:/i.test(target)) return repositoryPathFromUrl(target, context);
-  if (target.startsWith("#") || /^[a-z][\w+.-]*:/i.test(target)) return null;
-  let local = decodedOrAsIs(target.split(/[?#]/)[0]);
-  local = local.replace(/^(\.\/)+/, "");
+  const local = /^https?:/i.test(target)
+    ? repositoryPathFromUrl(target, context)
+    : target.startsWith("#") || /^[a-z][\w+.-]*:/i.test(target)
+      ? null
+      : decodedOrAsIs(target.split(/[?#]/)[0]);
+  if (local === null) return null;
+  const shape = unknownPathShape(local);
+  if (shape) return { undecidable: `a link path ${shape}: ${target}` };
+  const relative = local.replace(/^(\.\/)+/, "");
   // 떼어낸 뒤에도 `/`로 시작하면 저장소 밖 절대 경로다.
-  return local.startsWith("/") ? null : local;
+  return relative.startsWith("/") ? null : { path: relative };
 }
 
 /**
  * 게시문에서 독자가 열 수 없는 경로를 찾는다. 점 폴더 경로는 글자로(코드 표기 안 포함), 링크는 CommonMark·GFM 구문 트리로 본다
- * (인라인 링크·이미지·자동 링크·맨 주소·참조식 링크 정의·raw HTML의 href, 코드 안 글은 링크가 아님). 이 컴퓨터의 저장소 절대 경로는
- * 먼저 뗀다. 줄마다 같은 대상은 한 번만 낸다. 대상을 판정할 수 없는 raw HTML 링크는 `undecidable`로 낸다.
+ * (인라인 링크·이미지·자동 링크·맨 주소·참조식 링크 정의, 코드 안 글은 링크가 아님). 이 컴퓨터의 저장소 절대 경로는 먼저 뗀다.
+ * 줄마다 같은 대상은 한 번만 낸다. raw HTML의 href와 아는 모양이 아닌 링크 경로는 판정할 수 없음(`undecidable`)으로 낸다.
  */
 export function findLocalOnlyReferences(text, context) {
   let stripped = text;
@@ -202,9 +222,15 @@ export function findLocalOnlyReferences(text, context) {
       add(index + 1, match[0].trim().replace(/^[`'"(]/, ""));
   });
   const targets = linkTargets(parseMarkdown(stripped));
+  const undecidable = targets.undecidable.map(({ line, reason }) => ({
+    line,
+    undecidable: reason,
+  }));
   for (const { url, line } of targets.links) {
-    const relative = linkedRepositoryPath(url, context);
-    if (relative && context.isIgnored(relative)) add(line, url);
+    const linked = linkedRepositoryPath(url, context);
+    if (linked && "undecidable" in linked)
+      undecidable.push({ line, undecidable: linked.undecidable });
+    else if (linked && context.isIgnored(linked.path)) add(line, url);
   }
   return [
     ...[...byLine.keys()]
@@ -212,10 +238,7 @@ export function findLocalOnlyReferences(text, context) {
       .flatMap((line) =>
         [...byLine.get(line)].map((reference) => ({ line, reference }))
       ),
-    ...targets.undecidable.map(({ line, reason }) => ({
-      line,
-      undecidable: reason,
-    })),
+    ...undecidable,
   ];
 }
 
@@ -292,11 +315,11 @@ export function postToGitHub(args, { context, cwd, readStdin, runGh, report }) {
     for (const finding of findings)
       report(
         "undecidable" in finding
-          ? `Cannot tell where an HTML link points in published text ${finding.source}:${finding.line}: ${finding.undecidable}`
+          ? `Cannot tell where a link points in published text ${finding.source}:${finding.line}: ${finding.undecidable}`
           : `Local-only path in published text ${finding.source}:${finding.line}: ${finding.reference}`
       );
     report(
-      "Nothing was posted. Readers cannot open Git-ignored paths: summarize the content in the text or link a committed file instead. Write an HTML link that cannot be read as a Markdown link or a single plain href."
+      "Nothing was posted. Readers cannot open Git-ignored paths: summarize the content in the text or link a committed file instead. Write a link that cannot be judged as a Markdown link with a plain repository path."
     );
     return 1;
   }
