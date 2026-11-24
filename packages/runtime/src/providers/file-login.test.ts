@@ -303,6 +303,68 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     }
   );
 
+  // 옮긴 자리 표시를 다시 확인하는 사이 원래 이름에 다른 파일이 저장돼 되돌리지 못하면 옮긴 이름에 남긴다. 그 위치는 폴더 handle의
+  // 경로(Linux `/proc/self/fd/…`)가 아니라 조직 폴더 기준으로 남겨, handle을 닫은 뒤에도 그 위치로 찾을 수 있다(#296 외부 리뷰
+  // 1회차 STD-1·SPEC-2).
+  it.skipIf(windows)(
+    "records where it kept an unconfirmed file relative to the organization folder, so it can be found after the folder is let go",
+    async () => {
+      const root = await folders.make("babojubot-file-login-");
+      let hostRun = false;
+      const login = fileLogin(root, "nested", {
+        ...nested,
+        isStandIn: async (file) => {
+          // 옮긴 이름의 확인: 그 사이 원래 이름에 다른 파일이 저장되고, 옮긴 것은 자리 표시가 아니라고 답한다.
+          if (hostRun && file.endsWith(".removing")) {
+            await writeFile(
+              path.join(path.dirname(file), "token"),
+              "agent file"
+            );
+            return false;
+          }
+          return nested.isStandIn(file);
+        },
+      });
+      const original = path.join(root, "providers", "nested", "login", "token");
+      await mkdir(path.dirname(original), { recursive: true });
+      await writeFile(original, "REAL LOGIN");
+      const isolated = await login.prepare(organizationId, true);
+      if (isolated.refusal !== undefined || !isolated.attemptLogin)
+        throw new Error(`no isolated login: ${isolated.refusal}`);
+      await isolated.attemptLogin(
+        await folders.make("babojubot-attempt-"),
+        "grant"
+      );
+
+      hostRun = true;
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      await login.prepare(organizationId, false);
+      const kept = warned.mock.calls.flatMap(([line]) => {
+        const found =
+          /^\[provider\] a file put in place of the Nested login stand-in was kept as "(.+)" in the organization folder$/.exec(
+            String(line)
+          );
+        return found ? [found[1]!] : [];
+      });
+      expect(kept).toEqual([
+        expect.stringMatching(
+          /^\.gemini\/antigravity-cli\/\.token\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
+        ),
+      ]);
+      const organizationFolder = path.join(
+        root,
+        "providers",
+        "nested",
+        "organizations",
+        organizationId
+      );
+      expect(
+        await readFile(path.join(organizationFolder, kept[0]!), "utf8")
+      ).toBe(JSON.stringify({ token: "" }));
+    }
+  );
+
   // 자리 표시를 쓰다 실패해도 조직 폴더에 임시 파일을 남기지 않는다(#280 리뷰 2회차 STD-2).
   it("leaves no temporary file in the organization folder when writing the stand-in fails", async () => {
     const root = await folders.make("babojubot-file-login-");
