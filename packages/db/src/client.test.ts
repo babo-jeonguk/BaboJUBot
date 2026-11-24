@@ -1155,14 +1155,44 @@ async function runningPostgresIn(
   }
 }
 
-/** 시험이 서버(`url`)에 `ask`로 묻는다. 연결과 묻기를 합쳐 `limitMs` 안에 끝나지 않으면 `what`으로 실패한다. */
+/**
+ * 시험이 서버(`url`)에 `ask`로 묻는다. 연결과 묻기를 합쳐 `limitMs` 안에 끝나지 않으면 `what`으로 실패하고, 성공·실패 모두 그 연결을
+ * 끝내고 끝난 것을 확인한다(CODING_STANDARDS 「정리」). 상한이 거절만 하면 연결 시도나 묻기가 그대로 돌아 연결이 남는다.
+ * 연결의 소켓은 시험이 만든다(pg 설정 `stream`, `@types/pg` `ConnectionConfig.stream`). pg의 `end()`는 답 없는 질의가 있으면 소켓을
+ * 닫지만 연결 중에는 정중히 끝내며 상대의 끝을 기다리므로(pg 8.23 `lib/client.js` `end`), 답을 받지 못했으면 그 소켓을 직접 끊는다.
+ * `end()`를 먼저 불러 pg가 이 끝을 예상한 끝으로 다룬다(예상하지 못한 끊김의 오류 이벤트를 내지 않는다). 끝은 `end()`의 이행(소켓의
+ * `close`)으로 본다. 제품 `withClient`는 시한을 두지 않으므로 쓰지 않는다.
+ */
 function askServer<T>(
   url: string,
   ask: (client: pg.Client) => Promise<T>,
   limitMs: number,
   what: string
 ) {
-  return within(withClient(url, ask), limitMs, what);
+  return withCleanup(async (defer) => {
+    const socket = new net.Socket();
+    const client = new pg.Client({
+      connectionString: url,
+      stream: () => socket,
+    });
+    let answered = false;
+    defer(() => {
+      const ended = client.end();
+      if (!answered) socket.destroy();
+      return within(
+        ended,
+        limitMs,
+        `${what}, and its connection did not close`
+      );
+    });
+    const answer = await within(
+      client.connect().then(() => ask(client)),
+      limitMs,
+      what
+    );
+    answered = true;
+    return answer;
+  });
 }
 
 /** 이미 잡았으면 그것, 아니면 그 폴더에 남은 것(`runningPostgresIn`). */
@@ -1208,34 +1238,35 @@ describe("the line a child reports its Postgres on", () => {
   });
 });
 
-// #288 외부 리뷰 5회차 parent 점검: 서버에 묻는 기다림의 상한이 지나면, 시험은 실패하고 그 연결도 끝나야 한다. 상한이 거절만 하고
-// 연결 시도나 묻기를 그대로 두면, 시험이 잡은 연결이 실패한 뒤에도 남는다(CODING_STANDARDS 「정리」). 연결에 답하지 않는 서버와,
-// 연결은 받았지만 묻는 말에 답하지 않는 서버(인증 끝·준비 알림만 보냄)를 시험이 띄워, 상한 뒤 그 서버 쪽에서 연결의 닫힘을 본다.
+// #288 외부 리뷰 5회차 parent 점검: 서버에 묻는 기다림의 상한이 지나면, 시험은 그 상한의 이유 하나로 실패하고 그 연결도 끝나야 한다.
+// 상한이 거절만 하고 연결 시도나 묻기를 그대로 두면, 시험이 잡은 연결이 실패한 뒤에도 남는다(CODING_STANDARDS 「정리」). 시험이 띄운
+// 서버로 세 장면을 본다. 받은 것을 읽기만 하고 답하지 않는 서버(연결 단계)와, 인증 끝·준비 알림만 보내고 묻는 말에 답하지 않는
+// 서버(묻기 단계)에서는 서버 쪽에서 연결의 닫힘을 본다. 아무것도 읽지 않는 서버(멈춘 서버)는 상대의 끝도 읽지 않아 서버 쪽에서는 닫힘을
+// 볼 수 없으므로, 묻는 쪽의 정리가 연결의 끝을 확인했는지(실패가 상한의 이유 하나뿐인지)로 본다.
 describe("asking a server with a limit", () => {
   // 인증 끝(AuthenticationOk)과 질의 준비(ReadyForQuery, idle). PostgreSQL 프로토콜 메시지 형식.
   const readyForQuery = Buffer.from([
     0x52, 0, 0, 0, 8, 0, 0, 0, 0, 0x5a, 0, 0, 0, 5, 0x49,
   ]);
-  it.each([
-    { what: "its connection", answers: false },
-    { what: "its question", answers: true },
-  ])(
-    "ends the connection when the server never answers $what",
-    async ({ answers }) => {
-      const server = net.createServer();
-      const sockets = new Set<net.Socket>();
-      const closed: Promise<void>[] = [];
-      server.on("connection", (socket) => {
-        sockets.add(socket);
-        closed.push(
-          new Promise<void>((resolve) => socket.once("close", () => resolve()))
-        );
-        // 시험이 끊는 연결은 Windows에서 재설정으로 끝난다. 그 끝은 위 `close`로 본다.
-        socket.on("error", () => socket.destroy());
-        if (answers) socket.once("data", () => socket.write(readyForQuery));
-      });
-      onTestFinished(async () => {
-        for (const socket of sockets) socket.destroy();
+
+  /** 시험이 띄운 서버. 받은 연결마다 `serve`를 부르고, 그 연결의 닫힘을 모은다. 시험이 끝나면 연결을 끊고 서버를 닫는다. */
+  async function fakeServer(serve: (socket: net.Socket) => void) {
+    const server = net.createServer();
+    const sockets = new Set<net.Socket>();
+    const closed: Promise<void>[] = [];
+    server.on("connection", (socket) => {
+      sockets.add(socket);
+      closed.push(
+        new Promise<void>((resolve) => socket.once("close", () => resolve()))
+      );
+      // 시험이 끊는 연결은 재설정으로 끝날 수 있다. 그 끝은 위 `close`로 본다.
+      socket.on("error", () => socket.destroy());
+      serve(socket);
+    });
+    // 듣기 전에 정리에 맡긴다. 듣지 못한 서버(듣기 실패)는 닫을 것이 없다(닫으면 ERR_SERVER_NOT_RUNNING으로 실패한다).
+    onTestFinished(async () => {
+      for (const socket of sockets) socket.destroy();
+      if (server.listening)
         await within(
           new Promise<void>((resolve, reject) =>
             server.close((error) => (error ? reject(error) : resolve()))
@@ -1243,25 +1274,44 @@ describe("asking a server with a limit", () => {
           10_000,
           "the fake server did not close"
         );
-      });
-      await within(
-        new Promise<void>((resolve, reject) => {
-          server.once("error", reject);
-          server.listen(0, "127.0.0.1", () => resolve());
-        }),
-        10_000,
-        "the fake server did not start listening"
-      );
-      const { port } = server.address() as net.AddressInfo;
+    });
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolve());
+      }),
+      10_000,
+      "the fake server did not start listening"
+    );
+    const { port } = server.address() as net.AddressInfo;
+    return { url: clusterUrl(port, "postgres"), closed };
+  }
 
-      await expect(
-        askServer(
-          clusterUrl(port, "postgres"),
-          (client) => client.query("select 1"),
-          500,
-          "the fake server did not answer"
-        )
-      ).rejects.toThrow("the fake server did not answer within 500 ms");
+  /** 상한 500ms로 묻고, 그 상한의 이유 하나로 실패하는지 본다(정리가 연결의 끝을 확인하지 못하면 그 실패가 함께 묶여 다르다). */
+  const asksInVain = (url: string) =>
+    expect(
+      askServer(
+        url,
+        (client) => client.query("select 1"),
+        500,
+        "the fake server did not answer"
+      )
+    ).rejects.toThrow(
+      new Error("the fake server did not answer within 500 ms")
+    );
+
+  it.each([
+    { what: "its connection", answers: false },
+    { what: "its question", answers: true },
+  ])(
+    "ends the connection when the server never answers $what",
+    async ({ answers }) => {
+      const { url, closed } = await fakeServer((socket) => {
+        if (answers) socket.once("data", () => socket.write(readyForQuery));
+        else socket.resume();
+      });
+
+      await asksInVain(url);
 
       expect(closed).toHaveLength(1);
       await within(
@@ -1271,6 +1321,14 @@ describe("asking a server with a limit", () => {
       );
     }
   );
+
+  it("ends the connection when the server reads nothing at all", async () => {
+    const { url, closed } = await fakeServer(() => {});
+
+    await asksInVain(url);
+
+    expect(closed).toHaveLength(1);
+  });
 });
 
 // 남은 Postgres를 끄는 정리는 한 대상의 신호가 실패해도 다른 대상에 신호를 보내고 끝나기를 기다린 뒤, 그 실패를 함께 알린다

@@ -231,6 +231,24 @@ async function lateReadyLine(
         })
       )
     );
+    // 서버는 듣기를 시작하기 전에 정리에 맡긴다: 듣기를 기다리는 상한이 지나 거절돼도 서버가 남지 않는다. 서버는 받은 연결이 모두
+    // 끝나야 닫히므로, 받은 연결을 먼저 끊고 닫는다(한 단계). 듣지 못한 서버(듣기 실패)는 닫을 것이 없다(닫으면
+    // ERR_SERVER_NOT_RUNNING으로 실패한다).
+    defer(async () => {
+      for (const socket of sockets) socket.destroy();
+      if (server.listening)
+        await within(
+          new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve()))
+          ),
+          limitMs,
+          "the test's server did not close"
+        );
+      if (socketFailure !== undefined)
+        throw new Error("the connection with the descendant failed", {
+          cause: socketFailure,
+        });
+    });
     await within(
       new Promise<void>((resolve, reject) => {
         server.once("error", reject);
@@ -239,21 +257,6 @@ async function lateReadyLine(
       limitMs,
       "the test's server did not start listening"
     );
-    // 서버는 받은 연결이 모두 끝나야 닫히므로, 받은 연결을 먼저 끊고 닫는다(한 단계).
-    defer(async () => {
-      for (const socket of sockets) socket.destroy();
-      await within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        ),
-        limitMs,
-        "the test's server did not close"
-      );
-      if (socketFailure !== undefined)
-        throw new Error("the connection with the descendant failed", {
-          cause: socketFailure,
-        });
-    });
     const { port } = server.address() as AddressInfo;
     // 프로그램은 자손을 띄운 즉시 그 번호를 오류 출력에 한 줄로 남긴다. 자손의 끝은 띄운 쪽이 알린 이 번호로 확인한다(연결과 무관).
     const child = spawn(
@@ -290,16 +293,17 @@ async function lateReadyLine(
     });
     const ready = awaitedLater(readyLine(child));
     // 상한은 AbortSignal.timeout이 진다(가짜 시계와 무관). 끝내라고 하기 전에 기다리기 시작한다.
-    const exited = once(child, "exit", {
-      signal: AbortSignal.timeout(limitMs),
-    }).catch((error: unknown) => {
-      throw new Error(
-        `the program did not exit within ${limitMs} ms after it was told to`,
-        {
-          cause: error,
-        }
-      );
-    });
+    const deadline = AbortSignal.timeout(limitMs);
+    const exited = once(child, "exit", { signal: deadline }).catch(
+      (error: unknown) => {
+        // 시한이 지나 거절된 때만 그 이유를 붙인다. 자식의 `error` 이벤트처럼 다른 실패는 원래 오류 그대로 넘긴다.
+        if (!deadline.aborted) throw error;
+        throw new Error(
+          `the program did not exit within ${limitMs} ms after it was told to`,
+          { cause: error }
+        );
+      }
+    );
     child.stdin!.write("exit\n");
     await exited;
     vi.advanceTimersByTime(5_000);
