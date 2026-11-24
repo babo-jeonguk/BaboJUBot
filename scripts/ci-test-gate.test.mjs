@@ -1232,6 +1232,8 @@ test("the install guard follows the modules NODE_OPTIONS preloads, from the env 
     "third.mjs": 'import "picomatch";\n',
   }))
     writeFileSync(path.join(base, "scripts", file), text);
+  /** @typedef {{ workflowEnv?: Record<string, string>, jobEnv?: Record<string, string>, stepEnv?: Record<string, string>, run: string, before?: { run: string }[] }} Shape */
+  /** @param {Shape} shape */
   const flow = ({ workflowEnv, jobEnv, stepEnv, run, before = [] }) => ({
     ...(workflowEnv ? { env: workflowEnv } : {}),
     jobs: {
@@ -1246,7 +1248,7 @@ test("the install guard follows the modules NODE_OPTIONS preloads, from the env 
   const third =
     "judge: scripts/third.mjs imports picomatch without pnpm install before it";
   const run = "node scripts/first.mjs";
-  for (const shape of [
+  for (const shape of /** @type {Shape[]} */ ([
     { jobEnv: { NODE_OPTIONS: "--import=./scripts/second.mjs" }, run },
     { workflowEnv: { NODE_OPTIONS: "--import ./scripts/second.mjs" }, run },
     { stepEnv: { NODE_OPTIONS: "-r ./scripts/second.mjs --no-warnings" }, run },
@@ -1256,7 +1258,7 @@ test("the install guard follows the modules NODE_OPTIONS preloads, from the env 
       jobEnv: { NODE_OPTIONS: "--import ./scripts/second.mjs" },
       run,
     },
-  ])
+  ]))
     assert.deepEqual(
       installProblems(flow(shape), base),
       [second],
@@ -1306,7 +1308,7 @@ test("the install guard follows the modules NODE_OPTIONS preloads, from the env 
   );
   const unread = (reason) =>
     `judge: cannot tell what NODE_OPTIONS makes node load (${reason}), and no pnpm install comes before it`;
-  for (const [shape, reason] of [
+  for (const [shape, reason] of /** @type {[Shape, string][]} */ ([
     [
       { jobEnv: { NODE_OPTIONS: "${{ vars.NODE_OPTIONS }}" }, run },
       'NODE_OPTIONS "${{ vars.NODE_OPTIONS }}" holds an expression',
@@ -1338,7 +1340,7 @@ test("the install guard follows the modules NODE_OPTIONS preloads, from the env 
       { jobEnv: { NODE_OPTIONS: '--import "./scripts/second.mjs"' }, run },
       'NODE_OPTIONS "--import "./scripts/second.mjs"" has a part it cannot read',
     ],
-  ])
+  ]))
     assert.deepEqual(
       installProblems(flow(shape), base),
       [unread(reason)],
