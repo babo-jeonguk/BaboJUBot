@@ -2,12 +2,56 @@ import { existsSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { destinationSchema, type Destination } from "@babojubot/contracts";
 import { createRelayHub, type RelayHooks } from "./relay.ts";
 
 // 격리 실행의 중계(#149). 컨테이너에는 네트워크가 없고, 실행 시도마다 연 파일 소켓으로만 바깥과 조직 도구에 닿는다.
 // 여기서는 컨테이너 쪽 대신 시험이 그 소켓에 직접 붙는다. 금지 목적지는 실제 listener가 연결을 받지 않았는지까지 본다.
+
+// 허용된 목적지로 붙는 연결(`relay.ts` `dial`의 `net.connect`)을 정한 오류로 실패시킨다. 이 시스템의 포트·주소 설정과 상관없이
+// 같은 실패를 만든다. `refuse`가 정한 포트로 오는 연결만 대역하고 불린 주소·포트를 `dialed`에 남긴다. 그 밖의 연결(시험이 띄운
+// listener, 중계의 파일 소켓)은 실제 `net.connect`로 간다.
+const connecting = vi.hoisted(() => ({
+  refuse: undefined as { port: number; code: string } | undefined,
+  dialed: vi.fn(),
+}));
+vi.mock("node:net", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:net")>();
+  const passThrough = real.connect as (...args: unknown[]) => net.Socket;
+  const connect = ((...args: unknown[]) => {
+    const [options] = args;
+    const refuse = connecting.refuse;
+    if (
+      refuse &&
+      typeof options === "object" &&
+      options !== null &&
+      "host" in options &&
+      "port" in options &&
+      options.port === refuse.port
+    ) {
+      const { host, port } = options;
+      connecting.dialed({ host, port });
+      const socket = new real.Socket();
+      const failure = Object.assign(
+        new Error(`connect ${refuse.code} ${String(host)}:${refuse.port}`),
+        { code: refuse.code, syscall: "connect" }
+      );
+      process.nextTick(() => socket.destroy(failure));
+      return socket;
+    }
+    return passThrough(...args);
+  }) as typeof real.connect;
+  return {
+    ...real,
+    connect,
+    default: { ...real, connect },
+  };
+});
+afterEach(() => {
+  connecting.refuse = undefined;
+  connecting.dialed.mockReset();
+});
 
 const destination = (value: unknown): Destination =>
   destinationSchema.parse(value);
@@ -689,10 +733,37 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(warned).not.toHaveBeenCalled();
   });
 
-  // 연결 실패의 원인은 그 연결이 실제로 받은 오류 코드다. 이름(`localhost`)으로 붙으면 이 컴퓨터의 이름 풀이와 IPv6 설정에 따라
-  // 시도하는 주소와 마지막 오류(ECONNREFUSED·EADDRNOTAVAIL)가 달라진다(#286 항목 14). 이름 풀이 없이 IPv4 주소 하나로 붙어, 듣는
-  // 곳이 없는 loopback 포트의 연결 거절(ECONNREFUSED)을 모든 시스템에서 같은 원인으로 받는다. 이름 풀이의 실패 원인은
-  // egress-policy.test.ts가 풀이 함수를 넣어 본다.
+  // 연결 실패의 원인은 그 연결이 실제로 받은 오류 코드다(#286 항목 14). 연결 경계에 정한 오류를 넣어, 이 시스템의 이름 풀이·IPv6
+  // 설정과 상관없이 중계가 확인한 주소·포트로 붙고 그 오류 코드를 그대로 남기며 502로 답하는지 본다. 실제 연결에서 나오지 않는
+  // 코드(EHOSTUNREACH)를 넣어, 다른 실패가 끼어들면 드러나게 한다. 이름 풀이의 실패 원인은 egress-policy.test.ts가 풀이 함수를 넣어 본다.
+  it("answers 502 and leaves the code the connection failed with, dialing only the checked address and port", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const port = 40_123;
+    connecting.refuse = { port, code: "EHOSTUNREACH" };
+    const { relays } = hub();
+    const relay = relays.open({
+      identity,
+      required: [
+        destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
+      ],
+    });
+    await relay.ready;
+    const answer = await connectVia(relay.directory, `127.0.0.1:${port}`);
+    answer.socket.destroy();
+    expect(answer.head).toMatch(/^HTTP\/1\.1 502 /);
+    expect(connecting.dialed.mock.calls).toEqual([
+      [{ host: "127.0.0.1", port }],
+    ]);
+    expect(warned.mock.calls).toEqual([
+      [
+        "[provider] the relay could not connect to an allowed destination; it answered 502 (EHOSTUNREACH)",
+      ],
+    ]);
+  });
+
+  // 실제 연결로도 본다. 듣는 곳이 없는 loopback 포트(잠깐 열어 번호를 받고 닫음)는 모든 시스템에서 연결 거절(ECONNREFUSED)이다.
+  // 닫은 뒤 다른 프로그램이 그 번호를 잡으면 이 시험은 실패할 뿐 잘못 통과하지 않는다.
   it("answers 502 and leaves the code the connection failed with when it cannot connect to an allowed destination", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
