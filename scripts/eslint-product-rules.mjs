@@ -1870,6 +1870,99 @@ const functionNodeTypes = new Set([
 ]);
 
 /**
+ * 경로 목록 하위 명령(ls-files·ls-tree·diff 계열·log·show·status)의 옵션 중 값을 받지 않는 것(각 명령의 git 문서: 값이 없거나 값을
+ * 붙여서만 받는 선택 값 옵션). 값을 받는 옵션은 다음 낱말을 값으로 받을 수 있다(gitcli: 필수 값을 받는 긴 옵션은 `--opt value`도
+ * 된다, 짧은 옵션은 `-x value`). 그래서 `-z` 바로 앞 옵션이 이 목록에 없으면 그 `-z`는 값일 수 있다.
+ */
+const gitValueFreeOptions = new Set([
+  // ls-files
+  "-c",
+  "--cached",
+  "-d",
+  "--deleted",
+  "-m",
+  "--modified",
+  "-o",
+  "--others",
+  "-i",
+  "--ignored",
+  "-s",
+  "--stage",
+  "-u",
+  "--unmerged",
+  "-k",
+  "--killed",
+  "--directory",
+  "--no-empty-directory",
+  "--eol",
+  "--exclude-standard",
+  "--error-unmatch",
+  "--recurse-submodules",
+  "--deduplicate",
+  "--full-name",
+  "--sparse",
+  "--resolve-undo",
+  "-t",
+  "-v",
+  "-f",
+  // ls-tree
+  "-r",
+  "-l",
+  "--long",
+  "--name-only",
+  "--name-status",
+  "--object-only",
+  "--full-tree",
+  // diff 계열·log·show
+  "--no-renames",
+  "--staged",
+  "--merge-base",
+  "--raw",
+  "-p",
+  "--patch",
+  "--no-patch",
+  "--stat",
+  "--numstat",
+  "--shortstat",
+  "--summary",
+  "-M",
+  "--find-renames",
+  "-C",
+  "--find-copies",
+  "-R",
+  "--no-color",
+  "--binary",
+  "--full-index",
+  "--no-ext-diff",
+  "--no-textconv",
+  "-w",
+  "--ignore-all-space",
+  "--relative",
+  "-a",
+  "--text",
+  "--no-prefix",
+  "--root",
+  "--first-parent",
+  "--no-merges",
+  "--merges",
+  "--reverse",
+  "--all",
+  "--oneline",
+  "--no-walk",
+  // status
+  "--porcelain",
+  "--short",
+  "-b",
+  "--branch",
+  "--untracked-files",
+  "--renames",
+  "--ahead-behind",
+  "--no-ahead-behind",
+  "--show-stash",
+  "--long",
+]);
+
+/**
  * git 인수(`{ value }`는 글자, `{ unknown }`은 모르는 인수)를 판정한다: 경로 목록을 -z 없이 읽으면 `{ command }`, 하위 명령을
  * 모르면(전역 옵션 뒤 첫 인수가 모르는 값) `{ unjudged: true }`, 아니면 undefined. 경로 목록: `ls-files`, `ls-tree`, diff 계열·`log`·
  * `show`의 `--name-only`·`--name-status`, `status`의 `--porcelain`·`--short`·`-s`. -z는 따로 적거나 짧은 옵션 묶음(`-sz`)에 든다.
@@ -1885,9 +1978,15 @@ function gitPathListWithoutNul(parts) {
   }
   const command = parts[at];
   if (!command || "unknown" in command) return { unjudged: true };
-  const flags = parts
-    .slice(at + 1)
-    .flatMap((part) => ("value" in part ? [part.value] : []));
+  // 옵션 끝(`--`) 뒤는 경로다.
+  const afterCommand = parts.slice(at + 1);
+  const end = afterCommand.findIndex(
+    (part) => "value" in part && part.value === "--"
+  );
+  const options = end === -1 ? afterCommand : afterCommand.slice(0, end);
+  const flags = options.flatMap((part) =>
+    "value" in part ? [part.value] : []
+  );
   const has = (...names) =>
     flags.some((flag) =>
       names.some((name) => flag === name || flag.startsWith(`${name}=`))
@@ -1896,6 +1995,25 @@ function gitPathListWithoutNul(parts) {
     flags.some((flag) =>
       new RegExp(`^-[A-Za-z]*${letter}[A-Za-z]*$`).test(flag)
     );
+  /** `-z`(짧은 옵션 묶음 포함)가 옵션으로 쓰였는가: "yes", 바로 앞 옵션의 값일 수 있으면 "maybe", 없으면 "no". */
+  const nul = () => {
+    let found = "no";
+    options.forEach((part, index) => {
+      if (!("value" in part) || !/^-[A-Za-z]*z[A-Za-z]*$/.test(part.value))
+        return;
+      const before = options[index - 1];
+      const free =
+        index === 0 ||
+        ("value" in before &&
+          (!before.value.startsWith("-") ||
+            before.value.includes("=") ||
+            gitValueFreeOptions.has(before.value) ||
+            /^-[A-Za-z]*z[A-Za-z]*$/.test(before.value)));
+      if (free) found = "yes";
+      else if (found === "no") found = "maybe";
+    });
+    return found;
+  };
   const lists =
     command.value === "ls-files" ||
     command.value === "ls-tree" ||
@@ -1903,7 +2021,10 @@ function gitPathListWithoutNul(parts) {
       has("--name-only", "--name-status")) ||
     (command.value === "status" &&
       (has("--porcelain", "--short") || short("s")));
-  return lists && !short("z") ? { command: command.value } : undefined;
+  if (!lists) return undefined;
+  const z = nul();
+  if (z === "maybe") return { unjudged: true };
+  return z === "no" ? { command: command.value } : undefined;
 }
 
 /**
