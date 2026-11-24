@@ -95,13 +95,7 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   const port = testClusterPort();
   const admin = clusterUrl(port, "postgres");
   const name = `test_${randomUUID().replaceAll("-", "")}`;
-  await askServer(
-    admin,
-    (client) =>
-      client.query(`create database ${name} template ${templateName}`),
-    60_000,
-    `the test cluster did not create ${name}`
-  );
+  await createDatabase(admin, name, templateName, 60_000);
   const drop = () =>
     askServer(
       admin,
@@ -124,6 +118,21 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
     // 연결 닫기가 실패해도 DB를 지우고, 둘 다 실패하면 둘 다 알린다.
     close: () => attemptAll([() => handle.close(), drop]),
   };
+}
+
+/** 서버(`admin`)에 DB `name`을 `template`에서 만든다(`askServer`). */
+export async function createDatabase(
+  admin: string,
+  name: string,
+  template: string,
+  limitMs: number
+) {
+  await askServer(
+    admin,
+    (client) => client.query(`create database ${name} template ${template}`),
+    limitMs,
+    `the test cluster did not create ${name}`
+  );
 }
 
 /**
