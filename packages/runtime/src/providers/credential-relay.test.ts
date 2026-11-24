@@ -712,6 +712,12 @@ describe("the credential relay's per-connection differences (#148)", () => {
         upstreamPath: "/v1/rejected",
         fixed: { authorization: "Bearer public" },
       },
+      {
+        method: "POST",
+        path: "/free/stream",
+        upstreamPath: "/v1/stream",
+        fixed: { authorization: "Bearer public" },
+      },
     ],
     authorize: (credential) => {
       const login = JSON.parse(credential) as {
@@ -870,6 +876,30 @@ describe("the credential relay's per-connection differences (#148)", () => {
     grant.revoke();
     expect((await send(url, grant.token, "/free/responses")).status).toBe(401);
     expect(up.seen).toHaveLength(2);
+  });
+
+  // 고정 값 경로는 거르개 없이 상류 답을 그대로 넘긴다. 상류 끊김 하나는 원인 하나로 남는다(#290 3회차 SPEC-5).
+  it("leaves why once when the upstream resets an answer it was streaming on a fixed-value route", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const stream = await send(url, relay.grant(scope()).token, "/free/stream");
+    const reader = stream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+      "first"
+    );
+    up.streams[0]!.socket!.resetAndDestroy();
+    await expect(
+      (async () => {
+        for (;;) if ((await reader.read()).done) return "ended";
+      })()
+    ).rejects.toThrow();
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] an upstream answer broke off in the credential relay (ECONNRESET)",
+    ]);
   });
 
   it("finds the run's grant in x-api-key when the program keeps a public key in Authorization, and sends neither upstream", async () => {
