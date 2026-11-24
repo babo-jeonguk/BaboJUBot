@@ -345,6 +345,16 @@ export function describeRuntimeContract(
         owner.markReturned();
         tools.onRequest.delete(markWorking);
       });
+      // 시험이 어디서 끝나든(단언 실패·시한 초과 포함) 실행 시도를 취소하고 돌아오기를 취소 시한 안에서 확인한다. 돌아오지 않은 실행
+      // 시도가 다음 시험까지 돌며 프로그램·도구 호출을 남기지 않게 한다. 늦은 활동 확인(위 등록)보다 먼저 돈다(등록 역순).
+      onTestFinished(async () => {
+        controller.abort();
+        await within(
+          settled(result),
+          cancelWithinMs,
+          "did not return after the test ended and cancelled it"
+        );
+      });
       /**
        * 일을 시작했다는 신호를 `startWithinMs` 안에 기다린다. 준비가 끝난 뒤에 취소·완료 시한을 재려고 쓴다. 신호 없이 끝나면
        * 그 뒤의 시한이 아무것도 재지 못하므로 기다리지 않고 실패한다(완료를 시작으로 치면 완료 시한이 준비 상한에 묻힌다).
@@ -637,10 +647,21 @@ export function describeRuntimeContract(
         onTestFinished(() => {
           expect(lateProblems(owner)).toEqual([]);
         });
+        const controller = new AbortController();
+        const checking = runAs(owner, () =>
+          adapter.checkReadiness(controller.signal)
+        ).finally(() => owner.markReturned());
+        // 시한을 넘기거나 단언이 실패해도 준비 확인을 취소하고 돌아오기를 취소 시한 안에서 확인한다(등록 역순으로 늦은 활동 확인보다 먼저).
+        onTestFinished(async () => {
+          controller.abort();
+          await within(
+            settled(checking),
+            cancelWithinMs,
+            "did not return from the readiness check after the test ended and cancelled it"
+          );
+        });
         const result = await within(
-          runAs(owner, () =>
-            adapter.checkReadiness(new AbortController().signal)
-          ).finally(() => owner.markReturned()),
+          checking,
           readinessWithinMs,
           "did not check readiness"
         );
