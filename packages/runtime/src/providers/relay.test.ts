@@ -640,6 +640,68 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(refused).toEqual([]);
   });
 
+  // 목적지가 넘길 답 없이 요청을 닫으면(요청하지 않은 101 Switching Protocols 등) 그 끝도 알린다. 요청자에는 502로 답하고 연결
+  // 등록을 놓는다(#296 외부 리뷰 1회차 SPEC-1). 어떤 이유로 닫혔든 같은 끝이다.
+  it("answers 502, leaves why and lets go of the connection when a plain HTTP destination closes the request without an answer", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const answering: net.Socket[] = [];
+    const server = net.createServer((socket) => {
+      answering.push(socket);
+      socket.once("data", () =>
+        socket.write(
+          "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\n\r\n"
+        )
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          for (const socket of answering) socket.destroy();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    const { relays, refused, setResearch } = hub();
+    setResearch([
+      destination({
+        host: "localhost",
+        port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        socketPath: path.join(relay.directory, "egress.sock"),
+        path: `http://localhost:${port}/page`,
+        agent: false,
+      });
+      // 답이 오지 않는 결함이 시험 시간 초과로 번지지 않게 한다.
+      req.setTimeout(10_000, () =>
+        reject(new Error("the relay did not answer within 10 s"))
+      );
+      req.on("response", (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(status).toBe(502);
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the relay could not forward a request to an allowed destination; it answered 502 (closed_without_answer)",
+    ]);
+    // 놓은 연결은 정책이 줄어도 다시 거둘 것이 없다.
+    setResearch([]);
+    await relays.revalidate(identity.organizationId);
+    expect(refused).toEqual([]);
+  });
+
   // 요청자가 답을 다 받기 전에 떠난 것은 답이다. 원인을 남기지 않고, 목적지 쪽 연결도 닫아 정리한다.
   it("closes the destination side without a warning when the requester leaves mid-answer", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});

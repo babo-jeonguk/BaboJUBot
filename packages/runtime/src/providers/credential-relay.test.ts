@@ -13,7 +13,7 @@ import {
 import { relayIdentityHeaders } from "./relay.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { attemptAll } from "@babojubot/contracts";
-import { permissionDenial } from "@babojubot/process/test-support";
+import { permissionDenial, within } from "@babojubot/process/test-support";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
 
@@ -402,6 +402,48 @@ describe("the credential relay", () => {
     ).rejects.toThrow();
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
       "[provider] an upstream answer broke off in the credential relay (HPE_INVALID_CHUNK_SIZE)",
+    ]);
+  });
+
+  // 상류가 넘길 답 없이 요청을 닫으면(요청하지 않은 101 Switching Protocols 등) 그 끝도 알린다. 프로그램에는 502로 답한다
+  // (#296 외부 리뷰 1회차 SPEC-1). 어떤 이유로 닫혔든 같은 끝이다.
+  it("answers 502 and leaves why when the upstream closes the request without an answer", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const answering: net.Socket[] = [];
+    const switching = net.createServer((socket) => {
+      answering.push(socket);
+      socket.once("data", () =>
+        socket.write(
+          "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\n\r\n"
+        )
+      );
+    });
+    await new Promise<void>((resolve) =>
+      switching.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          for (const socket of answering) socket.destroy();
+          switching.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (switching.address() as net.AddressInfo).port;
+    const { relay, url } = await setup({
+      through: async (up) => `http://127.0.0.1:${port}${new URL(up).pathname}`,
+    });
+    const response = await within(
+      send(url, relay.grant(scope()).token),
+      10_000,
+      "the relay's answer"
+    );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: { code: "relay_upstream_failed" },
+    });
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the credential relay could not reach the upstream; it answered 502 (closed_without_answer)",
     ]);
   });
 
