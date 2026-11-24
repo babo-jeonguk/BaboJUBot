@@ -26,6 +26,8 @@ if (scriptFile === undefined)
     "usage: codex-peer.synthetic.mjs <script.json> [arguments...]"
   );
 const script = JSON.parse(readFileSync(scriptFile, "utf8"));
+/** 붙잡은 답을 풀어 주는 파일이 놓이는 폴더(스크립트 옆). */
+const scriptFolder = path.dirname(scriptFile);
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 /** 요청 이름별로 받은 수. 이름은 상대가 보낸 프레임에서 오므로 일반 객체 대신 Map에 센다. */
 const seen = new Map();
@@ -45,7 +47,7 @@ function serve() {
     seen.set(frame.method, index + 1);
     const step = steps[Math.min(index, steps.length - 1)];
     if (step.holdUntil) {
-      const release = path.join(path.dirname(scriptFile), step.holdUntil);
+      const release = path.join(scriptFolder, step.holdUntil);
       while (!existsSync(release)) await new Promise((r) => setTimeout(r, 10));
     }
     if (step.delayMs) await new Promise((r) => setTimeout(r, step.delayMs));
