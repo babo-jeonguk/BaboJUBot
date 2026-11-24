@@ -2,13 +2,21 @@
 // 비동기다, Node 문서 process `A note on process I/O`). 4MB를 쓰고 바로 끝낸 자식에서 부모가 받은 것은 146176바이트였다
 // (#286, PR #287 같은 모양 수색의 PR 4 그룹 몫). 스크립트는 `process.exit(await afterOutput(code))`로 쓴 출력이 모두 닿은 뒤 끝낸다.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { within } from "@babojubot/process/test-support";
 
 // 같은 폴더의 도움을 URL로 바로 푼다. URL의 pathname은 퍼센트 인코딩된 글이라 파일 경로나 다른 파일 URL의 재료가 아니다.
 const helper = new URL("./exit-after-output.ts", import.meta.url).href;
@@ -73,4 +81,39 @@ test("runs from a checkout path holding a space and a percent sign", (context) =
   );
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /# pass 1/);
+});
+
+// 출력을 다 쓰지 못하면 성공 코드(0)로 끝내지 않고 1로 끝내며, 0이 아닌 코드는 그대로 둔다(#292 외부 리뷰 1회차 권고). 부모가 자식
+// 표준 출력의 읽는 쪽을 먼저 닫아 쓰기가 EPIPE로 실패하게 한다. 자식은 신호(표준 입력)를 받은 뒤에야 쓴다.
+test("hands back 1 instead of 0, and keeps any other code, when the output cannot be written", async (context) => {
+  const folder = mkdtempSync(path.join(tmpdir(), "exit-after-output-pipe-"));
+  context.after(() => removeFolder(folder));
+  const driver = path.join(folder, "driver.mjs");
+  writeFileSync(
+    driver,
+    `import { afterOutput } from ${JSON.stringify(helper)};
+process.stdin.once("data", async () => {
+  process.stdout.write("x".repeat(${1 << 20}));
+  const code = await afterOutput(Number(process.argv[2]));
+  process.stderr.write("handed back " + code + "\\n");
+  process.exit(code);
+});
+`
+  );
+  for (const [asked, expected] of [
+    [0, 1],
+    [3, 3],
+  ] as const) {
+    const child = spawn(process.execPath, [driver, String(asked)], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => (stderr += String(chunk)));
+    const exited = once(child, "exit");
+    child.stdout.destroy();
+    child.stdin.write("go\n");
+    const [code] = await within(exited, 60_000, "the driver did not end");
+    assert.equal(code, expected, stderr);
+    assert.match(stderr, new RegExp(`^handed back ${expected}$`, "m"));
+  }
 });
