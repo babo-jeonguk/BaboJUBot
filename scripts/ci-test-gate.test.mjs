@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { globSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  globSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -856,4 +862,30 @@ function installProblems(workflow, base) {
 // @babojubot/contracts). 스크립트의 가져오기를 구문 트리로 따라가, 패키지가 필요하면 그 단계 앞에 설치가 있어야 한다.
 test("a job installs the packages before it runs a repository script that imports them", () => {
   assert.deepEqual(installProblems(workflow, root), []);
+});
+
+// 한 단계가 여러 스크립트를 돌리면 모두 본다. 따라갈 수 없는 불러오기(글자가 아닌 import() 등)는 "패키지 없음"으로 접지 않고 멈춘다
+// (#291 parent 점검의 같은 모양 수색).
+test("the install guard reads every script a step runs and fails on an import it cannot follow", (t) => {
+  const base = mkdtempSync(path.join(tmpdir(), "babojubot-install-guard-"));
+  t.after(() => removeFolder(base));
+  mkdirSync(path.join(base, "scripts"));
+  for (const [file, text] of Object.entries({
+    "first.mjs": 'import "node:path";\n',
+    "second.mjs": 'import "yaml";\n',
+    "computed.mjs": 'const name = "yaml";\nawait import(name);\n',
+  }))
+    writeFileSync(path.join(base, "scripts", file), text);
+  const job = (run) => ({ jobs: { judge: { steps: [{ run }] } } });
+  assert.deepEqual(
+    installProblems(
+      job("node scripts/first.mjs\nnode scripts/second.mjs"),
+      base
+    ),
+    ["judge: scripts/second.mjs imports yaml without pnpm install before it"]
+  );
+  assert.throws(
+    () => installProblems(job("node scripts/computed.mjs"), base),
+    /scripts\/computed\.mjs loads a module through import\(\) with a name that is not a string literal/
+  );
 });
