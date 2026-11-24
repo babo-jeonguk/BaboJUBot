@@ -348,7 +348,9 @@ export function describeRuntimeContract(
           atReturn = {
             started: programCount() - firstProgram,
             programs: programCount(),
-            running: programsFrom(firstProgram).filter((p) => !p.ended).length,
+            running: programsFrom(firstProgram).filter(
+              (p) => p.state !== "ended"
+            ).length,
           };
         });
       /**
