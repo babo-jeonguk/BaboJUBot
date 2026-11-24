@@ -1163,6 +1163,37 @@ test("git path lists are read with -z, judged by the syntax tree of the call", a
     }
 });
 
+// 하위 명령을 읽지 못한 git 호출은 "경로 목록 아님"으로 접지 않고 판정할 수 없다고 보고한다(#291 parent 점검: 풀지 못함을 건너뜀으로
+// 접지 않는다). 하위 명령이 글자가 아닌 것, 인수를 넘기는 감싸기를 내보내거나 값으로 넘기거나 이름 없이 넘겨 부르는 자리를 따라갈 수 없는 것.
+test("a git call whose subcommand the rule cannot read is reported, not passed as no path list", async () => {
+  const place = "scripts/provider-live.mjs";
+  for (const code of [
+    'const command = "ls-files";\nexecFileSync("git", [command, "--others"]);\n',
+    'const command = "ls-files";\nexecSync(`git ${command} --others`);\n',
+    'execFileSync("git", process.argv.slice(2));\n',
+    'export function git(...args) {\n  return execFileSync("git", args);\n}\n',
+    'const git = (...args) => execFileSync("git", args);\nexport { git };\n',
+    'const git = (...args) => execFileSync("git", args);\nuse(git);\n',
+    'use((...args) => execFileSync("git", args));\n',
+    'const git = (...args) => execFileSync("git", args);\nconst words = ["ls-files"];\ngit(...words);\n',
+  ]) {
+    const found = await lint(childProcess + code, place, gitListRule);
+    assert.equal(found.length, 1, code);
+    assert.match(found[0]?.message ?? "", /판정할 수 없습니다/, code);
+  }
+  // 부르는 자리가 모두 같은 파일에 있고 글자로 하위 명령을 넘기면 판정한다. 아무도 부르지 않는 감싸기는 실행되지 않는다.
+  for (const code of [
+    'const git = (...args) => execFileSync("git", args);\ngit("rev-parse", "HEAD");\n',
+    'const git = (...args) => execFileSync("git", args);\n',
+    'execFileSync("git", ["-C", process.cwd(), "rev-parse", "HEAD"]);\n',
+  ])
+    assert.deepEqual(
+      await lint(childProcess + code, place, gitListRule),
+      [],
+      code
+    );
+});
+
 test("git calls are found by where the launch comes from, not by its name", async () => {
   const place = "scripts/provider-live.mjs";
   for (const code of [
