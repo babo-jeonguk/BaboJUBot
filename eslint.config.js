@@ -218,9 +218,25 @@ export default defineConfig([
     },
   },
   {
-    // 경로에 NUL이 없음을 뜻하는 정규식은 NUL을 일부러 담는다. 그 정규식 하나만 담은 파일에서만 끈다(packages/contracts/src/nul-free.ts).
+    // 경로에 NUL이 없음을 뜻하는 정규식은 NUL을 일부러 담는다. 그 정규식 하나만 담은 파일에서만 no-control-regex를 끄고, 그 파일이
+    // 그 선언 하나만 담는지는 product/nul-free-file-shape가 구문 트리로 막는다(예외가 다른 정규식을 덮지 않는다).
     files: ["packages/contracts/src/nul-free.ts"],
-    rules: { "no-control-regex": "off" },
+    plugins: { product: productRules },
+    rules: {
+      "no-control-regex": "off",
+      "product/nul-free-file-shape": "error",
+    },
+  },
+  {
+    // git 경로 목록은 -z로 읽는다(#286 항목 31). 제품 코드·스크립트·agent 도구·시험 어디서든 줄 단위 목록은 특별한 이름을 다른 경로로 읽는다.
+    files: [
+      ...productFiles,
+      ...scriptFiles,
+      ...testFiles,
+      `.agents/**/*.${codeFormats}`,
+    ],
+    plugins: { product: productRules },
+    rules: { "product/git-path-list-nul": "error" },
   },
   {
     // check-test-exit-code.mjs가 vitest를 --globals로 돌려 넣는 이름(일부러 실패하는 시험).

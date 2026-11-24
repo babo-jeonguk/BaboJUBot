@@ -1,20 +1,17 @@
 #!/usr/bin/env node
 // Checks a code worker's uncommitted change so the parent can decide whether to accept it. The files a worker may
-// not edit come from .opencode/agents/dev-worker.md, so the permission and this check cannot drift.
+// not edit come from their definition (protected-files.ts), judged by path pieces. It does not reuse the OpenCode
+// permissions: OpenCode's `*` crosses `/`, and a check that read the same rules would miss what they let through.
 // Contract: docs/agents/worker.md.
 //
 // usage: node .agents/scripts/check-worker-change.ts --base <sha> --allow <pattern>...
 //          --reported <file>... --test <command>...
 //
-// `*` in a pattern matches any characters, `/` included, as in OpenCode permissions.
+// `*` in an --allow pattern matches any characters, `/` included, as in OpenCode permissions.
 // Exit codes: 0 no problem found; 1 problem found; 2 usage.
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-  editRules,
-  isProtected,
-  matcher,
-  type EditRule,
-} from "./worker-permissions.ts";
+import { protectedReason } from "./protected-files.ts";
+import { matcher } from "./worker-permissions.ts";
 
 const USAGE =
   "usage: check-worker-change.ts --base <sha> --allow <pattern>... --reported <file>... --test <command>...";
@@ -77,20 +74,11 @@ function changedFiles(root: string, base: string) {
       .filter(Boolean);
   return [
     ...new Set([
-      ...list("diff", "--name-only", "--no-renames", "-z", base),
-      ...list("diff", "--cached", "--name-only", "--no-renames", "-z", base),
-      ...list("ls-files", "--others", "--exclude-standard", "-z"),
+      ...list("diff", "-z", "--name-only", "--no-renames", base),
+      ...list("diff", "-z", "--cached", "--name-only", "--no-renames", base),
+      ...list("ls-files", "-z", "--others", "--exclude-standard"),
     ]),
   ].sort();
-}
-
-// Read from the base commit: the change under review must not decide what it may change.
-function baseEditRules(root: string, base: string): EditRule[] {
-  const rules = editRules(
-    git(root, "show", `${base}:.opencode/agents/dev-worker.md`)
-  );
-  if (!rules) fail(["dev-worker.md has no frontmatter"]);
-  return rules;
 }
 
 function runTest(root: string, command: string) {
@@ -124,7 +112,6 @@ const head = git(root, "rev-parse", "HEAD").trim();
 const base = git(root, "rev-parse", `${options.base}^{commit}`).trim();
 if (head !== base) fail([`HEAD moved from ${base} to ${head}`]);
 
-const rules = baseEditRules(root, base);
 const allowed = options.allow.map(matcher);
 const reported = new Set(options.reported);
 
@@ -133,7 +120,8 @@ function checkChange() {
   if (files.length === 0) fail(["no files changed"]);
   const reasons = files.flatMap((file) => {
     const found: string[] = [];
-    if (isProtected(rules, file)) found.push(`protected file changed: ${file}`);
+    const reason = protectedReason(file);
+    if (reason) found.push(`protected file changed: ${file} (${reason})`);
     else if (!allowed.some((pattern) => pattern.test(file)))
       found.push(`outside the brief: ${file}`);
     if (!reported.has(file)) found.push(`changed but not reported: ${file}`);

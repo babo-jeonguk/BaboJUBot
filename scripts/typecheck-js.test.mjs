@@ -56,10 +56,10 @@ test("an area moved to TypeScript has no JS file", () => {
   const javaScript = git(
     root,
     "ls-files",
+    "-z",
     "--cached",
     "--others",
-    "--exclude-standard",
-    "-z"
+    "--exclude-standard"
   )
     .split("\0")
     .filter((file) => file && isJavaScript(file));
@@ -116,10 +116,10 @@ test("every JS file in the repository is type-checked", () => {
   const javaScript = git(
     root,
     "ls-files",
+    "-z",
     "--cached",
     "--others",
-    "--exclude-standard",
-    "-z"
+    "--exclude-standard"
   )
     .split("\0")
     .filter((file) => file && isJavaScript(file));
@@ -138,10 +138,10 @@ test("a JS file added anywhere in a package or app is type-checked by exactly on
   for (const config of git(
     root,
     "ls-files",
+    "-z",
     "--cached",
     "--others",
-    "--exclude-standard",
-    "-z"
+    "--exclude-standard"
   )
     .split("\0")
     .filter(isTypeScriptConfig)) {

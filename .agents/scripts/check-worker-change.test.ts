@@ -157,7 +157,8 @@ test("reports a deleted test", (t) => {
   assertProblem(result, /protected file changed: src\/a\.test\.ts/);
 });
 
-test("judges protected files by the base commit's permissions", (t) => {
+// The after-check does not read the permissions, so a change that loosens them cannot loosen the check either.
+test("does not let a change to the worker's permissions loosen what it may change", (t) => {
   const repo = repository(t);
   write(
     repo.cwd,
@@ -170,6 +171,38 @@ test("judges protected files by the base commit's permissions", (t) => {
     reported: [".opencode/agents/dev-worker.md", "src/a.test.ts"],
   });
   assertProblem(result, /protected file changed: src\/a\.test\.ts/);
+});
+
+// 사후 확인은 OpenCode 권한을 흉내 내지 않고 보호할 파일의 정의(설정 이름·시험 파일·비밀 파일)를 경로 조각으로 판정한다. OpenCode의
+// `*`는 `/`를 넘어 권한이 다시 연 폴더 안의 실제 설정을 놓칠 수 있고, 같은 판정기를 쓰면 사후 확인도 똑같이 놓친다(#286 항목 27).
+test("judges protected files by their names, not by OpenCode's patterns", (t) => {
+  const repo = repository(
+    t,
+    fs.readFileSync(
+      path.join(import.meta.dirname, "../../.opencode/agents/dev-worker.md"),
+      "utf8"
+    )
+  );
+  write(repo.cwd, "src/vitest.d/eslint.config.js", "export default [];\n");
+  write(repo.cwd, "src/tsconfig-tools/tsconfig.json", "{}\n");
+  write(repo.cwd, "src/vitest-tools/config.ts", "export const a = 1;\n");
+  const result = check(repo, {
+    allow: ["src/*"],
+    reported: [
+      "src/tsconfig-tools/tsconfig.json",
+      "src/vitest-tools/config.ts",
+      "src/vitest.d/eslint.config.js",
+    ],
+  });
+  // 다시 연 폴더 안의 실제 설정 둘은 보고하고, 설정 이름이 아닌 파일은 보고하지 않는다.
+  assert.deepEqual(
+    [result.status, result.output],
+    [
+      1,
+      "problem: protected file changed: src/tsconfig-tools/tsconfig.json (check setting)\n" +
+        "problem: protected file changed: src/vitest.d/eslint.config.js (check setting)\n",
+    ]
+  );
 });
 
 test("reports a staged change that the working tree no longer shows", (t) => {

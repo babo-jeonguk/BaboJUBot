@@ -573,11 +573,11 @@ test("other modules reach runtime and the process package only through their lis
       `import { openLifelines } from "@babojubot/runtime/lifelines";\nvoid openLifelines;\n`,
     ],
     [
-      ".agents/scripts/run-worker.mjs",
+      ".agents/scripts/run-worker.ts",
       `export { removeFolder } from "@babojubot/runtime/remove-folder";\n`,
     ],
     [
-      ".agents/scripts/run-worker.mjs",
+      ".agents/scripts/run-worker.ts",
       `import { holdsLease } from "@babojubot/process/recovery";\nvoid holdsLease;\n`,
     ],
     [
@@ -764,7 +764,7 @@ test("other workspace packages are imported only through their exported entries"
       `const { withClient } = await import("../../packages/db/src/client.ts");\nvoid withClient;\n`,
     ],
     [
-      ".agents/scripts/run-worker.mjs",
+      ".agents/scripts/run-worker.ts",
       `export { attemptAll } from "../../packages/contracts/src/failure.ts";\n`,
     ],
     [
@@ -1090,4 +1090,196 @@ test("every product rule that judges by origin sees its value through every acce
         );
     }
   assert.deepEqual(wrong, []);
+});
+
+// git이 경로 목록을 줄 단위로 내면 줄바꿈·따옴표·탭·ASCII 밖 글자가 든 이름을 따옴표로 감싸 이스케이프한다(core.quotePath). 그 출력을
+// 줄로 나누면 그런 이름을 다른 경로로 읽는다(#285 외부 리뷰의 자동 검사 후보, #286 항목 31). 경로 목록을 내는 하위 명령은 -z로
+// NUL 구분 목록을 받는다. 글자가 아니라 구문 트리로 본다: child_process에서 온 실행(이름을 바꿔 가져오거나 모듈 객체로 불러도), git
+// 인수를 그대로 넘기는 같은 파일의 감싸기 함수(나머지 인자·배열 인자, 감싸기를 다시 감싼 함수), 셸 명령 글.
+const gitListRule = ["product/git-path-list-nul"];
+const gitListPlaces = [
+  "scripts/provider-live.mjs",
+  ".agents/scripts/run-worker.ts",
+  "scripts/gh-post.test.mjs",
+  ".agents/scripts/worker-permissions.test.ts",
+  "packages/process/src/ps.ts",
+];
+const childProcess = `import { execFileSync, execSync, spawnSync } from "node:child_process";\n`;
+/**
+ * 경로 목록을 -z 없이 읽는 모양과, 같은 모양에 -z를 하위 명령 바로 다음에 둔 것. 옵션을 git처럼 해석하지 않는다: 하위 명령 바로 다음의
+ * `-z`만 NUL 목록으로 인정한다(#291 정리).
+ */
+const gitLists = [
+  [
+    'execFileSync("git", ["ls-files"]);',
+    'execFileSync("git", ["ls-files", "-z"]);',
+  ],
+  // 늘 경로를 내는 하위 명령은 -z가 하위 명령 바로 다음에 없으면 보고한다.
+  [
+    'execFileSync("git", ["ls-files", "--others", "-z"]);',
+    'execFileSync("git", ["ls-files", "-z", "--others"]);',
+  ],
+  [
+    'execFileSync("git", ["ls-files", "--", "-z"]);',
+    'execFileSync("git", ["ls-files", "-z", "--", "-z"]);',
+  ],
+  [
+    'execFileSync("git", ["ls-tree", "--name-only", "-r", "HEAD"]);',
+    'execFileSync("git", ["ls-tree", "-z", "--name-only", "-r", "HEAD"]);',
+  ],
+  // 조건부 하위 명령은 경로 목록 옵션(긴 옵션의 앞부분 포함)이 있으면 보고한다.
+  [
+    'spawnSync("git", ["diff", "--name-only", "origin/main"]);',
+    'spawnSync("git", ["diff", "-z", "--name-only", "origin/main"]);',
+  ],
+  [
+    'execFileSync("git", ["-c", "core.quotePath=false", "diff", "--name-status", "HEAD"]);',
+    'execFileSync("git", ["-c", "core.quotePath=false", "diff", "-z", "--name-status", "HEAD"]);',
+  ],
+  [
+    'execFileSync("git", ["-C", "repo", "status", "--porcelain"]);',
+    'execFileSync("git", ["-C", "repo", "status", "-z", "--porcelain"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "--porcelain=v2"]);',
+    'execFileSync("git", ["status", "-z", "--porcelain=v2"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "-s"]);',
+    'execFileSync("git", ["status", "-z", "-s"]);',
+  ],
+  [
+    'execFileSync("git", ["status", "--porcelain", "-z"]);',
+    'execFileSync("git", ["status", "-z", "--porcelain"]);',
+  ],
+  [
+    'execFileSync("git", ["diff", "--name-o", "HEAD"]);',
+    'execFileSync("git", ["diff", "-z", "--name-o", "HEAD"]);',
+  ],
+  [
+    'execSync("git ls-files --others");',
+    'execSync("git ls-files -z --others");',
+  ],
+  [
+    'const git = (...args) => execFileSync("git", args);\ngit("ls-files", "--others");',
+    'const git = (...args) => execFileSync("git", args);\ngit("ls-files", "-z", "--others");',
+  ],
+  [
+    'function git(root, ...args) {\n  return execFileSync("git", ["-C", root, ...args]);\n}\nconst list = (...args) => git(".", ...args);\nlist("diff", "--name-only");',
+    'function git(root, ...args) {\n  return execFileSync("git", ["-C", root, ...args]);\n}\nconst list = (...args) => git(".", ...args);\nlist("diff", "-z", "--name-only");',
+  ],
+  [
+    'function output(root, args) {\n  return spawnSync("git", args, { cwd: root });\n}\noutput(".", ["ls-files"]);',
+    'function output(root, args) {\n  return spawnSync("git", args, { cwd: root });\n}\noutput(".", ["ls-files", "-z"]);',
+  ],
+];
+
+test("git path lists are read with -z, judged by the syntax tree of the call", async () => {
+  for (const place of gitListPlaces)
+    for (const [reported, kept] of gitLists) {
+      const found = await lint(childProcess + reported, place, gitListRule);
+      assert.equal(found.length, 1, `${place}: ${reported}`);
+      assert.deepEqual(
+        [found[0]?.ruleId, found[0]?.messageId],
+        ["product/git-path-list-nul", "missing"],
+        `${place}: ${reported}`
+      );
+      assert.deepEqual(
+        await lint(childProcess + kept, place, gitListRule),
+        [],
+        `${place}: ${kept}`
+      );
+    }
+});
+
+// 하위 명령을 읽지 못한 git 호출은 "경로 목록 아님"으로 접지 않고 판정할 수 없다고 보고한다(#291 parent 점검: 풀지 못함을 건너뜀으로
+// 접지 않는다). 하위 명령이 글자가 아닌 것, 인수를 넘기는 감싸기를 내보내거나 값으로 넘기거나 이름 없이 넘겨 부르는 자리를 따라갈 수 없는 것.
+// 조건부 하위 명령에서 -z가 하위 명령 바로 다음에 없으면서 글자가 아닌 인수·짧은 옵션 묶음·`--no-…`가 있는 것(#291 정리).
+test("a git call whose subcommand or options the rule cannot read is reported, not passed as no path list", async () => {
+  const place = "scripts/provider-live.mjs";
+  for (const code of [
+    'const command = "ls-files";\nexecFileSync("git", [command, "--others"]);\n',
+    'const command = "ls-files";\nexecSync(`git ${command} --others`);\n',
+    'execFileSync("git", process.argv.slice(2));\n',
+    'export function git(...args) {\n  return execFileSync("git", args);\n}\n',
+    'const git = (...args) => execFileSync("git", args);\nexport { git };\n',
+    'const git = (...args) => execFileSync("git", args);\nuse(git);\n',
+    'use((...args) => execFileSync("git", args));\n',
+    'const git = (...args) => execFileSync("git", args);\nconst words = ["ls-files"];\ngit(...words);\n',
+    'execFileSync("git", ["status", "-bs"]);\n',
+    'execFileSync("git", ["diff", "--no-renames", "--name-only"]);\n',
+    'execFileSync("git", ["log", "--name-only", process.argv[2]]);\n',
+    "execSync(`git status --porcelain ${process.argv[2]}`);\n",
+  ]) {
+    const found = await lint(childProcess + code, place, gitListRule);
+    assert.equal(found.length, 1, code);
+    assert.deepEqual(
+      [found[0]?.ruleId, found[0]?.messageId],
+      ["product/git-path-list-nul", "unjudged"],
+      code
+    );
+  }
+  // 하위 명령 바로 다음의 -z, 경로 목록 옵션이 없는 조건부 하위 명령, 경로 목록이 아닌 하위 명령, 아무도 부르지 않는 감싸기.
+  for (const code of [
+    'const git = (...args) => execFileSync("git", args);\ngit("rev-parse", "HEAD");\n',
+    'const git = (...args) => execFileSync("git", args);\n',
+    'execFileSync("git", ["-C", process.cwd(), "rev-parse", "HEAD"]);\n',
+    'execFileSync("git", ["diff", "-z", "--name-only", process.argv[2]]);\n',
+    'execFileSync("git", ["status", "-z", "--porcelain", "--no-renames"]);\n',
+    'execFileSync("git", ["diff", "--stat", "HEAD"]);\n',
+  ])
+    assert.deepEqual(
+      await lint(childProcess + code, place, gitListRule),
+      [],
+      code
+    );
+});
+
+// 지난 외부 리뷰의 반례는 옵션을 해석하지 않아도 모두 보고되거나 판정할 수 없다(#291 외부 리뷰 2~5회차 SPEC-4).
+test("past counterexamples to the git option reading are all reported", async () => {
+  const place = "scripts/provider-live.mjs";
+  for (const [args, messageId] of [
+    ['["ls-files", "-x", "-z"]', "missing"],
+    ['["ls-files", "-xz"]', "missing"],
+    ['["ls-files", "-sxz"]', "missing"],
+    ['["status", "--porcelain", "-uz"]', "unjudged"],
+    ['["status", "--porcelain", "-z", "--no-null"]', "unjudged"],
+    ['["status", "--porcelain", "--null", "--no-null"]', "unjudged"],
+    ['["status", "--porcelain", "--nu"]', "missing"],
+    ['["log", "--name-only", "--author", "-z"]', "missing"],
+    [
+      '["log", "--grep", "--end-of-options", "--name-only", "--format="]',
+      "missing",
+    ],
+  ]) {
+    const code = `${childProcess}execFileSync("git", ${args});\n`;
+    assert.deepEqual(
+      (await lint(code, place, gitListRule)).map((found) => [
+        found.ruleId,
+        found.messageId,
+      ]),
+      [["product/git-path-list-nul", messageId]],
+      args
+    );
+  }
+});
+
+test("git calls are found by where the launch comes from, not by its name", async () => {
+  const place = "scripts/provider-live.mjs";
+  for (const code of [
+    'import { execFileSync as run } from "node:child_process";\nrun("git", ["ls-files"]);\n',
+    'import cp from "node:child_process";\ncp.spawnSync("git", ["status", "--short"]);\n',
+    'import * as cp from "child_process";\ncp.execFileSync("git", ["log", "--name-only"]);\n',
+  ])
+    assert.equal((await lint(code, place, gitListRule)).length, 1, code);
+  for (const code of [
+    // 경로 목록이 아닌 하위 명령.
+    `${childProcess}execFileSync("git", ["rev-parse", "--show-toplevel"]);\n`,
+    `${childProcess}execFileSync("git", ["merge-base", "HEAD", "origin/main"]);\n`,
+    `${childProcess}execFileSync("git", ["status"]);\n`,
+    // child_process에서 오지 않은 같은 이름의 함수, git이 아닌 프로그램.
+    `const execFileSync = (...args) => args;\nexecFileSync("git", ["ls-files"]);\n`,
+    `${childProcess}execFileSync("ls", ["ls-files"]);\n`,
+  ])
+    assert.deepEqual(await lint(code, place, gitListRule), [], code);
 });

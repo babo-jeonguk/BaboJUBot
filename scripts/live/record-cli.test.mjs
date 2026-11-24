@@ -99,9 +99,8 @@ function recordCli(defer, args, env = {}) {
   child.stderr.on("data", (chunk) => (stderr += chunk));
   // 시작 실패(`error`)와 출력 오류는 기다리기 전에 올 수 있다. 그 거절은 `ended()`·`firstLine()`이나 정리가 받는다.
   const exited = awaitedLater(once(child, "exit"));
-  const stdoutEnded = awaitedLater(once(child.stdout, "end"));
   const outputEnded = awaitedLater(
-    Promise.all([stdoutEnded, once(child.stderr, "end")])
+    Promise.all([once(child.stdout, "end"), once(child.stderr, "end")])
   );
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
@@ -122,7 +121,7 @@ function recordCli(defer, args, env = {}) {
     /** 표준 출력의 첫 줄. 줄 없이 출력이 끝나면 더 기다리지 않는다. 상한 안에 둘 다 오지 않으면 그렇게 알리고 실패한다. */
     firstLine: async () => {
       await within(
-        Promise.race([line.promise, stdoutEnded]),
+        Promise.race([line.promise, outputEnded]),
         runMs,
         "record-cli did not print an output line or end its output"
       );

@@ -43,7 +43,7 @@ const relative = (root, file) =>
 function repositoryFiles(root) {
   return execFileSync(
     "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
     {
       cwd: root,
       encoding: "utf8",
