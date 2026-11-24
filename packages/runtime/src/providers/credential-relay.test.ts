@@ -71,6 +71,11 @@ async function upstream() {
       res.end();
       return;
     }
+    // 상류가 답하기 전에 연결을 끊는다(TCP RST). 프로그램은 아직 답을 기다린다.
+    if (req.url?.startsWith("/base/v1/reset")) {
+      req.socket.resetAndDestroy();
+      return;
+    }
     if (req.url?.startsWith("/base/v1/redirect")) {
       res.writeHead(302, { location: "https://elsewhere.invalid/" });
       res.end();
@@ -220,6 +225,7 @@ const profile = (url: string): RelayProfile => ({
     { method: "POST", path: "/v1/messages" },
     { method: "POST", path: "/v1/stream" },
     { method: "POST", path: "/v1/redirect" },
+    { method: "POST", path: "/v1/reset" },
     { method: "POST", path: "/v1/rejected" },
     { method: "POST", path: "/v1/unchanged" },
     { method: "POST", path: "/v1/echo-header" },
@@ -318,6 +324,79 @@ describe("the credential relay", () => {
     expect(warned).toHaveBeenCalledWith(
       expect.stringContaining("(ECONNREFUSED)")
     );
+  });
+
+  // 상류가 끊은 것은 상류 장애다. 프로그램이 떠나거나 실행이 취소되어 중계가 끊은 것과 같은 오류 코드(ECONNRESET)여도 원인을
+  // 남긴다(#286 항목 4).
+  it("answers 502 and leaves why when the upstream resets the connection while the program still waits", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { relay, url } = await setup();
+    const grant = relay.grant(scope());
+    const response = await send(url, grant.token, "/v1/reset");
+    expect(response.status).toBe(502);
+    await response.body?.cancel();
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the credential relay could not reach the upstream; it answered 502 (ECONNRESET)",
+    ]);
+  });
+
+  it("leaves why when the upstream resets an answer it was streaming", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { up, relay, url } = await setup();
+    const grant = relay.grant(scope());
+    const stream = await send(url, grant.token, "/v1/stream");
+    const reader = stream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+      "first"
+    );
+    up.streams[0]!.socket!.resetAndDestroy();
+    await expect(
+      (async () => {
+        for (;;) if ((await reader.read()).done) return "ended";
+      })()
+    ).rejects.toThrow();
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] an upstream answer broke off in the credential relay (ECONNRESET)",
+    ]);
+  });
+
+  // 중계가 스스로 상류 요청을 끊은 것(프로그램이 떠남·실행 취소)은 답이다. 상류 장애로 남기지 않는다.
+  it("leaves no upstream failure when it cuts the upstream itself, because the program hung up or the run was cancelled", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { up, relay, url } = await setup();
+    const hangingUp = new AbortController();
+    const stream = await fetch(`${url}/v1/stream`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${relay.grant(scope()).token}` },
+      body: "{}",
+      signal: hangingUp.signal,
+    });
+    const reader = stream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+      "first"
+    );
+    hangingUp.abort();
+    await expect.poll(() => up.closed, settles).toEqual(["/base/v1/stream"]);
+    const cancel = new AbortController();
+    const cancelled = await send(
+      url,
+      relay.grant(scope(cancel.signal)).token,
+      "/v1/stream"
+    );
+    const cancelledReader = cancelled.body!.getReader();
+    expect(
+      new TextDecoder().decode((await cancelledReader.read()).value)
+    ).toContain("first");
+    cancel.abort();
+    await expect
+      .poll(() => up.closed, settles)
+      .toEqual(["/base/v1/stream", "/base/v1/stream"]);
+    // 판정 시점: 그 뒤 보낸 요청이 상류의 답까지 받은 다음. 두 끊김의 처리는 그보다 먼저 끝났다.
+    expect(await statusOf(url, relay.grant(scope()).token, "after")).toBe(200);
+    expect(warned).not.toHaveBeenCalled();
   });
 
   it("sends an allowed request to the fixed upstream with the real credential in place of the run's grant, and returns no cookie", async () => {
@@ -447,6 +526,8 @@ describe("the credential relay", () => {
   });
 
   it("never returns the injected credential to the program when the upstream echoes it in a header, an error body or across stream chunks", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
     const { up, relay, url } = await setup();
     const grant = relay.grant(scope());
     const header = await send(url, grant.token, "/v1/echo-header");
@@ -464,6 +545,11 @@ describe("the credential relay", () => {
     );
     expect(stream.text).not.toContain("real-a");
     expect(stream.cut).toBe(true);
+    // 본문에서 찾은 반향마다 거르개가 멈춘 까닭을 한 번 남긴다(머리의 반향은 본문을 넘기기 전에 거부한다).
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the credential relay stopped passing an upstream answer (credential_echoed)",
+      "[provider] the credential relay stopped passing an upstream answer (credential_echoed)",
+    ]);
     // 상류의 반향은 로그인 거부가 아니다. 연결은 그대로 쓴다.
     expect(relay.failed()).toBe(false);
     expect((await send(url, grant.token)).status).toBe(200);
@@ -633,6 +719,12 @@ describe("the credential relay's per-connection differences (#148)", () => {
         upstreamPath: "/v1/rejected",
         fixed: { authorization: "Bearer public" },
       },
+      {
+        method: "POST",
+        path: "/free/stream",
+        upstreamPath: "/v1/stream",
+        fixed: { authorization: "Bearer public" },
+      },
     ],
     authorize: (credential) => {
       const login = JSON.parse(credential) as {
@@ -791,6 +883,30 @@ describe("the credential relay's per-connection differences (#148)", () => {
     grant.revoke();
     expect((await send(url, grant.token, "/free/responses")).status).toBe(401);
     expect(up.seen).toHaveLength(2);
+  });
+
+  // 고정 값 경로는 거르개 없이 상류 답을 그대로 넘긴다. 상류 끊김 하나는 원인 하나로 남는다(#290 3회차 SPEC-5).
+  it("leaves why once when the upstream resets an answer it was streaming on a fixed-value route", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { up, relay, url } = await setup({
+      profile: documentProfile,
+      credential: async () => document(),
+    });
+    const stream = await send(url, relay.grant(scope()).token, "/free/stream");
+    const reader = stream.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+      "first"
+    );
+    up.streams[0]!.socket!.resetAndDestroy();
+    await expect(
+      (async () => {
+        for (;;) if ((await reader.read()).done) return "ended";
+      })()
+    ).rejects.toThrow();
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] an upstream answer broke off in the credential relay (ECONNRESET)",
+    ]);
   });
 
   it("finds the run's grant in x-api-key when the program keeps a public key in Authorization, and sends neither upstream", async () => {
@@ -1118,37 +1234,52 @@ describe("the credential relay with runs that overlap (#148)", () => {
 });
 
 describe("login residue in an organization's product folder", () => {
-  it("counts a regular file or folder as residue, and a link as residue unless it is the known link to the connection's login", async () => {
+  // 남음·없음·확인하지 못함을 따로 돌려준다. 확인하지 못한 것을 "남은 로그인"으로 접으면 판정(격리 실행을 시작하지 않음)은
+  // 같아도 사용자가 보는 이유가 틀린다(#286).
+  it("tells a login left as a file, folder or foreign link from none, and from a place it cannot look into", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
     onTestFinished(() => removeFolder(root));
     const login = path.join(root, "connection/login/auth.json");
-    expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+    expect(await credentialResidue(root, ["auth.json"], login)).toEqual({
+      state: "none",
+    });
     // 연결의 로그인 원본을 가리키는 링크는 컨테이너 안에서 비어 있다.
     await symlink(login, path.join(root, "auth.json"));
-    expect(await credentialResidue(root, ["auth.json"], login)).toBe(false);
+    expect(await credentialResidue(root, ["auth.json"], login)).toEqual({
+      state: "none",
+    });
     // 알려진 원본이 없는 프로그램에서는 어떤 링크도 안전하다고 볼 수 없다.
-    expect(await credentialResidue(root, ["auth.json"])).toBe(true);
+    expect(await credentialResidue(root, ["auth.json"])).toEqual({
+      state: "left",
+    });
     // 컨테이너 안에서 닿을 수 있는 다른 곳을 가리키는 링크는 남은 로그인이다.
     await mkdir(path.join(root, "copy"));
     await symlink(
       path.join(root, "copy/auth.json"),
       path.join(root, "other.json")
     );
-    expect(await credentialResidue(root, ["other.json"], login)).toBe(true);
+    expect(await credentialResidue(root, ["other.json"], login)).toEqual({
+      state: "left",
+    });
     await mkdir(path.join(root, "config"));
     await writeFile(path.join(root, "config/.credentials.json"), "{}");
     expect(
       await credentialResidue(root, ["auth.json", "config/.credentials.json"])
-    ).toBe(true);
-    // 상위 칸이 폴더가 아니면(파일·FIFO) 그 안을 확인할 수 없다. 없는 것과 달리 남은 로그인으로 본다(#280 리뷰 1회차 STD-1).
+    ).toEqual({ state: "left" });
+    // 상위 칸이 폴더가 아니면(파일·FIFO) 그 안을 확인할 수 없다. 없는 것도 남은 것도 아니다(#280 리뷰 1회차 STD-1).
     await writeFile(path.join(root, "file"), "");
-    expect(await credentialResidue(root, ["file/auth.json"], login)).toBe(true);
+    expect(await credentialResidue(root, ["file/auth.json"], login)).toEqual({
+      state: "unverified",
+      reason: "path_unverifiable",
+    });
   });
 
   // 폴더 권한으로 읽기를 막는다. root는 권한을 넘고, Windows는 POSIX 권한 비트로 읽기를 막지 않는다.
   it.skipIf(process.platform === "win32" || !permissionDenial())(
-    "counts a path it cannot inspect as residue",
+    "reports a path it cannot read as unverified, and leaves why",
     async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
       const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
       // 막은 권한을 되돌린 뒤에 폴더를 지운다.
       onTestFinished(async () => {
@@ -1157,26 +1288,10 @@ describe("login residue in an organization's product folder", () => {
       });
       await mkdir(path.join(root, "locked"));
       await chmod(path.join(root, "locked"), 0o000);
-      expect(await credentialResidue(root, ["locked/auth.json"])).toBe(true);
-    }
-  );
-
-  it.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
-    "leaves why it could not inspect a path it counts as residue",
-    async () => {
-      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-      onTestFinished(() => warned.mockRestore());
-      const root = await mkdtemp(path.join(tmpdir(), "babojubot-relay-"));
-      onTestFinished(async () => {
-        await chmod(path.join(root, "locked"), 0o700);
-        await removeFolder(root);
-      });
-      await mkdir(path.join(root, "locked"));
-      await chmod(path.join(root, "locked"), 0o000);
       const login = path.join(root, "connection/login/auth.json");
-      expect(await credentialResidue(root, ["locked/auth.json"], login)).toBe(
-        true
-      );
+      expect(
+        await credentialResidue(root, ["locked/auth.json"], login)
+      ).toEqual({ state: "unverified", reason: "unreadable" });
       expect(warned).toHaveBeenCalledWith(expect.stringContaining("(EACCES)"));
     }
   );

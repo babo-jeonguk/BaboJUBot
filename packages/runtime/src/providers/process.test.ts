@@ -1,13 +1,41 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { probeEnding, runProbe, startProcess } from "./process.ts";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { killAndWait } from "@babojubot/process/testing";
 import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
 import { manualClock } from "@babojubot/process/test-support";
 import { testFolders } from "./test-folders.ts";
+
+/**
+ * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
+ * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
+ */
+const tree = vi.hoisted(() => ({
+  run: undefined as undefined | (() => unknown),
+}));
+vi.mock("@babojubot/process", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@babojubot/process")>();
+  return {
+    ...real,
+    runTree: (...args: Parameters<typeof real.runTree>) =>
+      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+  };
+});
+/** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
+const stoppedBySignal = () => ({
+  started: true,
+  code: null,
+  signal: "SIGKILL",
+  stdout: Buffer.alloc(0),
+  stderr: Buffer.alloc(0),
+  stopped: "limit",
+});
+afterEach(() => {
+  tree.run = undefined;
+});
 
 const folders = testFolders();
 const alive = processAlive;
@@ -199,7 +227,21 @@ describe("runProbe", () => {
   // 끈 이유(시한·취소)와 끝낸 신호는 원인이다. 일반 문구("killed")로 접지 않는다(#264 외부 리뷰 4회차 STD-3).
   it("stops a program that outlives its limit and names the limit as the cause", async () => {
     await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toSatisfy(
-      (error) => probeEnding(error) === "stopped: limit"
+      // 끄기 순서는 SIGTERM → 유예 → SIGKILL이다(packages/process/supervisor/src/unix.rs `end_tree`). 이 프로그램은 SIGTERM을
+      // 다루지 않아 그 기본 동작으로 SIGTERM이 닿는 순간 끝난다. 그래서 POSIX에서는 SIGTERM으로 정해져 있다. Windows는 신호 없이
+      // 끝난다. 예전 기대는 신호를 버린 문구를 고정했다(#286 리뷰 1회차 STD-2).
+      (error) =>
+        probeEnding(error) ===
+        (process.platform === "win32"
+          ? "stopped: limit"
+          : "stopped: limit, signal SIGTERM")
+    );
+  });
+
+  it("names both why a program was stopped and the signal that ended it", async () => {
+    tree.run = stoppedBySignal;
+    await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toSatisfy(
+      (error) => probeEnding(error) === "stopped: limit, signal SIGKILL"
     );
   });
 
@@ -249,7 +291,9 @@ describe("runProbe", () => {
       const pid = Number(readFileSync(ready, "utf8"));
       controller.abort();
       await expect(probing).rejects.toSatisfy(
-        (error) => probeEnding(error) === "stopped: aborted"
+        // 이 프로그램은 SIGTERM을 무시하므로 유예 뒤의 SIGKILL로만 끝난다(packages/process/supervisor/src/unix.rs `end_tree`).
+        // 예전 기대는 신호를 버린 문구를 고정했다(#286 리뷰 1회차 STD-2).
+        (error) => probeEnding(error) === "stopped: aborted, signal SIGKILL"
       );
       expect(alive(pid)).toBe(false);
     },

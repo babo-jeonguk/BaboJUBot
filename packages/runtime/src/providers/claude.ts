@@ -48,10 +48,10 @@ import { connectionFolders } from "./folders.ts";
 import {
   createCredentialRelay,
   credentialResidue,
+  residueRefusalFor,
   type CredentialRelay,
   type RelayGrant,
   type RelayProfile,
-  residueRefusal,
 } from "./credential-relay.ts";
 import { removeAttemptFolder } from "./attempt-folder.ts";
 
@@ -335,11 +335,12 @@ async function executeClaude(
   const env = connection.environment(home, Boolean(placement.container));
   await mkdir(home, { recursive: true, mode: 0o700 });
   // 격리 실행에는 연결의 로그인을 넣지 않는다. 조직 폴더에 로그인이 남아 있으면 컨테이너가 읽을 수 있으므로 시작하지 않는다.
-  if (placement.container && (await credentialResidue(home, credentialFiles)))
-    return {
-      ...failed(),
-      error: residueRefusal,
-    };
+  if (placement.container) {
+    const refusal = residueRefusalFor(
+      await credentialResidue(home, credentialFiles)
+    );
+    if (refusal !== undefined) return { ...failed(), error: refusal };
+  }
   // 컨테이너에서는 조직의 제품 폴더가 그 조직의 같은 연결 에이전트 컨테이너에 모두 들어가므로, 토큰이 든 이 실행 시도의 파일은 그 밖에 두고 이 컨테이너에만 읽기로 넣는다.
   const temp = placement.container
     ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))

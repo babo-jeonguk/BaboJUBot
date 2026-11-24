@@ -1,4 +1,5 @@
 import { lstatSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, lstat, open, rm, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
@@ -23,7 +24,7 @@ import {
   subtractUsage,
   usageAmount,
 } from "@babojubot/contracts";
-import { openRegularFile, type Folder } from "@babojubot/files";
+import { openRegularFile, type OpenedRegularFile } from "@babojubot/files";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
@@ -46,8 +47,10 @@ import {
 import {
   createCredentialRelay,
   residueInFolder,
+  residueRefusalFor,
   type RelayGrant,
   type RelayProfile,
+  type ResidueCheck,
   residueRefusal,
 } from "./credential-relay.ts";
 import { providerDestinations } from "./destinations.ts";
@@ -184,54 +187,71 @@ const residueCopyMaxBytes = 512 * 1024 * 1024;
 /** 저장소를 개인 폴더로 복사할 때 읽는 조각. */
 const residueChunkBytes = 1024 * 1024;
 /**
- * 확인한 폴더 안의 로그인 저장소 하나를 개인 폴더로 복사한다. 없으면 `absent`, 링크·일반 파일 아님·확인 사이에 바뀐 자리·크기
- * 제한 초과면 `unsafe`다. 다 읽은 파일 핸들은 하나를 닫지 못해도 모두 닫고 원인을 남긴다.
+ * 확인한 파일 하나를 처음부터 위치를 명시해 읽어 개인 폴더 `destination`에 쓰면서 SHA-256을 계산한다.
+ * `from.info.size`나 읽은 합이 `limit`을 넘으면 `unsafe`다. `destination` handle은 이 함수가 닫고, `from`은 부르는 쪽이 닫는다.
+ * 위치를 명시해 읽으므로 handle의 현재 위치가 달라도 같은 구간을 읽는다.
  */
-async function copyResidueFile(
-  folder: Folder,
-  name: string,
+async function copyOpened(
+  from: OpenedRegularFile,
   destination: string,
   limit: number
-): Promise<{ copied: number } | "absent" | "unsafe"> {
-  const opened = await openRegularFile(folder.at(name));
-  if (opened === "missing") return "absent";
-  if (typeof opened === "string") return "unsafe";
-  const from = opened.handle;
+): Promise<{ copied: number; digest: string } | "unsafe"> {
+  if (from.info.size > limit) return "unsafe";
   let to: FileHandle | undefined;
   try {
-    if (opened.info.size > limit) return "unsafe";
     to = await open(destination, "wx", 0o600);
+    const hash = createHash("sha256");
     const buffer = Buffer.alloc(residueChunkBytes);
     let copied = 0;
     for (;;) {
-      const { bytesRead } = await from.read(buffer, 0, buffer.length);
+      const { bytesRead } = await from.handle.read(
+        buffer,
+        0,
+        buffer.length,
+        copied
+      );
       if (bytesRead === 0) break;
       copied += bytesRead;
       if (copied > limit) return "unsafe";
+      hash.update(buffer.subarray(0, bytesRead));
       await writeAll(to, buffer.subarray(0, bytesRead));
     }
-    return { copied };
+    return { copied, digest: hash.digest("hex") };
   } finally {
     const opened = to;
-    await Promise.all([
-      continueAfterFailure(
-        () => from.close(),
+    if (opened !== undefined)
+      await continueAfterFailure(
+        () => opened.close(),
         (error) =>
           console.warn(
             `[provider] a login store handle could not be closed (${failureCode(error)})`
           )
-      ),
-      opened === undefined
-        ? undefined
-        : continueAfterFailure(
-            () => opened.close(),
-            (error) =>
-              console.warn(
-                `[provider] a login store handle could not be closed (${failureCode(error)})`
-              )
-          ),
-    ]);
+      );
   }
+}
+/**
+ * 같은 handle을 위치 0부터 최대 `length` 바이트(파일이 더 짧으면 끝까지) 다시 읽어 읽은 바이트 수와 SHA-256을 돌려준다.
+ * 복사한 구간이 그대로인지 확인하는 데 쓴다. `from`은 닫지 않는다.
+ */
+async function digestOf(
+  from: OpenedRegularFile,
+  length: number
+): Promise<{ read: number; digest: string }> {
+  const hash = createHash("sha256");
+  const buffer = Buffer.alloc(residueChunkBytes);
+  let read = 0;
+  while (read < length) {
+    const { bytesRead } = await from.handle.read(
+      buffer,
+      0,
+      Math.min(buffer.length, length - read),
+      read
+    );
+    if (bytesRead === 0) break;
+    read += bytesRead;
+    hash.update(buffer.subarray(0, bytesRead));
+  }
+  return { read, digest: hash.digest("hex") };
 }
 /** 파일 핸들에 다 쓸 때까지 쓴다. */
 async function writeAll(file: FileHandle, buffer: Buffer): Promise<void> {
@@ -249,8 +269,20 @@ async function writeAll(file: FileHandle, buffer: Buffer): Promise<void> {
  * 조직의 제품 폴더에 남은 로그인 흔적이 있는가. 서버를 띄우기 전에 보므로, 그 폴더의 로그인을 읽을 수 있는
  * 컨테이너는 시작하지 않는다. 값은 읽지 않고 표의 개수만 센다. 저장소는 확인한 폴더의 handle로 열어 개인 폴더에 복사한 뒤 읽는다:
  * 링크는 따라가지 않고 FIFO에서는 기다리지 않으며, 복사본의 크기가 제한을 넘으면 남은 로그인으로 본다.
+ *
+ * DB와 WAL을 각각 한 handle로 처음부터 읽어 사본에 쓰면서 SHA-256을 계산하고, 둘 다 복사한 뒤 같은 handle로 DB 전체와 WAL의
+ * 앞부분(복사한 바이트 수만큼)을 다시 읽어 비교한다. 체크포인트가 복사 사이에 WAL의 프레임을 DB로 옮기고 WAL을 비우면, 옛 DB와
+ * 빈 WAL을 복사해 정상으로 열리지만 행을 0개로 세는 사본이 된다. DB가 그대로면 그 사이 체크포인트가 DB를 바꾸지 않았고, WAL의
+ * 앞부분이 그대로면 WAL이 재시작(새 salt의 머리로 처음부터 다시 씀)되지 않았다. 끝에 새 프레임이 붙는 것은 앞부분을 바꾸지
+ * 않으므로 같은 조직의 OpenCode가 쓰는 중이어도 통과하며, 사본을 열면 SQLite는 salt·checksum이 맞는 마지막 commit 프레임까지만
+ * 쓴다(https://www.sqlite.org/walformat.html §3 Recovery). 둘 중 하나라도 다르면 사본이 원본의 어느 한 때와도 같다고 할 수
+ * 없으므로 확인하지 못한 것으로 보고 그 이유를 돌려준다(fail closed). 체크포인트는 DB를 바꾸고
+ * (https://www.sqlite.org/fileformat2.html §4.3 Checkpoint Algorithm), WAL 재시작은 머리의 salt를 바꾼다(같은 문서
+ * §4.4 WAL Reset).
  */
-async function openCodeLoginResidue(organization: string): Promise<boolean> {
+async function openCodeLoginResidue(
+  organization: string
+): Promise<ResidueCheck> {
   return orIfProbeFailed(
     async () => {
       return await residueInFolder(
@@ -267,64 +299,129 @@ async function openCodeLoginResidue(organization: string): Promise<boolean> {
               false
             )
           )
-            return true;
+            return { state: "left" };
           const copyFolder = await mkdtemp(
             path.join(os.tmpdir(), "babojubot-opencode-residue-")
           );
           let db: DatabaseSync | undefined;
+          let main: OpenedRegularFile | undefined;
+          let wal: OpenedRegularFile | undefined;
           try {
             const copy = path.join(copyFolder, "opencode.db");
-            const main = await copyResidueFile(
-              folder,
-              "opencode.db",
-              copy,
-              residueCopyMaxBytes
+            const openedMain = await openRegularFile(folder.at("opencode.db"));
+            if (openedMain === "missing") return { state: "none" };
+            if (openedMain === "changed") {
+              console.warn(
+                "[provider] the OpenCode login store changed place while it was opened; the remaining login could not be checked"
+              );
+              return { state: "unverified", reason: "changed_while_checked" };
+            }
+            if (openedMain === "not-regular")
+              return { state: "unverified", reason: "not_regular" };
+            main = openedMain;
+            const mainCopy = await copyOpened(main, copy, residueCopyMaxBytes);
+            if (mainCopy === "unsafe")
+              return { state: "unverified", reason: "too_large" };
+            // DB 복사를 끝낸 뒤에 WAL을 연다. 시험은 이 열기 직전에 원본의 체크포인트를 일으켜, DB 다시 읽기가 그것을 잡는지 본다.
+            const openedWal = await openRegularFile(
+              folder.at("opencode.db-wal")
             );
-            if (main === "absent") return false;
-            if (main === "unsafe") return true;
-            const wal = await copyResidueFile(
-              folder,
-              "opencode.db-wal",
-              `${copy}-wal`,
-              residueCopyMaxBytes - main.copied
-            );
-            if (wal === "unsafe") return true;
+            if (openedWal === "changed") {
+              console.warn(
+                "[provider] the OpenCode login store changed place while it was opened; the remaining login could not be checked"
+              );
+              return { state: "unverified", reason: "changed_while_checked" };
+            }
+            if (openedWal === "not-regular")
+              return { state: "unverified", reason: "not_regular" };
+            let walCopy: { copied: number; digest: string } | undefined;
+            if (openedWal !== "missing") {
+              wal = openedWal;
+              const copiedWal = await copyOpened(
+                wal,
+                `${copy}-wal`,
+                residueCopyMaxBytes - mainCopy.copied
+              );
+              if (copiedWal === "unsafe")
+                return { state: "unverified", reason: "too_large" };
+              walCopy = copiedWal;
+            }
+            const mainAgain = await digestOf(main, mainCopy.copied + 1);
+            let same =
+              mainAgain.read === mainCopy.copied &&
+              mainAgain.digest === mainCopy.digest;
+            if (walCopy !== undefined && wal !== undefined) {
+              const walAgain = await digestOf(wal, walCopy.copied);
+              same =
+                same &&
+                walAgain.read === walCopy.copied &&
+                walAgain.digest === walCopy.digest;
+            }
+            if (!same) {
+              console.warn(
+                "[provider] the OpenCode login store changed while it was copied; the remaining login could not be checked"
+              );
+              return { state: "unverified", reason: "changed_while_checked" };
+            }
             db = new DatabaseSync(copy);
             for (const table of ["credential", "account", "control_account"]) {
               try {
                 const row = db
                   .prepare(`select count(*) as n from "${table}"`)
                   .get() as { n?: unknown } | undefined;
-                if (typeof row?.n === "number" && row.n > 0) return true;
+                if (typeof row?.n === "number" && row.n > 0)
+                  return { state: "left" };
               } catch (error) {
                 // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
                 if (!/no such table/i.test(String(error))) throw error;
               }
             }
-            return false;
+            return { state: "none" };
           } finally {
-            continueAfterFailure(
-              () => db?.close(),
-              (error) =>
-                console.warn(
-                  `[provider] the copied OpenCode store could not be closed (${failureCode(error)})`
-                )
-            );
-            await continueAfterFailure(
-              () => rm(copyFolder, { recursive: true, force: true }),
-              (error) =>
-                console.warn(
-                  `[provider] the copied OpenCode store folder could not be removed (${failureCode(error)})`
-                )
-            );
+            const closedMain = main;
+            const closedWal = wal;
+            await Promise.all([
+              continueAfterFailure(
+                () => db?.close(),
+                (error) =>
+                  console.warn(
+                    `[provider] the copied OpenCode store could not be closed (${failureCode(error)})`
+                  )
+              ),
+              closedMain === undefined
+                ? undefined
+                : continueAfterFailure(
+                    () => closedMain.handle.close(),
+                    (error) =>
+                      console.warn(
+                        `[provider] a login store handle could not be closed (${failureCode(error)})`
+                      )
+                  ),
+              closedWal === undefined
+                ? undefined
+                : continueAfterFailure(
+                    () => closedWal.handle.close(),
+                    (error) =>
+                      console.warn(
+                        `[provider] a login store handle could not be closed (${failureCode(error)})`
+                      )
+                  ),
+              continueAfterFailure(
+                () => rm(copyFolder, { recursive: true, force: true }),
+                (error) =>
+                  console.warn(
+                    `[provider] the copied OpenCode store folder could not be removed (${failureCode(error)})`
+                  )
+              ),
+            ]);
           }
         }
       );
     },
-    true,
+    { state: "unverified", reason: "unreadable" },
     (error) =>
       console.warn(
-        `[provider] the OpenCode login store could not be read; it counts as a remaining login (${failureCode(error)})`
+        `[provider] the OpenCode login store could not be read; the remaining login could not be checked (${failureCode(error)})`
       )
   );
 }
@@ -743,8 +840,12 @@ export function createOpenCodeProvider(options: {
           await Promise.all(copies);
         }
         // 격리 실행은 조직 폴더에 남은 로그인을 컨테이너가 읽을 수 있으므로, 서버를 띄우기 전에 확인하고 시작하지 않는다.
-        if (placement.container && (await openCodeLoginResidue(organization)))
-          return { ...failure(), error: residueRefusal };
+        if (placement.container) {
+          const refusal = residueRefusalFor(
+            await openCodeLoginResidue(organization)
+          );
+          if (refusal !== undefined) return { ...failure(), error: refusal };
+        }
         let container: ContainerLaunch | undefined;
         try {
           container = placement.container?.({
