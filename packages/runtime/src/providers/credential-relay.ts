@@ -431,48 +431,58 @@ export function createCredentialRelay(options: {
           if (!route.fixed) fail("unusable", credential);
           return deny(res, 503, "relay_unavailable");
         }
-        // 중계가 스스로 상류 요청을 끊었는지. 프로그램이 떠남·실행 취소·권한 회수로 끊은 것은 답이고,
-        // 상류에서 시작된 실패는 같은 오류 코드(ECONNRESET 등)여도 원인을 남긴다.
-        let cutByRelay = false;
-        // 상류가 답을 시작했는지. 그 뒤의 상류 오류는 답 흐름(`incoming`)이 맡는다.
-        let answered = false;
-        const inflight = {
-          destroy: () => {
-            cutByRelay = true;
-            outgoing.destroy();
-            res.destroy();
-          },
-        };
+        // 상류 요청 하나의 끝(답 전의 연결 실패, 답 중간의 끊김·형식 오류, 거르개의 멈춤, 프로그램의 떠남, 실행 취소·권한 회수)은 답
+        // 흐름 한 곳이 한 번 맡는다(`passAnswer`). 중계가 끊은 것(떠남·취소)이 먼저 알려지므로 뒤따르는 상류 오류를 상류 장애로 남기지 않는다.
+        const answer = passAnswer<"guard">(outgoing, res, (end) => {
+          done();
+          switch (end.by) {
+            // 프로그램이 끝까지 받았거나 먼저 떠났거나, 중계가 스스로 거부했거나, 실행 취소·권한 회수로 중계가 끊었다. 모두 답이다.
+            case "complete":
+            case "requester":
+            case "refused":
+            case "cancelled":
+              return;
+            case "upstream":
+              if (res.headersSent) {
+                console.warn(
+                  `[provider] an upstream answer broke off in the credential relay (${failureCode(end.error)})`
+                );
+                return;
+              }
+              console.warn(
+                `[provider] the credential relay could not reach the upstream; it answered 502 (${failureCode(end.error)})`
+              );
+              deny(res, 502, "relay_upstream_failed");
+              return;
+            // 거르개가 답에서 넣은 비밀을 찾아 멈췄다. 중계 자신의 판단이므로 늘 남긴다.
+            case "guard":
+              console.warn(
+                `[provider] the credential relay stopped passing an upstream answer (${failureCode(end.error)})`
+              );
+              return;
+            default: {
+              const unhandled: never = end;
+              throw new Error(
+                `unhandled answer end ${JSON.stringify(unhandled)}`
+              );
+            }
+          }
+        });
+        const inflight = { destroy: answer.cancel };
         state.inflight.add(inflight);
         const done = () => state.inflight.delete(inflight);
-        res.on("close", () => {
-          cutByRelay = true;
-          done();
-          outgoing.destroy();
-        });
-        outgoing.on("error", (error) => {
-          // 답이 시작된 뒤의 오류는 `incoming`이 남기고 끊는다. 여기서는 답 전의 실패만 남긴다.
-          if (answered) return;
-          if (!cutByRelay)
-            console.warn(
-              `[provider] the credential relay could not reach the upstream; it answered 502 (${failureCode(error)})`
-            );
-          done();
-          deny(res, 502, "relay_upstream_failed");
-        });
         outgoing.on("response", (incoming) => {
-          answered = true;
           const status = incoming.statusCode ?? 502;
+          // 중계가 스스로 거부하는 답(아래 넷)은 상류 답을 버리고 상류 요청을 끊는다. 거부로 먼저 끝냈으므로 그 뒤의 상류 오류가 거부를
+          // 끊지 않는다.
           if (redirects.has(status)) {
-            incoming.resume();
-            done();
+            answer.refuse();
             return deny(res, 502, "relay_redirect_refused");
           }
           // 권한을 확인한 요청이 거부됐으면 원본 로그인이 거부된 것이다. 연결을 실패로 두고 모든 권한을 거둬, 프로그램의 재시도가 상류에 닿지 않게 한다.
           // 고정 값 경로의 거부는 연결의 로그인과 상관없으므로 그대로 넘긴다.
           if (status === 401 && !route.fixed) {
-            incoming.resume();
-            done();
+            answer.refuse();
             fail("rejected", credential);
             return deny(res, 503, "relay_login_rejected");
           }
@@ -482,8 +492,7 @@ export function createCredentialRelay(options: {
             encoding !== undefined &&
             String(encoding).trim().toLowerCase() !== "identity"
           ) {
-            incoming.resume();
-            done();
+            answer.refuse();
             return deny(res, 502, "relay_response_refused");
           }
           // 주입한 비밀이 그대로 돌아오면 프로그램에 넘기지 않는다. 연결은 실패로 두지 않는다.
@@ -498,60 +507,31 @@ export function createCredentialRelay(options: {
               )
             )
           ) {
-            incoming.resume();
-            done();
+            answer.refuse();
             return deny(res, 502, "relay_response_refused");
           }
           res.writeHead(status, keep(incoming.headers, droppedResponseHeaders));
           // 본문을 막아 끊어도 프로그램이 상태와 header를 읽도록 먼저 보낸다.
           res.flushHeaders();
-          // 고정 값 경로에는 넣은 비밀이 없어 거르개를 두지 않는다. 상류 끊김·거르개 멈춤·프로그램 떠남은 먼저 끝난 흐름 하나로 한 번
-          // 알린다(같은 흐름에 처리기를 둘 붙이지 않는다).
+          // 고정 값 경로에는 넣은 비밀이 없어 거르개를 두지 않는다.
           const upstreamAnswer = { stream: incoming, by: "upstream" as const };
-          passAnswer(
+          answer.pass(
             route.fixed
               ? [upstreamAnswer]
               : [
                   upstreamAnswer,
                   { stream: echoGuard(secrets), by: "guard" as const },
-                ],
-            res,
-            (end) => {
-              done();
-              switch (end.by) {
-                // 프로그램이 끝까지 받았거나 먼저 떠났다. 둘 다 답이다.
-                case "complete":
-                case "requester":
-                  return;
-                case "upstream":
-                  if (!cutByRelay)
-                    console.warn(
-                      `[provider] an upstream answer broke off in the credential relay (${failureCode(end.error)})`
-                    );
-                  return;
-                // 거르개가 답에서 넣은 비밀을 찾아 멈췄다. 중계 자신의 판단이므로 늘 남긴다.
-                case "guard":
-                  console.warn(
-                    `[provider] the credential relay stopped passing an upstream answer (${failureCode(end.error)})`
-                  );
-                  return;
-                default: {
-                  const unhandled: never = end;
-                  throw new Error(
-                    `unhandled answer end ${JSON.stringify(unhandled)}`
-                  );
-                }
-              }
-            }
+                ]
           );
         });
         req.pipe(outgoing);
+        // 프로그램의 요청이 중간에 끊기면 중계가 상류 요청을 끊는다. 그 뒤의 상류 오류는 그 끊김의 결과다.
         req.on("error", (error) => {
           if (!isDisconnect(error))
             console.warn(
               `[provider] a run's request broke off in the credential relay (${failureCode(error)})`
             );
-          outgoing.destroy();
+          answer.cancel();
         });
       })().catch((error: unknown) => {
         console.warn(

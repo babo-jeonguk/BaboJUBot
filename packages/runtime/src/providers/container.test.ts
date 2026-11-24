@@ -11,7 +11,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import http from "node:http";
@@ -76,9 +83,13 @@ const stoppedBySignal = () => ({
 let refusal: string | null = null;
 /** 이 이름이 경로에 든 폴더 지우기가 잠긴 파일처럼(EBUSY) 계속 실패한다. 비어 있으면 실제로 지운다. */
 const locked = vi.hoisted(() => ({ folder: null as RegExp | null }));
-/** 이름이 `opencode.db-wal`인 파일을 열기 바로 전에 한 번 부른다. 비어 있으면 그냥 연다. */
+/**
+ * 이름이 `opencode.db-wal`인 파일을 열기 바로 전(`beforeWal`), 이름이 `opencode.db`인 경로를 `lstat`으로 보기 바로 전(`beforeNameCheck`,
+ * 복사를 마친 뒤 이름이 아직 읽은 파일인지 볼 때)에 한 번 부른다. 비어 있으면 그냥 연다·본다.
+ */
 const opening = vi.hoisted(() => ({
   beforeWal: undefined as undefined | (() => void),
+  beforeNameCheck: undefined as undefined | (() => void),
   /** 참이면 이름이 `opencode.db`인 파일의 다음 열기 한 번이 "없음"으로 실패한다(그 자리는 그대로 있다). */
   missMain: false,
 }));
@@ -102,6 +113,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
             })
           )
         : actual.symlink(...args),
+    lstat: ((...args: Parameters<typeof actual.lstat>) => {
+      const before = opening.beforeNameCheck;
+      if (before && String(args[0]).endsWith("opencode.db")) {
+        opening.beforeNameCheck = undefined;
+        before();
+      }
+      return actual.lstat(...args);
+    }) as typeof actual.lstat,
     open: (...args: Parameters<typeof actual.open>) => {
       if (opening.missMain && String(args[0]).endsWith("opencode.db")) {
         opening.missMain = false;
@@ -165,6 +184,7 @@ afterEach(() => {
   locked.folder = null;
   policy.decide = undefined;
   opening.beforeWal = undefined;
+  opening.beforeNameCheck = undefined;
   opening.missMain = false;
   tree.run = undefined;
   vi.unstubAllEnvs();
@@ -1916,6 +1936,96 @@ describe.skipIf(process.platform === "win32")(
       expect(await t.env.calls()).toEqual([]);
     }, 20000);
 
+    // 복사한 handle의 내용이 그대로여도, 그 사이 그 이름에 다른 저장소가 들어왔으면 읽은 것은 지금 그 이름의 저장소가 아니다. 남은 로그인이
+    // 없다고 볼 근거가 되지 못하므로 시작하지 않고 확인 중에 바뀌었다고 알린다(#286 병합분 항목 15).
+    it("does not start a container when another store with a login took the database's name while it was being copied", async () => {
+      const t = await openCodeSetup();
+      const data = path.join(t.organization, "data");
+      await storeLogins(data, []);
+      const replacement = path.join(t.organization, "replacement");
+      await storeLogins(replacement, [
+        { integration: "opencode-go", value: { type: "key", key: "left" } },
+      ]);
+      let replaced = false;
+      opening.beforeWal = () => {
+        renameSync(
+          path.join(replacement, "opencode", "opencode.db"),
+          path.join(data, "opencode", "opencode.db")
+        );
+        replaced = true;
+      };
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+
+      const result = await t
+        .provider()
+        .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+      expect(replaced).toBe(true);
+      expect(result.stopReason).toBe("failed");
+      expectUnverified(result.error, "changed");
+      expect(await t.env.calls()).toEqual([]);
+      expect(t.network.urls).toHaveLength(0);
+    }, 20000);
+
+    // 같은 모양의 WAL 쪽: 복사를 마친 뒤 WAL 이름이 다른 파일로 바뀌었거나(내용이 같아도), 열 때 없던 WAL이 생겼거나, 있던 WAL이 사라졌으면
+    // 읽은 짝이 지금 그 이름의 저장소가 아니다. 확인 중에 바뀐 것으로 막는다(#296 외부 리뷰 1회차 권고, 항목 15).
+    it.each([
+      [
+        "its log was replaced by another file with the same content",
+        true,
+        (wal: string) => {
+          copyFileSync(wal, `${wal}.new`);
+          renameSync(`${wal}.new`, wal);
+        },
+      ],
+      [
+        "a log appeared after it found none",
+        false,
+        (wal: string) => writeFileSync(wal, ""),
+      ],
+      ["its log disappeared", true, (wal: string) => unlinkSync(wal)],
+    ] as const)(
+      "does not start a container when %s while the organization's database was being copied",
+      async (_case, withLog, change) => {
+        const t = await openCodeSetup();
+        const store = path.join(t.organization, "data", "opencode");
+        await mkdir(store, { recursive: true });
+        const db = new DatabaseSync(path.join(store, "opencode.db"));
+        onTestFinished(() => db.close());
+        db.exec(
+          withLog
+            ? "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0"
+            : "PRAGMA journal_mode=DELETE"
+        );
+        db.exec(
+          "create table credential (id text primary key, integration_id text, label text not null, value text not null, active integer)"
+        );
+        const wal = path.join(store, "opencode.db-wal");
+        expect(statSync(wal, { throwIfNoEntry: false }) !== undefined).toBe(
+          withLog
+        );
+        let changed = false;
+        opening.beforeNameCheck = () => {
+          change(wal);
+          changed = true;
+        };
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+
+        const result = await t
+          .provider()
+          .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+        expect(changed).toBe(true);
+        expect(result.stopReason).toBe("failed");
+        expectUnverified(result.error, "changed");
+        expect(warned).toHaveBeenCalledWith(
+          "[provider] the OpenCode login store changed while it was copied; the remaining login could not be checked"
+        );
+        expect(await t.env.calls()).toEqual([]);
+      },
+      20000
+    );
+
     it("copies no connection login into the organization's product folder while an isolated run of the organization is still going, even after isolation is turned off (PR #171 SP-2)", async () => {
       const t = await openCodeSetup(true, true);
 
@@ -3359,6 +3469,59 @@ describe.skipIf(process.platform === "win32")(
       }
     );
 
+    // 중계의 답은 HTTP 파서가 읽은 머리로만 판정한다. 본문에 거부 머리와 같은 글자가 있어도 주소 거부가 아니다(#286 병합분 항목 10).
+    it("does not take refusal words in the body of the relay's answer for its address refusal", async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const environment = await probeEnvironmentWith(
+        {},
+        {
+          39280:
+            "HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\r\nx-babojubot-refusal: address_not_allowed\r\n",
+        }
+      );
+      await expect(
+        environment.probe(
+          { blocked: [], forbidden: [{ host: "192.0.2.20", port: 5432 }] },
+          AbortSignal.timeout(20_000)
+        )
+      ).resolves.toEqual({
+        interfaces: [],
+        reached: [],
+        proxied: [],
+        toolsReached: true,
+        unverified: ["proxied"],
+      });
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] the isolation probe's proxied check failed (answered 403)",
+      ]);
+    });
+
+    // 상태 줄 하나는 답이 아니다. 머리를 HTTP로 다 읽지 못하면 조직 도구에 닿았다고 보지 않고 파서가 알린 원인을 남긴다(#286 병합분 항목 10).
+    it("does not count the organization tools as reached when only the status line of their answer reads as HTTP", async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const environment = await probeEnvironmentWith(
+        {},
+        { 39281: "HTTP/1.1 200 OK\r\nnot a header line\r\n\r\n" }
+      );
+      await expect(
+        environment.probe(
+          { blocked: [], forbidden: [] },
+          AbortSignal.timeout(20_000)
+        )
+      ).resolves.toEqual({
+        interfaces: [],
+        reached: [],
+        proxied: [],
+        toolsReached: false,
+        unverified: ["tools"],
+      });
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] the isolation probe's tools check failed (HPE_INVALID_HEADER_TOKEN)",
+      ]);
+    });
+
     it("counts a direct connection that opened as reached", async () => {
       const target = { host: "192.0.2.10", port: 5432 };
       const environment = await probeEnvironmentWith({
@@ -3372,12 +3535,12 @@ describe.skipIf(process.platform === "win32")(
       ).resolves.toMatchObject({ reached: [target], unverified: [] });
     });
 
-    // HTTP가 아닌 것이 답하면 닿았는지 막혔는지 알 수 없다. 받은 첫 줄을 원인으로 남기고 확인 불가로 넘긴다(#286).
+    // HTTP가 아닌 것이 답하면 닿았는지 막혔는지 알 수 없다. HTTP 파서가 알린 원인을 남기고 확인 불가로 넘긴다(#286).
     it.each([
       ["the organization tools", 39281, "tools"],
       ["the relay", 39280, "proxied"],
     ] as const)(
-      "reports %s check answered by something other than HTTP as unverified, with the first line it got",
+      "reports %s check answered by something other than HTTP as unverified, with the cause its HTTP parser gave",
       async (_case, port, probe) => {
         const target = forbiddenTarget();
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -3395,7 +3558,7 @@ describe.skipIf(process.platform === "win32")(
         // 답을 바꿔 넣은 확인은 중계에 닿지 않아 목적지로 붙지 않았다.
         expect(refusing.dialed).not.toHaveBeenCalled();
         expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
-          `[provider] the isolation probe's ${probe} check failed (answered "SSH-2.0-OpenSSH_9.9")`,
+          `[provider] the isolation probe's ${probe} check failed (HPE_INVALID_CONSTANT)`,
         ]);
       }
     );
