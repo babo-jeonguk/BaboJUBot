@@ -1,5 +1,10 @@
 import { fileURLToPath } from "node:url";
+import { orIfUnreadable } from "@babojubot/contracts";
 import { runTree } from "@babojubot/process";
+import {
+  cleanupReasons,
+  type ScriptCleanupReason,
+} from "./antigravity-config-reasons.ts";
 
 export const ownerMark = "babojubot-antigravity-v1";
 
@@ -13,6 +18,82 @@ export const ownerMark = "babojubot-antigravity-v1";
 export const configScriptFile = fileURLToPath(
   new URL("./antigravity-config-clear.ts", import.meta.url)
 );
+
+/** 정리 스크립트가 지우지 못한 까닭. 스크립트의 정해진 값과 직렬화한 이름만 담는다(사람이 읽을 글은 옮기지 않는다). */
+export type CleanupReason = {
+  reason: ScriptCleanupReason | "unreadable_output";
+  name: string;
+  keptAs?: string;
+  code?: string;
+};
+
+const reasonNames = new Set<string>(cleanupReasons);
+const isReasonName = (value: unknown): value is ScriptCleanupReason =>
+  typeof value === "string" && reasonNames.has(value);
+
+/** 정리하지 못한 까닭. 서버 기록에는 이 까닭들만 남는다. */
+export class ConfigNotCleared extends Error {
+  readonly reasons: CleanupReason[];
+  constructor(reasons: CleanupReason[]) {
+    super("configuration not cleared");
+    this.reasons = reasons;
+  }
+}
+
+/** 정리하지 못한 까닭을 한 문장으로 적는다. 정해진 까닭과 직렬화한 이름만 쓴다. */
+export function describeCleanup(reasons: CleanupReason[]): string {
+  return reasons
+    .map((reason) => {
+      if (reason.reason === "unreadable_output") return "unreadable output";
+      let text = `${reason.reason} ${JSON.stringify(reason.name)}`;
+      if (reason.keptAs !== undefined)
+        text += ` as ${JSON.stringify(reason.keptAs)}`;
+      if (reason.code !== undefined) text += ` (${reason.code})`;
+      return text;
+    })
+    .join("; ");
+}
+
+/** 스크립트가 표준 오류에 남긴 JSON 한 줄. 정해진 모양일 때만 까닭으로 읽는다. */
+function cleanupReason(line: string): CleanupReason | undefined {
+  const value = orIfUnreadable((): unknown => JSON.parse(line), undefined);
+  if (typeof value !== "object" || value === null) return undefined;
+  const fields = value as {
+    reason?: unknown;
+    name?: unknown;
+    keptAs?: unknown;
+    code?: unknown;
+  };
+  if (!isReasonName(fields.reason)) return undefined;
+  if (typeof fields.name !== "string") return undefined;
+  if (fields.keptAs !== undefined && typeof fields.keptAs !== "string")
+    return undefined;
+  if (fields.code !== undefined && typeof fields.code !== "string")
+    return undefined;
+  return {
+    reason: fields.reason,
+    name: fields.name,
+    ...(fields.keptAs !== undefined ? { keptAs: fields.keptAs } : {}),
+    ...(fields.code !== undefined ? { code: fields.code } : {}),
+  };
+}
+
+/**
+ * 정리 스크립트의 표준 오류를 까닭으로 읽는다. 한 줄에 JSON 하나이며, 정해진 모양이 아닌 줄이 있으면 내용 없이
+ * `unreadable_output` 하나를 더한다(사람이 읽을 글은 옮기지 않는다).
+ */
+export function readCleanupReasons(stderr: string): CleanupReason[] {
+  const reasons: CleanupReason[] = [];
+  let unreadable = false;
+  for (const line of stderr.split("\n")) {
+    if (!line.trim()) continue;
+    const reason = cleanupReason(line);
+    if (reason) reasons.push(reason);
+    else unreadable = true;
+  }
+  if (unreadable) reasons.push({ reason: "unreadable_output", name: "" });
+  return reasons;
+}
 
 /** 설정을 다루는 Node.js 프로세스를 공용 실행으로 끝까지 돌린다. 상한(30초)에 닿으면 그 트리를 끄고 확인한 뒤 실패로 던진다. */
 async function run(cwd: string) {
@@ -35,17 +116,22 @@ async function run(cwd: string) {
     );
   if (result.stopped)
     throw new Error(
-      `the configuration script was stopped at its ${result.stopped} limit`
+      `the configuration script was stopped at its ${result.stopped} limit${result.signal ? ` (signal ${result.signal})` : ""}`
     );
   if (result.code === null)
     throw new Error(
       `the configuration script ended by ${result.signal ?? "an unknown cause"}`
     );
-  return result.code;
+  // 표준 오류는 한 줄에 JSON 하나다. 정해진 모양이 아닌 줄은 내용 없이 하나로 센다(사람이 읽을 글은 옮기지 않는다).
+  if (result.code === 3)
+    throw new ConfigNotCleared(
+      readCleanupReasons(result.stderr.toString("utf8"))
+    );
+  if (result.code !== 0)
+    throw new Error(`the configuration script failed (exit ${result.code})`);
 }
 
-/** 우리 표시가 있는 설정과 임시 파일을 지운다. 표시 없는 파일이나 링크가 있으면 오류다. */
+/** 우리 표시가 있는 설정과 임시 파일을 지운다. 표시 없는 파일이나 링크가 있으면 까닭과 함께 오류다. */
 export async function clearOwnedConfig(cwd: string) {
-  const status = await run(cwd);
-  if (status) throw new Error(`configuration not cleared (${status})`);
+  await run(cwd);
 }

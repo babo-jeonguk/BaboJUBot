@@ -190,6 +190,33 @@ describe("opening a file in a place others can change, only if it is a regular f
     }
   );
 
+  // "없음"은 열기와 바로 뒤 lstat이 모두 없다고 본 때만이다. 열기가 권한·디스크 오류로 실패했으면 그 자리를 확인하지 못한 것이고,
+  // 바로 뒤 자리가 비었어도 없다고 답하지 않는다. 처음 쓰는 조직 폴더로 보고 표식을 게시할 수 있다(#286 항목 5).
+  it.each(["EACCES", "EIO"])(
+    "throws the open error %s even when nothing is at the path right after",
+    async (code) => {
+      const root = await folders.make("babojubot-files-");
+      const file = path.join(root, "mark.json");
+      const failed = Object.assign(new Error("could not open"), { code });
+      swap.failing = { path: file, error: failed };
+      await expect(openRegularFile(file)).rejects.toBe(failed);
+    }
+  );
+
+  // 열기가 링크·폴더를 만났는데 바로 뒤 자리가 비었으면 그 사이 자리가 바뀐 것이다. 없음이 아니다.
+  it.each(["ELOOP", "EISDIR"])(
+    "calls the place changed when the open met %s but nothing is there right after",
+    async (code) => {
+      const root = await folders.make("babojubot-files-");
+      const file = path.join(root, "mark.json");
+      swap.failing = {
+        path: file,
+        error: Object.assign(new Error("the place changed"), { code }),
+      };
+      expect(await openRegularFile(file)).toBe("changed");
+    }
+  );
+
   // Windows는 열린 파일의 자리에 다른 파일을 옮길 수 없어 이 사이가 생기지 않는다.
   it.skipIf(process.platform === "win32")(
     "keeps the file it opened even when the path is replaced right after",

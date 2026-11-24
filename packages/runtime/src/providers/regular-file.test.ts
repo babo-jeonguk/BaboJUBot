@@ -88,6 +88,21 @@ describe("reading a file only if it is a regular file", () => {
     await expect(readRegularFile(file)).rejects.toBe(denied);
   });
 
+  // 열 때와 바로 뒤 사이에 자리가 바뀐 것은 없음이 아니라 확인하지 못한 것이다. 없음으로 접으면 부르는 쪽(자리 표시 확인)이
+  // 그 자리에 새로 게시해 다른 쪽이 둔 파일을 바꾼다(#286 항목 6).
+  it("throws when the place changed between the open and the look right after", async () => {
+    const root = await folders.make("babojubot-regular-");
+    const file = path.join(root, "login.json");
+    await writeFile(file, "content");
+    swap.failing = {
+      path: file,
+      error: Object.assign(new Error("no such file"), { code: "ENOENT" }),
+    };
+    await expect(readRegularFile(file)).rejects.toMatchObject({
+      code: "changed",
+    });
+  });
+
   it.skipIf(!canLink)(
     "returns nothing for a link, even to a regular file",
     async () => {

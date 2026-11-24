@@ -16,6 +16,7 @@ import {
 } from "@babojubot/contracts";
 import { inFolder, type Folder } from "@babojubot/files";
 import { relayIdentityHeaders } from "./relay.ts";
+import { passAnswer } from "./answer-flow.ts";
 
 /**
  * 인증 중계(#148). 격리 실행의 프로그램은 연결의 로그인 원본 대신 실행 시도 하나에 묶인 권한(grant)을 받고, 모델 요청을 이 중계로 보낸다.
@@ -182,7 +183,11 @@ function echoGuard(secrets: readonly string[]): Transform {
     transform(chunk, _encoding, callback) {
       const buffer = Buffer.concat([held, chunk]);
       if (secretBytes.some((secret) => buffer.includes(secret))) {
-        callback(new Error("credential echoed"));
+        callback(
+          Object.assign(new Error("credential echoed"), {
+            code: "credential_echoed",
+          })
+        );
         return;
       }
       let keep = 0;
@@ -426,8 +431,14 @@ export function createCredentialRelay(options: {
           if (!route.fixed) fail("unusable", credential);
           return deny(res, 503, "relay_unavailable");
         }
+        // 중계가 스스로 상류 요청을 끊었는지. 프로그램이 떠남·실행 취소·권한 회수로 끊은 것은 답이고,
+        // 상류에서 시작된 실패는 같은 오류 코드(ECONNRESET 등)여도 원인을 남긴다.
+        let cutByRelay = false;
+        // 상류가 답을 시작했는지. 그 뒤의 상류 오류는 답 흐름(`incoming`)이 맡는다.
+        let answered = false;
         const inflight = {
           destroy: () => {
+            cutByRelay = true;
             outgoing.destroy();
             res.destroy();
           },
@@ -435,12 +446,14 @@ export function createCredentialRelay(options: {
         state.inflight.add(inflight);
         const done = () => state.inflight.delete(inflight);
         res.on("close", () => {
+          cutByRelay = true;
           done();
           outgoing.destroy();
         });
         outgoing.on("error", (error) => {
-          // 프로그램이 먼저 떠나 요청을 끊은 것은 답이다. 그 밖의 실패는 원인을 남긴다.
-          if (!isDisconnect(error))
+          // 답이 시작된 뒤의 오류는 `incoming`이 남기고 끊는다. 여기서는 답 전의 실패만 남긴다.
+          if (answered) return;
+          if (!cutByRelay)
             console.warn(
               `[provider] the credential relay could not reach the upstream; it answered 502 (${failureCode(error)})`
             );
@@ -448,6 +461,7 @@ export function createCredentialRelay(options: {
           deny(res, 502, "relay_upstream_failed");
         });
         outgoing.on("response", (incoming) => {
+          answered = true;
           const status = incoming.statusCode ?? 502;
           if (redirects.has(status)) {
             incoming.resume();
@@ -491,27 +505,45 @@ export function createCredentialRelay(options: {
           res.writeHead(status, keep(incoming.headers, droppedResponseHeaders));
           // 본문을 막아 끊어도 프로그램이 상태와 header를 읽도록 먼저 보낸다.
           res.flushHeaders();
-          const guarded = route.fixed
-            ? incoming
-            : incoming.pipe(echoGuard(secrets));
-          guarded.pipe(res);
-          guarded.on("error", (error) => {
-            if (!isDisconnect(error))
-              console.warn(
-                `[provider] the credential relay stopped passing an upstream answer (${failureCode(error)})`
-              );
-            incoming.destroy();
-            res.destroy();
-            done();
-          });
-          incoming.on("end", done);
-          incoming.on("error", (error) => {
-            if (!isDisconnect(error))
-              console.warn(
-                `[provider] an upstream answer broke off in the credential relay (${failureCode(error)})`
-              );
-            res.destroy();
-          });
+          // 고정 값 경로에는 넣은 비밀이 없어 거르개를 두지 않는다. 상류 끊김·거르개 멈춤·프로그램 떠남은 먼저 끝난 흐름 하나로 한 번
+          // 알린다(같은 흐름에 처리기를 둘 붙이지 않는다).
+          const upstreamAnswer = { stream: incoming, by: "upstream" as const };
+          passAnswer(
+            route.fixed
+              ? [upstreamAnswer]
+              : [
+                  upstreamAnswer,
+                  { stream: echoGuard(secrets), by: "guard" as const },
+                ],
+            res,
+            (end) => {
+              done();
+              switch (end.by) {
+                // 프로그램이 끝까지 받았거나 먼저 떠났다. 둘 다 답이다.
+                case "complete":
+                case "requester":
+                  return;
+                case "upstream":
+                  if (!cutByRelay)
+                    console.warn(
+                      `[provider] an upstream answer broke off in the credential relay (${failureCode(end.error)})`
+                    );
+                  return;
+                // 거르개가 답에서 넣은 비밀을 찾아 멈췄다. 중계 자신의 판단이므로 늘 남긴다.
+                case "guard":
+                  console.warn(
+                    `[provider] the credential relay stopped passing an upstream answer (${failureCode(end.error)})`
+                  );
+                  return;
+                default: {
+                  const unhandled: never = end;
+                  throw new Error(
+                    `unhandled answer end ${JSON.stringify(unhandled)}`
+                  );
+                }
+              }
+            }
+          );
         });
         req.pipe(outgoing);
         req.on("error", (error) => {
@@ -535,52 +567,97 @@ export function createCredentialRelay(options: {
 export const residueRefusal =
   "조직 제품 폴더에 로그인 기록이 남아 있어 격리 실행을 시작하지 않았습니다.";
 
+/** 남은 로그인을 확인하지 못한 이유. `changed_while_checked`는 여는 사이 자리가 바뀌었거나 복사하는 사이 내용이 바뀐 경우다. */
+export type ResidueUnverified =
+  | "path_unverifiable"
+  | "not_regular"
+  | "unreadable"
+  | "too_large"
+  | "changed_while_checked";
+/** 조직 제품 폴더의 남은 로그인 확인 결과: 남음, 없음, 확인하지 못함(이유). */
+export type ResidueCheck =
+  | { state: "left" }
+  | { state: "none" }
+  | { state: "unverified"; reason: ResidueUnverified };
+/** 남은 로그인을 확인하지 못해 격리 실행을 시작하지 않은 실행 시도의 실패 문장. */
+export const residueUnverifiedRefusal: Record<ResidueUnverified, string> = {
+  path_unverifiable:
+    "조직 제품 폴더의 로그인 자리로 가는 길에 링크나 폴더가 아닌 것이 있어 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 그 자리를 확인하세요.",
+  not_regular:
+    "조직 제품 폴더의 로그인 자리에 일반 파일이 아닌 것(링크·특수 파일)이 있어 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 그 자리를 확인하세요.",
+  unreadable:
+    "조직 제품 폴더의 로그인 기록을 읽지 못해 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 서버 기록에서 원인을 확인하세요.",
+  too_large:
+    "로그인 저장소가 확인할 수 있는 크기보다 커서 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다.",
+  changed_while_checked:
+    "로그인 저장소가 확인 중에 바뀌어 남은 로그인을 확인하지 못했습니다. 격리 실행을 시작하지 않았습니다. 다시 실행하세요.",
+};
+
+/** 확인 결과의 실패 문장. 없으면 `undefined`. 빠짐없는 switch로 쓴다. */
+export function residueRefusalFor(check: ResidueCheck): string | undefined {
+  switch (check.state) {
+    case "left":
+      return residueRefusal;
+    case "none":
+      return undefined;
+    case "unverified":
+      return residueUnverifiedRefusal[check.reason];
+  }
+}
+
+/** 확인하지 못한 결과의 기본 이유. 결과를 모르면 격리 실행을 시작하지 않는다(fail closed). */
+const unreadableResidue: ResidueCheck = {
+  state: "unverified",
+  reason: "unreadable",
+};
+
 /**
- * 격리 실행에 넣으면 안 되는 로그인 흔적이 조직 제품 폴더에 남아 있는가.
+ * 격리 실행에 넣으면 안 되는 로그인 흔적이 조직 제품 폴더에 남아 있는가. 남음·없음·확인하지 못함(이유)을 나눠 돌려준다.
  * 연결의 로그인 원본을 가리키는 알려진 링크(이 컴퓨터의 실행이 남긴 것)만 컨테이너 안에서 비어 있어 괜찮다.
- * 보통 파일·폴더, 다른 곳을 가리키는 링크, 확인할 수 없는 경로는 남은 로그인으로 본다. 비밀값은 읽지 않는다.
+ * 보통 파일·폴더, 다른 곳을 가리키는 링크는 남은 로그인이다. 확인할 수 없는 경로는 남은 로그인으로 접지 않고 확인하지
+ * 못한 것으로 돌려준다(#286). 비밀값은 읽지 않는다.
  */
 export async function credentialResidue(
   home: string,
   paths: readonly string[],
   known?: string
-): Promise<boolean> {
+): Promise<ResidueCheck> {
   for (const relative of paths) {
     const residue = await orIfProbeFailed(
       () => residueAt(home, relative, known),
-      true,
+      unreadableResidue,
       (error) =>
         console.warn(
-          `[provider] a login path in the organization folder could not be checked; it counts as a remaining login (${failureCode(error)})`
+          `[provider] a login path in the organization folder could not be checked (${failureCode(error)})`
         )
     );
-    if (residue) return true;
+    if (residue.state !== "none") return residue;
   }
-  return false;
+  return { state: "none" };
 }
 
 /**
  * 조직 폴더 안 `parts`로 내려가 `use`로 남은 로그인을 본다. 남은 로그인이 없다고 할 수 있는 것은 가는 길의 칸이 실제로 없을 때뿐이다.
- * 링크·폴더가 아닌 것·바뀐 칸은 그 안을 확인할 수 없으므로 남은 로그인으로 본다(fail closed, #280 리뷰 1회차 STD-1).
+ * 링크·폴더가 아닌 것·바뀐 칸은 그 안을 확인할 수 없으므로 확인하지 못한 것으로 돌려준다(fail closed, #280 리뷰 1회차 STD-1, #286).
  */
 export async function residueInFolder(
   root: string,
   parts: readonly string[],
-  use: (folder: Folder) => Promise<boolean>
-): Promise<boolean> {
+  use: (folder: Folder) => Promise<ResidueCheck>
+): Promise<ResidueCheck> {
   const result = await inFolder(root, parts, use);
   switch (result.state) {
     case "reached":
       return result.value;
     case "absent":
-      return false;
+      return { state: "none" };
     case "unverifiable":
-      return true;
+      return { state: "unverified", reason: "path_unverifiable" };
   }
 }
 
 /**
- * 경로 하나가 남은 로그인인가. 가는 길의 칸이 실제로 없으면 아니고, 알려진 원본을 가리키는 링크만 아니다. 확인하지 못하면 던진다.
+ * 경로 하나가 남은 로그인인가. 가는 길의 칸이 실제로 없으면 없음이고, 알려진 원본을 가리키는 링크만 없음이다. 확인하지 못하면 던진다.
  * 경로의 폴더 칸은 확인한 폴더의 handle을 거쳐 내려가므로, 중간 칸이 링크로 바뀌어도 그 너머를 보지 않는다. 링크 너머는 확인할 수
  * 없으므로 남은 로그인으로 본다.
  */
@@ -588,10 +665,10 @@ async function residueAt(
   home: string,
   relative: string,
   known: string | undefined
-) {
+): Promise<ResidueCheck> {
   const names = relative.split(path.sep === "/" ? "/" : /[/\\]/);
   const name = names.pop();
-  if (name === undefined) return false;
+  if (name === undefined) return { state: "none" };
   return residueInFolder(home, names, async (folder) => {
     const at = folder.at(name);
     const found = await orIfMissing(
@@ -599,8 +676,11 @@ async function residueAt(
       hasErrorCode("ENOENT", "ENOTDIR"),
       undefined
     );
-    if (!found) return false;
-    if (!found.isSymbolicLink() || known === undefined) return true;
-    return (await readlink(at)) !== known;
+    if (!found) return { state: "none" };
+    if (!found.isSymbolicLink() || known === undefined)
+      return { state: "left" };
+    return (await readlink(at)) !== known
+      ? { state: "left" }
+      : { state: "none" };
   });
 }

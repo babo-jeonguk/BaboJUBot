@@ -1,8 +1,9 @@
 // 예전 판(#148 전)이 작업 폴더에 둔 Antigravity 설정(`.agents/mcp_config.json`)의 남은 것을 지우는 별도 프로세스다.
 // `antigravity-config.ts`의 `clearOwnedConfig`가 조직의 작업 폴더를 현재 폴더로 띄우고, 인수는 JSON `[우리 표시]`다.
 // 작업 폴더로 `.agents`를 붙들려고 별도 프로세스로 돈다(@babojubot/files `enterFolder`). 열기와 폴더 확인은 그 패키지가 한다.
-// 끝난 코드: 0 지움(또는 지울 것 없음), 3 우리 표시가 없는 설정이나 확인한 폴더가 아님(지우지 않음), 그 밖은 실패.
-import { lstat, readdir, unlink } from "node:fs/promises";
+// 끝난 코드: 0 지움(또는 지울 것 없음), 3 지우지 못한 까닭이 있음. 까닭은 표준 오류에 한 줄에 JSON 하나로 남긴다:
+// `{"reason": …, "name": …}`(되돌리지 못해 옮긴 이름으로 남겼으면 `keptAs`, handle을 닫지 못했으면 `code`). 그 밖은 실패.
+import { lstat, readdir } from "node:fs/promises";
 import {
   continueAfterFailure,
   failureCode,
@@ -10,7 +11,13 @@ import {
   orIfMissing,
   orIfUnreadable,
 } from "@babojubot/contracts/failure";
-import { enterFolder, openRegularFile } from "@babojubot/files";
+import {
+  enterFolder,
+  openRegularFile,
+  removeConfirmed,
+  type Removal,
+} from "@babojubot/files";
+import type { ScriptCleanupReason } from "./antigravity-config-reasons.ts";
 import { record } from "./record.ts";
 
 const unsafe = 3;
@@ -20,23 +27,97 @@ const ownerMark: unknown = Array.isArray(given) ? given.at(0) : undefined;
 if (typeof ownerMark !== "string")
   throw new Error("the configuration script was started without our mark");
 
-/** 이름이 우리 표시가 있는 일반 파일인가. 한 번 연 파일에서 종류를 보고 읽는다. 없으면 `"missing"`이다. */
-async function owned(name: string): Promise<boolean | "missing"> {
+/** 지우지 못한 까닭이 있었는가. 하나라도 남기면 끝남 코드 3이다. */
+let unsafeReason = false;
+/** 까닭 하나를 표준 오류에 JSON 한 줄로 남긴다. 사람이 읽을 글은 쓰지 않는다(서버가 정해진 값만 기록한다). */
+function report(
+  reason: ScriptCleanupReason,
+  name: string,
+  extra?: { keptAs?: string; code?: string }
+) {
+  unsafeReason = true;
+  process.stderr.write(`${JSON.stringify({ reason, name, ...extra })}\n`);
+}
+
+/** 이름이 우리 표시가 있는 일반 파일인가, 아니면 확인하지 못한 까닭인가. */
+async function owned(
+  name: string
+): Promise<"missing" | "owned" | "unmarked" | "not_regular" | "changed"> {
   const opened = await openRegularFile(name);
-  if (typeof opened === "string")
-    return opened === "missing" ? "missing" : false;
+  if (opened === "missing") return "missing";
+  if (opened === "not-regular") return "not_regular";
+  if (opened === "changed") return "changed";
   try {
     const text = await opened.handle.readFile("utf8");
     const parsed = orIfUnreadable((): unknown => JSON.parse(text), undefined);
-    return record(parsed).babojubotOwner === ownerMark;
+    return record(parsed).babojubotOwner === ownerMark ? "owned" : "unmarked";
   } finally {
     await continueAfterFailure(
       () => opened.handle.close(),
-      (error) =>
-        process.stderr.write(
-          `[config] a file handle could not be closed (${failureCode(error)})\n`
-        )
+      (error) => report("handle_not_closed", name, { code: failureCode(error) })
     );
+  }
+}
+
+/** 옮긴 파일을 다시 확인하지 못한 까닭. `removeConfirmed`는 이 오류를 되돌린 뒤 그대로 던진다. */
+class Unconfirmed extends Error {
+  readonly reason: "changed" | "not_regular";
+  constructor(reason: "changed" | "not_regular") {
+    super(`the moved file could not be confirmed (${reason})`);
+    this.reason = reason;
+  }
+}
+
+/** `removeConfirmed`에 넘기는 확인. 우리 것 아님은 `false`, 확인하지 못한 것은 `Unconfirmed`다. */
+async function confirmOwned(moved: string): Promise<boolean> {
+  const state = await owned(moved);
+  switch (state) {
+    case "owned":
+      return true;
+    case "unmarked":
+      return false;
+    case "not_regular":
+      throw new Unconfirmed("not_regular");
+    case "changed":
+    case "missing":
+      throw new Unconfirmed("changed");
+    default: {
+      const unhandled: never = state;
+      throw new Error(`unhandled owned result ${String(unhandled)}`);
+    }
+  }
+}
+
+/** `removeConfirmed`의 결과를 빠짐없이 처리한다. 되돌렸으면 정리하지 못한 까닭이다. */
+function handled(name: string, removal: Removal) {
+  if (typeof removal === "object") {
+    report("kept_aside", name, { keptAs: removal.keptAs });
+    return;
+  }
+  switch (removal) {
+    case "removed":
+    case "missing":
+      return;
+    case "restored":
+      report("restored", name);
+      return;
+    default: {
+      const unhandled: never = removal;
+      throw new Error(`unhandled removal ${String(unhandled)}`);
+    }
+  }
+}
+
+/** 우리 파일 하나를 확인해 지운다. 확인하지 못한 것은 되돌린 뒤 그 까닭을 남긴다. */
+async function removeOwned(name: string) {
+  try {
+    handled(name, await removeConfirmed(name, confirmOwned));
+  } catch (error) {
+    if (error instanceof Unconfirmed) {
+      report(error.reason, name);
+      return;
+    }
+    throw error;
   }
 }
 const temporary = (name: string) =>
@@ -48,12 +129,47 @@ const agents = await orIfMissing(
   undefined
 );
 if (agents === undefined) process.exit(0);
-if (!agents.isDirectory() || !(await enterFolder(".agents", agents)))
+if (!agents.isDirectory() || !(await enterFolder(".agents", agents))) {
+  report("not_checkable", ".agents");
   process.exit(unsafe);
-for (const name of await readdir("."))
-  if (temporary(name) && (await owned(name)) === true) await unlink(name);
+}
+for (const name of await readdir(".")) {
+  if (!temporary(name)) continue;
+  const state = await owned(name);
+  switch (state) {
+    case "owned":
+      await removeOwned(name);
+      break;
+    case "missing":
+    case "unmarked":
+      // 우리 것 아님(이미 없거나 표시가 없다). 건드리지 않는다.
+      break;
+    case "not_regular":
+    case "changed":
+      // 우리 임시 파일 이름인데 확인하지 못했다. 설정 파일 쪽과 같은 기준으로 지우지 않고 그 까닭을 남긴다.
+      report(state, name);
+      break;
+    default: {
+      const unhandled: never = state;
+      throw new Error(`unhandled owned result ${String(unhandled)}`);
+    }
+  }
+}
 const config = await owned(file);
-if (config === false) process.exit(unsafe);
-// 지우기는 이름 자체에 하는 일이라 링크를 따라가지 않는다. `.agents`는 그 조직의 에이전트가 원래 지울 수 있는 곳이다.
-if (config === true)
-  await orIfMissing(() => unlink(file), hasErrorCode("ENOENT"), undefined);
+switch (config) {
+  case "owned":
+    await removeOwned(file);
+    break;
+  case "unmarked":
+  case "not_regular":
+  case "changed":
+    report(config, file);
+    break;
+  case "missing":
+    break;
+  default: {
+    const unhandled: never = config;
+    throw new Error(`unhandled owned result ${String(unhandled)}`);
+  }
+}
+if (unsafeReason) process.exit(unsafe);

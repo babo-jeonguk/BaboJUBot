@@ -77,7 +77,9 @@ async function readPinned(start: string, args: string[]): Promise<PinnedRead> {
       cause: run.error,
     });
   if (run.stopped)
-    throw new Error(`file reader was stopped at its ${run.stopped} limit`);
+    throw new Error(
+      `file reader was stopped at its ${run.stopped} limit${run.signal ? ` (signal ${run.signal})` : ""}`
+    );
   if (run.code === 0) {
     const at = run.stdout.indexOf(0x0a);
     const parts = orIfUnreadable(

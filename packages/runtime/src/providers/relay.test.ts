@@ -459,6 +459,236 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(await viaProxy()).toBe(200);
   });
 
+  // 목적지가 요청을 받고 답하기 전에 끊은 것은 목적지 장애다. 중계가 정책 변경으로 그 연결을 거둔 것과 같은 오류 코드(ECONNRESET)여도
+  // 원인을 남긴다(#286 항목 4와 같은 모양).
+  it("answers 502 and leaves why when a plain HTTP destination resets before answering", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const server = http.createServer((req) => req.socket.resetAndDestroy());
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          server.closeAllConnections();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    const { relays } = hub();
+    const relay = relays.open({
+      identity,
+      required: [
+        destination({
+          host: "localhost",
+          port,
+          addresses: ["127.0.0.1", "::1"],
+        }),
+      ],
+    });
+    await relay.ready;
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        socketPath: path.join(relay.directory, "egress.sock"),
+        path: `http://localhost:${port}/page`,
+        agent: false,
+      });
+      req.on("response", (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    expect(status).toBe(502);
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] the relay could not forward a request to an allowed destination; it answered 502 (ECONNRESET)",
+    ]);
+  });
+
+  // 답을 보내기 시작한 목적지가 중간에 끊으면(RST든 FIN이든) 받은 조각을 끝난 답처럼 넘기지 않는다. 머리는 이미 나갔으므로 502를 새로
+  // 쓰지 않고 요청자 연결을 끊으며, 원인을 한 번 남기고 그 연결을 정리한다(#290 3회차 SPEC-4).
+  it.each([
+    ["resets", (socket: net.Socket) => socket.resetAndDestroy()],
+    ["closes", (socket: net.Socket) => socket.destroy()],
+  ])(
+    "cuts the request, leaves why once, and lets go of the connection when a plain HTTP destination %s mid-answer",
+    async (_how, breakOff) => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const answering: net.Socket[] = [];
+      const server = http.createServer((req, res) => {
+        answering.push(req.socket);
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.write("part");
+      });
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve)
+      );
+      onTestFinished(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            server.closeAllConnections();
+            server.close((error) => (error ? reject(error) : resolve()));
+          })
+      );
+      const port = (server.address() as net.AddressInfo).port;
+      const { relays, refused, setResearch } = hub();
+      setResearch([
+        destination({
+          host: "localhost",
+          port,
+          addresses: ["127.0.0.1", "::1"],
+        }),
+      ]);
+      const relay = relays.open({ identity, required: [] });
+      await relay.ready;
+      const received = await new Promise<{ body: string; ending: string }>(
+        (resolve, reject) => {
+          const req = http.request({
+            socketPath: path.join(relay.directory, "egress.sock"),
+            path: `http://localhost:${port}/page`,
+            agent: false,
+          });
+          req.on("response", (res) => {
+            let body = "";
+            res.on("data", (chunk) => {
+              body += chunk;
+              breakOff(answering[0]!);
+            });
+            res.on("end", () => resolve({ body, ending: "ended" }));
+            res.on("error", () => resolve({ body, ending: "broken" }));
+          });
+          req.on("error", reject);
+          req.end();
+        }
+      );
+      expect(received).toEqual({ body: "part", ending: "broken" });
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] an allowed destination's answer broke off in the relay (ECONNRESET)",
+      ]);
+      // 정리한 연결은 정책이 줄어도 다시 거둘 것이 없다.
+      setResearch([]);
+      await relays.revalidate(identity.organizationId);
+      expect(refused).toEqual([]);
+    }
+  );
+
+  // 요청자가 답을 다 받기 전에 떠난 것은 답이다. 원인을 남기지 않고, 목적지 쪽 연결도 닫아 정리한다.
+  it("closes the destination side without a warning when the requester leaves mid-answer", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const ended: string[] = [];
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("part");
+      res.on("close", () => ended.push("closed"));
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          server.closeAllConnections();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    const { relays, refused, setResearch } = hub();
+    setResearch([
+      destination({
+        host: "localhost",
+        port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({
+        socketPath: path.join(relay.directory, "egress.sock"),
+        path: `http://localhost:${port}/page`,
+        agent: false,
+      });
+      req.on("response", (res) => {
+        res.once("data", () => {
+          req.destroy();
+          resolve();
+        });
+      });
+      // 떠난 뒤의 오류는 이미 정해진 결과를 바꾸지 않는다.
+      req.on("error", reject);
+      req.end();
+    });
+    await expect
+      .poll(() => ended, { timeout: 2000, interval: 20 })
+      .toEqual(["closed"]);
+    setResearch([]);
+    await relays.revalidate(identity.organizationId);
+    expect(refused).toEqual([]);
+    expect(warned).not.toHaveBeenCalled();
+  });
+
+  // 같은 모양의 요청 쪽: 요청자가 본문을 다 보내기 전에 떠나면 목적지는 나머지 본문을 기다린다. 중계가 목적지 쪽을 닫고 연결을 정리한다.
+  it("closes the destination side without a warning when the requester leaves while still sending its body", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const ended: string[] = [];
+    let received!: () => void;
+    const bodyArrived = new Promise<void>((resolve) => (received = resolve));
+    const server = http.createServer((req, res) => {
+      req.once("data", () => received());
+      req.on("end", () => res.end("done"));
+    });
+    server.on("connection", (socket: net.Socket) =>
+      socket.on("close", () => ended.push("closed"))
+    );
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          server.closeAllConnections();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    const { relays, refused, setResearch } = hub();
+    setResearch([
+      destination({
+        host: "localhost",
+        port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const req = http.request({
+      socketPath: path.join(relay.directory, "egress.sock"),
+      path: `http://localhost:${port}/upload`,
+      method: "POST",
+      agent: false,
+    });
+    // 답 전에 스스로 끊은 요청은 Node가 "socket hang up"(ECONNRESET)으로 알린다. 시험 쪽 요청자의 끝이다.
+    const hungUp = new Promise<string | undefined>((resolve) =>
+      req.once("error", (error: NodeJS.ErrnoException) => resolve(error.code))
+    );
+    req.write("part");
+    await bodyArrived;
+    req.destroy();
+    expect(await hungUp).toBe("ECONNRESET");
+    await expect
+      .poll(() => ended, { timeout: 2000, interval: 20 })
+      .toEqual(["closed"]);
+    setResearch([]);
+    await relays.revalidate(identity.organizationId);
+    expect(refused).toEqual([]);
+    expect(warned).not.toHaveBeenCalled();
+  });
+
   it("answers 502 and leaves why when it cannot connect to an allowed destination", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());

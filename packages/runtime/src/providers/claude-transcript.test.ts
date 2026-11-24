@@ -2,10 +2,30 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, openSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { hasErrorCode } from "@babojubot/contracts";
 import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
+
+/** 참이면 이름이 세션 기록 파일인 다음 열기 한 번이 "없음"으로 실패한다(그 자리는 그대로 있다: 여는 사이 바뀐 장면). */
+const opening = vi.hoisted(() => ({
+  missTranscript: undefined as string | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs/promises")>();
+  const open: typeof real.open = async (...args) => {
+    const name = opening.missTranscript;
+    if (name && String(args[0]).endsWith(name)) {
+      opening.missTranscript = undefined;
+      throw Object.assign(new Error("no such file"), { code: "ENOENT" });
+    }
+    return real.open(...args);
+  };
+  return { ...real, open, default: { ...real, open } };
+});
+afterEach(() => {
+  opening.missTranscript = undefined;
+});
 
 const folders = testFolders();
 const windows = process.platform === "win32";
@@ -43,6 +63,66 @@ describe.each(readers)(
       expect(await readTranscript(home, session)).toBeDefined();
     });
 
+    // 에이전트가 쓸 수 있는 폴더라 기록 자리가 폴더나 링크로 바뀔 수 있다. 그것은 "기록 없음"이 아니라 확인하지 못한 것이다.
+    // 사용량 사실 읽기라 건너뛰되 그 까닭을 남긴다. 실제로 없는 기록만 말없이 넘긴다(#286 PR 1 parent 점검).
+    it("skips a folder in place of the transcript, saying it is not a regular file", async () => {
+      const home = await folders.make("babojubot-transcript-");
+      const projects = path.join(home, "config", "projects", "project");
+      await mkdir(path.join(projects, `${session}.jsonl`), { recursive: true });
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      expect(await readTranscript(home, session)).toBeUndefined();
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] a Claude session transcript is not a regular file",
+      ]);
+    });
+
+    it.skipIf(windows)(
+      "skips a link in place of the transcript, saying it is not a regular file",
+      async () => {
+        const home = await folders.make("babojubot-transcript-");
+        const projects = path.join(home, "config", "projects", "project");
+        await mkdir(projects, { recursive: true });
+        const elsewhere = path.join(home, "elsewhere.jsonl");
+        await writeFile(elsewhere, transcript);
+        await symlink(elsewhere, path.join(projects, `${session}.jsonl`));
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+        expect(await readTranscript(home, session)).toBeUndefined();
+        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+          "[provider] a Claude session transcript is not a regular file",
+        ]);
+      }
+    );
+
+    // 실제로 없는 기록은 기록이 없는 것이다. 말없이 넘긴다.
+    it("says nothing when the transcript is simply missing", async () => {
+      const home = await folders.make("babojubot-transcript-");
+      await mkdir(path.join(home, "config", "projects", "project"), {
+        recursive: true,
+      });
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      expect(await readTranscript(home, session)).toBeUndefined();
+      expect(warned).not.toHaveBeenCalled();
+    });
+
+    // 기록을 여는 사이 자리가 바뀌었으면 읽지 못한 것이다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
+    it("skips a transcript that changed while it was opened, saying so", async () => {
+      const home = await folders.make("babojubot-transcript-");
+      const projects = path.join(home, "config", "projects", "project");
+      await mkdir(projects, { recursive: true });
+      await writeFile(path.join(projects, `${session}.jsonl`), transcript);
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      opening.missTranscript = `${session}.jsonl`;
+      expect(await readTranscript(home, session)).toBeUndefined();
+      expect(opening.missTranscript).toBeUndefined();
+      expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+        "[provider] a Claude session transcript changed while it was opened",
+      ]);
+    });
+
     // Windows에서 링크를 만들려면 관리자 권한이나 개발자 모드가 필요하고, FIFO가 없다. 링크·FIFO 경우는 POSIX에서 본다.
     it.skipIf(windows)(
       "does not follow a link in place of a folder on the way to the transcript",
@@ -57,7 +137,13 @@ describe.each(readers)(
           transcript
         );
         await symlink(elsewhere, path.join(home, "config"));
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
         expect(await readTranscript(home, session)).toBeUndefined();
+        // 확인하지 못한 폴더는 "기록 없음"과 같지 않다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
+        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+          "[provider] a Claude session transcript folder could not be checked (link)",
+        ]);
       }
     );
 
@@ -80,7 +166,13 @@ describe.each(readers)(
             if (!hasErrorCode("ENXIO")(error)) throw error;
           }
         }, "fifo writer");
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
         expect(await readTranscript(home, session)).toBeUndefined();
+        // 기록 자리의 특수 파일은 기록이 없는 것이 아니라 확인하지 못한 것이다. 건너뛰되 그 까닭을 남긴다(#286 PR 1 parent 점검).
+        expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+          "[provider] a Claude session transcript is not a regular file",
+        ]);
       }
     );
   }

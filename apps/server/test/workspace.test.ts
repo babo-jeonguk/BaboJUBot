@@ -12,10 +12,35 @@ import {
 import { keepAppending } from "./appending-writer.ts";
 import { featureGaps, filesBase, remove } from "./files-volume.ts";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { WorkspaceIdentityError, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
+
+/**
+ * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
+ * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
+ */
+const tree = vi.hoisted(() => ({
+  run: undefined as undefined | (() => unknown),
+}));
+vi.mock("@babojubot/process", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@babojubot/process")>();
+  return {
+    ...real,
+    runTree: (...args: Parameters<typeof real.runTree>) =>
+      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+  };
+});
+/** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
+const stoppedBySignal = () => ({
+  started: true,
+  code: null,
+  signal: "SIGKILL",
+  stdout: Buffer.alloc(0),
+  stderr: Buffer.alloc(0),
+  stopped: "limit",
+});
 
 // 링크를 만들 수 없는 파일 시스템(FAT32)에서는 링크가 필요한 시험을 건너뛴다. 그 볼륨의 링크 없는 경계 사례는
 // workspace-cases.test.ts가 같은 볼륨에서 돌고, 링크 사례는 적용 불가로 결과표에 남는다.
@@ -26,6 +51,7 @@ const withHardLinks = it.skipIf(lacks.hardLink !== "");
 const roots: string[] = [];
 const writers: ReturnType<typeof keepAppending>[] = [];
 afterEach(async () => {
+  tree.run = undefined;
   // 진행 중인 덧붙이기를 정산한 뒤에 폴더를 지운다. 정리 실패는 hook 오류로 따로 보고되어 시험의 단언 실패를 가리지 않는다.
   const stopped = await Promise.allSettled(
     writers.splice(0).map((w) => w.stop())
@@ -109,6 +135,15 @@ withLinks.each(["shared", "."])(
 );
 
 // 온전한 다른 조직의 폴더가 이 이름으로 옮겨져도 폴더가 자기 ID를 말하므로 구별된다.
+// 읽는 프로세스를 상한에서 끈 것은 서버 쪽 문제다. 끈 이유와 끝낸 신호를 함께 남긴다(#286 리뷰 1회차 STD-2).
+it("names both why the file reader was stopped and the signal that ended it", async () => {
+  const { root } = await folder();
+  tree.run = stoppedBySignal;
+  await expect(read(root, "notes.md")).rejects.toThrow(
+    "file reader was stopped at its limit limit (signal SIGKILL)"
+  );
+});
+
 it("refuses another organization's real folder moved to this organization's name", async () => {
   const { root, shared } = await folder();
   const mine = path.dirname(shared);
