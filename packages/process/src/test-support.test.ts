@@ -1,27 +1,40 @@
-import { lstatSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { fileLinks, reportedPid, within } from "./test-support.ts";
 
-// 파일 링크 만들기를 정한 오류로 실패시킨다(모듈 경계 대역). 비어 있으면 실제로 만든다. 받은 인수를 남겨 무엇을 만들려 했는지 본다.
+// 파일 링크 만들기와 지우기를 대신한다(모듈 경계 대역). 실제 링크는 만들지 않아 권한 없는 Windows에서도 같은 결과다. 받은 인수를 남겨
+// 무엇을 만들고 지웠는지 본다. 실제 링크 만들기는 `fileLinks`를 쓰는 링크 시험(CI는 필수)이 본다.
 const linking = vi.hoisted(() => ({
   refusal: undefined as string | undefined,
-  calls: [] as unknown[][],
+  unlinkFailure: undefined as string | undefined,
+  made: [] as unknown[][],
+  removed: [] as unknown[][],
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
-  const symlinkSync: typeof real.symlinkSync = (...args) => {
-    linking.calls.push(args);
-    if (linking.refusal)
-      throw Object.assign(new Error(`${linking.refusal}: link refused`), {
-        code: linking.refusal,
-      });
-    real.symlinkSync(...args);
+  const failure = (code: string) =>
+    Object.assign(new Error(`${code}: refused`), { code });
+  const symlinkSync = ((...args: unknown[]) => {
+    linking.made.push(args);
+    if (linking.refusal) throw failure(linking.refusal);
+  }) as typeof real.symlinkSync;
+  const unlinkSync = ((...args: unknown[]) => {
+    linking.removed.push(args);
+    if (linking.unlinkFailure) throw failure(linking.unlinkFailure);
+  }) as typeof real.unlinkSync;
+  return {
+    ...real,
+    symlinkSync,
+    unlinkSync,
+    default: { ...real, symlinkSync, unlinkSync },
   };
-  return { ...real, symlinkSync, default: { ...real, symlinkSync } };
 });
 afterEach(() => {
   linking.refusal = undefined;
-  linking.calls = [];
+  linking.unlinkFailure = undefined;
+  linking.made = [];
+  linking.removed = [];
   vi.unstubAllEnvs();
 });
 
@@ -71,13 +84,24 @@ describe("reportedPid", () => {
 // 파일 링크를 만들 수 없는 컴퓨터(권한 없는 Windows)에서 링크 시험은 건너뛴다. 그 건너뜀은 이유와 함께 알리고, CI가 필수로 정했으면
 // 건너뛰지 않고 실패해야 시험 수 관문이 잡는다(#286 항목 16). 권한이 없다는 답(EPERM)만 "쓸 수 없음"이고 다른 실패는 그대로 던진다.
 describe("fileLinks", () => {
-  it("makes a file link, removes it and answers yes when links can be made", () => {
+  it("makes one file link in the temporary folder, removes that link and answers yes when links can be made", () => {
     vi.stubEnv("BABOJUBOT_REQUIRE_FILE_LINKS", "1");
     expect(fileLinks()).toBe(true);
-    expect(linking.calls).toHaveLength(1);
-    const [, link, type] = linking.calls[0]!;
+    expect(linking.made).toHaveLength(1);
+    const [target, link, type] = linking.made[0]!;
+    expect(path.dirname(String(link))).toBe(tmpdir());
+    expect(target).toBe(`${String(link)}.target`);
     expect(type).toBe("file");
-    expect(lstatSync(String(link), { throwIfNoEntry: false })).toBeUndefined();
+    expect(linking.removed).toEqual([[link]]);
+  });
+
+  // 만든 링크를 지우지 못한 것은 링크를 지원한다는 답으로 덮지 않는다. 그 실패로 끝난다.
+  it("throws when it cannot remove the link it made", () => {
+    vi.stubEnv("BABOJUBOT_REQUIRE_FILE_LINKS", "");
+    linking.unlinkFailure = "EBUSY";
+    expect(() => fileLinks()).toThrow(
+      expect.objectContaining({ code: "EBUSY", message: "EBUSY: refused" })
+    );
   });
 
   it("skips saying why when it may not make links and CI does not require them", () => {
@@ -86,6 +110,8 @@ describe("fileLinks", () => {
     const said = vi.spyOn(console, "log").mockImplementation(() => {});
     onTestFinished(() => said.mockRestore());
     expect(fileLinks()).toBe(false);
+    // 만들지 못한 링크는 지울 것이 없다.
+    expect(linking.removed).toEqual([]);
     expect(said.mock.calls).toEqual([
       [
         "[파일 링크] 쓸 수 없어 건너뜁니다: 파일 링크를 만들 권한이 없다(EPERM). Windows는 관리자 권한이나 개발자 모드에서만 만든다",
@@ -108,7 +134,7 @@ describe("fileLinks", () => {
     vi.stubEnv("BABOJUBOT_REQUIRE_FILE_LINKS", "");
     linking.refusal = "EIO";
     expect(() => fileLinks()).toThrow(
-      expect.objectContaining({ code: "EIO", message: "EIO: link refused" })
+      expect.objectContaining({ code: "EIO", message: "EIO: refused" })
     );
   });
 });
