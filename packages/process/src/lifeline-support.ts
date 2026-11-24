@@ -1,5 +1,6 @@
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { attemptEach, combinedFailure } from "@babojubot/contracts";
 import { within } from "./test-support.ts";
 
 /** 시험 프로그램 안에서 연결을 쥐는 실제 파일. */
@@ -16,12 +17,13 @@ const holder = fileURLToPath(
 export async function openLifelines() {
   const server = net.createServer();
   /** 이름 → 그 연결. 닫히면 `closed`가 이행한다. */
-  const lines = new Map<
-    string,
-    { open: boolean; closed: Promise<void>; socket: net.Socket }
-  >();
+  const lines = new Map<string, { open: boolean; closed: Promise<void> }>();
   const arrived = new Map<string, () => void>();
+  /** 받은 모든 연결. 이름(첫 줄)을 보내기 전에 멈춘 프로그램의 연결도 받은 즉시 정리 대상이다(`close`). */
+  const sockets = new Set<net.Socket>();
   server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
     let buffer = "";
     // 끝난 프로그램의 연결은 Windows에서 재설정(ECONNRESET)으로 끝난다. 닫힘으로 다루고 오류는 그 신호로만 본다.
     socket.on("error", () => socket.destroy());
@@ -33,7 +35,6 @@ export async function openLifelines() {
       const name = buffer.slice(0, newline);
       const line = {
         open: true,
-        socket,
         closed: new Promise<void>((resolve) =>
           socket.once("close", () => {
             line.open = false;
@@ -48,14 +49,35 @@ export async function openLifelines() {
     };
     socket.on("data", read);
   });
-  await within(
-    new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => resolve());
-    }),
-    10_000,
-    "the lifeline server did not start listening"
-  );
+  /** 서버와 받은 연결(이름을 보내지 않은 연결 포함)을 닫고, 닫기의 실패를 거절로 상한 안에 알린다. */
+  const closeAll = async () => {
+    for (const socket of sockets) socket.destroy();
+    await within(
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      ),
+      10_000,
+      "the lifeline server did not close"
+    );
+  };
+  try {
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => resolve());
+      }),
+      10_000,
+      "the lifeline server did not start listening"
+    );
+  } catch (error) {
+    // 부른 쪽은 서버를 받지 못해 닫을 수 없다. 듣고 있는 서버(`listening`은 듣기를 마친 순간부터 참이다)는 여기서 닫고 그 끝을
+    // 기다리며, 닫기의 실패는 듣기의 실패와 함께 알린다(#287 리뷰 권고). 듣지 못한 서버는 닫을 것이 없다.
+    const failures = server.listening ? await attemptEach([closeAll]) : [];
+    throw combinedFailure(
+      [error, ...failures],
+      "the lifeline server did not start"
+    );
+  }
   const address = server.address();
   if (address === null || typeof address === "string")
     throw new Error("the lifeline server has no port");
@@ -93,17 +115,8 @@ export async function openLifelines() {
     },
     /** 연결이 온 모든 이름. */
     names: () => [...lines.keys()],
-    /** 서버와 남은 연결을 닫는다. 남은 연결이 있으면 그 프로그램은 시험이 따로 끈다. */
-    close: async () => {
-      for (const line of lines.values()) line.socket.destroy();
-      await within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        ),
-        10_000,
-        "the lifeline server did not close"
-      );
-    },
+    /** 서버와 남은 연결(이름을 보내지 않은 연결 포함)을 닫는다. 남은 연결이 있으면 그 프로그램은 시험이 따로 끈다. */
+    close: closeAll,
   };
 }
 

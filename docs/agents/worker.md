@@ -51,7 +51,7 @@ node .agents/scripts/run-worker.ts --model <provider/model> --title "pr-<N> <원
 | 0 | `error` 이벤트 없이 끝남 | 마지막 보고와 diff 검토(§6) |
 | 2 | `error` 이벤트(rate limit·quota·429 등) | 그 회차에서 그 모델을 다시 쓰지 않고 다음 모델로. session이 있으면 `--session <id> --message "Continue the brief from where you stopped."`, 없으면 같은 brief |
 | 3 | 3분(`--start-check`) 안에 session이 생기지 않아 한 번 다시 띄웠는데도 실패 | worker를 더 띄우지 않고 parent가 직접 수정 |
-| 4 | `error` 이벤트 없이 OpenCode 실패, 띄우지 못함(감독 실행기를 쓸 수 없으면 worker를 띄우지 않음), 지침을 worker에 보내지 못함(상태 줄 `could not send the brief: <코드>`, worker가 읽기 전에 끝났거나 읽지 않은 채 멈춤. 모델 문제가 아니므로 다음 모델로 넘어가지 않음), 시간 한도(`--limit`, 기본 110분)에 닿아 멈춤, 또는 worker의 프로세스 트리가 끝난 것을 확인하지 못함. 한도는 다시 띄우기를 포함한 호출 전체 상한이다. worker는 제품의 공용 실행(`@babojubot/process` `launchTree`)으로 띄우고, 모든 시도는 그 트리의 끄기 결과로 끝난다(세션 확인·한도·runner가 받은 신호로 멈출 때도, worker가 스스로 끝나 남긴 명령을 끌 때도). 끄기를 확인하지 못하면 다시 띄우지 않고 이유를 상태에 남긴다(아직 보내던 지침은 기다리지 않고 접는다. 읽을 쪽이 남았을 수 있어 쓰기가 끝나지 않을 수 있다). runner가 신호로 멈췄으면 128+신호 번호로 끝난다 | `.err`·diff를 보고 판단. 트리를 확인하지 못했으면 남은 프로세스를 먼저 정리 |
+| 4 | `error` 이벤트 없이 OpenCode 실패, 띄우지 못함(감독 실행기를 쓸 수 없으면 worker를 띄우지 않음), 지침을 worker에 보내지 못함(상태 줄 `could not send the brief: <코드>`, worker가 읽기 전에 끝났거나 읽지 않은 채 멈춤. 모델 문제가 아니므로 다음 모델로 넘어가지 않음), 시간 한도(`--limit`, 기본 110분)에 닿아 멈춤, 또는 worker의 프로세스 트리가 끝난 것을 확인하지 못함. 한도는 다시 띄우기를 포함한 호출 전체 상한이다. worker는 제품의 공용 실행(`@babojubot/process` `launchTree`)으로 띄우고, 모든 시도는 그 트리의 끄기 결과로 끝난다(세션 확인·한도·runner가 받은 신호로 멈출 때도, worker가 스스로 끝나 남긴 명령을 끌 때도). 끄기를 확인하지 못하면 다시 띄우지 않고 이유를 상태에 남긴다(아직 보내던 지침은 기다리지 않고 접는다. 읽을 쪽이 남았을 수 있어 쓰기가 끝나지 않을 수 있다). 요약을 표준 출력에 다 쓰지 못한 때도 4다. runner가 신호로 멈췄으면 128+신호 번호로 끝난다 | `.err`·diff를 보고 판단. 트리를 확인하지 못했으면 남은 프로세스를 먼저 정리 |
 
 모든 모델이 한도면 parent가 직접 고치고 이유를 보고에 남깁니다.
 
