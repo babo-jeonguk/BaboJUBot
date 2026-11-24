@@ -16,6 +16,7 @@ import {
 } from "@babojubot/contracts";
 import { inFolder, type Folder } from "@babojubot/files";
 import { relayIdentityHeaders } from "./relay.ts";
+import { passAnswer } from "./answer-flow.ts";
 
 /**
  * 인증 중계(#148). 격리 실행의 프로그램은 연결의 로그인 원본 대신 실행 시도 하나에 묶인 권한(grant)을 받고, 모델 요청을 이 중계로 보낸다.
@@ -182,7 +183,11 @@ function echoGuard(secrets: readonly string[]): Transform {
     transform(chunk, _encoding, callback) {
       const buffer = Buffer.concat([held, chunk]);
       if (secretBytes.some((secret) => buffer.includes(secret))) {
-        callback(new Error("credential echoed"));
+        callback(
+          Object.assign(new Error("credential echoed"), {
+            code: "credential_echoed",
+          })
+        );
         return;
       }
       let keep = 0;
@@ -500,27 +505,45 @@ export function createCredentialRelay(options: {
           res.writeHead(status, keep(incoming.headers, droppedResponseHeaders));
           // 본문을 막아 끊어도 프로그램이 상태와 header를 읽도록 먼저 보낸다.
           res.flushHeaders();
-          const guarded = route.fixed
-            ? incoming
-            : incoming.pipe(echoGuard(secrets));
-          guarded.pipe(res);
-          guarded.on("error", (error) => {
-            if (!cutByRelay)
-              console.warn(
-                `[provider] the credential relay stopped passing an upstream answer (${failureCode(error)})`
-              );
-            incoming.destroy();
-            res.destroy();
-            done();
-          });
-          incoming.on("end", done);
-          incoming.on("error", (error) => {
-            if (!cutByRelay)
-              console.warn(
-                `[provider] an upstream answer broke off in the credential relay (${failureCode(error)})`
-              );
-            res.destroy();
-          });
+          // 고정 값 경로에는 넣은 비밀이 없어 거르개를 두지 않는다. 상류 끊김·거르개 멈춤·프로그램 떠남은 먼저 끝난 흐름 하나로 한 번
+          // 알린다(같은 흐름에 처리기를 둘 붙이지 않는다).
+          const upstreamAnswer = { stream: incoming, by: "upstream" as const };
+          passAnswer(
+            route.fixed
+              ? [upstreamAnswer]
+              : [
+                  upstreamAnswer,
+                  { stream: echoGuard(secrets), by: "guard" as const },
+                ],
+            res,
+            (end) => {
+              done();
+              switch (end.by) {
+                // 프로그램이 끝까지 받았거나 먼저 떠났다. 둘 다 답이다.
+                case "complete":
+                case "requester":
+                  return;
+                case "upstream":
+                  if (!cutByRelay)
+                    console.warn(
+                      `[provider] an upstream answer broke off in the credential relay (${failureCode(end.error)})`
+                    );
+                  return;
+                // 거르개가 답에서 넣은 비밀을 찾아 멈췄다. 중계 자신의 판단이므로 늘 남긴다.
+                case "guard":
+                  console.warn(
+                    `[provider] the credential relay stopped passing an upstream answer (${failureCode(end.error)})`
+                  );
+                  return;
+                default: {
+                  const unhandled: never = end;
+                  throw new Error(
+                    `unhandled answer end ${JSON.stringify(unhandled)}`
+                  );
+                }
+              }
+            }
+          );
         });
         req.pipe(outgoing);
         req.on("error", (error) => {
