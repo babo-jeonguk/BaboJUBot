@@ -3,8 +3,15 @@ import { describeRuntimeContract } from "./runtime-contract.ts";
 import { createClaudeProvider as unownedClaudeProvider } from "./providers/claude.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterAll } from "vitest";
+import { afterAll, vi } from "vitest";
 import { testFolders } from "./providers/test-folders.ts";
+
+// 실행 시도가 띄운 프로그램의 끝을 계약 시험이 신호로 본다(runtime-contract.ts 약속 2).
+vi.mock("./providers/process.ts", async (importOriginal) =>
+  (await import("./providers/program-watch-support.ts")).watchPrograms(
+    await importOriginal()
+  )
+);
 // 이 파일의 시험이 모두 끝난 뒤 정리가 지운다.
 const folders = testFolders(afterAll);
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
@@ -23,6 +30,7 @@ for (const recorded of [false, true])
       ? "Claude with recorded protocol output (reviewed real frames, scripted behaviour)"
       : "Claude synthetic process (not recorded model evidence)",
     {
+      launches: "programs",
       adapter: createClaudeProvider({
         dataDir,
         command: [
