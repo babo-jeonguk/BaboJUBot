@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import type { Writable } from "node:stream";
 import { awaitedLater } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 import { expect, it, onTestFinished } from "vitest";
@@ -15,7 +16,8 @@ const testMs = runMs + 2 * runToEndStopMs + 20_000;
  */
 function spawnChild(code: string) {
   const child = spawn(process.execPath, ["-e", code], {
-    stdio: ["pipe", "pipe", "pipe"],
+    // 넷째 파이프는 시험이 끝낼 때까지 열려 있다. Node는 자식이 끝나면 stdin을 닫지만 이것은 닫지 않는다.
+    stdio: ["pipe", "pipe", "pipe", "pipe"],
   });
   const exited = awaitedLater(
     new Promise<void>((resolve, reject) => {
@@ -61,14 +63,14 @@ it(
 );
 
 // 끈 자식의 끝(`exit`)만 보면 그 출력을 물려받은 자손이 남아도 모른다. 도움은 출력이 닫히는 것도 따로 상한 안에 확인하고, 닫히지
-// 않으면 원래 실패와 함께 알린다(#286 병합분 감사 항목 6). 자손은 자식이 넘긴 이 시험의 입력이 끝나면 끝나므로 시험이 끝낸다.
+// 않으면 원래 실패와 함께 알린다(#286 병합분 감사 항목 6). 자손은 자식이 넘긴 이 시험의 넷째 파이프가 끝나면 끝나므로 시험이 끝낸다.
 it(
   "reports a descendant that still holds the output after the child is stopped",
   async () => {
     const child = spawnChild(`
       const { spawn } = require("node:child_process");
-      const descendant = spawn(process.execPath, ["-e", "process.stdin.resume(); process.stdin.on('end', () => process.exit(0));"], {
-        stdio: ["inherit", "ignore", "inherit"],
+      const descendant = spawn(process.execPath, ["-e", "require('node:fs').createReadStream('', { fd: 3 }).on('close', () => process.exit(0)).resume();"], {
+        stdio: ["ignore", "ignore", "inherit", 3],
       });
       descendant.once("spawn", () => console.log("ready"));
       setInterval(() => {}, 1000);
@@ -76,9 +78,9 @@ it(
     const stderrClosed = new Promise<void>((resolve) =>
       child.stderr.once("close", () => resolve())
     );
-    // 자손이 쥔 출력은 그 입력이 끝나야 닫힌다. 정리가 입력을 끝내고 닫힘을 상한 안에 확인한다.
+    // 자손이 쥔 출력은 자손이 읽는 넷째 파이프가 끝나야 닫힌다. 정리가 그 파이프를 끝내고 닫힘을 상한 안에 확인한다.
     onTestFinished(async () => {
-      child.stdin.end();
+      (child.stdio[3] as Writable).end();
       await within(
         stderrClosed,
         runToEndStopMs,
