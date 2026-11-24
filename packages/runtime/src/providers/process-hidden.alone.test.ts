@@ -1,8 +1,11 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exited, killAndWait, readyLine } from "@babojubot/process/testing";
+import { attemptAll } from "@babojubot/contracts";
+import { psField } from "@babojubot/process";
+import { killUnlessGone } from "@babojubot/process/test-cleanup";
+import { exited, readyLine, untilExited } from "@babojubot/process/testing";
 import { startProcess } from "./process.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -10,11 +13,21 @@ import { testFolders } from "./test-folders.ts";
 // 실행 시도의 트리 밖에서 생긴 그런 프로그램은 끄지 않고, 실행 시도는 복구 기록을 남긴다. 트리가 남긴 것은 감독 실행기가 끈다(#274). 표식 조회가 그런 프로그램을 "확인하지 못함"으로 두는지는
 // @babojubot/process의 lease-hidden.alone.test.ts가 본다. 이 시험이 띄운 프로그램은 같은 시각의 다른 시험 실행 시도에도 그렇게
 // 보이므로, 이 파일은 다른 시험과 겹치지 않게 따로 돈다.
-const pids: number[] = [];
+/** 실행 시도가 남겼다고 알린 프로그램: 번호와 알린 때 본 시작 시각(`ps`의 lstart). */
+const reported: { pid: number; start: string | undefined }[] = [];
 const folders = testFolders();
 afterEach(async () => {
   vi.restoreAllMocks();
-  await killAndWait(pids.splice(0));
+  // 시험이 끄지 못한 것은 알린 때와 같은 시작 시각을 본 직후(사이에 기다림 없이)에만 그 번호로 끈다. 시작 시각이 다르거나 없으면
+  // 그 번호는 이미 그 프로그램이 아니다(끝난 번호는 다른 프로그램에 다시 쓰일 수 있다).
+  await attemptAll(
+    reported.splice(0).map(({ pid, start }) => async () => {
+      if (start === undefined || psField(pid, "lstart", 10_000) !== start)
+        return;
+      killUnlessGone(pid);
+      await untilExited([pid]);
+    })
+  );
 });
 
 const hide =
@@ -49,7 +62,7 @@ setInterval(() => {}, 1000);
         stateDir,
         onFrame: async (frame) => {
           pid = (frame as { hidden: number }).hidden;
-          pids.push(pid);
+          reported.push({ pid, start: psField(pid, "lstart", 10_000) });
         },
       });
       const exit = await run.done;
@@ -66,7 +79,7 @@ setInterval(() => {}, 1000);
       const stateDir = await folders.make("babojubot-hidden-");
       const go = path.join(stateDir, "go");
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
-      let pid: number | undefined;
+      let hidden: ChildProcess | undefined;
       const run = startProcess({
         command: [
           process.execPath,
@@ -82,24 +95,29 @@ setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(go)})) pr
         stateDir,
         onFrame: async () => {
           // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 대표를 끝낸다.
-          const hidden = spawn("python3", ["-c", hide], {
-            detached: true,
-            stdio: ["ignore", "pipe", "ignore"],
-          });
-          pid = hidden.pid;
-          if (pid !== undefined) pids.push(pid);
+          // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
+          hidden = folders.ownChild(
+            spawn("python3", ["-c", hide], {
+              detached: true,
+              stdio: ["ignore", "pipe", "ignore"],
+            })
+          );
           await readyLine(hidden, "ready");
           await writeFile(go, "");
         },
       });
       const exit = await run.done;
-      expect(pid).toBeDefined();
+      if (hidden?.pid === undefined)
+        throw new Error("the hidden program did not start");
       expect(exit.broken).toBe(true);
       expect(await readdir(path.join(stateDir, "processes"))).toHaveLength(1);
       expect(error).toHaveBeenCalledWith(
         expect.stringContaining("could not all be stopped")
       );
-      expect(() => process.kill(pid!, 0)).not.toThrow();
+      // Node가 끝을 보지 않은 자식이라 그 번호는 아직 그 프로그램이다.
+      expect(hidden.exitCode).toBeNull();
+      expect(hidden.signalCode).toBeNull();
+      expect(exited(hidden.pid)).toBe(false);
     });
   }
 );
