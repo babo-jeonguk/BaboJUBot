@@ -74,6 +74,38 @@ function recording(recordings) {
     .map((line) => JSON.parse(line));
 }
 
+/**
+ * 중계가 아직 쓰고 있는 녹화에 `kind` 기록이 닿으면 이행한다. 중계가 밖으로 알리지 않는 일(떠난 요청자)의 기록을 기다릴 때 쓴다.
+ * 쓰는 중이므로 줄바꿈으로 끝난 줄만 읽고, 닿지 않았으면 깨어나 다시 확인한다. 상한(`eventMs`) 안에 닿지 않거나 녹화를 읽지
+ * 못하면 그 까닭으로 거절한다.
+ */
+function recordedRow(recordings, kind) {
+  const deadline = Date.now() + eventMs;
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      try {
+        const [file] = readdirSync(recordings);
+        const text =
+          file === undefined
+            ? ""
+            : readFileSync(path.join(recordings, file), "utf8");
+        const rows = text
+          .slice(0, text.lastIndexOf("\n") + 1)
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        if (rows.some((row) => row.kind === kind)) resolve(undefined);
+        else if (Date.now() > deadline)
+          reject(new Error(`record-cli did not record ${kind}`));
+        else setTimeout(poll, 20);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    poll();
+  });
+}
+
 /** 시험 안의 사건 대기 상한. 넘기면 무엇을 기다렸는지 알리고 실패한다. */
 const eventMs = 10_000;
 /** 중계가 끝나기까지의 상한. 감독 실행기의 준비·끄기 확인이 그 안에 든다. */
@@ -415,6 +447,55 @@ test("record-cli cuts and records a reply that has no valid status line", async 
         ["http-error", "HPE_INVALID_CONSTANT"],
       ]
     );
+  });
+});
+
+// 요청자가 본문을 다 보내기 전에 떠나면 그 요청은 끝나지 않는다. 중계는 그 실패를 남기고, 받다 만 본문을 상류로 넘기지 않는다.
+// `Expect: 100-continue`에 Node 서버가 처리기를 부르며 보내는 100 답으로, 중계가 그 요청을 받아 든 뒤에 떠난다. 중계는 떠난
+// 요청자에게 알릴 것이 없으므로, 시험은 녹화에 그 기록이 닿기를 기다린 뒤에 중계를 끝낸다.
+test("record-cli records a request whose requester left before the whole body, and sends nothing on", async () => {
+  await withCleanup(async (defer) => {
+    const { recordings, program } = folders(defer);
+    /** @type {(string | undefined)[]} 상위 서버가 받은 요청 */
+    const received = [];
+    const upstream = http.createServer((req, res) => {
+      received.push(req.url);
+      res.end();
+    });
+    const port = await listen(defer, upstream);
+    const announced = `http://127.0.0.1:${port}/`;
+    const run = recordCli(defer, [recordings, process.execPath, program], {
+      FAKE_URL: announced,
+    });
+    const proxy = await proxyUrl(run, announced);
+    const connection = await openToProxy(defer, {
+      host: "127.0.0.1",
+      port: Number(proxy.port),
+    });
+    const continued = once(connection.socket, "data");
+    connection.socket.write(
+      "POST /x HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\nExpect: 100-continue\r\n\r\n"
+    );
+    await within(continued, eventMs, "the proxy did not take the request");
+    assert.equal(connection.reply(), "HTTP/1.1 100 Continue\r\n\r\n");
+    connection.socket.end("abc");
+    await recordedRow(recordings, "http-request-error");
+    run.child.stdin.end();
+    assert.equal(await run.ended(), 3, run.stderr());
+    assert.deepEqual(
+      recording(recordings)
+        .filter((row) => row.kind.startsWith("http-"))
+        .map(({ kind, method, url, code }) => ({ kind, method, url, code })),
+      [
+        {
+          kind: "http-request-error",
+          method: "POST",
+          url: "/x",
+          code: "ECONNRESET",
+        },
+      ]
+    );
+    assert.deepEqual(received, []);
   });
 });
 
