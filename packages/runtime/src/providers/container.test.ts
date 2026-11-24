@@ -11,7 +11,14 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { realpathSync, renameSync, statSync } from "node:fs";
+import {
+  copyFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import http from "node:http";
@@ -75,9 +82,13 @@ const stoppedBySignal = () => ({
 let refusal: string | null = null;
 /** 이 이름이 경로에 든 폴더 지우기가 잠긴 파일처럼(EBUSY) 계속 실패한다. 비어 있으면 실제로 지운다. */
 const locked = vi.hoisted(() => ({ folder: null as RegExp | null }));
-/** 이름이 `opencode.db-wal`인 파일을 열기 바로 전에 한 번 부른다. 비어 있으면 그냥 연다. */
+/**
+ * 이름이 `opencode.db-wal`인 파일을 열기 바로 전(`beforeWal`), 이름이 `opencode.db`인 경로를 `lstat`으로 보기 바로 전(`beforeNameCheck`,
+ * 복사를 마친 뒤 이름이 아직 읽은 파일인지 볼 때)에 한 번 부른다. 비어 있으면 그냥 연다·본다.
+ */
 const opening = vi.hoisted(() => ({
   beforeWal: undefined as undefined | (() => void),
+  beforeNameCheck: undefined as undefined | (() => void),
   /** 참이면 이름이 `opencode.db`인 파일의 다음 열기 한 번이 "없음"으로 실패한다(그 자리는 그대로 있다). */
   missMain: false,
 }));
@@ -101,6 +112,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
             })
           )
         : actual.symlink(...args),
+    lstat: ((...args: Parameters<typeof actual.lstat>) => {
+      const before = opening.beforeNameCheck;
+      if (before && String(args[0]).endsWith("opencode.db")) {
+        opening.beforeNameCheck = undefined;
+        before();
+      }
+      return actual.lstat(...args);
+    }) as typeof actual.lstat,
     open: (...args: Parameters<typeof actual.open>) => {
       if (opening.missMain && String(args[0]).endsWith("opencode.db")) {
         opening.missMain = false;
@@ -156,6 +175,7 @@ afterEach(() => {
   locked.folder = null;
   policy.decide = undefined;
   opening.beforeWal = undefined;
+  opening.beforeNameCheck = undefined;
   opening.missMain = false;
   tree.run = undefined;
   vi.unstubAllEnvs();
@@ -1937,6 +1957,65 @@ describe.skipIf(process.platform === "win32")(
       expect(await t.env.calls()).toEqual([]);
       expect(t.network.urls).toHaveLength(0);
     }, 20000);
+
+    // 같은 모양의 WAL 쪽: 복사를 마친 뒤 WAL 이름이 다른 파일로 바뀌었거나(내용이 같아도), 열 때 없던 WAL이 생겼거나, 있던 WAL이 사라졌으면
+    // 읽은 짝이 지금 그 이름의 저장소가 아니다. 확인 중에 바뀐 것으로 막는다(#296 외부 리뷰 1회차 권고, 항목 15).
+    it.each([
+      [
+        "its log was replaced by another file with the same content",
+        true,
+        (wal: string) => {
+          copyFileSync(wal, `${wal}.new`);
+          renameSync(`${wal}.new`, wal);
+        },
+      ],
+      [
+        "a log appeared after it found none",
+        false,
+        (wal: string) => writeFileSync(wal, ""),
+      ],
+      ["its log disappeared", true, (wal: string) => unlinkSync(wal)],
+    ] as const)(
+      "does not start a container when %s while the organization's database was being copied",
+      async (_case, withLog, change) => {
+        const t = await openCodeSetup();
+        const store = path.join(t.organization, "data", "opencode");
+        await mkdir(store, { recursive: true });
+        const db = new DatabaseSync(path.join(store, "opencode.db"));
+        onTestFinished(() => db.close());
+        db.exec(
+          withLog
+            ? "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0"
+            : "PRAGMA journal_mode=DELETE"
+        );
+        db.exec(
+          "create table credential (id text primary key, integration_id text, label text not null, value text not null, active integer)"
+        );
+        const wal = path.join(store, "opencode.db-wal");
+        expect(statSync(wal, { throwIfNoEntry: false }) !== undefined).toBe(
+          withLog
+        );
+        let changed = false;
+        opening.beforeNameCheck = () => {
+          change(wal);
+          changed = true;
+        };
+        const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warned.mockRestore());
+
+        const result = await t
+          .provider()
+          .adapter.execute(t.input("opencode-go/glm-5.3"), control());
+        expect(changed).toBe(true);
+        expect(result.stopReason).toBe("failed");
+        expectUnverified(result.error, "changed");
+        expect(warned).toHaveBeenCalledWith(
+          "[provider] the OpenCode login store changed while it was copied; the remaining login could not be checked"
+        );
+        expect(await t.env.calls()).toEqual([]);
+      },
+      20000
+    );
 
     it("copies no connection login into the organization's product folder while an isolated run of the organization is still going, even after isolation is turned off (PR #171 SP-2)", async () => {
       const t = await openCodeSetup(true, true);
