@@ -87,7 +87,8 @@ test("runs from a checkout path holding a space and a percent sign", (context) =
 // 출력을 다 쓰지 못하면 성공 코드(0)로 끝내지 않고 1로 끝내며, 0이 아닌 코드는 그대로 둔다(#292 외부 리뷰 1회차 권고). 부모가 자식
 // 표준 출력의 읽는 쪽을 먼저 닫아 쓰기가 EPIPE로 실패하게 한다. 자식은 신호(표준 입력)를 받은 뒤에야 쓴다. 종료와 출력의 끝(표준
 // 오류의 end, 닫은 표준 출력의 close)을 띄운 직후 각각 기록하고, 모두 상한 안에 끝난 뒤 단언한다: exit 때는 표준 오류가 아직 열려
-// 있을 수 있다(CODING_STANDARDS.md, #292 외부 리뷰 2회차 STD-2). 정리는 자식을 끄고 끝을 확인한 뒤 폴더를 지운다.
+// 있을 수 있다(CODING_STANDARDS.md, #292 외부 리뷰 2회차 STD-2). 정리는 자식을 끄고 끝과 출력 닫힘(close)을 상한 안에서 확인한 뒤
+// 폴더를 지운다(#292 외부 리뷰 3회차 권고).
 test("hands back 1 instead of 0, and keeps any other code, when the output cannot be written", () =>
   withCleanup(async (defer) => {
     const folder = mkdtempSync(path.join(tmpdir(), "exit-after-output-pipe-"));
@@ -113,16 +114,24 @@ process.stdin.once("data", async () => {
         stdio: ["pipe", "pipe", "pipe"],
       });
       const exited = once(child, "exit");
+      // 정리도 기다리는 닫힘(close)을 본문의 기다림에 함께 둔다. 거기서 바로 처리기가 붙어, 띄우지 못한 자식의 거절이 처리되지 않은
+      // 채 남지 않는다.
+      const closed = once(child, "close");
       const ended = Promise.all([
         exited,
         once(child.stderr, "end"),
         once(child.stdout, "close"),
+        closed,
       ]);
       // 자식 객체로 끈다: Node는 끝을 본 자식에는 신호를 보내지 않는다.
       own(async () => {
         if (child.exitCode === null && child.signalCode === null)
           child.kill("SIGKILL");
-        await within(exited, 10_000, "a killed driver did not exit");
+        await within(
+          closed,
+          10_000,
+          "a killed driver or its output did not end"
+        );
       });
       let stderr = "";
       child.stderr.on("data", (chunk: Buffer) => (stderr += String(chunk)));
