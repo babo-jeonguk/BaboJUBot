@@ -609,14 +609,17 @@ export async function removeContainer(
 
 // 컨테이너 안에서 돈다(이미지 시작 프로그램 뒤). 네트워크 장치, 직접 연결, 중계를 거친 금지 목적지, 조직 도구 연결(양성 대조)을 본다.
 // 막힘으로 세는 답은 직접 연결의 거부(연결 거부·경로 없음·권한 거부)와 중계의 주소 거부(403 address_not_allowed)뿐이다.
-// 그 밖의 답·오류·시한·머리를 다 받기 전에 닫힌 연결은 닿았는지 확인하지 못한 것이므로, 원인만 남겨 서버가 확인 불가로 넘기게 한다.
+// 중계의 답은 손으로 읽지 않고 Node HTTP 파서가 다 읽은 머리로만 판정한다. 그 밖의 답·오류·시한, 머리를 다 읽기 전의 형식 오류·끊김은
+// 닿았는지 확인하지 못한 것이므로, 원인만 남겨 서버가 확인 불가로 넘기게 한다.
 const probeScript = `
+const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const input = JSON.parse(process.argv[1]);
 // 원래 오류의 사실(code·name)·상태·기다린 시간만 보내고 이름 붙이기는 서버(failureCode·probeFailureText)가 한다. 문구는 주소가 섞일 수 있어 보내지 않는다.
 const failures = [];
-const note = (probe, error) => failures.push({ probe, code: error.code, name: error.name });
+const errorFact = (probe, error) => ({ probe, code: error.code, name: error.name });
+const note = (probe, error) => failures.push(errorFact(probe, error));
 // 직접 연결이 닿지 못했다는 답인 오류. 그 밖의 오류(이름을 풀지 못함·시스템 시한 등)는 확인하지 못한 것이다.
 const refused = ["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EPERM", "EACCES"];
 const attempt = (host, port) =>
@@ -640,107 +643,65 @@ const attempt = (host, port) =>
       finish(false);
     });
   });
-const firstLine = (text) => text.split("\\r\\n")[0].slice(0, 80).replace(/[^\\x20-\\x7e]/g, "?");
-const statusOf = (text) => {
-  const match = /^HTTP\\/1\\.[01] (\\d{3})/.exec(text.split("\\r\\n")[0] ?? "");
-  return match ? Number(match[1]) : undefined;
-};
-const refusalOf = (text) => {
-  for (const line of text.split("\\r\\n")) {
-    const at = line.indexOf(":");
-    if (at < 0) continue;
-    if (line.slice(0, at).trim().toLowerCase() !== "x-babojubot-refusal") continue;
-    return line.slice(at + 1).trim();
-  }
-  return undefined;
-};
+// 중계 포트에 HTTP 요청 하나를 보내고 Node HTTP 파서가 다 읽은 답 머리(상태·머리)를 judge에 넘긴다. CONNECT의 답은 상태와 상관없이
+// "connect"로, 그 밖의 답은 "response"로 온다(Node http 문서). 머리를 다 읽기 전의 오류(형식 오류·끊김)와 시한은 원인만 남긴다.
+const ask = (probe, port, options, judge) =>
+  new Promise((resolve) => {
+    let settled = false;
+    const finish = (value, failure) => {
+      if (settled) return;
+      settled = true;
+      if (failure) failures.push(failure);
+      request.destroy();
+      resolve(value);
+    };
+    const request = http.request({
+      ...options,
+      timeout: 5000,
+      createConnection: () => net.connect({ host: "127.0.0.1", port }),
+    });
+    request.once("timeout", () => finish(false, { probe, timeoutMs: 5000 }));
+    request.on("error", (error) => finish(false, errorFact(probe, error)));
+    request.once("connect", (response, socket) => {
+      socket.destroy();
+      finish(...judge(response));
+    });
+    request.once("response", (response) => {
+      response.resume();
+      finish(...judge(response));
+    });
+    request.end();
+  });
 const proxied = (host, port) =>
-  new Promise((resolve) => {
-    const socket = net.connect({ host: "127.0.0.1", port: ${relayPorts.proxy} });
-    let text = "";
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(value);
-    };
-    const answer = () => {
-      const status = statusOf(text);
-      // 머리를 다 받았는데 상태 줄을 읽지 못하면 HTTP가 아닌 답이다. 더 기다리지 않고 받은 첫 줄을 원인으로 남긴다.
-      if (status === undefined) {
-        failures.push({ probe: "proxied", unexpected: firstLine(text) });
-        return finish(false);
-      }
+  ask(
+    "proxied",
+    ${relayPorts.proxy},
+    { method: "CONNECT", path: (host.includes(":") ? "[" + host + "]" : host) + ":" + port },
+    (response) => {
+      const status = response.statusCode;
       // 200(연결됨)과 502(정책은 열었지만 목적지 연결 실패)는 중계 정책이 그 목적지를 연 것이다.
-      if (status === 200 || status === 502) return finish(true);
-      const refusal = refusalOf(text);
+      if (status === 200 || status === 502) return [true];
+      const refusal = response.headers["x-babojubot-refusal"];
       // 주소 확인이 막은 거부만 답이다. 그 밖의 거부 이유는 주소 확인이 막는지 알려 주지 않는다.
-      if (status === 403 && refusal === "address_not_allowed") return finish(false);
-      failures.push({
-        probe: "proxied",
-        status,
-        ...(refusal && /^[a-z_]{1,64}$/.test(refusal) ? { refusal } : {}),
-      });
-      finish(false);
-    };
-    socket.setTimeout(5000, () => {
-      failures.push({ probe: "proxied", timeoutMs: 5000 });
-      finish(false);
-    });
-    socket.once("error", (error) => {
-      note("proxied", error);
-      finish(false);
-    });
-    socket.on("connect", () =>
-      socket.write("CONNECT " + (host.includes(":") ? "[" + host + "]" : host) + ":" + port + " HTTP/1.1\\r\\n\\r\\n")
-    );
-    socket.on("data", (chunk) => {
-      text += chunk;
-      if (text.includes("\\r\\n\\r\\n")) answer();
-    });
-    socket.once("close", () => {
-      if (settled) return;
-      failures.push({ probe: "proxied", closed: true });
-      finish(false);
-    });
-  });
+      if (status === 403 && refusal === "address_not_allowed") return [false];
+      return [
+        false,
+        {
+          probe: "proxied",
+          status,
+          ...(typeof refusal === "string" && /^[a-z_]{1,64}$/.test(refusal) ? { refusal } : {}),
+        },
+      ];
+    }
+  );
+// 조직 도구가 HTTP로 답 머리를 끝까지 보냈으면 닿은 것이다(상태와 상관없이).
 const tools = () =>
-  new Promise((resolve) => {
-    const socket = net.connect({ host: "127.0.0.1", port: ${relayPorts.tools} });
-    let text = "";
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(value);
-    };
-    socket.setTimeout(5000, () => {
-      failures.push({ probe: "tools", timeoutMs: 5000 });
-      finish(false);
-    });
-    socket.once("error", (error) => {
-      note("tools", error);
-      finish(false);
-    });
-    socket.on("connect", () => socket.write("GET /api/tools/probe HTTP/1.1\\r\\nHost: tools\\r\\nConnection: close\\r\\n\\r\\n"));
-    socket.on("data", (chunk) => {
-      text += chunk;
-      const at = text.indexOf("\\r\\n");
-      if (at < 0) return;
-      if (!/^HTTP\\/1\\.[01] \\d{3}/.test(text.slice(0, at))) {
-        failures.push({ probe: "tools", unexpected: firstLine(text) });
-        return finish(false);
-      }
-      finish(true);
-    });
-    socket.once("close", () => {
-      if (settled) return;
-      failures.push({ probe: "tools", closed: true });
-      finish(false);
-    });
-  });
+  ask(
+    "tools",
+    ${relayPorts.tools},
+    { method: "GET", path: "/api/tools/probe", headers: { host: "tools", connection: "close" } },
+    () => [true]
+  );
 (async () => {
   const interfaces = Object.entries(os.networkInterfaces())
     .filter(([, list]) => (list ?? []).some((entry) => !entry.internal))
@@ -773,15 +734,13 @@ const isTarget = (value: unknown): value is { host: string; port: number } =>
   typeof (value as { port?: unknown }).port === "number";
 
 /**
- * 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다), 답이 없었으면 기다린 시간,
- * 중계가 답한 상태(주소 거부가 아닌 이유), HTTP가 아닌 답의 첫 줄, 머리를 다 받기 전에 닫혔는지.
+ * 확인 스크립트가 보낸 실패: 어느 확인인지와 원래 오류의 사실(`code`는 없거나 문자열이 아닐 수 있다. HTTP 파서의 형식 오류·
+ * 머리 전 끊김도 여기다), 답이 없었으면 기다린 시간, 중계가 답한 상태(주소 거부가 아닌 이유).
  */
 type ProbeFailure =
   | { probe: string; code?: unknown; name: string }
   | { probe: string; timeoutMs: number }
-  | { probe: string; status: number; refusal?: string }
-  | { probe: string; unexpected: string }
-  | { probe: string; closed: true };
+  | { probe: string; status: number; refusal?: string };
 const isProbeFailure = (value: unknown): value is ProbeFailure => {
   if (typeof value !== "object" || value === null) return false;
   const failure = value as {
@@ -790,16 +749,13 @@ const isProbeFailure = (value: unknown): value is ProbeFailure => {
     timeoutMs?: unknown;
     status?: unknown;
     refusal?: unknown;
-    unexpected?: unknown;
-    closed?: unknown;
   };
   if (typeof failure.probe !== "string") return false;
   if (typeof failure.name === "string") return true;
   if (typeof failure.timeoutMs === "number") return true;
   if (typeof failure.status === "number" && Number.isInteger(failure.status))
     return failure.refusal === undefined || typeof failure.refusal === "string";
-  if (typeof failure.unexpected === "string") return true;
-  return failure.closed === true;
+  return false;
 };
 
 /** 확인 실패를 한 문구로 적는다. 모든 갈래를 다루며, 오류는 원래 이름·코드만 남긴다. */
@@ -807,8 +763,6 @@ function probeFailureText(failure: ProbeFailure): string {
   if ("timeoutMs" in failure) return `no answer within ${failure.timeoutMs} ms`;
   if ("status" in failure)
     return `answered ${failure.status}${failure.refusal ? ` ${failure.refusal}` : ""}`;
-  if ("unexpected" in failure) return `answered "${failure.unexpected}"`;
-  if ("closed" in failure) return "closed before answering";
   return failureCode(
     Object.assign(new Error(), { name: failure.name, code: failure.code })
   );
