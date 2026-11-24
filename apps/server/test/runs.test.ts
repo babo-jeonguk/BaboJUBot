@@ -18,7 +18,12 @@ import {
 } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, quietCreation } from "./scenarios.ts";
-import { startTestServer, within, type TestServer } from "./support.ts";
+import {
+  eventuallyMs,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
 /**
@@ -145,7 +150,14 @@ function competitors() {
       } finally {
         started = undefined;
       }
-      passes.push(await Promise.allSettled(pass));
+      // 결과를 아래에서 단언하므로 성공·실패를 모두 받되, 끝나지 않는 transaction은 상한에서 그 이유로 실패한다.
+      passes.push(
+        await within(
+          Promise.allSettled(pass),
+          eventuallyMs,
+          "the competitors' transactions did not end"
+        )
+      );
     },
   };
 }

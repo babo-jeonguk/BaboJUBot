@@ -50,13 +50,17 @@ const ids = scenes.map((s) => s.id);
 const launchAll = { scenes: ids, maxLiveRuns: 24 };
 const sceneById = (id) => scenes.find((s) => s.id === id);
 
-/** 이 홈의 내장 Postgres 프로세스가 남았는지. */
+/**
+ * 이 홈의 내장 Postgres 프로세스가 남았는지. pgrep은 찾은 것이 없으면 1로 끝난다. 그 밖의 실패(띄우지 못함, 다른 종료 코드)는
+ * 남았는지 모르는 것이므로 그 오류로 실패한다. 모든 실패를 "없음"으로 세면 확인하지 못한 홈을 깨끗하다고 보았다(#286).
+ */
 const postgresAlive = (home) => {
   try {
     execFileSync("pgrep", ["-f", `${home}/postgres`]);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if (/** @type {{ status?: unknown }} */ (error).status === 1) return false;
+    throw error;
   }
 };
 
