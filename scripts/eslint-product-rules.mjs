@@ -649,7 +649,7 @@ export const processLaunchers = new Map([
 ]);
 /**
  * 프로세스 패키지가 내보내지만 프로그램을 띄우지 않는 함수: 준비·조회(실행기 준비, 띄운 자식 받기, 그룹·표식·시작 시각 조회, 실행기에
- * 청하는 정리), 폴더 지우기, 시험 도움(정리·기다림·시계·환경 확인, 띄운 자식의 끝 기다리기와 끄기).
+ * 청하는 정리), 폴더 지우기, 시험 도움(정리·기다림·시계·환경 확인, 띄운 자식의 끝 기다리기와 끄기, 연결을 쥔 시험 프로그램의 시작 문장과 정리, 다른 프로세스가 알린 번호 확인).
  */
 export const processNonLaunchers = [
   "prepareSupervisor",
@@ -668,6 +668,7 @@ export const processNonLaunchers = [
   "withCleanup",
   "processAlive",
   "killUnlessGone",
+  "lifelineHolder",
   "awaitedLater",
   "openLifelines",
   "testFolders",
@@ -679,6 +680,7 @@ export const processNonLaunchers = [
   "manualClock",
   "permissionDenial",
   "probeEnvironment",
+  "reportedPid",
 ];
 /** child_process·cross-spawn에서 프로그램을 띄우는 함수와 그 명령을 받는 자리(`line`은 명령줄 문자열 하나). */
 const nodeLaunchers = new Map([

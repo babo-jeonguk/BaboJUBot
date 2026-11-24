@@ -41,6 +41,44 @@ export type TreeStart =
 
 export type TreeExit = { code: number | null; signal: NodeJS.Signals | null };
 
+/** 트리를 끄지 못했거나 그 끝을 확인하지 못한 원인(#286). 진단은 문구 대신 `code`와 아래 칸으로 남긴다(`failureCode`). */
+export type TreeStopCode =
+  | "TREE_LEFT" // 실행기가 남은 프로그램이 있다고 답했다(`left`에 실행기의 답 그대로)
+  | "TREE_END_UNCONFIRMED" // 실행기가 끝을 확인하는 답 없이 끝났다(`protocolFailure`·`controlFailure`)
+  | "SUPERVISOR_NO_ANSWER" // 실행기가 상한 안에 끄기에 답하지 않았다
+  | "SUPERVISOR_EXIT" // 끝은 확인했지만 실행기가 0이 아닌 종료로 끝났다(`supervisorExit`)
+  | "SUPERVISOR_START_UNREPORTED" // 실행기가 상한 안에 시작을 알리지 않아 강제로 끝냈다
+  | "SUPERVISOR_NOT_ENDED" // 강제로 끝낸 실행기의 끝을 상한 안에 확인하지 못했다
+  | "PROGRAM_END_UNREPORTED" // 프로그램(대표)의 끝이 상한 안에 전달되지 않았다
+  | "MARKER_CLEANUP_UNSUPPORTED" // Windows에는 표식 정리가 없다
+  | "SUPERVISOR_UNAVAILABLE"; // 실행기를 준비하지 못해 정리를 청할 수 없다
+export class TreeStopFailure extends Error {
+  override readonly name = "TreeStopFailure";
+  readonly code: TreeStopCode;
+  declare readonly left?: string;
+  declare readonly protocolFailure?: string;
+  declare readonly controlFailure?: string;
+  declare readonly supervisorExit?: TreeExit;
+  constructor(
+    code: TreeStopCode,
+    message: string,
+    details: {
+      left?: string;
+      protocolFailure?: string;
+      controlFailure?: string;
+      supervisorExit?: TreeExit;
+    } = {},
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.code = code;
+    // 있는 칸만 둔다(없는 칸을 undefined로 두지 않는다).
+    for (const [key, value] of Object.entries(details))
+      if (value !== undefined)
+        Object.defineProperty(this, key, { value, enumerable: true });
+  }
+}
+
 export type LaunchedTree<In = Writable | null, Out = Readable | null> = {
   /** 이 트리를 쥔 감독 실행기의 번호. 실행기를 띄우지 못했으면 없다. */
   pid: number | undefined;
@@ -396,6 +434,8 @@ export function superviseTree(
     reportExit({ code: null, signal: null });
   });
 
+  /** 실행기가 끄기에 남은 프로그램이 있다고 답했으면 그 답 그대로. */
+  let leftDetail: string | undefined;
   /** 실행기의 끄기 답. `undefined`는 답 없이 통로가 닫혔다는 뜻이다. */
   let reportEnd!: (end: string | undefined) => void;
   const ended = new Promise<string | undefined>((resolve) => {
@@ -433,11 +473,20 @@ export function superviseTree(
     control?.destroy();
     for (const stream of [child.stdin, child.stdout, child.stderr])
       stream?.destroy();
-    await within(
-      supervisorGone,
-      endLimitMs,
-      `process ${pid} (the supervisor) did not end after SIGKILL`
-    );
+    try {
+      await within(
+        supervisorGone,
+        endLimitMs,
+        `process ${pid} (the supervisor) did not end after SIGKILL`
+      );
+    } catch (error) {
+      throw new TreeStopFailure(
+        "SUPERVISOR_NOT_ENDED",
+        error instanceof Error ? error.message : String(error),
+        {},
+        { cause: error }
+      );
+    }
   };
   /** 약속을 어긴 실행기는 믿지 않는다. 그 원인으로 시작·끝을 실패시키고 실행기를 강제로 끝낸다(그 뒤의 끝은 stop()이 확인한다). */
   const breakProtocol = (reason: string) => {
@@ -519,7 +568,10 @@ export function superviseTree(
       } else if (message.kind === "exit")
         reportExit({ code: message.code, signal: message.signal });
       else if (message.kind === "ended") reportEnd("ended");
-      else if (message.kind === "left") reportEnd(`left: ${message.detail}`);
+      else if (message.kind === "left") {
+        leftDetail = message.detail;
+        reportEnd(`left: ${message.detail}`);
+      }
     }
   });
   // 통로의 읽기·쓰기 실패. 끝났는지는 실행기의 답과 통로의 닫힘으로 판단하고, 답 없이 닫혔으면 이 원인을 함께 알린다.
@@ -582,16 +634,30 @@ export function superviseTree(
       unanswered = error;
     }
     await settleSupervisor();
-    if (unanswered) throw unanswered;
+    if (unanswered)
+      throw new TreeStopFailure(
+        "SUPERVISOR_NO_ANSWER",
+        unanswered instanceof Error ? unanswered.message : String(unanswered),
+        {},
+        { cause: unanswered }
+      );
     if (answer === undefined)
-      throw new Error(
-        `the supervisor ended without confirming that its programs ended${protocolFailure ? ` (${protocolFailure})` : ""}${controlFailure ? ` (control channel: ${controlFailure})` : ""}`
+      throw new TreeStopFailure(
+        "TREE_END_UNCONFIRMED",
+        `the supervisor ended without confirming that its programs ended${protocolFailure ? ` (${protocolFailure})` : ""}${controlFailure ? ` (control channel: ${controlFailure})` : ""}`,
+        { protocolFailure, controlFailure }
       );
     if (answer !== "ended")
-      throw new Error(`programs of this tree did not end (${answer})`);
+      throw new TreeStopFailure(
+        "TREE_LEFT",
+        `programs of this tree did not end (${answer})`,
+        { left: leftDetail }
+      );
     if (supervisorExit?.code !== 0)
-      throw new Error(
-        `the supervisor confirmed the end but exited with ${supervisorExit?.signal ?? `code ${supervisorExit?.code}`}`
+      throw new TreeStopFailure(
+        "SUPERVISOR_EXIT",
+        `the supervisor confirmed the end but exited with ${supervisorExit?.signal ?? `code ${supervisorExit?.code}`}`,
+        { supervisorExit }
       );
   };
   /** 실행기에 끄기를 보내고 답을 판단한다(`answered`). */
@@ -604,13 +670,22 @@ export function superviseTree(
     }
     await answered(graceMs + supervisorStopLimitMs);
   };
+  /** 대표의 끝(`exit`)이 상한 안에 전달되기를 기다린다. 넘기면 프로그램의 끝을 확인하지 못한 실패로 바꾼다(#286). */
+  const programEnd = async (what: string) => {
+    try {
+      await within(exited, endLimitMs, what);
+    } catch (error) {
+      throw new TreeStopFailure(
+        "PROGRAM_END_UNREPORTED",
+        error instanceof Error ? error.message : String(error),
+        {},
+        { cause: error }
+      );
+    }
+  };
   const stopTree = async (graceMs: number) => {
     if (pid === undefined) {
-      await within(
-        exited,
-        endLimitMs,
-        "a program that did not start did not end"
-      );
+      await programEnd("a program that did not start did not end");
       return;
     }
     // 시작 응답을 상한 없이 기다리지 않는다. 실행기는 프로그램을 띄운 직후 답한다. 답이 없으면 실행기를 끄고, 트리의 끝은 모른다고 던진다.
@@ -623,25 +698,23 @@ export function superviseTree(
       );
     } catch (error) {
       await forceEnd();
-      throw new Error(
+      throw new TreeStopFailure(
+        "SUPERVISOR_START_UNREPORTED",
         `the supervisor did not report its start within ${supervisorStartLimitMs} ms; it was ended, and whether its programs ended is unknown`,
+        {},
         { cause: error }
       );
     }
     if (start.kind === "failed") {
       await settleSupervisor();
-      await within(
-        exited,
-        endLimitMs,
-        "a program that did not start did not end"
-      );
+      await programEnd("a program that did not start did not end");
       return;
     }
     // 실행기가 트리(그룹·고아, Linux·macOS는 이 실행 시도의 표식을 가진 프로그램까지)를 끄고 끝을 확인해 답한다. 서버는 표식을 따로
     // 찾지 않는다: 찾은 번호에 나중에 신호하면 그 사이 번호가 다른 프로그램에 갈 수 있다(#268 PR 2).
     await stopThroughSupervisor(graceMs);
     // 트리가 끝났으면 대표도 끝났다. 그 끝(exit)이 전달될 때까지 기다린다.
-    await within(exited, endLimitMs, `the program did not report its end`);
+    await programEnd("the program did not report its end");
   };
   let stopping: Promise<void> | undefined;
 

@@ -1,9 +1,14 @@
 import { spawnSync } from "node:child_process";
 
+// 모듈을 불러올 때의 진짜 타이머. 시험이 가짜 시계를 켜도(`vi.useFakeTimers`) `within`의 상한은 실제 시간으로 잰다.
+const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
+
 /**
  * `promise`를 `ms` 안에 기다린다. 넘기면 무엇을 기다리다 실패했는지(`what`, 예: "the server did not start")와 상한을 밝혀
  * 던진다. 시험의 대기마다 상한과 실패 원인을 두는 공용 도움이다(CODING_STANDARDS 「시간」). vi를 불러오지 않아 vitest·node:test·
- * Playwright 모두에서 쓴다. 상한이 지나도 `promise`가 쥔 자원은 그대로이므로 정리는 부른 쪽이 맡는다(`withCleanup` 등).
+ * Playwright 모두에서 쓴다. 상한은 시험이 가짜 시계를 켜도 실제 시간으로 잰다. 상한이 지나도 `promise`가 쥔 자원은 그대로이므로
+ * 정리는 부른 쪽이 맡는다(`withCleanup` 등).
  * 제품 코드는 시험 도움을 부르지 않아 같은 모양을 따로 둔다(supervised.ts `within`).
  */
 export async function within<T>(
@@ -16,14 +21,14 @@ export async function within<T>(
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
+        timer = realSetTimeout(
           () => reject(new Error(`${what} within ${ms} ms`)),
           ms
         );
       }),
     ]);
   } finally {
-    clearTimeout(timer);
+    realClearTimeout(timer);
   }
 }
 
@@ -147,4 +152,19 @@ export function probeEnvironment<T>({
     );
   console.log(`[${what}] 쓸 수 없어 건너뜁니다: ${found.missing}`);
   return undefined;
+}
+
+/**
+ * 다른 프로세스가 알린 프로세스 번호(pid 파일·출력 줄·서버 응답·구조화된 줄의 값). 숫자이거나 숫자 글자(앞뒤 공백·줄 끝 허용)인
+ * 양의 정수만 받는다. 아니면 무엇(`what`)이 무엇을 알렸는지와 함께 던진다. 그대로 `Number`로 바꾸면 빈 글자는 0(프로세스 그룹
+ * 전체에 가는 신호)이, 잘린 글자는 NaN(대상 없이 지나가는 확인)이 된다(#288 외부 리뷰 3회차 STD-4 같은 모양).
+ */
+export function reportedPid(value: unknown, what: string): number {
+  const pid =
+    typeof value === "string" && /^\s*\d+\s*$/.test(value)
+      ? Number(value)
+      : value;
+  if (typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0)
+    return pid;
+  throw new Error(`${what} is not a process number: ${JSON.stringify(value)}`);
 }
