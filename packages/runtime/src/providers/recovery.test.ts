@@ -1,18 +1,29 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it, onTestFinished, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { launchTree } from "@babojubot/process";
 import { recordProcess, recoverProviderProcesses } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "@babojubot/process/recovery";
 import { readyLine } from "@babojubot/process/testing";
 import { testFolders } from "./test-folders.ts";
+import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import {
   killUnlessGone,
+  lifelineHolder,
   processAlive,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 import { attemptAll } from "@babojubot/contracts";
 
 /**
@@ -70,25 +81,71 @@ vi.mock("@babojubot/process/recovery", async (original) => {
 // 복구 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
 const folders = testFolders();
 // 시험이 새 세션으로 띄운 프로그램(그룹 번호 = 프로그램 번호). 띄우자마자 넣어, 준비나 단언이 실패해도 그룹째 끄고 끝날 때까지 기다린다.
-const groups: number[] = [];
+// 그룹 번호로는 대표를 Node가 아직 거두지 않았을 때만 신호한다: 그동안 그 번호는 이 그룹이다. 거둔 뒤에는 그 번호가 다른 그룹에
+// 쓰였을 수 있어 신호하지 않는다. 대표가 끝난 뒤 남는 구성원은 연결을 쥐고 돌며 그 정리가 연결로 끈다(`leavingMember`).
+const groups: ChildProcess[] = [];
 afterEach(() => {
   lease.fails = false;
   lease.stopped = [];
   lease.requests = [];
   // 그룹마다 끄고 끝나기를 기다린다. 한 그룹이 실패해도 나머지 그룹을 정리한다.
   return attemptAll(
-    groups.splice(0).map((group) => async () => {
-      try {
-        killUnlessGone(-group);
-      } catch (error) {
-        // 거두어지기 전의 프로세스만 남은 그룹에 macOS는 EPERM으로 답한다(groupGone). 끝났는지는 아래 기다림이 확인한다.
-        const code = ((error as Error).cause as NodeJS.ErrnoException).code;
-        if (process.platform !== "darwin" || code !== "EPERM") throw error;
-      }
+    groups.splice(0).map((leader) => async () => {
+      const group = leader.pid!;
+      if (leader.exitCode === null && leader.signalCode === null)
+        try {
+          killUnlessGone(-group);
+        } catch (error) {
+          // 거두어지기 전의 프로세스만 남은 그룹에 macOS는 EPERM으로 답한다(groupGone). 끝났는지는 아래 기다림이 확인한다.
+          const code = ((error as Error).cause as NodeJS.ErrnoException).code;
+          if (process.platform !== "darwin" || code !== "EPERM") throw error;
+        }
       await until(() => groupGone(group));
     })
   );
 });
+// 대표가 끝난 뒤 그룹에 남는 구성원은 연결을 쥐고 돈다. 구성원이 살아 있는 동안 그룹 번호는 다른 그룹에 쓰이지 않는다.
+let lifelines: Lifelines;
+beforeAll(async () => {
+  lifelines = await openLifelines();
+});
+afterAll(() => lifelines.close());
+let members = 0;
+/**
+ * 연결을 쥔 구성원 하나를 자기 그룹에 띄우고, 구성원이 연결을 쥐었다고 알린 뒤 끝나는 대표의 문장(`leader`). 구성원의 정리(`end`)는
+ * 연결이 열려 있음을 본 직후에만 그 번호로 끄고 연결의 닫힘까지 기다린다(`lifelineHolder`). 폴더 정리에도 맡겨, 시험이 중간에
+ * 실패해도 폴더를 지우기 전에 끈다. 이미 끈 구성원에는 다시 신호하지 않는다.
+ */
+async function leavingMember() {
+  const folder = await folders.make("babojubot-member-");
+  const name = `member-${++members}`;
+  const member = lifelineHolder(
+    lifelines,
+    name,
+    path.join(folder, "pid"),
+    'require("node:fs").writeSync(3, "connected\\n");'
+  );
+  folders.own(member.end, name);
+  return {
+    name,
+    end: member.end,
+    leader: `const m = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${member.code} setInterval(() => {}, 1000);`)}], { stdio: ["ignore", "ignore", "ignore", "pipe"] }); m.stdio[3].once("data", () => process.exit(0));`,
+  };
+}
+/** 대표가 끝나고 연결을 쥔 구성원만 남은 새 세션 그룹. 그룹 번호는 끝난 대표의 번호다. */
+async function leftGroup() {
+  const member = await leavingMember();
+  const leader = spawn(process.execPath, ["-e", member.leader], {
+    detached: true,
+    stdio: "ignore",
+  });
+  await within(
+    once(leader, "close"),
+    10_000,
+    `group leader ${leader.pid} did not end after its member connected`
+  );
+  return { group: leader.pid!, end: member.end };
+}
 async function records() {
   const root = await folders.make("babojubot-recovery-");
   const directory = path.join(root, "providers/claude/processes");
@@ -138,32 +195,26 @@ it.runIf(process.platform === "linux")(
   "leaves a process group it cannot identify alone and still starts",
   async () => {
     const { root, directory } = await records();
-    const leader = spawn("sh", ["-c", "sleep 30 & exit 0"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    await new Promise((resolve) => leader.on("close", resolve));
-    const group = leader.pid!;
+    const left = await leftGroup();
+    const { group } = left;
+    await writeFile(
+      path.join(directory, `${group}.json`),
+      JSON.stringify({
+        pid: group,
+        start: testStart(),
+        group,
+        boot: (
+          await readFile("/proc/sys/kernel/random/boot_id", "utf8")
+        ).trim(),
+        lease: "not-the-real-lease",
+      })
+    );
+    await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
+    expect(() => process.kill(-group, 0)).not.toThrow();
+    // 끝났음을 확인하지 못했으니 기록을 남겨 다음 시작 때 다시 본다.
+    expect(await readdir(directory)).toEqual([`${group}.json`]);
     // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
-    await withCleanup(async (defer) => {
-      defer(() => killUnlessGone(-group));
-      await writeFile(
-        path.join(directory, `${group}.json`),
-        JSON.stringify({
-          pid: group,
-          start: testStart(),
-          group,
-          boot: (
-            await readFile("/proc/sys/kernel/random/boot_id", "utf8")
-          ).trim(),
-          lease: "not-the-real-lease",
-        })
-      );
-      await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
-      expect(() => process.kill(-group, 0)).not.toThrow();
-      // 끝났음을 확인하지 못했으니 기록을 남겨 다음 시작 때 다시 본다.
-      expect(await readdir(directory)).toEqual([`${group}.json`]);
-    });
+    await left.end();
     await until(() => groupGone(group));
     await recoverProviderProcesses(root);
     expect(await readdir(directory)).toEqual([]);
@@ -314,23 +365,17 @@ it.skipIf(process.platform === "win32")(
   "keeps the record while children outlive their leader on systems without /proc",
   async () => {
     const { root, directory } = await records();
-    const leader = spawn("sh", ["-c", "sleep 30 & exit 0"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    await new Promise((resolve) => leader.on("close", resolve));
-    const group = leader.pid!;
+    const left = await leftGroup();
+    const { group } = left;
+    await writeFile(
+      path.join(directory, `${group}.json`),
+      JSON.stringify({ pid: group, lease: "lease" })
+    );
+    await recoverProviderProcesses(root, { platform: withoutProc });
+    expect(groupGone(group)).toBe(false);
+    expect(await readdir(directory)).toEqual([`${group}.json`]);
     // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
-    await withCleanup(async (defer) => {
-      defer(() => killUnlessGone(-group));
-      await writeFile(
-        path.join(directory, `${group}.json`),
-        JSON.stringify({ pid: group, lease: "lease" })
-      );
-      await recoverProviderProcesses(root, { platform: withoutProc });
-      expect(groupGone(group)).toBe(false);
-      expect(await readdir(directory)).toEqual([`${group}.json`]);
-    });
+    await left.end();
     await until(() => groupGone(group));
     await recoverProviderProcesses(root, { platform: withoutProc });
     expect(await readdir(directory)).toEqual([]);
@@ -352,7 +397,7 @@ it("keeps the record of a live process whose start cannot be read", async () => 
   await withCleanup(async (defer) => {
     defer(async () => {
       child.kill("SIGKILL");
-      await closed;
+      await within(closed, 10_000, `process ${child.pid} did not close`);
     });
     defer(() => vi.unstubAllEnvs());
     await writeFile(
@@ -398,7 +443,7 @@ const marked = async (
       env: { PATH: process.env.PATH, [leaseVariable]: value },
     }
   );
-  groups.push(child.pid!);
+  groups.push(child);
   const closed = new Promise((resolve) => child.on("close", resolve));
   await readyLine(child);
   return { child, closed };
@@ -444,10 +489,9 @@ it.each(platforms)(
   async (platform) => {
     const { root, directory } = await records();
     const value = crypto.randomUUID();
-    const leader = await marked(
-      value,
-      `require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }).unref()`
-    );
+    // 구성원은 대표의 표식(환경)을 물려받는다. 대표는 구성원이 연결을 쥔 뒤 끝난다.
+    const member = await leavingMember();
+    const leader = await marked(value, member.leader);
     await leader.closed;
     const group = leader.child.pid!;
     await recordFor(directory, group, value);
