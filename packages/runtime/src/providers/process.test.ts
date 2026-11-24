@@ -293,11 +293,13 @@ describe("runProbe", () => {
   );
 
   // 프로그램이 끝났는데 그 출력을 물려받은 다른 프로그램이 남으면, 출력이 닫히기를 기다리지 않고 바로 트리를 끈다(공용 실행의 트리
-  // 끄기). 출력을 쥔 그 프로그램까지 끝나 출력이 닫히고, 결과는 프로그램의 결과다. 예전에는 출력 닫힘을 1초 기다리다 시한에 닿아
-  // 실패로 돌려주었다(#268, 시간 기다림 제거). 판정은 결과에 끈 이유(`stopped`)가 없다는 것과 출력을 쥔 프로그램이 끝났다는 연결
-  // 신호다. 출력을 쥔 프로그램은 스스로 끝나지 않으므로, 출력 닫힘을 기다리는 회귀는 시한에 닿아 "stopped (limit)"으로 실패한다.
-  // 시한은 그 회귀를 끊는 상한일 뿐이고 프로그램 둘을 띄우는 준비도 그 안에 든다. 그래서 느린 실행기를 감당하게 잡는다. 예전의
-  // 500ms는 결함 없이도 부하가 큰 실행에서 준비만으로 닿았다(#213, #286 이월분).
+  // 끄기). 출력을 쥔 그 프로그램까지 끝나 출력이 닫히고, 결과는 프로그램의 결과다. 예전에는 출력 닫힘을 1초 기다린 뒤 트리를 껐다
+  // (#268, 시간 기다림 제거). 그 기다림이 돌아오는지를 시간이 아니라 시계로 가린다: 이 시험 프로세스의 `setTimeout`을 가짜 시계로
+  // 두고 옮기지 않는다(#288 `lateReadyLine`과 같은 방식). 출력 닫힘을 시간으로 기다리는 어떤 대기도 지나지 않으므로, 그런 회귀는
+  // 끝나지 않고 이 시험의 실제 시간 상한(아래 `it`의 시한, 러너의 실제 시계)에서 실패한다. 공용 실행의 끄기 길에 있는 타이머
+  // (`runTree`의 `limitMs`, `within`, 실행기 끝 확인)는 모두 넘기면 실패하는 상한이라, 올바른 실행은 시계가 흐르지 않아도 끝난다.
+  // 실행 상한(`limitMs`)도 가짜 시계 위라 결과에 끼어들지 않는다. 예전의 500ms 실제 시한은 결함 없이도 부하가 큰 실행에서 프로그램
+  // 둘을 띄우는 준비만으로 닿았다(#213, #286 이월분). `node:timers/promises`의 기다림은 가짜 시계가 덮지 않는다(한계).
   it("stops what the program left holding its output as soon as the program ends, and returns the program's result", async () => {
     const folder = await folders.make("babojubot-probe-");
     const holderFile = path.join(folder, "holder");
@@ -309,11 +311,16 @@ describe("runProbe", () => {
     onTestFinished(() => lifelines.close());
     // 출력을 쥔 프로그램이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 끝난다.
     const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const result = await probe(
       `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
-      20_000
+      // 가짜 시계 위의 실행 상한이라 지나지 않는다.
+      5_000
     );
     expect(result.stdout).toBe("done\n");
     await lifelines.closed("holder");
-  }, 40_000);
+  }, 30_000);
 });
