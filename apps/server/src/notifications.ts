@@ -1,4 +1,5 @@
 import type { NotificationChannel } from "@babojubot/contracts";
+import { failureCode } from "@babojubot/contracts";
 import { notificationOf } from "@babojubot/core";
 import {
   claimNotifications,
@@ -26,7 +27,9 @@ export class NotificationRelay {
     () => this.#pass(),
     (error) => {
       // 남은 항목은 outbox에 그대로 있고 다음 신호·주기 확인이 다시 보낸다.
-      console.error("[notifications]", error);
+      console.error(
+        `[notifications] a delivery pass failed (${failureCode(error)})`
+      );
     }
   );
   #timer: ReturnType<typeof setInterval> | undefined;

@@ -1,3 +1,5 @@
+import { failureCode } from "@babojubot/contracts";
+
 /**
  * 한 실행 시도에서 이미 남긴 격리 중계 거부를 기억한다. 같은 거부(같은 키)는 실행 시도마다 한 번만 남기고,
  * 서로 다른 거부도 정해진 수(`limit`)까지만 남긴다. 실행 시도가 끝나면 그 실행 시도의 상태를 버리므로
@@ -37,7 +39,9 @@ export class RefusalLog {
       if (!(await this.#write(runId, text))) this.#runs.delete(runId);
     } catch (error) {
       this.#runs.get(runId)?.delete(key);
-      console.warn("[isolation] could not record a relay refusal", error);
+      console.warn(
+        `[isolation] could not record a relay refusal (${failureCode(error)})`
+      );
     }
   }
 

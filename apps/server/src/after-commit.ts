@@ -1,4 +1,8 @@
-import { continueAfterFailure, failureCode } from "@babojubot/contracts";
+import {
+  continueAfterFailure,
+  failureCode,
+  isThenable,
+} from "@babojubot/contracts";
 import type { AfterCommit, Stored } from "@babojubot/db";
 import type { RunDispatcher } from "./dispatcher.ts";
 import type { EventHub } from "./event-hub.ts";
@@ -45,9 +49,7 @@ export async function applyAfterCommit(
         await ensureWorkspace(id);
       } catch (error) {
         report(
-          "[workspace] folder preparation failed; the next run assembly will retry",
-          id,
-          error
+          `[workspace] folder preparation failed for organization ${id}; the next run assembly will retry (${failureCode(error)})`
         );
       }
   if (events.length)
@@ -84,19 +86,22 @@ function bestEffort(
   effect: () => void | Promise<void>
 ): void | Promise<void> {
   const failed = (error: unknown) =>
-    report(`[after-commit] ${what} failed; the saved result stands`, error);
+    report(
+      `[after-commit] ${what} failed; the saved result stands (${failureCode(error)})`
+    );
   try {
     const pending = effect();
-    if (pending) return pending.catch(failed);
+    if (isThenable(pending))
+      return Promise.resolve(pending).then(undefined, failed);
   } catch (error) {
     failed(error);
   }
 }
 
 /** 진단을 남긴다. 진단 자체가 실패해도 나머지 효과를 막지 않는다. */
-function report(...args: unknown[]): void {
+function report(line: string): void {
   continueAfterFailure(
-    () => console.error(...args),
+    () => console.error(line),
     (error) => {
       process.stderr.write(
         `[after-commit] a diagnostic could not be written (${failureCode(error)})\n`

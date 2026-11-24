@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import os from "node:os";
 import {
+  failureCode,
   settled,
   type ProviderConnection,
   type ProviderReadinessCheck,
@@ -225,7 +226,7 @@ export class IsolationGate {
       if (!result.toolsReached) return { status: "unavailable" };
       return { status: "safe", toolsBaseUrl: containerToolsOrigin };
     } catch (error) {
-      console.error("[isolation] safety check failed", error);
+      console.error(`[isolation] safety check failed (${failureCode(error)})`);
       return { status: "unavailable" };
     }
   }

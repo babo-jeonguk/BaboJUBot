@@ -1,5 +1,6 @@
 import {
   continueAfterFailure,
+  failureCode,
   isThenable,
   type Synchronous,
 } from "@babojubot/contracts";
@@ -89,24 +90,19 @@ export class RerunLoop<E = void, I = void> {
         const returned = this.#onError(error);
         if (isThenable(returned)) {
           console.error(
-            "[rerun-loop] onError returned a promise; the failure it was given follows",
-            new AsyncCallbackError("onError"),
-            error
+            `[rerun-loop] onError returned a promise (${failureCode(new AsyncCallbackError("onError"))}); the failure it was given was ${failureCode(error)}`
           );
           // 그 작업의 실패도 서버 로그에 남긴다. 회차는 기다리지 않는다.
           void Promise.resolve(returned).then(undefined, (thrown: unknown) =>
             console.error(
-              "[rerun-loop] the promise onError returned failed",
-              thrown
+              `[rerun-loop] the promise onError returned failed (${failureCode(thrown)})`
             )
           );
         }
       },
       (thrown) =>
         console.error(
-          "[rerun-loop] onError threw while handling a failure; the failure and what onError threw follow",
-          error,
-          thrown
+          `[rerun-loop] onError threw while handling a failure; the failure was ${failureCode(error)} and onError threw ${failureCode(thrown)}`
         )
     );
   }
