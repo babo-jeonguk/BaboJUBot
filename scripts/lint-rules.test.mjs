@@ -2041,6 +2041,29 @@ test("a promise marked with awaitedLater must be stored and awaited later in the
       `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.any([p, later]);\n`,
       /기다리지 않습니다/,
     ],
+    // 다른 값이 거절만 하는 race·any도, 그 조합의 거절을 받아 성공으로 바꾸는 자리(expect(…).rejects, .catch, then의 거절 처리기,
+    // try/catch)에서는 시한의 거절로 끝나 표시한 Promise를 보지 않고 통과한다(#291 외부 리뷰 2회차 SPEC-1).
+    "a deadline race whose rejection an expect takes as success": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait expect(Promise.race([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))])).rejects.toThrow("late");\n`,
+      /기다리지 않습니다/,
+    ],
+    "a deadline race whose rejection a catch handler takes": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.race([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))]).catch(() => undefined);\n`,
+      /기다리지 않습니다/,
+    ],
+    "a deadline race whose rejection a then handler takes": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\nawait Promise.any([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))]).then(use, () => undefined);\n`,
+      /기다리지 않습니다/,
+    ],
+    // try/catch로 받으면 거절이 나지 않은 길만 덮는다. catch에서 다시 기다려야 모든 길이다.
+    "a deadline race awaited in a try whose catch does not await again": [
+      `${laterImport}${laterHead}const later = awaitedLater(p);\ntry {\n  await Promise.race([later, new Promise((_, reject) => setTimeout(() => reject(new Error("late")), 1000))]);\n} catch {\n  use(1);\n}\n`,
+      /한 분기/,
+    ],
+    "a repository timeout helper whose rejection an expect takes as success": [
+      `${laterImport}${laterHead}import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait expect(within(later, 1000)).rejects.toThrow();\n`,
+      /기다리지 않습니다/,
+    ],
     "a local timeout helper that fulfils when the time runs out": [
       `${laterImport}${laterHead}const later = awaitedLater(p);\nconst within = async (value, ms) =>\n  Promise.race([value, new Promise((resolve) => setTimeout(() => resolve(undefined), ms))]);\nawait within(later, 1000);\n`,
       /기다리지 않습니다/,
