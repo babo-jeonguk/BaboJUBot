@@ -139,34 +139,40 @@ export function loadContext(root = scriptRoot) {
   };
 }
 
-// 이 저장소의 GitHub 파일 주소(blob/tree/raw)를 저장소 기준 경로로 바꾼다. 다른 저장소·다른 주소는 null.
+// 이 저장소의 GitHub 파일 주소(blob/tree/raw)를 저장소 기준 경로로 바꾼다. github.com이 아닌 주소, 다른 저장소, 파일 주소가 아닌
+// 것은 null. 주소 해석기가 읽지 못한 주소, origin을 모름, 잘못된 퍼센트 인코딩, 아는 ref가 없음은 판정할 수 없음이다.
+/** @returns {string | null | { undecidable: string }} */
 function repositoryPathFromUrl(url, context) {
-  // 주소로 읽을 수 없는 글자는 이 저장소의 파일 주소가 아니다.
-  if (!URL.canParse(url)) return null;
+  if (!URL.canParse(url))
+    return { undecidable: "address the URL parser cannot read" };
   const parsed = new URL(url);
-  if (parsed.hostname !== "github.com" || !context.repository) return null;
-  const segments = parsed.pathname
-    .split("/")
-    .filter(Boolean)
-    .map(decodedOrAsIs);
+  if (parsed.hostname !== "github.com") return null;
+  if (!context.repository)
+    return {
+      undecidable: "to GitHub while this checkout has no GitHub origin",
+    };
+  const segments = parsed.pathname.split("/").filter(Boolean).map(decoded);
+  if (segments.includes(undefined))
+    return { undecidable: "path with invalid percent-encoding" };
   const [owner, name, kind, ...rest] = segments;
   if (
     owner?.toLowerCase() !== context.repository.owner.toLowerCase() ||
     name?.toLowerCase() !== context.repository.name.toLowerCase() ||
+    kind === undefined ||
     !["blob", "tree", "raw", "edit", "blame"].includes(kind) ||
     rest.length < 2
   )
     return null;
-  // 브랜치 이름에 `/`가 들어갈 수 있어 실제로 있는 가장 짧은 ref를 찾는다. 모르면 첫 마디를 ref로 본다.
+  // 브랜치 이름에 `/`가 들어갈 수 있어 실제로 있는 가장 짧은 ref를 찾는다. 아는 ref가 없으면 어디까지가 ref인지 모른다.
   for (let index = 1; index < rest.length; index++)
     if (context.refExists(rest.slice(0, index).join("/")))
       return rest.slice(index).join("/");
-  return rest.slice(1).join("/");
+  return { undecidable: "to a GitHub branch or commit not known here" };
 }
 
-/** URL 인코딩을 푼 글자. 잘못된 인코딩(URIError)은 그대로 판정한다. */
-function decodedOrAsIs(text) {
-  return orIfUnreadable(() => decodeURIComponent(text), text);
+/** URL 인코딩을 푼 글자. 잘못된 인코딩(URIError)이면 undefined다. */
+function decoded(text) {
+  return orIfUnreadable(() => decodeURIComponent(text), undefined);
 }
 
 /**
@@ -175,12 +181,12 @@ function decodedOrAsIs(text) {
  * 판정하지 않는다.
  */
 function unknownPathShape(relative) {
-  if (relative !== relative.trim()) return "with space at either end";
-  if (/\p{Cc}/u.test(relative)) return "with a control character";
-  if (relative.includes("\\")) return "with a backslash";
-  if (relative.startsWith("//")) return "that starts with //";
-  if (relative.split("/").includes("..")) return "with a .. segment";
-  if (relative.includes(":")) return "with a colon";
+  if (relative !== relative.trim()) return "path with space at either end";
+  if (/\p{Cc}/u.test(relative)) return "path with a control character";
+  if (relative.includes("\\")) return "path with a backslash";
+  if (relative.startsWith("//")) return "path that starts with //";
+  if (relative.split("/").includes("..")) return "path with a .. segment";
+  if (relative.includes(":")) return "path with a colon";
   return undefined;
 }
 
@@ -194,10 +200,14 @@ function linkedRepositoryPath(target, context) {
     ? repositoryPathFromUrl(target, context)
     : target.startsWith("#") || /^[a-z][\w+.-]*:/i.test(target)
       ? null
-      : decodedOrAsIs(target.split(/[?#]/)[0]);
+      : (decoded(target.split(/[?#]/)[0]) ?? {
+          undecidable: "path with invalid percent-encoding",
+        });
   if (local === null) return null;
+  if (typeof local !== "string")
+    return { undecidable: `a link ${local.undecidable}: ${target}` };
   const shape = unknownPathShape(local);
-  if (shape) return { undecidable: `a link path ${shape}: ${target}` };
+  if (shape) return { undecidable: `a link ${shape}: ${target}` };
   const relative = local.replace(/^(\.\/)+/, "");
   // 떼어낸 뒤에도 `/`로 시작하면 저장소 밖 절대 경로다.
   return relative.startsWith("/") ? null : { path: relative };
