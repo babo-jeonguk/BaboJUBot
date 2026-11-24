@@ -195,12 +195,33 @@ export function settingModules(
     )
       packages.set(manifest.name, path.posix.dirname(file));
   }
+  // A specifier that points into the repository (a relative or absolute path, a workspace package name) must resolve. One
+  // that does not is "not checked", not "nothing to protect", so it throws with the specifier, the importing file and the
+  // reason. A relative path resolves as ESM does (a URL against the importing file), with no tool-specific guess such as
+  // finding x.ts for ./x.js: the repository writes extensions as they are. Only packages outside the repository and
+  // built-in modules stay outside the closure.
+  const unresolved = (from: string, specifier: string, why: string) =>
+    new Error(
+      `${from} imports "${specifier}", which ${why}; the files a check setting imports must resolve to protect them (.agents/scripts/protected-files.ts)`
+    );
   const resolve = (from: string, specifier: string): string | undefined => {
-    if (specifier.startsWith(".")) {
+    if (/^(?:\.{1,2}\/|\/|file:)/.test(specifier)) {
       const url = new URL(specifier, pathToFileURL(path.join(root, from)));
       const file = repositoryRelative(root, fileURLToPath(url));
-      return present.has(file) ? file : undefined;
+      if (!present.has(file))
+        throw unresolved(
+          from,
+          specifier,
+          "does not resolve to a repository file"
+        );
+      return file;
     }
+    if (specifier.startsWith("#"))
+      throw unresolved(
+        from,
+        specifier,
+        "is a package import this check does not resolve"
+      );
     const name = [...packages.keys()].find(
       (each) => specifier === each || specifier.startsWith(`${each}/`)
     );
@@ -208,9 +229,16 @@ export function settingModules(
     const folder = packages.get(name) ?? ".";
     const entry = specifier === name ? "." : `.${specifier.slice(name.length)}`;
     const resolved = resolvePackageEntry(path.join(root, folder), name, entry);
-    if ("refused" in resolved) return undefined;
+    if ("refused" in resolved)
+      throw unresolved(from, specifier, `Node refuses (${resolved.refused})`);
     const file = repositoryRelative(root, resolved.file);
-    return present.has(file) ? file : undefined;
+    if (!present.has(file))
+      throw unresolved(
+        from,
+        specifier,
+        `resolves to ${file}, which is not a repository file`
+      );
+    return file;
   };
   const modules = new Map<string, string>();
   const settings = files.filter(
