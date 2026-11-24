@@ -335,8 +335,10 @@ export function waitForReadyLine(
     );
     child.stdout!.on("data", onData);
     child.stdout!.once("end", onEnd);
+    // Promise 구독은 풀 수 없어(리스너와 달리 off가 없다) 대기가 끝난 뒤에도 불린다. 끝난 대기는 아무 자원도 새로 잡지 않는다.
     exited.then(
       (ended) => {
+        if (settled) return;
         exit = ended;
         if (outputEnded) return endedBeforeStart(ended);
         outputEnd = setTimeout(
