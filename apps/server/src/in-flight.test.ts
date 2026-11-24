@@ -1,14 +1,17 @@
 import http from "node:http";
 import type net from "node:net";
 import express from "express";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
 import { afterEach, describe, expect, it } from "vitest";
 import { InFlight, trackHandlers } from "./in-flight.ts";
 
 let server: http.Server | undefined;
 afterEach(async () => {
   server?.closeAllConnections();
-  await new Promise<void>((resolve) =>
-    server ? server.close(() => resolve()) : resolve()
+  await new Promise<void>((resolve, reject) =>
+    server
+      ? server.close((error) => (error ? reject(error) : resolve()))
+      : resolve()
   );
   server = undefined;
 });
@@ -52,11 +55,13 @@ describe("trackHandlers", () => {
       held.handle
     );
     const url = await serve(app);
-    const answered = fetch(url + path).then((res) => res.text());
+    // 아래 단언이 먼저 실패하면 afterEach가 연결을 끊어 이 요청이 거절된다. 그때는 시험의 실패가 보고되고, 이 거절은 처리되지 않은
+    // 거절로 새지 않는다. 시험이 끝까지 가면 아래에서 기다린다.
+    const answered = awaitedLater(fetch(url + path).then((res) => res.text()));
     await held.entered;
+    // 들어온 처리기는 끝나기 전까지 센다. 세지 않았다면 여기서 비어 있고 `idle`이 곧바로 풀린다.
+    expect(inFlight.pending()).toEqual([`GET ${path}`]);
     const idle = inFlight.idle().then(() => order.push("idle"));
-    // 세지 않았다면 이 사이에 `idle`이 먼저 풀린다.
-    await new Promise((resolve) => setImmediate(resolve));
     held.release();
     await idle;
     expect(await answered).toBe("ok");

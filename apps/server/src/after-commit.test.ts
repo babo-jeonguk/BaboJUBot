@@ -1,7 +1,7 @@
 import type { Event } from "@babojubot/contracts";
 import type { RunCancellation } from "@babojubot/core";
 import { refused, stored, type AfterCommit } from "@babojubot/db";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { applyAfterCommit, completeStored } from "./after-commit.ts";
 
 const event = (id: number): Event => ({
@@ -59,6 +59,10 @@ describe("applyAfterCommit", () => {
     expect(f.calls).toEqual(["publish 1", "kick lead"]);
   });
   it("publishes, cancels, waits for the resumed organization, then kicks", async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const f = fakes();
     const applied = applyAfterCommit(f.deps, {
       events: [event(1), event(2)],
@@ -66,7 +70,9 @@ describe("applyAfterCommit", () => {
       resumedOrganizationId: "A",
       woken: ["lead", "worker"],
     });
-    await Promise.resolve();
+    // 재개 처리를 풀기 전에 할 수 있는 일을 모두 마치게 한다. 효과는 입출력 없이 microtask와 타이머로만 이어지므로, 가짜 시계의
+    // 타이머를 남김없이 돌린 뒤에는 저절로 일어날 일이 없다. 재개를 기다리지 않는 구현이면 이때 이미 촉진이 있다.
+    await vi.runAllTimersAsync();
     expect(f.calls).toEqual(["publish 1,2", "cancel r1", "resume A"]);
 
     f.release();

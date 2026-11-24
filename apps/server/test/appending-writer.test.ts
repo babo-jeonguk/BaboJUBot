@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { keepAppending } from "./appending-writer.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
@@ -28,19 +28,34 @@ function heldAppend(fail?: Error) {
     },
   };
 }
+/**
+ * writer가 시험의 다음 행동 없이 할 수 있는 일을 모두 마친 뒤 `promise`가 끝났는가. writer는 타이머와 microtask로만 움직이고(덧붙이기는
+ * 시험이 붙잡는다) 시험은 가짜 시계를 켠다(`fakeClock`). 그래서 가짜 시계의 타이머를 남김없이 돌리고 microtask가 빈 뒤에는 저절로 일어날
+ * 일이 남지 않는다. 이벤트 루프 한 차례만 기다리면 타이머로 미룬 끝남을 놓쳤다(#286).
+ */
 const settled = async (promise: Promise<unknown>) => {
   let done = false;
   void promise.then(
     () => (done = true),
     () => (done = true)
   );
-  await new Promise((resolve) => setImmediate(resolve));
+  await vi.runAllTimersAsync();
   return done;
 };
 
+/** 가짜 시계를 켜고 시험이 끝나면 되돌린다. 첫 덧붙이기는 시계를 1ms 옮겨 시작한다. */
+function fakeClock() {
+  vi.useFakeTimers();
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+}
+
 it("waits for an append already in progress before it reports stopped", async () => {
+  fakeClock();
   const held = heldAppend();
   const writer = keepAppending("run.log", "더\n", { append: held.append });
+  await vi.advanceTimersByTimeAsync(1);
   await held.firstStarted;
   const stopped = writer.stop();
   const callsAtStop = held.calls();
@@ -93,8 +108,10 @@ it("does not start the next append before the one in progress has finished", asy
 });
 
 it("waits for the append in progress when the test fails before it stops the writer", async () => {
+  fakeClock();
   const held = heldAppend();
   const writer = keepAppending("run.log", "더\n", { append: held.append });
+  await vi.advanceTimersByTimeAsync(1);
   await held.firstStarted;
   // 시험 본문이 단언에서 실패해도 등록한 정리가 writer를 멈추고 진행 중인 쓰기를 기다린다.
   const test = withCleanup(async (defer) => {

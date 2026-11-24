@@ -1,4 +1,12 @@
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { AsyncCallbackError, RerunLoop, RerunLoops } from "./rerun-loop.ts";
 
 /** 풀거나 거절할 수 있는 Promise. 시험이 회차의 시작과 끝을 정한다. */
@@ -54,11 +62,16 @@ function failures() {
   return { errors, onError: (error: unknown) => errors.push(error) };
 }
 
-/** 틀린 구현이라면 기다리던 쪽이 이 사이에 먼저 풀린다. 이벤트 루프 차례 하나는 그때까지의 microtask를 모두 처리한다. */
-const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+/**
+ * 루프가 시험의 다음 행동 없이 할 수 있는 일을 모두 마친다. 루프는 입출력 없이 microtask와 타이머로만 움직이고, 시험은 가짜 시계를
+ * 켠다(아래 `beforeEach`). 그래서 가짜 시계의 타이머를 남김없이 돌리고 microtask가 빈 뒤에는 저절로 일어날 일이 남지 않는다.
+ * 틀린 구현이 기다리던 쪽을 먼저 풀면(microtask로든 타이머로든) 이 뒤에는 이미 풀려 있다. 이벤트 루프 한 차례만 기다리면 타이머로
+ * 미룬 풀림을 놓쳤다(#286).
+ */
+const drained = () => vi.runAllTimersAsync();
 
 /**
- * 기다림이 이벤트 루프 차례 하나 안에 끝나는가. 회차와 콜백이 모두 곧바로 끝나는 시험에서 쓴다.
+ * 루프가 할 수 있는 일을 모두 마친 뒤 기다림의 결과. 회차와 콜백이 모두 곧바로 끝나는 시험에서 쓴다.
  * 회차 완료 표시가 풀리지 않는 구현이면 `"pending"`으로 남는다.
  */
 async function outcomeSoon(waiting: Promise<unknown>) {
@@ -67,7 +80,7 @@ async function outcomeSoon(waiting: Promise<unknown>) {
     () => (outcome = "resolved"),
     (error: unknown) => (outcome = { rejected: error })
   );
-  await nextTurn();
+  await drained();
   return outcome;
 }
 
@@ -81,7 +94,11 @@ function serverLog() {
   };
 }
 
+beforeEach(() => {
+  vi.useFakeTimers();
+});
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -127,7 +144,7 @@ describe("RerunLoop", () => {
     const settled = loop.settled().then(() => checks.log.push("settled"));
     checks.finish(1);
     await checks.entered(2);
-    await nextTurn();
+    await drained();
     checks.finish(2);
     await settled;
 
@@ -155,7 +172,7 @@ describe("RerunLoop", () => {
 
     const ran = loop.runNow().then(() => checks.log.push("ran"));
     await checks.entered(1);
-    await nextTurn();
+    await drained();
     checks.finish(1);
     await ran;
 
@@ -172,7 +189,7 @@ describe("RerunLoop", () => {
     const ran = loop.runNow().then(() => checks.log.push("ran"));
     checks.finish(1);
     await checks.entered(2);
-    await nextTurn();
+    await drained();
     checks.finish(2);
     await ran;
 
@@ -248,7 +265,7 @@ describe("RerunLoop", () => {
     await checks.entered(1);
     loop.request();
     const closed = loop.close().then(() => checks.log.push("closed"));
-    await nextTurn();
+    await drained();
     checks.finish(1);
     await closed;
 
@@ -276,7 +293,7 @@ describe("RerunLoop", () => {
     const settled = loop.settled().then(() => checks.log.push("settled"));
     checks.finish(1);
     await checks.entered(2);
-    await nextTurn();
+    await drained();
     checks.finish(2);
     await settled;
 
@@ -439,7 +456,7 @@ describe("RerunLoop", () => {
     );
     asyncReport.request();
     expect(await outcomeSoon(asyncReport.settled())).toBe("resolved");
-    await nextTurn();
+    await drained();
 
     expect(errors).toEqual([expect.any(AsyncCallbackError), idleBroken]);
     expect(log.includes(reportBroken)).toBe(true);
@@ -541,7 +558,7 @@ describe("RerunLoops", () => {
     const settled = loops
       .settled("a")
       .then(() => checks.of("a").log.push("settled"));
-    await nextTurn();
+    await drained();
     checks.of("a").finish(3);
     await settled;
 
@@ -577,7 +594,7 @@ describe("RerunLoops", () => {
     checks.of("a").finish(1);
     await checks.of("a").entered(2);
     expect(loops.busy("a")).toBe(true);
-    await nextTurn();
+    await drained();
     checks.of("a").finish(2);
     await settled;
 
@@ -613,7 +630,7 @@ describe("RerunLoops", () => {
     await checks.of("a").entered(2);
     expect(forgotten).toEqual(["a"]);
     expect(loops.busy("a")).toBe(true);
-    await nextTurn();
+    await drained();
     checks.of("a").finish(2);
     await settled;
 
@@ -660,7 +677,7 @@ describe("RerunLoops", () => {
     const settled = loops.settledAll().then(() => order.push("settled"));
     aDone.resolve();
     await bEntered.promise;
-    await nextTurn();
+    await drained();
     bDone.resolve();
     await settled;
 
@@ -696,7 +713,7 @@ describe("RerunLoops", () => {
     await checks.of("b").entered(1);
     loops.request("a");
     const closed = loops.close().then(() => checks.of("a").log.push("closed"));
-    await nextTurn();
+    await drained();
     checks.of("a").finish(1);
     checks.of("b").finish(1);
     await closed;
