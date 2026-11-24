@@ -2225,8 +2225,8 @@ test("a deadline wait gets the same verdict written directly or moved into a loc
     ],
   ];
   for (const pair of pairs) {
-    const kind = pair.at(-1);
-    for (const code of pair.slice(0, -1))
+    const kind = /** @type {RegExp | null} */ (pair.at(-1));
+    for (const code of /** @type {string[]} */ (pair.slice(0, -1)))
       for (const place of testPlaces) {
         const messages = await lint(
           laterImport + laterHead + code,

@@ -1885,50 +1885,54 @@ const diffFree =
 const diffOptional = optionNames("-M -C -B");
 const logFree =
   "--first-parent --no-merges --merges --reverse --all --oneline --no-walk -q --quiet --source --use-mailmap --mailmap";
-const gitListOptions = new Map([
-  [
-    "ls-files",
-    {
-      free: optionNames(
-        "-z -t -v -f -c --cached -d --deleted -m --modified -o --others -i --ignored -s --stage -k --killed --directory --eol --empty-directory -u --unmerged --resolve-undo --exclude-standard --full-name --recurse-submodules --error-unmatch --abbrev --debug --deduplicate --sparse"
-      ),
-      optional: new Set(),
-      nul: new Set(),
-    },
-  ],
-  [
-    "ls-tree",
-    {
-      free: optionNames(
-        "-d -r -t -z -l --long --name-only --name-status --object-only --full-name --full-tree --abbrev"
-      ),
-      optional: new Set(),
-      nul: new Set(),
-    },
-  ],
-  [
-    "status",
-    {
-      free: optionNames(
-        "-v --verbose -s --short -b --branch --show-stash --ahead-behind --porcelain --long -z --null --untracked-files --ignored --ignore-submodules --column --no-renames --renames --find-renames"
-      ),
-      optional: optionNames("-u -M"),
-      nul: new Set(["--null"]),
-    },
-  ],
-  ...[...gitDiffCommands].map((command) => [
-    command,
-    {
-      free: optionNames(
-        ["diff", "diff-tree", "diff-index", "diff-files"].includes(command)
-          ? diffFree
-          : `${diffFree} ${logFree}`
-      ),
-      optional: diffOptional,
-      nul: new Set(),
-    },
-  ]),
-]);
+/** @typedef {{ free: Set<string>, optional: Set<string>, nul: Set<string> }} GitListOptions */
+/** @type {Map<string, GitListOptions>} */
+const gitListOptions = new Map(
+  /** @type {[string, GitListOptions][]} */ ([
+    [
+      "ls-files",
+      {
+        free: optionNames(
+          "-z -t -v -f -c --cached -d --deleted -m --modified -o --others -i --ignored -s --stage -k --killed --directory --eol --empty-directory -u --unmerged --resolve-undo --exclude-standard --full-name --recurse-submodules --error-unmatch --abbrev --debug --deduplicate --sparse"
+        ),
+        optional: new Set(),
+        nul: new Set(),
+      },
+    ],
+    [
+      "ls-tree",
+      {
+        free: optionNames(
+          "-d -r -t -z -l --long --name-only --name-status --object-only --full-name --full-tree --abbrev"
+        ),
+        optional: new Set(),
+        nul: new Set(),
+      },
+    ],
+    [
+      "status",
+      {
+        free: optionNames(
+          "-v --verbose -s --short -b --branch --show-stash --ahead-behind --porcelain --long -z --null --untracked-files --ignored --ignore-submodules --column --no-renames --renames --find-renames"
+        ),
+        optional: optionNames("-u -M"),
+        nul: new Set(["--null"]),
+      },
+    ],
+    ...[...gitDiffCommands].map((command) => [
+      command,
+      {
+        free: optionNames(
+          ["diff", "diff-tree", "diff-index", "diff-files"].includes(command)
+            ? diffFree
+            : `${diffFree} ${logFree}`
+        ),
+        optional: diffOptional,
+        nul: new Set(),
+      },
+    ]),
+  ])
+);
 
 /**
  * 하위 명령 `known`의 옵션 낱말들(`--` 앞)을 git parse-options처럼 왼쪽부터 읽어, 짧은 옵션 글자 `letter`나 긴 옵션 `names`가 옵션으로
