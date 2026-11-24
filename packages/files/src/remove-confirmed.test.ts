@@ -66,19 +66,21 @@ describe("removing a file in a place others can change, only the one confirmed",
     expect(await readdir(root)).toEqual(["config.json"]);
   });
 
-  // 링크를 만들 수 없는 디스크에서도 확인하지 못한 파일을 제자리에 되돌린다. 그 이름에 아무것도 없을 때만 만드는 복사로 되돌리므로
-  // 그사이 생긴 새 파일은 바꾸지 않는다. 숨은 이름으로 남기면 사용자 설정이 제자리에서 사라진다(#286).
+  // 링크를 만들 수 없는 디스크에서는 한 번에 되돌릴 길이 없다. 옮긴 이름을 다시 열어 복사하면 그사이 그 이름에 놓인 다른 것(링크라면
+  // 그 너머)을 제자리에 옮겨 놓을 수 있다. 되돌리지 않고 옮긴 이름에 그대로 두어 그 자리를 알린다(#286 병합분 항목 12).
   it.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
-    "puts a file it does not confirm back under its name on a disk that cannot link (%s)",
+    "keeps a file it does not confirm under its moved name on a disk that cannot link (%s), without copying it back",
     async (code) => {
       const root = await folders.make("babojubot-remove-");
       const file = path.join(root, "config.json");
       await writeFile(file, "someone else's");
       disk.linkFails = code;
       const result = await removeConfirmed(file, async () => false);
-      expect(result).toBe("restored");
-      expect(await readFile(file, "utf8")).toBe("someone else's");
-      expect(await readdir(root)).toEqual(["config.json"]);
+      if (typeof result !== "object")
+        throw new Error(`expected the moved file to be kept, got ${result}`);
+      expect(await readdir(root)).toEqual([path.basename(result.keptAs)]);
+      expect(path.dirname(result.keptAs)).toBe(root);
+      expect(await readFile(result.keptAs, "utf8")).toBe("someone else's");
     }
   );
 
