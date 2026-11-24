@@ -631,6 +631,64 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(warned).not.toHaveBeenCalled();
   });
 
+  // 같은 모양의 요청 쪽: 요청자가 본문을 다 보내기 전에 떠나면 목적지는 나머지 본문을 기다린다. 중계가 목적지 쪽을 닫고 연결을 정리한다.
+  it("closes the destination side without a warning when the requester leaves while still sending its body", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const ended: string[] = [];
+    let received!: () => void;
+    const bodyArrived = new Promise<void>((resolve) => (received = resolve));
+    const server = http.createServer((req, res) => {
+      req.once("data", () => received());
+      req.on("end", () => res.end("done"));
+    });
+    server.on("connection", (socket: net.Socket) =>
+      socket.on("close", () => ended.push("closed"))
+    );
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          server.closeAllConnections();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    const { relays, refused, setResearch } = hub();
+    setResearch([
+      destination({
+        host: "localhost",
+        port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const req = http.request({
+      socketPath: path.join(relay.directory, "egress.sock"),
+      path: `http://localhost:${port}/upload`,
+      method: "POST",
+      agent: false,
+    });
+    // 답 전에 스스로 끊은 요청은 Node가 "socket hang up"(ECONNRESET)으로 알린다. 시험 쪽 요청자의 끝이다.
+    const hungUp = new Promise<string | undefined>((resolve) =>
+      req.once("error", (error: NodeJS.ErrnoException) => resolve(error.code))
+    );
+    req.write("part");
+    await bodyArrived;
+    req.destroy();
+    expect(await hungUp).toBe("ECONNRESET");
+    await expect
+      .poll(() => ended, { timeout: 2000, interval: 20 })
+      .toEqual(["closed"]);
+    setResearch([]);
+    await relays.revalidate(identity.organizationId);
+    expect(refused).toEqual([]);
+    expect(warned).not.toHaveBeenCalled();
+  });
+
   it("answers 502 and leaves why when it cannot connect to an allowed destination", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
