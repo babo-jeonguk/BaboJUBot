@@ -572,10 +572,13 @@ describe("runTree", () => {
       overflow: "stop",
     });
 
+  // 대표는 남길 자식이 연결을 쥔 것을 그 자식의 신호로 본 뒤에 끝난다(#286). 시간(200ms)으로 기다리면 느린 실행기에서 자식이 연결하기
+  // 전에 트리 끄기로 끝나, 연결이 닫히는 것을 볼 수 없었다.
   it("returns the output and exit code, and stops what the program left", async () => {
     const left = unique("left");
+    const held = `${lifelines.hold(left, 'process.stdout.write("held\\n");')} ${keep}`;
     const result = await run(
-      `${child(left, '{ stdio: "ignore" }')} setTimeout(() => { process.stdout.write("done", () => process.exit(4)); }, 200);`
+      `const c = process.getBuiltinModule("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(held)}], { stdio: ["ignore", "pipe", "ignore"] }); c.stdout.once("data", () => process.stdout.write("done", () => process.exit(4)));`
     );
     expect(result).toMatchObject({ started: true, code: 4 });
     expect(result.started && result.stdout.toString()).toBe("done");
