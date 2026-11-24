@@ -1245,6 +1245,12 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     // 부정형도 줄여 쓸 수 있다. 끄는 옵션의 앞부분이면 마지막 상태가 정해지지 않는다(#291 외부 리뷰 4회차 SPEC-4).
     'execFileSync("git", ["status", "--porcelain", "-z", "--no-nu"]);\n',
     'execFileSync("git", ["status", "--porcelain", "--no-porc"]);\n',
+    // 글자가 아닌 인수는 상태를 정하는 어떤 옵션(`--no-null`, `--porcelain`)이나 옵션 끝(`--`, 그러면 뒤의 -z는 경로)일 수 있다.
+    'execFileSync("git", ["status", "--porcelain", "-z", process.argv[2]]);\n',
+    'execFileSync("git", ["status", process.argv[2]]);\n',
+    'execFileSync("git", ["diff", "--name-only", process.argv[2], "-z"]);\n',
+    'execFileSync("git", ["log", "--format=%H", process.argv[2]]);\n',
+    "execSync(`git status --porcelain -z ${process.argv[2]}`);\n",
   ]) {
     const found = await lint(childProcess + code, place, gitListRule);
     assert.equal(found.length, 1, code);
@@ -1257,6 +1263,12 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     'execFileSync("git", ["-C", process.cwd(), "rev-parse", "HEAD"]);\n',
     // status의 -u는 값을 붙여 받으므로 `-us`의 s는 짧은 형식(-s)이 아니라 그 값이다. 경로 목록이 아니다.
     'execFileSync("git", ["status", "-us"]);\n',
+    // 옵션 끝(`--`, 리비전을 받는 자리는 `--end-of-options`) 뒤의 글자가 아닌 인수는 경로나 리비전이다. 끌 수 없는 -z(diff)는 뒤의
+    // 무엇으로도 꺼지지 않는다.
+    'execFileSync("git", ["status", "--porcelain", "-z", "--end-of-options", process.argv[2]]);\n',
+    "execSync(`git status --porcelain -z -- ${process.argv[2]}`);\n",
+    'execFileSync("git", ["log", "--format=%H", "--end-of-options", process.argv[2]]);\n',
+    'execFileSync("git", ["diff", "--name-only", "-z", process.argv[2]]);\n',
   ])
     assert.deepEqual(
       await lint(childProcess + code, place, gitListRule),
