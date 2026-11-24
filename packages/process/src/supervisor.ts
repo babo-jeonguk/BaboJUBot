@@ -6,6 +6,7 @@ import {
   resolvedCommand,
   superviseTree,
   supervisorStopLimitMs,
+  TreeStopFailure,
   windowsLaunch,
   type SupervisorCommand,
 } from "./supervised.ts";
@@ -95,11 +96,15 @@ export async function cleanThroughSupervisor({
   recorded?: { pid: number; start: string };
 }) {
   if (windows() && lease !== undefined)
-    throw new Error(
+    throw new TreeStopFailure(
+      "MARKER_CLEANUP_UNSUPPORTED",
       "Windows has no marker cleanup; the job object ends a run's tree"
     );
   if (!supervisor?.ok)
-    throw new Error(`the supervisor cannot clean up: ${supervisorProblem()}`);
+    throw new TreeStopFailure(
+      "SUPERVISOR_UNAVAILABLE",
+      `the supervisor cannot clean up: ${supervisorProblem()}`
+    );
   const { answered } = superviseTree(
     { file: supervisor.file, args: [], options: {} },
     {

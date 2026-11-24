@@ -407,6 +407,79 @@ mod tests {
             .collect()
     }
 
+    /// A kind of row in a shared file, and whether a row of that kind may have this many fields after its kind.
+    type Shape = [(&'static str, fn(usize) -> bool)];
+
+    const VECTORS: &Shape = &[
+        ("ok", |fields| fields == 2),
+        ("bad", |fields| fields == 1),
+        ("hello", |fields| fields == 2),
+        ("old-hello", |fields| fields == 1),
+    ];
+
+    const TRANSITIONS: &Shape = &[
+        ("transition", |fields| fields == 3),
+        ("accept", |fields| fields >= 1),
+        ("reject", |fields| fields >= 1),
+    ];
+
+    /// Where the rows leave their shape (#286): rows of an unknown kind or with the wrong number of fields, and kinds with no row.
+    /// The tests below go through the rows by kind, so a kind removed or misspelled would otherwise drop its cases without failing.
+    /// The server's tests check the same shape.
+    fn off_shape(rows: &[Vec<&str>], shape: &Shape) -> (Vec<String>, Vec<&'static str>) {
+        let rows_off = rows
+            .iter()
+            .filter(|row| {
+                !shape
+                    .iter()
+                    .any(|(kind, fields)| row[0] == *kind && fields(row.len() - 1))
+            })
+            .map(|row| row.join(" "))
+            .collect();
+        let empty_kinds = shape
+            .iter()
+            .map(|(kind, _)| *kind)
+            .filter(|kind| !rows.iter().any(|row| row[0] == *kind))
+            .collect();
+        (rows_off, empty_kinds)
+    }
+
+    /// The rows of a shared file, after checking that none leaves its shape.
+    fn shaped_rows<'a>(text: &'a str, shape: &Shape) -> Vec<Vec<&'a str>> {
+        let rows = rows(text);
+        assert_eq!(
+            off_shape(&rows, shape),
+            (vec![], vec![]),
+            "rows off the shape, kinds with no row"
+        );
+        rows
+    }
+
+    #[test]
+    fn the_shape_check_finds_a_kind_without_rows_and_rows_of_another_shape() {
+        assert_eq!(
+            off_shape(&rows("ok - 303a2c\nhello - 00\nold-hello 00"), VECTORS),
+            (vec![], vec!["bad"])
+        );
+        assert_eq!(
+            off_shape(
+                &rows("ok - 303a2c\nbad 00\nbda 00\nhello 00\nold-hello 00"),
+                VECTORS
+            ),
+            (vec!["bda 00".to_owned(), "hello 00".to_owned()], vec![])
+        );
+        assert_eq!(
+            off_shape(
+                &rows("transition hello hello\naccept hello\nreject"),
+                TRANSITIONS
+            ),
+            (
+                vec!["transition hello hello".to_owned(), "reject".to_owned()],
+                vec![]
+            )
+        );
+    }
+
     fn bytes(hex: &str) -> Vec<u8> {
         if hex == "-" {
             return Vec::new();
@@ -419,7 +492,7 @@ mod tests {
 
     #[test]
     fn framing_follows_the_shared_vectors() {
-        for row in rows(include_str!("../protocol-vectors.txt")) {
+        for row in shaped_rows(include_str!("../protocol-vectors.txt"), VECTORS) {
             match row[0] {
                 "ok" => {
                     let text = String::from_utf8(bytes(row[1])).unwrap();
@@ -451,7 +524,7 @@ mod tests {
                     assert_ne!(hello(None), line);
                     assert_ne!(hello(Some(1)), line);
                 }
-                other => panic!("unknown vector kind {other}"),
+                other => unreachable!("shaped_rows refuses the kind {other}"),
             }
         }
     }
@@ -461,15 +534,15 @@ mod tests {
     fn table() -> (Table, Vec<(bool, Vec<String>)>) {
         let mut table = HashMap::new();
         let mut sequences = Vec::new();
-        for row in rows(include_str!("../protocol-transitions.txt")) {
+        for row in shaped_rows(include_str!("../protocol-transitions.txt"), TRANSITIONS) {
+            let events = || row[1..].iter().map(|event| (*event).to_owned()).collect();
             match row[0] {
                 "transition" => {
                     table.insert((row[1].to_owned(), row[2].to_owned()), row[3].to_owned());
                 }
-                kind => sequences.push((
-                    kind == "accept",
-                    row[1..].iter().map(|event| (*event).to_owned()).collect(),
-                )),
+                "accept" => sequences.push((true, events())),
+                "reject" => sequences.push((false, events())),
+                other => unreachable!("shaped_rows refuses the kind {other}"),
             }
         }
         (table, sequences)

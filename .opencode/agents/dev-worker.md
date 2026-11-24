@@ -676,6 +676,12 @@ permissions:
     resource: "*/apps/web/e2e/support/server-process.ts"
     effect: deny
   - action: edit
+    resource: "packages/process/src/lifeline-support.ts"
+    effect: deny
+  - action: edit
+    resource: "*/packages/process/src/lifeline-support.ts"
+    effect: deny
+  - action: edit
     resource: "packages/process/src/test-cleanup.ts"
     effect: deny
   - action: edit
