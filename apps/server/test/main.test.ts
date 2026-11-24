@@ -1,5 +1,4 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -16,6 +15,7 @@ import { listOrganizations } from "@babojubot/db";
 import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { beforeEach, expect, it, onTestFinished, vi } from "vitest";
+import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
 import {
@@ -117,7 +117,7 @@ it("lists only this product folder's leftover containers at startup", async () =
   const child = startMain({ DATABASE_URL: external.url });
   onTestFinished(() => stopMain(child));
   await child.ready();
-  const owner = containerOwner(process.env.BABOJUBOT_HOME!);
+  const owner = containerOwner(path.resolve(process.env.BABOJUBOT_HOME!));
   expect(child.dockerCalls()).toEqual(
     process.platform === "win32"
       ? []
@@ -415,17 +415,6 @@ function inheritedEnv() {
   return env;
 }
 
-/**
- * 서버가 자기 컨테이너에 붙이고 시작 정리에서 고르는 주인 표식(main.ts `owner`): 제품 폴더 절대 경로의 SHA-256 앞 16자.
- * 같은 Docker를 쓰는 다른 제품 폴더의 컨테이너는 이 값이 달라 건드리지 않는다.
- */
-function containerOwner(home: string) {
-  return createHash("sha256")
-    .update(path.resolve(home))
-    .digest("hex")
-    .slice(0, 16);
-}
-
 /** `ipc`면 부모와의 IPC 채널을 열어 띄운다(멈춤 메시지·채널 끊김 시험). `preload`는 서버보다 먼저 불러올 모듈이다. */
 function startMain(
   env: Record<string, string>,
@@ -450,7 +439,7 @@ function startMain(
   onTestFinished(() => removeFolder(dockerConfig));
   writeFileSync(
     path.join(dockerConfig, "fake-docker.json"),
-    JSON.stringify({ owner: containerOwner(home) })
+    JSON.stringify({ owner: containerOwner(path.resolve(home)) })
   );
   const child = spawn(process.execPath, args, {
     env: {
