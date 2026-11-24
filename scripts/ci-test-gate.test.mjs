@@ -1160,3 +1160,142 @@ test("the install guard follows node's preloaded modules and its entry past opti
       run
     );
 });
+
+// node는 NODE_OPTIONS의 선적재 모듈도 진입점보다 먼저 불러온다(Node 문서 cli.html NODE_OPTIONS). 단계에 실제로 적용되는 값은 같은
+// 이름의 env 중 가장 좁은 것이다(단계 > job > workflow, GitHub 문서). 명령줄 옵션과 함께 있으면 둘 다 따라가고, 따라갈 수 없는 값
+// (표현식, 앞 단계가 $GITHUB_ENV에 씀, 단계 셸에서 정함, node의 --env-file, 읽지 못하는 값)은 판정할 수 없다(#292 외부 리뷰 3회차 SPEC-3).
+test("the install guard follows the modules NODE_OPTIONS preloads, from the env that applies to the step", (t) => {
+  const base = mkdtempSync(path.join(tmpdir(), "babojubot-install-guard-"));
+  t.after(() => removeFolder(base));
+  mkdirSync(path.join(base, "scripts"));
+  for (const [file, text] of Object.entries({
+    "first.mjs": 'import "node:path";\n',
+    "second.mjs": 'import "yaml";\n',
+    "third.mjs": 'import "picomatch";\n',
+  }))
+    writeFileSync(path.join(base, "scripts", file), text);
+  const flow = ({ workflowEnv, jobEnv, stepEnv, run, before = [] }) => ({
+    ...(workflowEnv ? { env: workflowEnv } : {}),
+    jobs: {
+      judge: {
+        ...(jobEnv ? { env: jobEnv } : {}),
+        steps: [...before, { run, ...(stepEnv ? { env: stepEnv } : {}) }],
+      },
+    },
+  });
+  const second =
+    "judge: scripts/second.mjs imports yaml without pnpm install before it";
+  const third =
+    "judge: scripts/third.mjs imports picomatch without pnpm install before it";
+  const run = "node scripts/first.mjs";
+  for (const shape of [
+    { jobEnv: { NODE_OPTIONS: "--import=./scripts/second.mjs" }, run },
+    { workflowEnv: { NODE_OPTIONS: "--import ./scripts/second.mjs" }, run },
+    { stepEnv: { NODE_OPTIONS: "-r ./scripts/second.mjs --no-warnings" }, run },
+    // 좁은 env가 넓은 env를 가린다.
+    {
+      workflowEnv: { NODE_OPTIONS: "--import ./scripts/third.mjs" },
+      jobEnv: { NODE_OPTIONS: "--import ./scripts/second.mjs" },
+      run,
+    },
+  ])
+    assert.deepEqual(
+      installProblems(flow(shape), base),
+      [second],
+      JSON.stringify(shape)
+    );
+  assert.deepEqual(
+    installProblems(
+      flow({
+        jobEnv: { NODE_OPTIONS: "--import ./scripts/second.mjs" },
+        stepEnv: { NODE_OPTIONS: "--no-warnings" },
+        run,
+      }),
+      base
+    ),
+    []
+  );
+  // 명령줄 옵션과 환경 옵션이 함께 있으면 둘 다 따라간다.
+  assert.deepEqual(
+    installProblems(
+      flow({
+        jobEnv: { NODE_OPTIONS: "--import ./scripts/second.mjs" },
+        run: "node --import ./scripts/third.mjs scripts/first.mjs",
+      }),
+      base
+    ),
+    [second, third]
+  );
+  assert.deepEqual(
+    installProblems(
+      flow({ jobEnv: { NODE_OPTIONS: "--import tsx" }, run }),
+      base
+    ),
+    [
+      "judge: NODE_OPTIONS --import tsx loads the package tsx without pnpm install before it",
+    ]
+  );
+  // NODE_OPTIONS는 node에만 닿는다.
+  assert.deepEqual(
+    installProblems(
+      flow({
+        jobEnv: { NODE_OPTIONS: "--import ./scripts/second.mjs" },
+        run: "echo done",
+      }),
+      base
+    ),
+    []
+  );
+  const unread = (reason) =>
+    `judge: cannot tell what NODE_OPTIONS makes node load (${reason}), and no pnpm install comes before it`;
+  for (const [shape, reason] of [
+    [
+      { jobEnv: { NODE_OPTIONS: "${{ vars.NODE_OPTIONS }}" }, run },
+      'NODE_OPTIONS "${{ vars.NODE_OPTIONS }}" holds an expression',
+    ],
+    [
+      {
+        before: [
+          {
+            run: 'echo "NODE_OPTIONS=--require=./preload.cjs" >> "$GITHUB_ENV"',
+          },
+        ],
+        run,
+      },
+      "a step before it writes $GITHUB_ENV",
+    ],
+    [
+      { run: "export NODE_OPTIONS=--import=tsx\nnode scripts/first.mjs" },
+      "the step sets NODE_OPTIONS in its shell",
+    ],
+    [
+      { run: "NODE_OPTIONS=--import=tsx node scripts/first.mjs" },
+      "the step sets NODE_OPTIONS in its shell",
+    ],
+    [
+      { jobEnv: { NODE_OPTIONS: "--frobnicate" }, run },
+      'NODE_OPTIONS "--frobnicate" has a part it cannot read',
+    ],
+    [
+      { jobEnv: { NODE_OPTIONS: '--import "./scripts/second.mjs"' }, run },
+      'NODE_OPTIONS "--import "./scripts/second.mjs"" has a part it cannot read',
+    ],
+  ])
+    assert.deepEqual(
+      installProblems(flow(shape), base),
+      [unread(reason)],
+      JSON.stringify(shape)
+    );
+  // node의 --env-file은 그 파일의 NODE_OPTIONS도 적용한다(Node 문서 cli.html --env-file). 무엇을 불러오는지 읽지 않는다.
+  for (const command of [
+    "node --env-file=.env scripts/first.mjs",
+    "node --env-file-if-exists .env scripts/first.mjs",
+  ])
+    assert.deepEqual(
+      installProblems(flow({ run: command }), base),
+      [
+        `judge: cannot tell what "${command}" runs, and no pnpm install comes before it`,
+      ],
+      command
+    );
+});
