@@ -1111,6 +1111,11 @@ const gitLists = [
     'execFileSync("git", ["ls-files"]);',
     'execFileSync("git", ["ls-files", "-z"]);',
   ],
+  // 옵션 끝(--) 뒤의 -z는 경로다(#291 외부 리뷰 2회차 SPEC-4).
+  [
+    'execFileSync("git", ["ls-files", "--", "-z"]);',
+    'execFileSync("git", ["ls-files", "-z", "--", "-z"]);',
+  ],
   [
     'spawnSync("git", ["diff", "--name-only", "origin/main"]);',
     'spawnSync("git", ["diff", "-z", "--name-only", "origin/main"]);',
@@ -1176,6 +1181,10 @@ test("a git call whose subcommand the rule cannot read is reported, not passed a
     'const git = (...args) => execFileSync("git", args);\nuse(git);\n',
     'use((...args) => execFileSync("git", args));\n',
     'const git = (...args) => execFileSync("git", args);\nconst words = ["ls-files"];\ngit(...words);\n',
+    // 값을 받을 수 있는 옵션 바로 뒤의 -z는 그 옵션의 값일 수 있다(#291 외부 리뷰 2회차 SPEC-4).
+    'execFileSync("git", ["ls-files", "-x", "-z"]);\n',
+    'execFileSync("git", ["ls-files", "--exclude", "-z"]);\n',
+    'execFileSync("git", ["log", "--name-only", "--author", "-z"]);\n',
   ]) {
     const found = await lint(childProcess + code, place, gitListRule);
     assert.equal(found.length, 1, code);
