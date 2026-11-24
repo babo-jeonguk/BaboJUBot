@@ -659,7 +659,8 @@ jobs:
     needs: [changes, test-e2e-windows-1, test-e2e-windows-2]
     if: ${{ always() && needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # 시한은 받기·설치·판정 전체를 잰다. 판정 스크립트가 저장소 패키지를 가져오므로(scripts/exit-after-output.ts) 설치가 들어간다.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -667,6 +668,11 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: "24"
+      - uses: pnpm/action-setup@v6.1.0
+        with:
+          cache: true
+      # 판정 스크립트가 가져오는 저장소 패키지(@babojubot/contracts 등)를 설치한다(scripts/ci-test-gate.test.mjs가 본다).
+      - run: pnpm install --frozen-lockfile
       - name: Get E2E report 1/2
         uses: actions/download-artifact@v8.0.2
         with:
