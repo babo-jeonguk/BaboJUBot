@@ -123,53 +123,59 @@ async function removeOwned(name: string) {
 const temporary = (name: string) =>
   name.startsWith(".babojubot-") && name.endsWith(".tmp");
 
-const agents = await orIfMissing(
-  () => lstat(".agents", { bigint: true }),
-  hasErrorCode("ENOENT"),
-  undefined
-);
-if (agents === undefined) process.exit(0);
-if (!agents.isDirectory() || !(await enterFolder(".agents", agents))) {
-  report("not_checkable", ".agents");
-  process.exit(unsafe);
-}
-for (const name of await readdir(".")) {
-  if (!temporary(name)) continue;
-  const state = await owned(name);
-  switch (state) {
+/** `.agents`로 들어가 우리 임시 파일과 설정을 확인해 지운다. 지우지 못한 까닭은 `report`로 남긴다. */
+async function clear() {
+  const agents = await orIfMissing(
+    () => lstat(".agents", { bigint: true }),
+    hasErrorCode("ENOENT"),
+    undefined
+  );
+  if (agents === undefined) return;
+  if (!agents.isDirectory() || !(await enterFolder(".agents", agents))) {
+    report("not_checkable", ".agents");
+    return;
+  }
+  for (const name of await readdir(".")) {
+    if (!temporary(name)) continue;
+    const state = await owned(name);
+    switch (state) {
+      case "owned":
+        await removeOwned(name);
+        break;
+      case "missing":
+      case "unmarked":
+        // 우리 것 아님(이미 없거나 표시가 없다). 건드리지 않는다.
+        break;
+      case "not_regular":
+      case "changed":
+        // 우리 임시 파일 이름인데 확인하지 못했다. 설정 파일 쪽과 같은 기준으로 지우지 않고 그 까닭을 남긴다.
+        report(state, name);
+        break;
+      default: {
+        const unhandled: never = state;
+        throw new Error(`unhandled owned result ${String(unhandled)}`);
+      }
+    }
+  }
+  const config = await owned(file);
+  switch (config) {
     case "owned":
-      await removeOwned(name);
+      await removeOwned(file);
       break;
-    case "missing":
     case "unmarked":
-      // 우리 것 아님(이미 없거나 표시가 없다). 건드리지 않는다.
-      break;
     case "not_regular":
     case "changed":
-      // 우리 임시 파일 이름인데 확인하지 못했다. 설정 파일 쪽과 같은 기준으로 지우지 않고 그 까닭을 남긴다.
-      report(state, name);
+      report(config, file);
+      break;
+    case "missing":
       break;
     default: {
-      const unhandled: never = state;
+      const unhandled: never = config;
       throw new Error(`unhandled owned result ${String(unhandled)}`);
     }
   }
 }
-const config = await owned(file);
-switch (config) {
-  case "owned":
-    await removeOwned(file);
-    break;
-  case "unmarked":
-  case "not_regular":
-  case "changed":
-    report(config, file);
-    break;
-  case "missing":
-    break;
-  default: {
-    const unhandled: never = config;
-    throw new Error(`unhandled owned result ${String(unhandled)}`);
-  }
-}
-if (unsafeReason) process.exit(unsafe);
+
+await clear();
+// `process.exit()`는 아직 다 쓰지 못한 표준 오류(파이프)를 버린다. 끝남 코드만 정하고, 쓰기가 끝나면 스스로 끝난다.
+if (unsafeReason) process.exitCode = unsafe;

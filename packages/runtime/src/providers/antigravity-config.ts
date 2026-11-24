@@ -19,9 +19,24 @@ export const configScriptFile = fileURLToPath(
   new URL("./antigravity-config-clear.ts", import.meta.url)
 );
 
+/**
+ * 스크립트의 까닭을 다 읽지 못한 상태. 정해진 모양이 아닌 줄이 있음, 수집 상한에 닿아 뒤가 버려짐, 지우지 못했다고 끝났는데
+ * 까닭이 없음. 읽은 까닭만으로 다 말한 것처럼 넘기지 않는다.
+ */
+type OutputProblem =
+  "unreadable_output" | "truncated_output" | "missing_output";
+const outputProblems: Record<OutputProblem, string> = {
+  unreadable_output: "unreadable output",
+  truncated_output: "reasons cut off",
+  missing_output: "no reasons given",
+};
+const isOutputProblem = (
+  reason: ScriptCleanupReason | OutputProblem
+): reason is OutputProblem => Object.hasOwn(outputProblems, reason);
+
 /** 정리 스크립트가 지우지 못한 까닭. 스크립트의 정해진 값과 직렬화한 이름만 담는다(사람이 읽을 글은 옮기지 않는다). */
 export type CleanupReason = {
-  reason: ScriptCleanupReason | "unreadable_output";
+  reason: ScriptCleanupReason | OutputProblem;
   name: string;
   keptAs?: string;
   code?: string;
@@ -44,7 +59,7 @@ export class ConfigNotCleared extends Error {
 export function describeCleanup(reasons: CleanupReason[]): string {
   return reasons
     .map((reason) => {
-      if (reason.reason === "unreadable_output") return "unreadable output";
+      if (isOutputProblem(reason.reason)) return outputProblems[reason.reason];
       let text = `${reason.reason} ${JSON.stringify(reason.name)}`;
       if (reason.keptAs !== undefined)
         text += ` as ${JSON.stringify(reason.keptAs)}`;
@@ -79,10 +94,14 @@ function cleanupReason(line: string): CleanupReason | undefined {
 }
 
 /**
- * 정리 스크립트의 표준 오류를 까닭으로 읽는다. 한 줄에 JSON 하나이며, 정해진 모양이 아닌 줄이 있으면 내용 없이
- * `unreadable_output` 하나를 더한다(사람이 읽을 글은 옮기지 않는다).
+ * 지우지 못했다고 끝난 정리 스크립트의 표준 오류를 까닭으로 읽는다. 한 줄에 JSON 하나이며, 정해진 모양이 아닌 줄이 있으면 내용 없이
+ * `unreadable_output` 하나를 더한다(사람이 읽을 글은 옮기지 않는다). 출력이 수집 상한에 닿았으면(`truncated`) `truncated_output`을,
+ * 읽은 것이 하나도 없으면 `missing_output`을 더한다.
  */
-export function readCleanupReasons(stderr: string): CleanupReason[] {
+export function readCleanupReasons(
+  stderr: string,
+  truncated: boolean
+): CleanupReason[] {
   const reasons: CleanupReason[] = [];
   let unreadable = false;
   for (const line of stderr.split("\n")) {
@@ -92,8 +111,14 @@ export function readCleanupReasons(stderr: string): CleanupReason[] {
     else unreadable = true;
   }
   if (unreadable) reasons.push({ reason: "unreadable_output", name: "" });
+  if (truncated) reasons.push({ reason: "truncated_output", name: "" });
+  if (reasons.length === 0)
+    reasons.push({ reason: "missing_output", name: "" });
   return reasons;
 }
+
+/** 정리 스크립트 출력의 수집 상한. 넘는 부분은 버리고 스크립트는 끝까지 돈다(도중에 끄면 옮긴 파일을 되돌리지 못한다). */
+const outputLimit = 64 * 1024;
 
 /** 설정을 다루는 Node.js 프로세스를 공용 실행으로 끝까지 돌린다. 상한(30초)에 닿으면 그 트리를 끄고 확인한 뒤 실패로 던진다. */
 async function run(cwd: string) {
@@ -104,7 +129,7 @@ async function run(cwd: string) {
     // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
     env: process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {},
     limitMs: 30_000,
-    maxOutputBytes: 64 * 1024,
+    maxOutputBytes: outputLimit,
     overflow: "truncate",
   });
   if (!result.started)
@@ -122,10 +147,13 @@ async function run(cwd: string) {
     throw new Error(
       `the configuration script ended by ${result.signal ?? "an unknown cause"}`
     );
-  // 표준 오류는 한 줄에 JSON 하나다. 정해진 모양이 아닌 줄은 내용 없이 하나로 센다(사람이 읽을 글은 옮기지 않는다).
+  // 표준 오류는 한 줄에 JSON 하나다. 수집 상한까지 찼으면 그 뒤가 버려졌을 수 있으므로 잘린 것으로 본다(넘침을 따로 알리지 않는다).
   if (result.code === 3)
     throw new ConfigNotCleared(
-      readCleanupReasons(result.stderr.toString("utf8"))
+      readCleanupReasons(
+        result.stderr.toString("utf8"),
+        result.stderr.length >= outputLimit
+      )
     );
   if (result.code !== 0)
     throw new Error(`the configuration script failed (exit ${result.code})`);
