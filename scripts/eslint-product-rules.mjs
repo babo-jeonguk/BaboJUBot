@@ -1935,8 +1935,9 @@ const gitListOptions = new Map([
  * 쓰였는지 판정한다: "yes", 앞 옵션의 값일 수 있으면 "maybe", 없으면 "no". 짧은 옵션 묶음(`-sz`)은 왼쪽부터 읽어 값을 받지 않는 옵션만
  * 넘는다. 값을 받는 옵션이나 모르는 글자를 만나면 묶음의 나머지가 그 값이고(git parse-options), 나머지가 없으면 다음 낱말이 값일 수 있다.
  * 값을 붙여서만 받는 선택 값 옵션은 나머지를 값으로 받고 다음 낱말은 받지 않는다. 긴 옵션은 `--opt=value`(값을 붙여 받음)와 부정형
- * `--no-…`(값을 받지 않음)이면 다음 낱말을 받지 않고, 값을 받지 않는 옵션이 아니면 다음 낱말이 값일 수 있다. 모르는 인수(글자가
- * 아님)도 다음 낱말을 값으로 받을 수 있다.
+ * `--no-…`(값을 받지 않음)이면 다음 낱말을 받지 않고, 값을 받지 않는 옵션이 아니면 다음 낱말이 값일 수 있다. git은 긴 옵션을
+ * 앞부분만 써도 받으므로(parse-options의 줄여 쓰기) 찾는 긴 옵션의 앞부분은 "maybe"다. 모르는 인수(글자가 아님)도 다음 낱말을 값으로
+ * 받을 수 있다.
  */
 function gitOptionUse(options, known, letter, names) {
   let found = "no";
@@ -1951,7 +1952,11 @@ function gitOptionUse(options, known, letter, names) {
     let here = "no";
     let takesNext = false;
     if (word.startsWith("--")) {
-      if (names.includes(word.split("=")[0])) here = "yes";
+      const name = word.split("=")[0];
+      if (names.includes(name)) here = "yes";
+      // git은 긴 옵션의 앞부분만 써도(겹치지 않으면) 그 옵션으로 받는다. 찾는 옵션의 앞부분이면 그 옵션일 수 있다.
+      else if (name.length > 2 && names.some((each) => each.startsWith(name)))
+        here = "maybe";
       takesNext =
         !word.includes("=") &&
         !word.startsWith("--no-") &&
