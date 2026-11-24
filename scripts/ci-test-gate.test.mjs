@@ -874,3 +874,64 @@ test("the install guard reads every script a step runs and fails on an import it
     /scripts\/computed\.mjs loads a module through import\(\) with a name that is not a string literal/
   );
 });
+
+// 설치가 앞서지 않은 단계가 저장소 코드를 돌릴 수 있는 실행기를 부르면, 그 대상을 읽어 내거나 판정할 수 없다고 보고한다. 읽지 못한
+// 실행 모양을 "패키지 없음"으로 접지 않는다(#292 parent 점검).
+test("the install guard reads node's script past options and ./, and reports a runner whose target it cannot read", (t) => {
+  const base = mkdtempSync(path.join(tmpdir(), "babojubot-install-guard-"));
+  t.after(() => removeFolder(base));
+  mkdirSync(path.join(base, "scripts"));
+  writeFileSync(
+    path.join(base, "scripts", "first.mjs"),
+    'import "node:path";\n'
+  );
+  writeFileSync(path.join(base, "scripts", "second.mjs"), 'import "yaml";\n');
+  const job = (run) => ({ jobs: { judge: { steps: [{ run }] } } });
+  const imported = [
+    "judge: scripts/second.mjs imports yaml without pnpm install before it",
+  ];
+  assert.deepEqual(
+    installProblems(job("node ./scripts/second.mjs"), base),
+    imported
+  );
+  assert.deepEqual(
+    installProblems(job("node --test-reporter=tap scripts/second.mjs"), base),
+    imported
+  );
+  for (const run of [
+    "pnpm run check",
+    "pnpm exec vitest run",
+    "npx tsx scripts/first.mjs",
+    "tsx scripts/first.mjs",
+    'node -e "process.exit(0)"',
+    "node --import tsx scripts/first.mjs",
+  ])
+    assert.deepEqual(
+      installProblems(job(run), base),
+      [
+        `judge: cannot tell what "${run}" runs, and no pnpm install comes before it`,
+      ],
+      run
+    );
+  // 저장소 코드를 돌리지 않는 명령과, 설치 뒤의 실행기는 보지 않는다.
+  assert.deepEqual(
+    installProblems(job("echo done\nnode scripts/first.mjs"), base),
+    []
+  );
+  assert.deepEqual(
+    installProblems(
+      {
+        jobs: {
+          judge: {
+            steps: [
+              { run: "pnpm install --frozen-lockfile" },
+              { run: "pnpm run check" },
+            ],
+          },
+        },
+      },
+      base
+    ),
+    []
+  );
+});
