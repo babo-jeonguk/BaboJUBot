@@ -200,12 +200,25 @@ test(
       const lifelines = await openLifelines();
       defer(() => lifelines.close());
       const pids = await mkdtemp(path.join(tmpdir(), "boot-check-pids-"));
-      defer(() => removeFolder(pids));
+      // 남긴 프로세스의 끝을 확인한 뒤에만 그 번호 기록(pids)과 감독 대상 폴더(scope, 감독자가 알린 뒤에 안다)를 지운다. 끝을 확인하지
+      // 못하면 둘 다 남겨 남은 프로세스를 볼 수 있게 한다(CODING_STANDARDS.md#정리, #292 외부 리뷰 6회차 STD-7).
+      /** @type {string | undefined} */
+      let scope;
+      const folder = folderCleanup(() =>
+        attemptAll([
+          () => removeFolder(pids),
+          async () => {
+            if (scope) await removeFolder(scope);
+          },
+        ])
+      );
+      defer(folder.cleanUp);
       const escaped = lifelineHolder(
         lifelines,
         "escaped",
         path.join(pids, "escaped")
       );
+      folder.own(escaped.end);
       const script = `
       const { spawn } = require("node:child_process");
       spawn(process.execPath, ["-e", ${JSON.stringify(`${escaped.code} setInterval(() => {}, 1000);`)}, require("node:os").tmpdir()], {
@@ -221,15 +234,7 @@ test(
       );
       const reported =
         outcome.error instanceof Error ? outcome.error : undefined;
-      const scope = /could not clean up (\S+)/.exec(
-        reported?.message ?? ""
-      )?.[1];
-      // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
-      const folder = folderCleanup(async () => {
-        if (scope) await removeFolder(scope);
-      });
-      defer(folder.cleanUp);
-      folder.own(escaped.end);
+      scope = /could not clean up (\S+)/.exec(reported?.message ?? "")?.[1];
       assert.ok(
         reported,
         `the supervisor did not report the running process: ${String(outcome.error)}`
@@ -263,8 +268,21 @@ test(
       const lifelines = await openLifelines();
       defer(() => lifelines.close());
       const pids = await mkdtemp(path.join(tmpdir(), "boot-check-pids-"));
-      defer(() => removeFolder(pids));
+      // 남긴 프로세스의 끝을 확인한 뒤에만 그 번호 기록(pids)과 감독 대상 폴더(scope, 감독자가 알린 뒤에 안다)를 지운다. 끝을 확인하지
+      // 못하면 둘 다 남겨 남은 프로세스를 볼 수 있게 한다(CODING_STANDARDS.md#정리, #292 외부 리뷰 6회차 STD-7).
+      /** @type {string | undefined} */
+      let scope;
+      const folder = folderCleanup(() =>
+        attemptAll([
+          () => removeFolder(pids),
+          async () => {
+            if (scope) await removeFolder(scope);
+          },
+        ])
+      );
+      defer(folder.cleanUp);
       const held = lifelineHolder(lifelines, "held", path.join(pids, "held"));
+      folder.own(held.end);
       const script = `
       const { spawn } = require("node:child_process");
       spawn(process.execPath, ["-e", ${JSON.stringify(`${held.code} setInterval(() => {}, 1000);`)}], {
@@ -281,15 +299,7 @@ test(
       );
       const reported =
         outcome.error instanceof Error ? outcome.error : undefined;
-      const scope = /could not clean up (\S+)/.exec(
-        reported?.message ?? ""
-      )?.[1];
-      // 남긴 프로세스를 끈 뒤에 그 폴더를 지운다. 끝나지 않으면 폴더를 남기고 그 사실을 알린다.
-      const folder = folderCleanup(async () => {
-        if (scope) await removeFolder(scope);
-      });
-      defer(folder.cleanUp);
-      folder.own(held.end);
+      scope = /could not clean up (\S+)/.exec(reported?.message ?? "")?.[1];
       assert.ok(
         reported,
         `the supervisor did not report the held output: ${String(outcome.error)}`
