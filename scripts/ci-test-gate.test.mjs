@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  existsSync,
   globSync,
   mkdirSync,
   mkdtempSync,
@@ -14,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse } from "yaml";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { importedSpecifiers } from "./module-imports.ts";
-import { codeFormats } from "./test-files.mjs";
+import { codeFormatNames, codeFormats } from "./test-files.mjs";
 import { testSuites } from "./test-suites.ts";
 
 const workflow = parse(
@@ -818,7 +819,66 @@ function packagesImportedBy(base, script, seen = new Set()) {
   });
 }
 
-/** workflow에서 저장소 `base`의 패키지를 가져오는 스크립트를 설치 전에 돌리는 단계. */
+/**
+ * 저장소 코드를 돌릴 수 있는 실행기. Node 자신(`node`, 파일을 돌림), Node·corepack이 주거나 pnpm/action-setup이 까는 패키지 관리자
+ * (`npm`·`npx`·`pnpm`·`pnpx`·`yarn`·`corepack`, package.json 스크립트와 패키지 실행 파일을 돌림), 저장소 코드를 바로 돌리는 TypeScript
+ * 실행기와 다른 JS 실행 환경(`tsx`·`ts-node`·`bun`·`bunx`·`deno`).
+ */
+const codeRunners = new Set([
+  "node",
+  "npm",
+  "npx",
+  "pnpm",
+  "pnpx",
+  "yarn",
+  "corepack",
+  "tsx",
+  "ts-node",
+  "bun",
+  "bunx",
+  "deno",
+]);
+const codeFile = new RegExp(`\\.(?:${codeFormatNames.join("|")})$`);
+
+/**
+ * 단계 명령 `run`이 부르는 실행기마다: 읽어 낸 저장소 스크립트(`{ script }`), 또는 무엇을 돌리는지 읽지 못한 그 줄(`{ unread }`).
+ * 셸을 해석하지 않는다: 줄을 셸 구분 기호(공백·`|`·`;`·`&`·괄호·`$(`·백틱)로 낱말로 나눠 실행기 이름인 낱말을 찾는다. `node` 뒤
+ * 옵션(`-`로 시작)을 건너뛴 첫 낱말이 저장소의 코드 파일(`./` 접두 허용)일 때만 읽은 것으로 본다. 다른 실행기는 대상을 읽지 않는다
+ * (`pnpm install`은 설치 자체).
+ */
+function runnersIn(run, base) {
+  /** @type {({ script: string } | { unread: string })[]} */
+  const found = [];
+  for (const line of run.split("\n")) {
+    const words = line
+      .split(/\$\(|[\s|;&()`]+/)
+      .map((word) => word.replace(/^["']+|["']+$/g, ""))
+      .filter(Boolean);
+    let unread = false;
+    words.forEach((word, at) => {
+      if (!codeRunners.has(word)) return;
+      if (word === "pnpm" && words[at + 1] === "install") return;
+      if (word === "node") {
+        let next = at + 1;
+        while (words[next]?.startsWith("-")) next += 1;
+        const file = words[next]?.replace(/^\.\//, "");
+        if (file && codeFile.test(file) && existsSync(path.join(base, file))) {
+          found.push({ script: file });
+          return;
+        }
+      }
+      unread = true;
+    });
+    // 한 줄에서 읽지 못한 실행기가 여럿이어도 그 줄을 한 번 알린다.
+    if (unread) found.push({ unread: line.trim() });
+  }
+  return found;
+}
+
+/**
+ * workflow에서 설치 전에 저장소 `base`의 패키지를 가져오는 스크립트를 돌리는 단계, 또는 설치 전에 무엇을 돌리는지 읽지 못한 실행기를
+ * 부르는 단계. 읽지 못한 것을 "패키지 없음"으로 접지 않는다.
+ */
 function installProblems(workflow, base) {
   const problems = [];
   for (const [id, job] of Object.entries(workflow.jobs)) {
@@ -827,14 +887,19 @@ function installProblems(workflow, base) {
       const installed = steps
         .slice(0, index)
         .some((before) => /^pnpm install\b/.test(before.run ?? ""));
-      // 한 단계가 돌리는 스크립트를 모두 본다.
-      for (const [, script] of (each.run ?? "").matchAll(
-        /(?:^|\s)node\s+((?:scripts|\.agents)\/\S+\.(?:mjs|ts))/g
-      )) {
-        const packages = [...new Set(packagesImportedBy(base, script))];
-        if (!installed && packages.length > 0)
+      if (installed) return;
+      // 한 단계가 부르는 실행기를 모두 본다.
+      for (const runner of runnersIn(each.run ?? "", base)) {
+        if ("unread" in runner) {
           problems.push(
-            `${id}: ${script} imports ${packages.join(", ")} without pnpm install before it`
+            `${id}: cannot tell what "${runner.unread}" runs, and no pnpm install comes before it`
+          );
+          continue;
+        }
+        const packages = [...new Set(packagesImportedBy(base, runner.script))];
+        if (packages.length > 0)
+          problems.push(
+            `${id}: ${runner.script} imports ${packages.join(", ")} without pnpm install before it`
           );
       }
     });
