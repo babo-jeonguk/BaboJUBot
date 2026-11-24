@@ -23,6 +23,24 @@ import { permissionDenial } from "@babojubot/process/test-support";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
+// 로그인 파일 읽기(`./regular-file.ts` `readRegularFile`)를 정한 오류로 실패시킨다. 옮긴 이름(`….removing`)의 파일만 실패시키고, 그 밖은
+// 진짜로 읽는다. 비어 있으면 아무것도 바꾸지 않는다.
+const reading = vi.hoisted(() => ({
+  failMovedWith: undefined as string | undefined,
+}));
+vi.mock("./regular-file.ts", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./regular-file.ts")>();
+  return {
+    ...real,
+    readRegularFile: async (file: string) => {
+      const code = reading.failMovedWith;
+      if (code !== undefined && file.endsWith(".removing"))
+        throw Object.assign(new Error(`${code}: cannot read`), { code });
+      return real.readRegularFile(file);
+    },
+  };
+});
+
 // 조직별 제품 폴더(사용자 결정 2026-11-06, docs/research/org-product-folders-references.md).
 // 같은 연결이라도 조직마다 제품 폴더(설정·세션·확장)를 따로 쓴다. 연결 폴더는 로그인 원본·준비 확인·모델 목록·프로세스 기록에만 쓰고
 // 컨테이너에 넣지 않는다. 한 조직이 써 둔 설정을 다른 조직의 프로그램이 읽어 그 조직의 실행 시도 토큰을 내보내지 못하게 한다.
@@ -515,6 +533,43 @@ describe("Antigravity", () => {
     });
     for (const home of [connection, path.join(connection, "organizations", a)])
       expect((await lstat(tokenAt(home))).isSymbolicLink()).toBe(true);
+  }, 20000);
+
+  // 격리를 끈 실행은 조직 자리의 자리 표시를 확인해 지운다. 옮긴 자리 표시를 다시 읽지 못해(EIO) 확인이 실패하면 실행은 실패하고,
+  // 실행 기록에는 감싼 오류의 이름이 아니라 그 원인 코드가 남는다(#296 외부 리뷰 2회차 STD-3).
+  it("leaves the code of a failed stand-in confirmation in the run's record", async () => {
+    const env = await setup();
+    const organizationId = crypto.randomUUID();
+    const place = tokenAt(
+      path.join(env.root, "providers/antigravity/organizations", organizationId)
+    );
+    await mkdir(path.dirname(place), { recursive: true });
+    // 격리 실행이 조직 자리에 두는 자리 표시(권한이 빈 가짜 로그인).
+    await writeFile(
+      place,
+      JSON.stringify({
+        token: {
+          access_token: "",
+          token_type: "Bearer",
+          expiry: "2099-01-01T00:00:00Z",
+        },
+        auth_method: "consumer",
+      })
+    );
+    reading.failMovedWith = "EIO";
+    onTestFinished(() => {
+      reading.failMovedWith = undefined;
+    });
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const result = await simulator(env.root).adapter.execute(
+      await env.requestFor(organizationId),
+      control()
+    );
+    expect(result.stopReason).toBe("failed");
+    expect(warned.mock.calls.map(([line]) => String(line))).toContain(
+      "[provider] the Antigravity run failed (EIO)"
+    );
   }, 20000);
 
   it("reports a run without the connection's login as needing one", async () => {

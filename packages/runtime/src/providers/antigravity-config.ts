@@ -19,11 +19,32 @@ export const configScriptFile = fileURLToPath(
   new URL("./antigravity-config-clear.ts", import.meta.url)
 );
 
+/**
+ * 스크립트의 까닭을 다 읽지 못한 상태. 정해진 모양이 아닌 줄이 있음, 수집 상한에 닿아 뒤가 버려짐, 지우지 못했다고 끝났는데
+ * 까닭이 없음, 정상(0)도 정리 실패(3)도 아니게 끝나 끝까지 돌지 못함(`code`에 그 끝남). 읽은 까닭만으로 다 말한 것처럼 넘기지 않는다.
+ */
+type OutputProblem =
+  | "unreadable_output"
+  | "truncated_output"
+  | "missing_output"
+  | "incomplete_run";
+const outputProblems: Record<OutputProblem, string> = {
+  unreadable_output: "unreadable output",
+  truncated_output: "reasons cut off",
+  missing_output: "no reasons given",
+  incomplete_run: "the script did not finish",
+};
+const isOutputProblem = (
+  reason: ScriptCleanupReason | OutputProblem
+): reason is OutputProblem => Object.hasOwn(outputProblems, reason);
+
 /** 정리 스크립트가 지우지 못한 까닭. 스크립트의 정해진 값과 직렬화한 이름만 담는다(사람이 읽을 글은 옮기지 않는다). */
 export type CleanupReason = {
-  reason: ScriptCleanupReason | "unreadable_output";
+  reason: ScriptCleanupReason | OutputProblem;
   name: string;
   keptAs?: string;
+  /** 옮긴 이름에 남긴 까닭이 예상 밖의 실패였으면 그 코드. 까닭 자신의 원인(`code`)과 다른 칸이다. */
+  keptCode?: string;
   code?: string;
 };
 
@@ -44,10 +65,12 @@ export class ConfigNotCleared extends Error {
 export function describeCleanup(reasons: CleanupReason[]): string {
   return reasons
     .map((reason) => {
-      if (reason.reason === "unreadable_output") return "unreadable output";
-      let text = `${reason.reason} ${JSON.stringify(reason.name)}`;
+      let text = isOutputProblem(reason.reason)
+        ? outputProblems[reason.reason]
+        : `${reason.reason} ${JSON.stringify(reason.name)}`;
       if (reason.keptAs !== undefined)
         text += ` as ${JSON.stringify(reason.keptAs)}`;
+      if (reason.keptCode !== undefined) text += ` because ${reason.keptCode}`;
       if (reason.code !== undefined) text += ` (${reason.code})`;
       return text;
     })
@@ -62,11 +85,14 @@ function cleanupReason(line: string): CleanupReason | undefined {
     reason?: unknown;
     name?: unknown;
     keptAs?: unknown;
+    keptCode?: unknown;
     code?: unknown;
   };
   if (!isReasonName(fields.reason)) return undefined;
   if (typeof fields.name !== "string") return undefined;
   if (fields.keptAs !== undefined && typeof fields.keptAs !== "string")
+    return undefined;
+  if (fields.keptCode !== undefined && typeof fields.keptCode !== "string")
     return undefined;
   if (fields.code !== undefined && typeof fields.code !== "string")
     return undefined;
@@ -74,15 +100,21 @@ function cleanupReason(line: string): CleanupReason | undefined {
     reason: fields.reason,
     name: fields.name,
     ...(fields.keptAs !== undefined ? { keptAs: fields.keptAs } : {}),
+    ...(fields.keptCode !== undefined ? { keptCode: fields.keptCode } : {}),
     ...(fields.code !== undefined ? { code: fields.code } : {}),
   };
 }
 
 /**
- * 정리 스크립트의 표준 오류를 까닭으로 읽는다. 한 줄에 JSON 하나이며, 정해진 모양이 아닌 줄이 있으면 내용 없이
- * `unreadable_output` 하나를 더한다(사람이 읽을 글은 옮기지 않는다).
+ * 정리하지 못하고 끝난 정리 스크립트의 표준 오류를 까닭으로 읽는다. 한 줄에 JSON 하나이며, 정해진 모양이 아닌 줄이 있으면 내용 없이
+ * `unreadable_output` 하나를 더한다(사람이 읽을 글은 옮기지 않는다). 출력이 수집 상한에 닿았으면(`truncated`) `truncated_output`을,
+ * 끝까지 돌지 못하고 끝났으면(`ending`: 끝남 코드·시한·신호) `incomplete_run`을, 읽은 것이 하나도 없으면 `missing_output`을 더한다.
  */
-export function readCleanupReasons(stderr: string): CleanupReason[] {
+export function readCleanupReasons(
+  stderr: string,
+  truncated: boolean,
+  ending?: string
+): CleanupReason[] {
   const reasons: CleanupReason[] = [];
   let unreadable = false;
   for (const line of stderr.split("\n")) {
@@ -92,8 +124,16 @@ export function readCleanupReasons(stderr: string): CleanupReason[] {
     else unreadable = true;
   }
   if (unreadable) reasons.push({ reason: "unreadable_output", name: "" });
+  if (truncated) reasons.push({ reason: "truncated_output", name: "" });
+  if (ending !== undefined)
+    reasons.push({ reason: "incomplete_run", name: "", code: ending });
+  if (reasons.length === 0)
+    reasons.push({ reason: "missing_output", name: "" });
   return reasons;
 }
+
+/** 정리 스크립트 출력의 수집 상한. 넘는 부분은 버리고 스크립트는 끝까지 돈다(도중에 끄면 옮긴 파일을 되돌리지 못한다). */
+const outputLimit = 64 * 1024;
 
 /** 설정을 다루는 Node.js 프로세스를 공용 실행으로 끝까지 돌린다. 상한(30초)에 닿으면 그 트리를 끄고 확인한 뒤 실패로 던진다. */
 async function run(cwd: string) {
@@ -104,7 +144,7 @@ async function run(cwd: string) {
     // 서버의 실행 옵션(NODE_OPTIONS 등)을 넘기지 않는다. Windows는 시스템 폴더 위치만 있으면 된다.
     env: process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {},
     limitMs: 30_000,
-    maxOutputBytes: 64 * 1024,
+    maxOutputBytes: outputLimit,
     overflow: "truncate",
   });
   if (!result.started)
@@ -114,21 +154,26 @@ async function run(cwd: string) {
         cause: result.error,
       }
     );
+  // 끝남 방식과 까닭 줄 읽기를 나눈다. 정상(0)과 정리 실패(3)가 아닌 끝남(다른 코드·시한·신호)은 끝까지 돌지 못한 것이라 그 끝남을
+  // 까닭에 더한다. 어느 끝남이든 이미 받은 까닭 줄은 버리지 않는다.
+  let ending: string | undefined;
   if (result.stopped)
-    throw new Error(
-      `the configuration script was stopped at its ${result.stopped} limit${result.signal ? ` (signal ${result.signal})` : ""}`
-    );
-  if (result.code === null)
-    throw new Error(
-      `the configuration script ended by ${result.signal ?? "an unknown cause"}`
-    );
-  // 표준 오류는 한 줄에 JSON 하나다. 정해진 모양이 아닌 줄은 내용 없이 하나로 센다(사람이 읽을 글은 옮기지 않는다).
-  if (result.code === 3)
-    throw new ConfigNotCleared(
-      readCleanupReasons(result.stderr.toString("utf8"))
-    );
-  if (result.code !== 0)
-    throw new Error(`the configuration script failed (exit ${result.code})`);
+    ending = `stopped: ${result.stopped}${result.signal ? `, signal ${result.signal}` : ""}`;
+  else if (result.code === null)
+    ending = result.signal
+      ? `signal ${result.signal}`
+      : "no exit code or signal";
+  else if (result.code !== 0 && result.code !== 3)
+    ending = `exit ${result.code}`;
+  if (result.code === 0 && ending === undefined) return;
+  // 표준 오류는 한 줄에 JSON 하나다. 수집 상한까지 찼으면 그 뒤가 버려졌을 수 있으므로 잘린 것으로 본다(넘침을 따로 알리지 않는다).
+  throw new ConfigNotCleared(
+    readCleanupReasons(
+      result.stderr.toString("utf8"),
+      result.stderr.length >= outputLimit,
+      ending
+    )
+  );
 }
 
 /** 우리 표시가 있는 설정과 임시 파일을 지운다. 표시 없는 파일이나 링크가 있으면 까닭과 함께 오류다. */

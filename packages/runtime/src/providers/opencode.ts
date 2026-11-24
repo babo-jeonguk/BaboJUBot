@@ -24,7 +24,11 @@ import {
   subtractUsage,
   usageAmount,
 } from "@babojubot/contracts";
-import { openRegularFile, type OpenedRegularFile } from "@babojubot/files";
+import {
+  openRegularFile,
+  sameEntry,
+  type OpenedRegularFile,
+} from "@babojubot/files";
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
@@ -276,7 +280,8 @@ async function writeAll(file: FileHandle, buffer: Buffer): Promise<void> {
  * 앞부분이 그대로면 WAL이 재시작(새 salt의 머리로 처음부터 다시 씀)되지 않았다. 끝에 새 프레임이 붙는 것은 앞부분을 바꾸지
  * 않으므로 같은 조직의 OpenCode가 쓰는 중이어도 통과하며, 사본을 열면 SQLite는 salt·checksum이 맞는 마지막 commit 프레임까지만
  * 쓴다(https://www.sqlite.org/walformat.html §3 Recovery). 둘 중 하나라도 다르면 사본이 원본의 어느 한 때와도 같다고 할 수
- * 없으므로 확인하지 못한 것으로 보고 그 이유를 돌려준다(fail closed). 체크포인트는 DB를 바꾸고
+ * 없으므로 확인하지 못한 것으로 보고 그 이유를 돌려준다(fail closed). 내용이 그대로여도 그 사이 DB나 WAL의 이름이 다른 파일로
+ * 바뀌었으면(WAL이 새로 생겼거나 사라진 것 포함) 읽은 것이 그 이름의 저장소라고 할 수 없으므로 같은 이유로 돌려준다. 체크포인트는 DB를 바꾸고
  * (https://www.sqlite.org/fileformat2.html §4.3 Checkpoint Algorithm), WAL 재시작은 머리의 salt를 바꾼다(같은 문서
  * §4.4 WAL Reset).
  */
@@ -357,7 +362,27 @@ async function openCodeLoginResidue(
                 walAgain.read === walCopy.copied &&
                 walAgain.digest === walCopy.digest;
             }
-            if (!same) {
+            // 복사한 handle의 내용이 그대로여도 그 사이 이름이 다른 파일로 바뀌었으면, 읽은 것은 지금 그 이름의 저장소가 아니다(DB와
+            // WAL이 서로 다른 저장소의 짝일 수도 있다). 두 이름이 아직 읽은 그 파일일 때(WAL은 열 때 없었으면 지금도 없을 때)만 사본을
+            // 그 저장소로 본다.
+            const stillNamed = async (
+              name: string,
+              read: OpenedRegularFile | undefined
+            ) => {
+              const now = await orIfMissing(
+                () => lstat(folder.at(name), { bigint: true }),
+                hasErrorCode("ENOENT"),
+                undefined
+              );
+              return read === undefined
+                ? now === undefined
+                : now !== undefined && sameEntry(now, read.info);
+            };
+            if (
+              !same ||
+              !(await stillNamed("opencode.db", main)) ||
+              !(await stillNamed("opencode.db-wal", wal))
+            ) {
               console.warn(
                 "[provider] the OpenCode login store changed while it was copied; the remaining login could not be checked"
               );
