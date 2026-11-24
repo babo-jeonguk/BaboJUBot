@@ -4,6 +4,7 @@ import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { finished } from "node:stream";
 import {
   attemptAll,
   continueAfterFailure,
@@ -22,6 +23,7 @@ import {
   decideDestination,
   type EgressRules,
 } from "./egress-policy.ts";
+import { passAnswer } from "./answer-flow.ts";
 
 /**
  * 격리 실행의 중계(#149). 실행 시도 컨테이너에는 네트워크가 없고(`--network none`), 실행 시도마다 이 컴퓨터에 연 폴더의
@@ -97,6 +99,8 @@ type Tunnel = {
   port: number;
   address: string;
   sockets: net.Socket[];
+  /** 중계가 스스로 이 연결을 끊었는지(정책 변경·중계 닫기). 목적지의 끊김과 구분한다. */
+  cut: boolean;
 };
 
 type Relay = {
@@ -242,6 +246,7 @@ export function createRelayHub(): RelayHub {
 
   /** 열린 연결 하나를 지금 규칙에 맞지 않아 회수한다. 소켓을 닫고 이유를 알린다. */
   const revoke = (relay: Relay, tunnel: Tunnel) => {
+    tunnel.cut = true;
     relay.tunnels.delete(tunnel);
     for (const socket of tunnel.sockets) socket.destroy();
     refuse(relay, tunnel.host, tunnel.port, "policy_changed");
@@ -290,6 +295,7 @@ export function createRelayHub(): RelayHub {
           port: target.port,
           address,
           sockets: [client, upstream],
+          cut: false,
         };
         relay.tunnels.add(tunnel);
         const end = () => {
@@ -309,6 +315,7 @@ export function createRelayHub(): RelayHub {
           );
           if (!relay.tunnels.has(tunnel)) return;
           if (!ok) {
+            tunnel.cut = true;
             relay.tunnels.delete(tunnel);
             refuse(relay, tunnel.host, tunnel.port, "policy_changed");
             upstream.destroy();
@@ -362,6 +369,7 @@ export function createRelayHub(): RelayHub {
           port,
           address: dialed.address,
           sockets: [req.socket, socket],
+          cut: false,
         };
         relay.tunnels.add(tunnel);
         const done = () => relay.tunnels.delete(tunnel);
@@ -378,6 +386,7 @@ export function createRelayHub(): RelayHub {
             return void badGateway();
           }
           if (!ok) {
+            tunnel.cut = true;
             relay.tunnels.delete(tunnel);
             refuse(relay, host, port, "policy_changed");
             socket.destroy();
@@ -397,6 +406,10 @@ export function createRelayHub(): RelayHub {
           done();
           return void badGateway();
         }
+        // 목적지가 답을 시작했는지. 그 뒤의 끝은 정상·비정상 모두 답 흐름(`passAnswer`)이 한 번 맡는다.
+        let answered = false;
+        // 요청자가 답을 받기 전에 떠났는지. 그 뒤 목적지 쪽 요청이 끊기는 것은 중계가 닫은 것이다.
+        let left = false;
         const outgoing = http.request(
           {
             method: req.method,
@@ -406,18 +419,48 @@ export function createRelayHub(): RelayHub {
             createConnection: () => socket,
           },
           (response) => {
+            answered = true;
             res.writeHead(response.statusCode ?? 502, response.headers);
-            response.pipe(res);
-            response.on("end", done);
+            passAnswer([{ stream: response, by: "upstream" }], res, (end) => {
+              done();
+              switch (end.by) {
+                // 요청자가 끝까지 받았거나 먼저 떠났다. 둘 다 답이다.
+                case "complete":
+                case "requester":
+                  return;
+                case "upstream":
+                  if (!tunnel.cut)
+                    console.warn(
+                      `[provider] an allowed destination's answer broke off in the relay (${failureCode(end.error)})`
+                    );
+                  return;
+                default: {
+                  const unhandled: never = end;
+                  throw new Error(
+                    `unhandled answer end ${JSON.stringify(unhandled)}`
+                  );
+                }
+              }
+            });
           }
         );
         outgoing.on("error", (error) => {
-          if (!isDisconnect(error))
+          // 답이 시작된 뒤의 오류는 답 흐름이 맡는다. 여기서는 답 전의 실패만 남긴다.
+          if (answered || left) return;
+          if (!tunnel.cut)
             console.warn(
               `[provider] the relay could not forward a request to an allowed destination; it answered 502 (${failureCode(error)})`
             );
           done();
           badGateway();
+        });
+        // `pipe`는 요청자가 본문 중간에 떠나도 목적지 쪽 요청을 끝내지 않는다. 답 전에 요청자 응답이 다 쓰이기 전에 닫히면(이미
+        // 닫혔어도 `finished`가 알린다) 요청자가 떠난 것이므로 목적지 쪽을 닫고 연결을 놓는다.
+        finished(res, (error) => {
+          if (!error || answered) return;
+          left = true;
+          done();
+          outgoing.destroy();
         });
         req.pipe(outgoing);
       });
@@ -460,8 +503,10 @@ export function createRelayHub(): RelayHub {
         close: () =>
           (ended ??= (async () => {
             relays.delete(relay);
-            for (const tunnel of relay.tunnels)
+            for (const tunnel of relay.tunnels) {
+              tunnel.cut = true;
               for (const socket of tunnel.sockets) socket.destroy();
+            }
             relay.tunnels.clear();
             for (const socket of [...idle, ...loose]) socket.destroy();
             await attemptAll(

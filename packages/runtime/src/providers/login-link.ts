@@ -10,27 +10,9 @@ import {
   symlink,
 } from "node:fs/promises";
 import path from "node:path";
-import {
-  continueAfterFailure,
-  failureCode,
-  settled,
-} from "@babojubot/contracts";
+import { continueAfterFailure, failureCode } from "@babojubot/contracts";
+import { oneAtATime } from "./one-at-a-time.ts";
 
-/**
- * 로그인 원본마다 링크 작업과 로그인 읽기(`readLogin`)를 하나씩 한다. 여러 조직과 준비 확인이 한꺼번에 같은 로그인을 옮기면 서로 지운다.
- * 옮기는 중에 읽으면 원본이 두 자리 사이에 있어 어느 쪽에서도 못 읽을 수 있다(#209).
- */
-const turns = new Map<string, Promise<unknown>>();
-function oneAtATime<T>(key: string, task: () => Promise<T>): Promise<T> {
-  const next = settled(turns.get(key) ?? Promise.resolve()).then(task);
-  turns.set(key, next);
-  void settled(
-    next.finally(() => {
-      if (turns.get(key) === next) turns.delete(key);
-    })
-  );
-  return next;
-}
 const warned = new Set<string>();
 /** 링크를 만들 수 없다는 뜻의 오류. 권한 없는 Windows는 EPERM, 링크를 모르는 파일 시스템은 ENOTSUP·EOPNOTSUPP다. */
 const noLinks = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP"]);

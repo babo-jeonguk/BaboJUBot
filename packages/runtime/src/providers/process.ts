@@ -170,6 +170,7 @@ export async function runProbe(
   if (run.stopped)
     throw failed(new Error(`Program was stopped (${run.stopped})`), {
       stopped: run.stopped,
+      ...(run.signal ? { signal: run.signal } : {}),
       stdout,
       stderr,
     });
@@ -193,7 +194,7 @@ export function probeEnding(error: unknown): string {
   const failure = error as
     { code?: unknown; stopped?: unknown; signal?: unknown } | null | undefined;
   if (typeof failure?.stopped === "string")
-    return `stopped: ${failure.stopped}`;
+    return `stopped: ${failure.stopped}${typeof failure.signal === "string" ? `, signal ${failure.signal}` : ""}`;
   if (typeof failure?.code === "number") return `exit ${failure.code}`;
   if (typeof failure?.signal === "string") return failure.signal;
   return failureCode(error);
@@ -409,7 +410,7 @@ export function startProcess(options: {
           // 대표는 셸·MCP 자식보다 먼저 끝날 수 있다. 새 세션으로 나간 명령까지 트리 전체가 끝난 것을 확인해야 기록을 지운다.
           reported(
             (error) =>
-              `programs this run started could not all be stopped; releasing the run and keeping its recovery record (${failureCode(error)}: ${error instanceof Error ? error.message : ""})`,
+              `programs this run started could not all be stopped; releasing the run and keeping its recovery record (${failureCode(error)})`,
             async () => {
               await tree.stop();
               stopped = true;
@@ -456,13 +457,16 @@ export function startProcess(options: {
           // 취소 공통 순서의 마지막: docker 프로그램이 끝나도 컨테이너는 남을 수 있으므로 지우고 없어졌는지 확인한다.
           reported(
             (error) =>
-              `a container could not be removed; it is removed at the next server start (${error instanceof Error ? error.message : failureCode(error)})`,
+              `a container could not be removed; it is removed at the next server start (${failureCode(error)})`,
             async () => {
               if (
                 options.container &&
                 !(await removeContainer(options.container.settings, name!))
               )
-                throw new Error("it was still there after removing it");
+                throw Object.assign(
+                  new Error("it was still there after removing it"),
+                  { code: "container_left" }
+                );
             }
           ),
           reported(
