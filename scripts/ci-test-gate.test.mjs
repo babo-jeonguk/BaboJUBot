@@ -972,10 +972,11 @@ test("the install guard reads every script a step runs and fails on an import it
     ),
     ["judge: scripts/second.mjs imports yaml without pnpm install before it"]
   );
-  assert.throws(
-    () => installProblems(job("node scripts/computed.mjs"), base),
-    /scripts\/computed\.mjs loads a module through import\(\) with a name that is not a string literal/
-  );
+  assert.throws(() => installProblems(job("node scripts/computed.mjs"), base), {
+    name: "Error",
+    message:
+      "scripts/computed.mjs loads a module through import() with a name that is not a string literal, which this check does not follow; load a repository file with import and a string literal so its target can be followed (scripts/module-imports.ts)",
+  });
 });
 
 // 설치가 앞서지 않은 단계가 저장소 코드를 돌릴 수 있는 실행기를 부르면, 그 대상을 읽어 내거나 판정할 수 없다고 보고한다. 읽지 못한

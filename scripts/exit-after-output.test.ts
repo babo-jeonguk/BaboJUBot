@@ -81,7 +81,24 @@ test("runs from a checkout path holding a space and a percent sign", (context) =
     }
   );
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /# pass 1/);
+  // TAP 요약의 줄들(걸린 시간 duration_ms는 실행마다 달라 뺀다): 고른 시험 하나가 통과하고 실패·취소·건너뜀이 없다.
+  assert.deepEqual(
+    result.stdout
+      .split("\n")
+      .filter(
+        (line) => line.startsWith("# ") && !line.startsWith("# duration_ms ")
+      ),
+    [
+      "# Subtest: hands back the exit code once everything written to stdout and stderr has reached the pipe",
+      "# tests 1",
+      "# suites 0",
+      "# pass 1",
+      "# fail 0",
+      "# cancelled 0",
+      "# skipped 0",
+      "# todo 0",
+    ]
+  );
 });
 
 // 출력을 다 쓰지 못하면 성공 코드(0)로 끝내지 않고 1로 끝내며, 0이 아닌 코드는 그대로 둔다(#292 외부 리뷰 1회차 권고). 부모가 자식
@@ -143,6 +160,6 @@ process.stdin.once("data", async () => {
         "the driver or its output did not end"
       );
       assert.equal(code, expected, stderr);
-      assert.match(stderr, new RegExp(`^handed back ${expected}$`, "m"));
+      assert.equal(stderr, `handed back ${expected}\n`);
     }
   }));
