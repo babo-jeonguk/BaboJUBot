@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
@@ -11,6 +12,7 @@ import {
   startServerProcess,
   stopChild,
   type StoppableChild,
+  waitForReadyLine,
 } from "./server-process.ts";
 import { attemptAll } from "@babojubot/contracts";
 
@@ -229,4 +231,46 @@ test("reports both the stop request deadline and the end check after SIGKILL whe
   expect(message).toMatch(/did not end after SIGKILL within 20 ms/);
   expect(sent).toHaveLength(1);
   expect(signals).toEqual(["SIGKILL"]);
+});
+
+/** 가짜 자식의 표준 출력과, 거기 닿은 글을 모은 것(startServerProcess가 모으는 것과 같다). */
+function fakeOutput() {
+  const stdout = new PassThrough();
+  let text = "";
+  stdout.on("data", (chunk: Buffer) => (text += String(chunk)));
+  return { stdout, text: () => text };
+}
+
+// 서버가 끝난(exit) 뒤에도 출력이 끝나기(end) 전에는 시작 줄이 닿을 수 있다. 시작 줄 대기는 exit가 아니라 출력의 끝에서 포기한다
+// (CODING_STANDARDS.md, #288의 readyLine과 같은 기준, #291 parent 점검).
+test("takes a ready line that reaches the pipe after the server exited, before its output ended", async () => {
+  const { stdout, text } = fakeOutput();
+  const ready = waitForReadyLine(
+    { stdout },
+    Promise.resolve({ code: 0, signal: null }),
+    text,
+    "fake server",
+    text,
+    { readyTimeoutMs: 10_000 }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  stdout.end("BaboJUBot server on http://127.0.0.1:1234 (fake)\n");
+  await expect(ready).resolves.toBe("http://127.0.0.1:1234");
+});
+
+test("fails as ended before start when the output ends after the exit without a ready line", async () => {
+  const { stdout, text } = fakeOutput();
+  const ready = waitForReadyLine(
+    { stdout },
+    Promise.resolve({ code: 3, signal: null }),
+    text,
+    "fake server",
+    text,
+    { readyTimeoutMs: 10_000 }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  stdout.end("starting\n");
+  await expect(ready).rejects.toThrow(
+    /시작 전에 끝났다\(code 3, signal null\)/
+  );
 });
