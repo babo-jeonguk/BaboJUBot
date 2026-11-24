@@ -1787,6 +1787,337 @@ const noOwnUntrustedOpen = {
   },
 };
 
+/**
+ * NUL이 없음을 뜻하는 정규식(`export const nulFree = /^[^\x00]*$/`)은 NUL을 일부러 담아, 그 파일(`packages/contracts/src/nul-free.ts`)
+ * 에서만 no-control-regex를 끈다. 그 예외가 정규식 하나만 덮도록 이 규칙이 그 파일의 문장을 그 선언 하나로 막는다(#286 항목 25): 다른
+ * 선언·다른 이름·다른 flag·다른 문장은 모두 짚는다. 도구 정의의 pattern으로 그 철자가 나가므로 `\0` 같은 다른 표기로 바꿀 수 없다(#147).
+ */
+const nulFreeFileShape = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "keep the file that turns no-control-regex off down to the one NUL-free pattern",
+    },
+    schema: [],
+    messages: {
+      other:
+        "이 파일은 no-control-regex를 끄므로 `export const nulFree = /^[^\\x00]*$/;` 하나만 둡니다. 다른 코드는 제어 문자 검사를 받는 다른 파일에 두세요. eslint.config.js",
+      missing:
+        "이 파일에 `export const nulFree = /^[^\\x00]*$/;`가 없습니다. 이 파일은 그 정규식 하나를 위해 no-control-regex를 끕니다. eslint.config.js",
+    },
+  },
+  create(context) {
+    const isNulFree = (statement) => {
+      const declaration =
+        statement.type === "ExportNamedDeclaration"
+          ? statement.declaration
+          : undefined;
+      const [declarator, ...more] =
+        declaration?.type === "VariableDeclaration" &&
+        declaration.kind === "const"
+          ? declaration.declarations
+          : [];
+      const init = declarator?.init;
+      return (
+        more.length === 0 &&
+        declarator?.id.type === "Identifier" &&
+        declarator.id.name === "nulFree" &&
+        init?.type === "Literal" &&
+        init.regex?.pattern === "^[^\\x00]*$" &&
+        init.regex.flags === ""
+      );
+    };
+    return {
+      Program(program) {
+        const kept = program.body.filter(isNulFree);
+        for (const statement of program.body)
+          if (!isNulFree(statement) || statement !== kept[0])
+            context.report({ node: statement, messageId: "other" });
+        if (kept.length === 0)
+          context.report({ node: program, messageId: "missing" });
+      },
+    };
+  },
+};
+
+/** git에 인수 배열을 넘겨 띄우는 child_process 함수와 셸 명령 글을 넘기는 함수(출처 이름). */
+const gitArrayLaunch =
+  /^module:child_process:(execFileSync|execFile|spawnSync|spawn)$/;
+const gitShellLaunch = /^module:child_process:(execSync|exec)$/;
+/** 다음 인수를 값으로 받는 git 전역 옵션(`git -c core.quotePath=false diff …`). */
+const gitOptionsWithValue = new Set([
+  "-c",
+  "-C",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--config-env",
+]);
+/** 경로 목록을 내는 diff 계열 명령(--name-only·--name-status일 때). */
+const gitDiffCommands = new Set([
+  "diff",
+  "diff-tree",
+  "diff-index",
+  "diff-files",
+  "log",
+  "show",
+  "whatchanged",
+]);
+const functionNodeTypes = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+
+/** 경로 목록을 정하는 옵션(조건부 하위 명령). git은 긴 옵션을 앞부분만 써도 받으므로(줄여 쓰기) 그 앞부분도 센다. */
+const gitListLongOptions = [
+  "--name-only",
+  "--name-status",
+  "--porcelain",
+  "--short",
+];
+
+/**
+ * git 인수(`{ value }`는 글자, `{ unknown }`은 모르는 인수)를 판정한다: 경로 목록을 -z 없이 읽으면 `{ command }`, 정할 수 없으면
+ * `{ unjudged: true }`, 아니면 undefined. 옵션을 git처럼 해석하지 않고 아는 단순한 모양만 통과시킨다.
+ * 1. 하위 명령 바로 다음 인수가 글자 그대로 `-z`이면 NUL 목록이다(이 자리의 `-z`는 앞 옵션의 값이 될 수 없다).
+ * 2. 아니면 늘 경로를 내는 `ls-files`·`ls-tree`는 보고한다.
+ * 3. 조건부 하위 명령(diff 계열·`log`·`show`·`status`)은 인수에 글자가 아닌 것, 짧은 옵션 묶음(`-sz`), `--no-…`가 있으면 정할 수
+ *    없다.
+ * 4. 아니면 경로 목록 옵션(`--name-only`·`--name-status`·`--porcelain`·`--short`·`-s`와 그 긴 옵션의 앞부분)이 있으면 보고한다.
+ *    값으로 쓰인 글자나 `--` 뒤의 경로를 옵션으로 봐도 더 보고할 뿐이고, 고치는 법은 같다(`-z`를 하위 명령 바로 다음에).
+ * 하위 명령을 모르면(전역 옵션 뒤 첫 인수가 모르는 값) 정할 수 없다.
+ */
+function gitPathListWithoutNul(parts) {
+  let at = 0;
+  while (at < parts.length) {
+    const part = parts[at];
+    if (!part || "unknown" in part) return { unjudged: true };
+    if (gitOptionsWithValue.has(part.value)) at += 2;
+    else if (part.value.startsWith("-")) at += 1;
+    else break;
+  }
+  const command = parts[at];
+  if (!command || "unknown" in command) return { unjudged: true };
+  const always = command.value === "ls-files" || command.value === "ls-tree";
+  if (
+    !always &&
+    command.value !== "status" &&
+    !gitDiffCommands.has(command.value)
+  )
+    return undefined;
+  const args = parts.slice(at + 1);
+  const first = args[0];
+  if (first && "value" in first && first.value === "-z") return undefined;
+  if (always) return { command: command.value };
+  const words = [];
+  for (const part of args) {
+    if (!("value" in part)) return { unjudged: true };
+    const word = part.value;
+    if (
+      (word.startsWith("-") && !word.startsWith("--") && word.length > 2) ||
+      word.startsWith("--no-")
+    )
+      return { unjudged: true };
+    words.push(word);
+  }
+  const listing = words.some((word) => {
+    const name = word.split("=", 1)[0];
+    return (
+      name === "-s" ||
+      (name.startsWith("--") &&
+        name.length > 2 &&
+        gitListLongOptions.some((option) => option.startsWith(name)))
+    );
+  });
+  return listing ? { command: command.value } : undefined;
+}
+
+/**
+ * git이 경로 목록을 줄 단위로 내면 줄바꿈·따옴표·탭·ASCII 밖 글자가 든 이름을 따옴표로 감싸 이스케이프한다(core.quotePath). 그 출력을
+ * 줄로 나누면 그런 이름을 다른 경로로 읽으므로, 경로 목록은 하위 명령 바로 다음의 -z로 NUL 구분 목록을 받는다(#285 외부 리뷰, #286
+ * 항목 31, 판정은 gitPathListWithoutNul). 구문 트리로
+ * 본다: child_process에서 온 실행(출처로, 이름을 바꿔 가져오거나 모듈 객체로 불러도)에 "git"과 인수 배열을 넘기거나 "git …" 셸
+ * 명령 글을 넘기는 호출. git 인수를 매개변수(나머지 인자·배열 인자)로 받아 넘기는 같은 파일의 감싸기 함수는 그 함수를 부르는 자리의
+ * 인수로 판정하고, 감싸기를 다시 감싼 함수도 따라간다. 하위 명령을 읽지 못하면(글자가 아님, 감싸기를 내보내거나 값으로 넘기거나 이름
+ * 없이 넘겨 부르는 자리를 따라갈 수 없음) "경로 목록 아님"으로 접지 않고 판정할 수 없다고 보고한다.
+ */
+const gitPathListNul = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description: "require -z when reading a path list from git",
+    },
+    schema: [],
+    messages: {
+      missing:
+        "git {{command}}의 경로 목록을 -z 없이 읽습니다. 줄 단위 출력은 줄바꿈·따옴표·탭·ASCII 밖 글자가 든 이름을 따옴표로 감싸 이스케이프하므로(core.quotePath) 그 이름을 다른 경로로 읽습니다. -z를 하위 명령 바로 다음에 두고(`git {{command}} -z …`) \\0으로 나누세요.",
+      unjudged:
+        "git 호출이 경로 목록을 -z로 읽는지 판정할 수 없습니다(하위 명령이 글자가 아님, 감싸기를 내보내거나 값으로 넘김, 또는 -z가 하위 명령 바로 다음에 없으면서 글자가 아닌 인수·짧은 옵션 묶음·--no- 옵션이 있음). -z를 하위 명령 바로 다음에 글자로 두고(`git <하위 명령> -z …`), git 인수를 넘기는 감싸기 함수는 같은 파일에서 이름으로 부르세요(내보내거나 값으로 넘기지 않음).",
+    },
+  },
+  create(context) {
+    const { sourceCode } = context;
+    const enclosingFunction = (node) => {
+      for (let at = node.parent; at; at = at.parent)
+        if (functionNodeTypes.has(at.type)) return at;
+      return undefined;
+    };
+    /** 함수 `fn`의 매개변수 `name`의 자리와 나머지 인자인지. 없으면 undefined. */
+    const parameter = (fn, name) => {
+      const index = (fn?.params ?? []).findIndex(
+        (param) =>
+          (param.type === "Identifier" && param.name === name) ||
+          (param.type === "RestElement" &&
+            param.argument.type === "Identifier" &&
+            param.argument.name === name)
+      );
+      return index === -1
+        ? undefined
+        : { index, rest: fn.params[index].type === "RestElement" };
+    };
+    const literal = (node) =>
+      node?.type === "Literal" && typeof node.value === "string"
+        ? node.value
+        : undefined;
+    /** 함수 `fn` 안의 인수 배열 식을 인수 조각으로: 글자, 그 함수의 매개변수(`{ param }`), 모르는 값. */
+    const partsOf = (expression, fn) => {
+      if (expression?.type === "ArrayExpression")
+        return expression.elements.flatMap((element) => {
+          const value = literal(element);
+          if (value !== undefined) return [{ value }];
+          if (
+            element?.type === "SpreadElement" &&
+            element.argument.type === "Identifier" &&
+            parameter(fn, element.argument.name)
+          )
+            return [{ param: element.argument.name }];
+          return [{ unknown: true }];
+        });
+      if (expression?.type === "Identifier" && parameter(fn, expression.name))
+        return [{ param: expression.name }];
+      return [{ unknown: true }];
+    };
+    /** 감싸기 함수 `fn`을 부른 `call`에서 매개변수 조각을 그 자리의 인수로 바꾼다. */
+    const atCall = (parts, fn, call, caller) =>
+      parts.flatMap((part) => {
+        if (!("param" in part)) return [part];
+        const found = parameter(fn, part.param);
+        if (!found) return [{ unknown: true }];
+        if (!found.rest) return partsOf(call.arguments[found.index], caller);
+        return call.arguments.slice(found.index).flatMap((argument) => {
+          const value = literal(argument);
+          if (value !== undefined) return [{ value }];
+          if (
+            argument.type === "SpreadElement" &&
+            argument.argument.type === "Identifier" &&
+            parameter(caller, argument.argument.name)
+          )
+            return [{ param: argument.argument.name }];
+          return [{ unknown: true }];
+        });
+      });
+    /** 이름 있는 함수(선언, const로 받은 함수 식)의 변수. */
+    const functionVariable = (fn) => {
+      const declaration =
+        fn.type === "FunctionDeclaration"
+          ? fn
+          : fn.parent?.type === "VariableDeclarator" && fn.parent.init === fn
+            ? fn.parent
+            : undefined;
+      const name =
+        fn.type === "FunctionDeclaration"
+          ? fn.id?.name
+          : fn.parent?.id?.type === "Identifier"
+            ? fn.parent.id.name
+            : undefined;
+      if (!declaration || !name) return undefined;
+      return sourceCode
+        .getDeclaredVariables(declaration)
+        .find((variable) => variable.name === name);
+    };
+    /** 함수 선언이나 const로 받은 함수 식이 그 자리에서 내보내지는지. 이름으로 내보내는 것은 부르지 않고 읽는 자리로 잡힌다. */
+    const exported = (fn) => {
+      const statement =
+        fn.type === "FunctionDeclaration" ? fn : fn.parent?.parent;
+      return (
+        statement?.parent?.type === "ExportNamedDeclaration" ||
+        statement?.parent?.type === "ExportDefaultDeclaration"
+      );
+    };
+    const follow = (parts, fn, node, seen) => {
+      if (!parts.some((part) => "param" in part)) {
+        const judged = gitPathListWithoutNul(parts);
+        if (judged && "unjudged" in judged)
+          context.report({ node, messageId: "unjudged" });
+        else if (judged)
+          context.report({
+            node,
+            messageId: "missing",
+            data: { command: judged.command },
+          });
+        return;
+      }
+      if (seen.has(fn)) return;
+      // 매개변수로 받은 git 인수는 부르는 자리에서 정해진다. 그 자리를 모두 볼 수 없으면(이름 없는 함수, 내보낸 함수, 부르지 않고
+      // 읽는 자리) 판정할 수 없다.
+      const variable = functionVariable(fn);
+      if (!variable || exported(fn)) {
+        context.report({ node, messageId: "unjudged" });
+        return;
+      }
+      for (const reference of variable.references) {
+        const call = reference.identifier.parent;
+        if (
+          call?.type !== "CallExpression" ||
+          call.callee !== reference.identifier
+        ) {
+          if (!reference.init) context.report({ node, messageId: "unjudged" });
+          continue;
+        }
+        const caller = enclosingFunction(call);
+        follow(
+          atCall(parts, fn, call, caller),
+          caller,
+          call,
+          new Set([...seen, fn])
+        );
+      }
+    };
+    return {
+      CallExpression(node) {
+        const origin = originName(sourceCode, node.callee) ?? "";
+        const fn = enclosingFunction(node);
+        if (gitArrayLaunch.test(origin) && literal(node.arguments[0]) === "git")
+          follow(partsOf(node.arguments[1], fn), fn, node, new Set());
+        else if (gitShellLaunch.test(origin)) {
+          const command = node.arguments[0];
+          const words =
+            command?.type === "TemplateLiteral"
+              ? command.quasis.flatMap((quasi, index) => [
+                  ...quasi.value.cooked
+                    .split(/\s+/)
+                    .filter(Boolean)
+                    .map((value) => ({ value })),
+                  ...(index < command.expressions.length
+                    ? [{ unknown: true }]
+                    : []),
+                ])
+              : (literal(command) ?? "")
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .map((value) => ({ value }));
+          if (words[0] && "value" in words[0] && words[0].value === "git")
+            follow(words.slice(1), fn, node, new Set());
+        }
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -1807,5 +2138,7 @@ export default {
     "no-number-signal": noNumberSignal,
     "no-check-then-reopen": noCheckThenReopen,
     "no-own-untrusted-open": noOwnUntrustedOpen,
+    "nul-free-file-shape": nulFreeFileShape,
+    "git-path-list-nul": gitPathListNul,
   },
 };

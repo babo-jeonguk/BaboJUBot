@@ -2,12 +2,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   awaitedLater,
   killUnlessGone,
   processAlive,
 } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 // E2E가 직접 띄우고 멈추는 서버 프로세스. 공용 서버(e2e/global-setup.ts)와 테스트마다의 자기 서버(isolated-server.ts)가 같이 쓴다.
@@ -26,6 +28,8 @@ import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 /** apps/server/src/stop-request.ts의 `stopRequest`와 같은 모양. 서버 패키지 코드를 화면 시험에 들이지 않으려고 따로 적는다. */
 const stopRequest = { type: "babojubot:stop" };
 const readyTimeoutMs = 60_000;
+/** 서버가 끝난 뒤 그 출력이 끝나기를 기다리는 상한(시작 줄이 늦게 닿을 수 있다). */
+const readyOutputEndMs = 10_000;
 /** 서버의 정리 시한. 기다리는 쪽은 그보다 길게 기다려, 서버가 스스로 끝나며 내장 Postgres를 멈출 기회를 준다. */
 export const serverShutdownMs = 10_000;
 const exitWaitMs = serverShutdownMs + 5_000;
@@ -152,9 +156,11 @@ export async function startServerProcess({
         async () => {
           if (child.exitCode === null && child.signalCode === null)
             child.kill("SIGKILL");
+          // 끝나기를 시한 안에 확인하지 못하면 그 이유로 실패를 남긴다(아래 남은 프로세스 확인과 별도로).
           await within(
             exited.catch(() => undefined),
-            killWaitMs
+            killWaitMs,
+            `${label} did not end after SIGKILL`
           );
         },
         async () => {
@@ -262,21 +268,38 @@ export async function startServerProcess({
   }
 }
 
-/** 완전한 시작 줄(`BaboJUBot server on <url> (…)`)이 나올 때까지 기다려 그 주소를 돌려준다. */
-function waitForReadyLine(
-  child: ChildProcess,
+/** 시작 줄 기다리기가 자식에게서 쓰는 것만. */
+export type ReadyChild = { readonly stdout: Readable | null };
+
+/**
+ * 완전한 시작 줄(`BaboJUBot server on <url> (…)`)이 나올 때까지 기다려 그 주소를 돌려준다. 서버가 끝난(`exit`) 뒤에도 출력이 끝나기
+ * (`end`) 전까지는 줄이 닿을 수 있어 계속 읽는다(CODING_STANDARDS.md, #288의 readyLine과 같은 기준). 출력이 줄 없이 끝나야 시작 전에
+ * 끝난 것이다. 출력을 물려받은 자손이 출력을 쥐고 있으면 끝이 오지 않으므로, exit 뒤 출력의 끝은 `outputEndMs` 안에서 확인하고 넘기면
+ * 끝을 확인하지 못했다고 실패한다(끝났다고 보지 않는다). 전체 시한(`readyTimeoutMs`)은 따로 둔다.
+ */
+export function waitForReadyLine(
+  child: ReadyChild,
   exited: Promise<Exit>,
   stdout: () => string,
   label: string,
-  output: () => string
+  output: () => string,
+  {
+    readyTimeoutMs: readyMs = readyTimeoutMs,
+    outputEndMs = readyOutputEndMs,
+  }: { readyTimeoutMs?: number; outputEndMs?: number } = {}
 ) {
   return new Promise<string>((resolve, reject) => {
     let settled = false;
+    let exit: Exit | undefined;
+    let outputEnded = false;
+    let outputEnd: ReturnType<typeof setTimeout> | undefined;
     const finish = (done: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(outputEnd);
       child.stdout!.off("data", onData);
+      child.stdout!.off("end", onEnd);
       done();
     };
     const onData = () => {
@@ -285,27 +308,51 @@ function waitForReadyLine(
       );
       if (match) finish(() => resolve(match[1]!));
     };
+    /** 끝났고 출력도 줄 없이 끝났다. */
+    const endedBeforeStart = (ended: Exit) =>
+      finish(() =>
+        reject(
+          new Error(
+            `${label}가 시작 전에 끝났다(code ${ended.code}, signal ${ended.signal}): ${output()}`
+          )
+        )
+      );
+    const onEnd = () => {
+      outputEnded = true;
+      // 출력이 끝보다 먼저 끝나면 끝(종료 코드)을 기다려 함께 알린다.
+      if (exit) endedBeforeStart(exit);
+    };
     const timer = setTimeout(
       () =>
         finish(() =>
           reject(
             new Error(
-              `${label}가 ${readyTimeoutMs}ms 안에 시작하지 않았다: ${output()}`
+              `${label}가 ${readyMs}ms 안에 시작하지 않았다: ${output()}`
             )
           )
         ),
-      readyTimeoutMs
+      readyMs
     );
     child.stdout!.on("data", onData);
+    child.stdout!.once("end", onEnd);
+    // Promise 구독은 풀 수 없어(리스너와 달리 off가 없다) 대기가 끝난 뒤에도 불린다. 끝난 대기는 아무 자원도 새로 잡지 않는다.
     exited.then(
-      ({ code, signal }) =>
-        finish(() =>
-          reject(
-            new Error(
-              `${label}가 시작 전에 끝났다(code ${code}, signal ${signal}): ${output()}`
-            )
-          )
-        ),
+      (ended) => {
+        if (settled) return;
+        exit = ended;
+        if (outputEnded) return endedBeforeStart(ended);
+        outputEnd = setTimeout(
+          () =>
+            finish(() =>
+              reject(
+                new Error(
+                  `${label}가 시작 줄 없이 끝났고(code ${ended.code}, signal ${ended.signal}) 출력이 ${outputEndMs}ms 안에 끝나지 않아 끝을 확인하지 못했다(출력을 물려받은 자손이 쥐고 있을 수 있다): ${output()}`
+                )
+              )
+            ),
+          outputEndMs
+        );
+      },
       (error: unknown) => finish(() => reject(error))
     );
     onData();
@@ -315,11 +362,23 @@ function waitForReadyLine(
 /**
  * 멈춤 메시지로 정리를 맡기고 시한 안에 끝나기를 기다린다. 시한은 요청을 보내는 일부터 덮는다. 넘기면 강제로 끝내고 실패로 알린다.
  */
-async function stopChild(
-  child: ChildProcess,
+/** 멈추기가 자식에게서 쓰는 것만. */
+export type StoppableChild = {
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  send(message: unknown, callback: (error: Error | null) => void): boolean;
+  kill(signal: NodeJS.Signals): boolean;
+};
+
+export async function stopChild(
+  child: StoppableChild,
   exited: Promise<Exit>,
   label: string,
-  output: () => string
+  output: () => string,
+  limits: { exitWaitMs: number; killWaitMs: number } = {
+    exitWaitMs,
+    killWaitMs,
+  }
 ) {
   // 서버는 멈추라고 할 때까지 살아 있어야 한다. 그 전에 끝났으면 종료 코드가 0이어도 이상이다.
   if (child.exitCode !== null || child.signalCode !== null)
@@ -332,36 +391,56 @@ async function stopChild(
       if (error) resolve(error);
     })
   );
-  const outcome = await within(
-    Promise.race<{ exit: Exit } | { error: Error }>([
-      exited.then((exit) => ({ exit })),
-      sendFailed.then((error) => ({ error })),
-    ]),
-    exitWaitMs
-  );
-  if (outcome && "error" in outcome) {
-    // 확인과 보내기 사이에 서버가 끝나고 있었으면 채널이 닫혀 보내기가 실패한다. 그때도 멈추라고 하기 전에 끝난 것이다.
-    const early = await within(exited, killWaitMs);
-    if (early)
-      throw new Error(
-        `${label}가 멈추라고 하기 전에 끝났다(code ${early.code}, signal ${early.signal}): ${output()}`
-      );
-    throw new Error(
-      `${label}에 멈춤 요청을 보내지 못했다: ${outcome.error.message}: ${output()}`
+  // 시한은 거절로 끝난다(공용 within). 시한을 이행으로 접으면 그 뒤 종료 관찰의 거절이 아무 데도 닿지 않는다(#286 항목 21).
+  let stopped: "exited" | Error;
+  try {
+    stopped = await within(
+      Promise.race([exited.then(() => "exited" as const), sendFailed]),
+      limits.exitWaitMs,
+      `${label} did not end after the stop request`
+    );
+  } catch (error) {
+    // 시한 안에 끝나지 않았다. 그 실패를 먼저 만들어 두고, 강제로 끝내기와 그 끝 확인을 모두 시도한다. 끝 확인이 실패해도 첫 실패를
+    // 잃지 않고 함께 알린다(CODING_STANDARDS.md#제품-코드, 독립 단계의 실패를 모아 던지기).
+    const unstopped = new Error(
+      `${label}가 멈춤 요청 뒤 ${limits.exitWaitMs}ms 안에 끝나지 않아 강제로 끝냈다: ${output()}`,
+      { cause: error }
+    );
+    const failures = await attemptEach([
+      () => child.kill("SIGKILL"),
+      () =>
+        within(exited, limits.killWaitMs, `${label} did not end after SIGKILL`),
+    ]);
+    throw combinedFailure(
+      [unstopped, ...failures],
+      `${label} could not be stopped`
     );
   }
-  if (outcome) {
-    if (outcome.exit.code !== 0)
-      throw new Error(
-        `${label}가 정리에 실패했다(code ${outcome.exit.code}, signal ${outcome.exit.signal}): ${output()}`
+  if (stopped instanceof Error) {
+    // 확인과 보내기 사이에 서버가 끝나고 있었으면 채널이 닫혀 보내기가 실패한다. 그때도 멈추라고 하기 전에 끝난 것이다.
+    let early: Exit;
+    try {
+      early = await within(
+        exited,
+        limits.killWaitMs,
+        `${label} did not end after the stop request could not be sent`
       );
-    return;
+    } catch (error) {
+      throw new Error(
+        `${label}에 멈춤 요청을 보내지 못했다: ${stopped.message}: ${output()}`,
+        { cause: error }
+      );
+    }
+    throw new Error(
+      `${label}가 멈추라고 하기 전에 끝났다(code ${early.code}, signal ${early.signal}): ${output()}`
+    );
   }
-  child.kill("SIGKILL");
-  await within(exited, killWaitMs);
-  throw new Error(
-    `${label}가 멈춤 요청 뒤 ${exitWaitMs}ms 안에 끝나지 않아 강제로 끝냈다: ${output()}`
-  );
+  // 종료가 먼저 왔다. 이미 정해진 그 결과를 읽는다.
+  const exit = await exited;
+  if (exit.code !== 0)
+    throw new Error(
+      `${label}가 정리에 실패했다(code ${exit.code}, signal ${exit.signal}): ${output()}`
+    );
 }
 
 /** 임시 내장 Postgres가 임시 폴더에 남기는 항목(dataDir와 그 주인 기록 `.owner`). */
@@ -434,18 +513,4 @@ export function gone(pid: number, ms: number) {
     };
     check();
   });
-}
-
-async function within<T>(promise: Promise<T>, ms: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
 }

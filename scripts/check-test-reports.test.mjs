@@ -39,7 +39,7 @@ function report(files) {
 /** 저장소의 파일 목록(Git). 명령은 이 목록과 묶음 정의로 기대하는 시험 파일을 정한다. */
 const repositoryFiles = execFileSync(
   "git",
-  ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+  ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
   { cwd: root, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" }
 )
   .split("\0")

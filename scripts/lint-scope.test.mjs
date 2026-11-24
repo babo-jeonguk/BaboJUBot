@@ -345,16 +345,35 @@ function filesOf(root, config) {
 /**
  * 제품 타입 검사(tsconfig.src.json)와 시험 타입 검사(tsconfig.test.json)가 lint 프로젝트(tsconfig.json)의 파일을 시험 범위
  * (scripts/test-files.mjs)대로 나누는가. 시험 코드는 시험 쪽에만, 그 밖은 제품 쪽에 든다(시험 쪽은 가져오는 제품 파일을 어차피 함께
- * 검사하므로 제품 파일이 들어도 된다). 어긋난 파일을 모두 돌려준다.
+ * 검사하므로 제품 파일이 들어도 된다). 패키지마다 세 설정이 있어야 하고, `files`(저장소의 파일 목록) 중 그 패키지의 시험 파일은 설정과
+ * 따로 열거해 lint 프로젝트와 시험 쪽에 모두 들어야 한다. 어긋난 파일을 모두 돌려준다.
+ * @param {string} root
+ * @param {string[]} packages
+ * @param {string[]} files
  */
-function splitGaps(root, packages) {
+function splitGaps(root, packages, files) {
   const gaps = [];
+  const configs = ["tsconfig.json", "tsconfig.src.json", "tsconfig.test.json"];
   for (const folder of packages) {
+    const missing = configs.filter(
+      (config) => !existsSync(path.join(root, folder, config))
+    );
+    if (missing.length > 0) {
+      gaps.push(`${folder}: no ${missing.join(", ")}`);
+      continue;
+    }
     const project = filesOf(root, `${folder}/tsconfig.json`);
     const product = filesOf(root, `${folder}/tsconfig.src.json`);
     const tests = filesOf(root, `${folder}/tsconfig.test.json`);
-    for (const file of project) {
+    const candidates = new Set([
+      ...project,
+      ...files.filter(
+        (file) => file.startsWith(`${folder}/`) && isTestFile(file)
+      ),
+    ]);
+    for (const file of candidates) {
       const test = isTestFile(file);
+      if (test && !project.has(file)) gaps.push(`${file} not in tsconfig.json`);
       if (test && !tests.has(file))
         gaps.push(`${file} not in tsconfig.test.json`);
       if (test === product.has(file))
@@ -364,13 +383,28 @@ function splitGaps(root, packages) {
   return gaps;
 }
 
+/**
+ * 제품·시험 타입 검사로 나눌 패키지 폴더: workspace 패키지(package.json이 있는 `apps/*`·`packages/*`). 설정 파일과 따로 찾아, 설정이
+ * 빠진 새 패키지도 splitGaps가 짚는다.
+ */
+function packagesToSplit(root) {
+  return globSync("{apps,packages}/*/package.json", {
+    cwd: root,
+  }).map((file) => path.dirname(file).replaceAll("\\", "/"));
+}
+
 test("the product and test type checks split files the way the test scope does", async (context) => {
   // tsconfig는 JSON이라 시험 범위(codeFormats)를 가져올 수 없다. 저장소 파일과 형식마다 만든 표본으로 같은 범위인지 본다.
-  const packages = globSync("{apps,packages}/*/tsconfig.test.json", {
-    cwd: repository,
-  }).map((file) => path.dirname(file).replaceAll("\\", "/"));
-  assert.ok(packages.length > 0, "no tsconfig.test.json found");
-  assert.deepEqual(splitGaps(repository, packages), []);
+  const packages = packagesToSplit(repository);
+  assert.ok(packages.length > 0, "no workspace package found");
+  const tracked = execFileSync(
+    "git",
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    { cwd: repository, encoding: "utf8" }
+  )
+    .split("\0")
+    .filter(Boolean);
+  assert.deepEqual(splitGaps(repository, packages, tracked), []);
   // 패키지마다 제품·시험·러너 설정 자리를 두어(새 패키지도 표본을 받는다) 위의 자리 목록과 함께 쓴다.
   const samples = [
     ...packages.flatMap((folder) => [
@@ -389,7 +423,68 @@ test("the product and test type checks split files the way the test scope does",
         (format) => `${place.replace("sample", `sample-${format}`)}.${format}`
       )
     );
-  assert.deepEqual(splitGaps(mirrorOf(context, samples), packages), []);
+  assert.deepEqual(
+    splitGaps(mirrorOf(context, samples), packages, samples),
+    []
+  );
+});
+
+/** 표본 저장소: { 저장소 기준 경로: 내용 }. JSON 내용은 객체로 받는다. */
+function sampleRepository(context, files) {
+  const root = mkdtempSync(path.join(tmpdir(), "lint-scope-split-"));
+  context.after(() => removeFolder(root));
+  for (const [file, content] of Object.entries(files)) {
+    mkdirSync(path.join(root, path.dirname(file)), { recursive: true });
+    writeFileSync(
+      path.join(root, file),
+      typeof content === "string" ? content : JSON.stringify(content)
+    );
+  }
+  return root;
+}
+const sampleOptions = { allowJs: true, noEmit: true, types: [] };
+
+// 나눌 패키지를 tsconfig.test.json이 있는 폴더에서 고르면, 그 파일이 빠진 새 패키지는 표본도 실제 파일도 검사받지 않는다(#286 항목 26).
+// 패키지는 설정과 따로 workspace(package.json)에서 찾는다.
+test("finds the packages to split by their package.json, not by a test config they may lack", (context) => {
+  const root = sampleRepository(context, {
+    "packages/fresh/package.json": { name: "@babojubot/fresh" },
+    "packages/fresh/tsconfig.json": { compilerOptions: sampleOptions },
+    "packages/fresh/src/a.test.ts": "export {};\n",
+  });
+  assert.deepEqual(packagesToSplit(root), ["packages/fresh"]);
+});
+
+// lint 프로젝트(tsconfig.json)가 시험 파일을 통째로 빼면, 그 프로젝트의 파일만 훑는 판정은 그 시험 파일을 보지 못한다(#286 항목 26).
+// 저장소의 시험 파일을 설정과 따로 열거해 세 프로젝트의 소속을 각각 본다.
+test("reports a test file the lint project leaves out", (context) => {
+  const root = sampleRepository(context, {
+    "packages/fresh/package.json": { name: "@babojubot/fresh" },
+    "packages/fresh/tsconfig.json": {
+      compilerOptions: sampleOptions,
+      include: ["src"],
+      exclude: ["src/**/*.test.*"],
+    },
+    "packages/fresh/tsconfig.src.json": {
+      compilerOptions: sampleOptions,
+      include: ["src"],
+      exclude: ["src/**/*.test.*"],
+    },
+    "packages/fresh/tsconfig.test.json": {
+      compilerOptions: sampleOptions,
+      include: ["src/**/*.test.*"],
+    },
+    "packages/fresh/src/a.ts": "export {};\n",
+    "packages/fresh/src/a.test.ts": "export {};\n",
+  });
+  assert.deepEqual(
+    splitGaps(
+      root,
+      ["packages/fresh"],
+      ["packages/fresh/src/a.ts", "packages/fresh/src/a.test.ts"]
+    ),
+    ["packages/fresh/src/a.test.ts not in tsconfig.json"]
+  );
 });
 
 /** 시험 러너가 모으는 형식의 이름 하나(앞의 `.`이나 정규식의 `\.` 포함). */
@@ -467,8 +562,14 @@ test("format lists and format globs are built from codeFormats", () => {
     else if (/\.ya?ml$/.test(file))
       literals = valueStrings(parseDocument(text).toJS());
     else if (file.startsWith(".opencode/") && file.endsWith(".md"))
+      // 생성 구간은 codeFormats에서 만든 규칙이다(.agents/scripts/protected-files.ts, 같은지는 worker-permissions.test.ts가 본다).
       literals = valueStrings(
-        parseDocument(/^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "").toJS()
+        parseDocument(
+          (/^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "").replace(
+            / {2}# BEGIN generated check settings\n[\s\S]*? {2}# END generated check settings\n/,
+            ""
+          )
+        ).toJS()
       );
     else continue;
     for (const literal of literals)
