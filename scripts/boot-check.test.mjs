@@ -21,6 +21,7 @@ import { runTimeoutMs, stopGraceMs } from "./boot-check-limits.mjs";
 import {
   folderCleanup,
   killUnlessGone,
+  lifelineHolder,
   processAlive as isAlive,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
@@ -194,17 +195,23 @@ test(
   },
   () =>
     withCleanup(async (defer) => {
-      // 남긴 프로세스는 시작하자마자 연결을 쥔다. 그 번호로 끌 때는 연결이 열려 있음을 본 직후에만 신호한다.
+      // 남긴 프로세스는 자기 번호를 파일에 남긴 뒤 연결을 쥔다. 정리는 그 번호를 연결이 열려 있음을 본 직후에만 신호한다(공용
+      // lifelineHolder, 번호는 reportedPid로 읽는다).
       const lifelines = await openLifelines();
       defer(() => lifelines.close());
+      const pids = await mkdtemp(path.join(tmpdir(), "boot-check-pids-"));
+      defer(() => removeFolder(pids));
+      const escaped = lifelineHolder(
+        lifelines,
+        "escaped",
+        path.join(pids, "escaped")
+      );
       const script = `
       const { spawn } = require("node:child_process");
-      const escaped = spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold("escaped")} setInterval(() => {}, 1000);`)}, require("node:os").tmpdir()], {
+      spawn(process.execPath, ["-e", ${JSON.stringify(`${escaped.code} setInterval(() => {}, 1000);`)}, require("node:os").tmpdir()], {
         detached: true,
         stdio: "ignore",
-      });
-      escaped.unref();
-      console.log(JSON.stringify({ escaped: escaped.pid }));
+      }).unref();
     `;
       // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
       /** @type {{ result?: Supervised, error?: unknown }} */
@@ -214,11 +221,6 @@ test(
       );
       const reported =
         outcome.error instanceof Error ? outcome.error : undefined;
-      const escaped = Number(
-        /"escaped":(\d+)/.exec(
-          reported?.message ?? outcome.result?.stdout ?? ""
-        )?.[1]
-      );
       const scope = /could not clean up (\S+)/.exec(
         reported?.message ?? ""
       )?.[1];
@@ -227,7 +229,7 @@ test(
         if (scope) await removeFolder(scope);
       });
       defer(folder.cleanUp);
-      folder.own(() => stopReported(lifelines, "escaped", escaped));
+      folder.own(escaped.end);
       assert.ok(
         reported,
         `the supervisor did not report the running process: ${String(outcome.error)}`
@@ -256,18 +258,20 @@ test(
   },
   () =>
     withCleanup(async (defer) => {
-      // 남긴 프로세스는 시작하자마자 연결을 쥔다. 그 번호로 끌 때는 연결이 열려 있음을 본 직후에만 신호한다.
+      // 남긴 프로세스는 자기 번호를 파일에 남긴 뒤 연결을 쥔다. 정리는 그 번호를 연결이 열려 있음을 본 직후에만 신호한다(공용
+      // lifelineHolder, 번호는 reportedPid로 읽는다).
       const lifelines = await openLifelines();
       defer(() => lifelines.close());
+      const pids = await mkdtemp(path.join(tmpdir(), "boot-check-pids-"));
+      defer(() => removeFolder(pids));
+      const held = lifelineHolder(lifelines, "held", path.join(pids, "held"));
       const script = `
       const { spawn } = require("node:child_process");
-      const held = spawn(process.execPath, ["-e", ${JSON.stringify(`${lifelines.hold("held")} setInterval(() => {}, 1000);`)}], {
+      spawn(process.execPath, ["-e", ${JSON.stringify(`${held.code} setInterval(() => {}, 1000);`)}], {
         cwd: require("node:os").tmpdir(),
         detached: true,
         stdio: ["ignore", "inherit", "ignore"],
-      });
-      held.unref();
-      console.log(JSON.stringify({ held: held.pid }));
+      }).unref();
     `;
       // 감독자가 알리지 않고 끝나도(폴더를 지웠어도) 남긴 프로세스는 아래에서 끝낸다.
       /** @type {{ result?: Supervised, error?: unknown }} */
@@ -277,11 +281,6 @@ test(
       );
       const reported =
         outcome.error instanceof Error ? outcome.error : undefined;
-      const held = Number(
-        /"held":(\d+)/.exec(
-          reported?.message ?? outcome.result?.stdout ?? ""
-        )?.[1]
-      );
       const scope = /could not clean up (\S+)/.exec(
         reported?.message ?? ""
       )?.[1];
@@ -290,7 +289,7 @@ test(
         if (scope) await removeFolder(scope);
       });
       defer(folder.cleanUp);
-      folder.own(() => stopReported(lifelines, "held", held));
+      folder.own(held.end);
       assert.ok(
         reported,
         `the supervisor did not report the held output: ${String(outcome.error)}`
@@ -304,23 +303,6 @@ test(
       assert.equal(existsSync(scope), true, `${scope} was removed`);
     })
 );
-
-/**
- * 감독 실행이 알린 번호(`pid`)의 프로세스를 끈다. 그 프로세스는 시작하자마자 `name` 연결을 쥔다. 번호는 끝난 뒤 다른 프로세스에 다시
- * 쓰일 수 있으므로 신호는 그 연결이 열려 있음을 본 직후에만 보내고(보기와 신호 사이에 기다림이 없다), 끝남은 연결이 닫히는 것으로
- * 본다(#287 리뷰 STD-4, CODING_STANDARDS.md#정리). 번호를 알렸는데 연결이 오지 않으면 그 번호가 그 프로세스인지 볼 수 없어 신호하지
- * 않고 실패로 알린다. 번호가 없으면 띄우지 못한 것이고, 그런데 연결이 왔으면 끌 번호를 몰라 실패로 알린다.
- */
-async function stopReported(lifelines, name, pid) {
-  if (!(pid > 0)) {
-    if (lifelines.names().includes(name))
-      throw new Error(`${name} connected but its pid was not reported`);
-    return;
-  }
-  await lifelines.connected(name, 10_000);
-  if (lifelines.open(name)) killUnlessGone(pid);
-  await lifelines.closed(name, 10_000);
-}
 
 const noLeftovers = { folders: [], processes: [] };
 
