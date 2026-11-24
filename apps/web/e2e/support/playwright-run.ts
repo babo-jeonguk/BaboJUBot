@@ -1,7 +1,9 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { attemptEach, combinedFailure } from "@babojubot/contracts";
+import { within } from "@babojubot/process/test-support";
 
 // 시험 하나 안에서 Playwright 실행을 따로 띄운다. 안쪽 실행이 끝난 뒤에야 보이는 것(fixture·globalSetup 정리 뒤의 상태, 종료 코드,
 // 실패 문구)을 바깥 시험이 확인할 때 쓴다(공용 서버 수명 shared-server.spec.ts, 전역 설정 정리 shared-settings.spec.ts).
@@ -55,24 +57,89 @@ export async function runPlaywright(options: {
       stdio: ["ignore", "pipe", "pipe"],
     }
   );
-  let output = "";
-  child.stdout!.on("data", (chunk) => (output += chunk));
-  child.stderr!.on("data", (chunk) => (output += chunk));
-  const exit = once(child, "exit") as Promise<[number | null]>;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timedOut = new Promise<undefined>((resolve) => {
-    timer = setTimeout(() => resolve(undefined), timeoutMs);
+  return runToEnd(child, {
+    timeoutMs,
+    what: "안쪽 Playwright 실행",
   });
-  const finished = await Promise.race([exit, timedOut]).finally(() =>
-    clearTimeout(timer)
+}
+
+/**
+ * `runToEnd`가 끝까지 돌지 못한 자식을 끈 뒤 그 끝을 확인하는 상한. 부르는 시험의 시한은 최악의 길(`timeoutMs` + 이 상한)보다 길어야
+ * 그 길에서 모은 원인(시한 실패·끄기 실패)이 시험 시한보다 먼저 보고된다.
+ */
+export const runToEndStopMs = 10_000;
+
+/**
+ * 띄운 자식(stdout·stderr가 파이프)을 끝까지 돌려 종료 코드와 출력(`output`은 stdout·stderr를 받은 차례대로, `stdout`은 표준
+ * 출력만)을 돌려준다. 끝은 종료와 출력의
+ * 끝을 함께 본다(`exit` 때는 출력이 아직 열려 있을 수 있다, Node 문서 child_process `'exit'`). 그 대기가 어떤 이유로든(`timeoutMs`
+ * 시한, 출력 읽기 오류, 시작 실패) 끝나지 않으면 자식을 끄고 그 끝을 확인한 뒤, 원래 실패와 끄기의 실패를 함께 알린다(#287 리뷰
+ * STD-3). 띄운 직후 넘겨받아 자식을 남기는 길이 없다.
+ */
+export async function runToEnd(
+  child: ChildProcess,
+  { timeoutMs, what }: { timeoutMs: number; what: string }
+) {
+  let output = "";
+  let stdout = "";
+  child.stdout!.on("data", (chunk) => {
+    output += chunk;
+    stdout += chunk;
+  });
+  child.stderr!.on("data", (chunk) => (output += chunk));
+  // 자식의 끝은 출력과 따로, 거절하지 않는 기록으로 둔다. 끈 뒤의 확인은 출력의 끝이 아니라 이것으로 한다.
+  const exited = new Promise<void>((resolve) =>
+    child.once("exit", () => resolve())
   );
-  if (!finished) {
-    child.kill("SIGKILL");
-    await exit;
-    throw new Error(
-      `안쪽 Playwright 실행이 ${timeoutMs}ms 안에 끝나지 않았다: ${output}`
-    );
+  const ended = Promise.all([
+    once(child, "exit") as Promise<[number | null]>,
+    once(child.stdout!, "end"),
+    once(child.stderr!, "end"),
+  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  });
+  const outcome = await Promise.race([ended, timedOut])
+    .then(
+      (result) =>
+        result === "timeout"
+          ? {
+              ended: false as const,
+              failure: new Error(
+                `${what}: ${timeoutMs}ms 안에 끝나지 않았다: ${output}`
+              ),
+            }
+          : { ended: true as const, result },
+      (error: unknown) => ({ ended: false as const, failure: error })
+    )
+    .finally(() => clearTimeout(timer));
+  if (outcome.ended) {
+    const [[code]] = outcome.result;
+    return { code, output, stdout };
   }
-  const [code] = finished;
-  return { code, output };
+  const failures = await attemptEach([() => stopChild(child, exited, what)]);
+  throw combinedFailure(
+    [outcome.failure, ...failures],
+    `${what} did not run to its end`
+  );
+}
+
+/**
+ * 끝까지 돌지 못한 자식을 끄고 그 끝을 상한 안에 확인한다. 띄우지 못한 자식(번호 없음)은 끌 것이 없다. Node가 이미 끝을 본 자식에는
+ * `kill()`이 신호를 보내지 않으므로, 끝난 자식의 번호가 다른 프로세스에 다시 쓰였어도 신호가 그쪽으로 가지 않는다.
+ */
+async function stopChild(
+  child: ChildProcess,
+  exited: Promise<void>,
+  what: string
+) {
+  if (child.pid === undefined) return;
+  if (child.exitCode === null && child.signalCode === null)
+    child.kill("SIGKILL");
+  await within(
+    exited,
+    runToEndStopMs,
+    `${what}: the stopped child did not exit`
+  );
 }

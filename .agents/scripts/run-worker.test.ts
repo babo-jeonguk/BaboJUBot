@@ -3,6 +3,9 @@
 // 새 세션으로 빠져나간 명령도, Windows에서 대표가 먼저 끝나 남은 명령도 남지 않는다. 남았는지는 번호(pid)가 아니라 그 명령이 쥔
 // 연결로 본다(번호는 재사용된다, #259).
 // 실제 모델은 부르지 않고, PATH 맨 앞의 가짜 opencode가 세션 없이 멈춰 있다.
+// runner는 시험용 진입점(test-fixtures/run-worker-clock.ts)으로 띄워 세션 확인·한도를 시험이 옮기는 시계로 잰다. 시험은 worker의
+// 준비(시험의 연결)를 본 뒤에만 시계를 옮긴다. 실제 시계로는 느린 실행기에서 worker가 준비되기 전에 한도가 와 시험이 다른 장면을
+// 보았다(#286 항목 33). 제품 진입점(실제 시계)은 인수 확인과 여러 줄 지침 시험이 띄운다.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
@@ -27,6 +30,10 @@ import {
 import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./run-worker.ts", import.meta.url));
+/** 시험이 시계를 옮기는 runner 진입점. */
+const clockScript = fileURLToPath(
+  new URL("./test-fixtures/run-worker-clock.ts", import.meta.url)
+);
 const windows = process.platform === "win32";
 
 // 가짜 opencode: 띄워질 때마다 한 줄을 남기고, 세션을 알리지 않은 채 멈춰 있다. 하위 명령을 띄우라는 환경이 있으면 띄운다.
@@ -38,6 +45,8 @@ const windows = process.platform === "win32";
 // - FAKE_SESSION: 표준 입력을 끝까지 읽은 뒤 세션을 알리고 끝난다(일을 마친 worker).
 // - FAKE_IGNORE_INPUT: 표준 입력을 읽지 않은 채 멈춰 있다(지침을 받지 않고 살아 있는 worker).
 // - FAKE_EVENTS: 표준 입력을 끝까지 읽은 뒤 받은 줄들(JSON 배열)을 그대로 출력하고 끝난다.
+// - FAKE_READY: 위를 모두 마련한 뒤(입력을 읽지 않기로 했으면 읽지 않은 채) 시험의 연결을 쥐어 준비됐음을 알린다(그 연결을 쥐는
+//   문장이다).
 const fakeOpencode = `import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_OPENCODE_LAUNCHES, "launch\\n");
@@ -49,8 +58,6 @@ process.stdin.setEncoding("utf8");
 if (!process.env.FAKE_IGNORE_INPUT) process.stdin.on("data", (chunk) => (input += chunk));
 process.stdin.on("end", () => {
   appendFileSync(process.env.FAKE_OPENCODE_CALLS, JSON.stringify({ args: process.argv.slice(2), input }) + "\\n");
-  // 남긴 뒤 시험의 연결을 쥐어 남겼음을 알린다(FAKE_RECORDED는 그 연결을 쥐는 문장이다).
-  if (process.env.FAKE_RECORDED) (0, eval)(process.env.FAKE_RECORDED);
   if (process.env.FAKE_SESSION) {
     console.log(JSON.stringify({ type: "step_start", sessionID: "ses_fake" }));
     process.exit(0);
@@ -66,6 +73,7 @@ if (process.env.FAKE_STUBBORN)
   spawn(process.execPath, ["-e", command(process.env.FAKE_STUBBORN, process.env.FAKE_STUBBORN_PID)], { stdio: "ignore" });
 if (process.env.FAKE_MOVED)
   spawn(process.execPath, ["-e", command(process.env.FAKE_MOVED, process.env.FAKE_MOVED_PID)], { stdio: "ignore", detached: true }).unref();
+if (process.env.FAKE_READY) (0, eval)(process.env.FAKE_READY);
 setInterval(() => {}, 1000);
 `;
 
@@ -81,7 +89,7 @@ async function fixture(
   {
     stubborn = false,
     moved = false,
-    recorded = false,
+    ready = false,
     skipInput = "",
     session = false,
     ignoreInput = false,
@@ -89,7 +97,8 @@ async function fixture(
   }: {
     stubborn?: boolean;
     moved?: boolean;
-    recorded?: boolean;
+    /** 가짜가 준비를 연결 "ready"로 알린다. */
+    ready?: boolean;
     skipInput?: string;
     session?: boolean;
     ignoreInput?: boolean;
@@ -125,7 +134,7 @@ async function fixture(
     PATH: `${dir}${path.delimiter}${process.env.PATH}`,
     FAKE_OPENCODE_LAUNCHES: launches,
     FAKE_OPENCODE_CALLS: calls,
-    ...(recorded ? { FAKE_RECORDED: lifelines.hold("recorded") } : {}),
+    ...(ready ? { FAKE_READY: lifelines.hold("ready") } : {}),
     ...(skipInput ? { FAKE_SKIP_INPUT: skipInput } : {}),
     ...(session ? { FAKE_SESSION: "1" } : {}),
     ...(ignoreInput ? { FAKE_IGNORE_INPUT: "1" } : {}),
@@ -150,7 +159,6 @@ async function fixture(
     lifelines,
     /** 지침 인수. 주지 않으면 `--message hi`다. */
     args: (limitMinutes: number, brief = ["--message", "hi"]) => [
-      script,
       "--model",
       "fake/model",
       "--title",
@@ -160,9 +168,9 @@ async function fixture(
       ...brief,
       "--limit",
       String(limitMinutes),
-      // 세션 확인(60초)보다 한도·신호가 먼저 온다.
+      // 세션 확인(1시간)은 이 시험들에서 오지 않는다. 시험이 옮기는 시계는 한도까지만 옮긴다.
       "--start-check",
-      "60",
+      "3600",
     ],
     env,
   };
@@ -170,40 +178,63 @@ async function fixture(
 
 /**
  * run-worker를 띄운다. 시험이 먼저 실패해도 정리가 끄고 끝나기를 기다린다. `brief`는 지침 인수(`--brief <파일>`이나
- * `--message <글>`)이고, 주지 않으면 `--message hi`다.
+ * `--message <글>`)이고, 주지 않으면 `--message hi`다. 기본은 시험이 시계를 옮기는 진입점이고(`advance`), `entry: "product"`면 실제
+ * 시계로 도는 제품 진입점이다. 끝남은 종료와 출력의 끝을 따로 본다: `exit` 때는 출력이 아직 열려 있을 수 있어(Node 문서
+ * child_process `'exit'`) 출력을 단언하기 전에 출력의 끝(`end`)까지 확인한다.
  */
 function runner(
   defer: Defer,
   f: Awaited<ReturnType<typeof fixture>>,
   limitMinutes: number,
-  brief?: string[]
+  brief?: string[],
+  { entry = "clock" }: { entry?: "clock" | "product" } = {}
 ) {
-  const child = spawn(process.execPath, f.args(limitMinutes, brief), {
-    env: f.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  // 두 진입점 모두 IPC 통로를 둔다. 제품 진입점은 통로를 듣지 않는다(시계를 옮기는 메시지는 보내지 않는다).
+  const child = spawn(
+    process.execPath,
+    [entry === "clock" ? clockScript : script, ...f.args(limitMinutes, brief)],
+    { env: f.env, stdio: ["ignore", "pipe", "pipe", "ipc"] }
+  );
+  const { stdout, stderr } = child;
+  assert.ok(stdout && stderr, "the runner's output is not piped");
   let output = "";
-  child.stdout.on("data", (chunk) => (output += chunk));
-  child.stderr.on("data", (chunk) => (output += chunk));
+  stdout.on("data", (chunk) => (output += chunk));
+  stderr.on("data", (chunk) => (output += chunk));
   const exited = once(child, "exit");
+  const outputEnded = Promise.all([once(stdout, "end"), once(stderr, "end")]);
   // 띄우지 못했으면 끌 프로세스가 없고, `exited`가 그 실패로 거절한다.
   defer(async () => {
-    if (child.pid !== undefined) killUnlessGone(child.pid);
+    // 번호가 아니라 자식 객체로 끈다. Node는 끝을 본 자식에는 신호를 보내지 않아, 끝난 자식의 번호가 다른 프로세스에 다시
+    // 쓰였어도 그쪽으로 가지 않는다(#287 리뷰 STD-4). 띄우지 못한 자식에는 보낼 곳이 없다.
+    child.kill("SIGKILL");
     await within(exited, 10_000, "a killed runner did not exit");
+    await within(
+      outputEnded,
+      10_000,
+      "the output of a killed runner did not end"
+    );
   });
   return {
     child,
     output: () => output,
+    /** runner의 시계를 `ms`만큼 옮긴다(시험이 시계를 옮기는 진입점만). */
+    advance: (ms: number) => {
+      assert.equal(entry, "clock", "the product entry runs on the real clock");
+      child.send({ advance: ms });
+    },
     /**
-     * runner의 종료 코드. 한도·신호·끄기 확인(감독 실행기의 끄기 상한 30초 안팎)이 모두 그 안에 들도록 상한을 넉넉히 둔다. 넘기면
-     * 그렇게 알리고 실패한다.
+     * runner의 종료 코드. 종료와 출력의 끝을 각각 상한 안에 확인한 뒤 돌려주므로, 그 뒤의 `output()`은 출력 전부다. 종료 상한은
+     * 끄기 확인(감독 실행기의 끄기 상한 30초 안팎)이 그 안에 들도록 넉넉히 둔다. 넘기면 무엇이 오지 않았는지 알리고 실패한다.
      */
-    exited: () =>
-      within(
-        exited.then(([code]) => code),
-        90_000,
-        "the runner did not exit"
-      ),
+    ended: async () => {
+      const [code] = await within(exited, 90_000, "the runner did not exit");
+      await within(
+        outputEnded,
+        10_000,
+        "the output of the runner did not end after it exited"
+      );
+      return code;
+    },
   };
 }
 
@@ -284,14 +315,15 @@ test("a runner sends a multi-line brief on the worker's standard input, not as a
   const text = '첫 줄\n둘째 줄\n\n  들여 쓴 줄 "따옴표" & | %PATH%\n';
   await withCleanup(async (defer) => {
     for (const kind of ["--brief", "--message"]) {
-      const f = await fixture(defer, { recorded: true });
+      // 가짜는 표준 입력의 끝까지 읽어 남긴 뒤 세션을 알리고 스스로 끝난다. 끝남은 시계가 아니라 그 일로 온다. 제품 진입점(실제
+      // 시계)으로 띄우며, 세션 확인(1시간)·한도(10분)는 이 일이 끝나기 전에 오지 않는다.
+      const f = await fixture(defer, { session: true });
       const brief = path.join(f.dir, "brief.md");
       writeFileSync(brief, text);
       const args = kind === "--brief" ? [kind, brief] : [kind, text];
-      // 한도 6초. 가짜는 표준 입력의 끝까지 읽어 남긴 뒤 연결로 알린다.
-      const run = runner(defer, f, 0.1, args);
-      await f.lifelines.connected("recorded", 30_000);
-      assert.equal(await run.exited(), 4, run.output());
+      const run = runner(defer, f, 10, args, { entry: "product" });
+      assert.equal(await run.ended(), 0, run.output());
+      assert.match(run.output(), /^status: finished$/m);
       const calls = readFileSync(f.calls, "utf8")
         .split("\n")
         .filter(Boolean)
@@ -391,7 +423,7 @@ test("a runner summarizes the session, written files, denials, tokens, errors an
       events: [...events, "not JSON", "[1, 2]"],
     });
     const run = runner(defer, f, 10);
-    assert.equal(await run.exited(), 2, run.output());
+    assert.equal(await run.ended(), 2, run.output());
     const summary = run
       .output()
       .slice(0, run.output().indexOf("\n--- final report ---"));
@@ -421,7 +453,7 @@ test("a runner whose brief cannot be sent ends with exit code 4 and the reason, 
     const brief = path.join(f.dir, "brief.md");
     writeFileSync(brief, bigBrief);
     const run = runner(defer, f, 10, ["--brief", brief]);
-    assert.equal(await run.exited(), 4, run.output());
+    assert.equal(await run.ended(), 4, run.output());
     assert.match(run.output(), /^status: could not send the brief: \S+$/m);
     assert.match(run.output(), /^attempts: 2$/m);
     assert.match(run.output(), /^errors: -$/m);
@@ -436,7 +468,7 @@ test("a runner whose first attempt could not take the brief finishes when the se
     const brief = path.join(f.dir, "brief.md");
     writeFileSync(brief, bigBrief);
     const run = runner(defer, f, 10, ["--brief", brief]);
-    assert.equal(await run.exited(), 0, run.output());
+    assert.equal(await run.ended(), 0, run.output());
     assert.match(run.output(), /^status: finished$/m);
     assert.match(run.output(), /^attempts: 2$/m);
     assert.match(run.output(), /^errors: -$/m);
@@ -462,12 +494,15 @@ test("a runner whose first attempt could not take the brief finishes when the se
 // 프로세스로 만들 수 없어(SIGKILL 뒤에도 끝나지 않는 트리) worker-run.test.ts의 대역으로 본다.
 test("a runner whose brief is still being written to a live worker at --limit ends with exit code 4 and the reason", async () => {
   await withCleanup(async (defer) => {
-    const f = await fixture(defer, { ignoreInput: true });
+    const f = await fixture(defer, { ignoreInput: true, ready: true });
     const brief = path.join(f.dir, "brief.md");
     writeFileSync(brief, bigBrief);
-    // 한도 1.2초.
-    const run = runner(defer, f, 0.02, ["--brief", brief]);
-    assert.equal(await run.exited(), 4, run.output());
+    const run = runner(defer, f, 10, ["--brief", brief]);
+    // worker가 띄워져 입력을 읽지 않은 채 살아 있다. 지침(8MB)은 파이프 버퍼보다 커서 읽는 쪽 없이는 다 쓸 수 없으므로 쓰기는
+    // 보류된 채다. 그 뒤에 한도(10분)에 닿게 한다.
+    await f.lifelines.connected("ready", 30_000);
+    run.advance(10 * 60_000);
+    assert.equal(await run.ended(), 4, run.output());
     assert.match(run.output(), /^status: could not send the brief: \S+$/m);
     assert.match(run.output(), /^attempts: 1$/m);
     assert.equal(readFileSync(f.launches, "utf8"), "launch\n");
@@ -476,14 +511,13 @@ test("a runner whose brief is still being written to a live worker at --limit en
 
 test("a worker that reaches --limit is not launched again and ends with exit code 4", async () => {
   await withCleanup(async (defer) => {
-    const f = await fixture(defer);
-    // 한도 1.2초.
-    const run = runner(defer, f, 0.02);
-    assert.equal(await run.exited(), 4, run.output());
-    assert.match(
-      run.output(),
-      /^status: stopped after the 0\.02-minute limit$/m
-    );
+    const f = await fixture(defer, { ready: true });
+    const run = runner(defer, f, 10);
+    // worker가 띄워져 띄움을 남긴 뒤에 한도(10분)에 닿게 한다.
+    await f.lifelines.connected("ready", 30_000);
+    run.advance(10 * 60_000);
+    assert.equal(await run.ended(), 4, run.output());
+    assert.match(run.output(), /^status: stopped after the 10-minute limit$/m);
     assert.match(run.output(), /^attempts: 1$/m);
     assert.equal(readFileSync(f.launches, "utf8"), "launch\n");
   });
@@ -492,10 +526,11 @@ test("a worker that reaches --limit is not launched again and ends with exit cod
 test("a worker stopped at --limit leaves no command that ignores SIGTERM", async () => {
   await withCleanup(async (defer) => {
     const f = await fixture(defer, { stubborn: true });
-    // 한도 6초. 명령이 그 전에 연결을 쥐었는지(무시를 설치했는지) 본다. 아니면 이 시험은 아무것도 보지 못한다.
-    const run = runner(defer, f, 0.1);
-    await f.lifelines.connected("stubborn", 6_000);
-    assert.equal(await run.exited(), 4, run.output());
+    // 명령이 연결을 쥔(무시를 설치한) 뒤에 한도(10분)에 닿게 한다.
+    const run = runner(defer, f, 10);
+    await f.lifelines.connected("stubborn", 30_000);
+    run.advance(10 * 60_000);
+    assert.equal(await run.ended(), 4, run.output());
     await f.lifelines.closed("stubborn", 2_000);
   });
 });
@@ -503,9 +538,11 @@ test("a worker stopped at --limit leaves no command that ignores SIGTERM", async
 test("a worker stopped at --limit leaves no command that moved to a new session", async () => {
   await withCleanup(async (defer) => {
     const f = await fixture(defer, { moved: true });
-    const run = runner(defer, f, 0.1);
-    await f.lifelines.connected("moved", 6_000);
-    assert.equal(await run.exited(), 4, run.output());
+    // 명령이 새 세션으로 나가 연결을 쥔 뒤에 한도(10분)에 닿게 한다.
+    const run = runner(defer, f, 10);
+    await f.lifelines.connected("moved", 30_000);
+    run.advance(10 * 60_000);
+    assert.equal(await run.ended(), 4, run.output());
     await f.lifelines.closed("moved", 2_000);
   });
 });
@@ -517,11 +554,11 @@ test(
   async () => {
     await withCleanup(async (defer) => {
       const f = await fixture(defer, { stubborn: true });
-      // 한도는 길게 둔다. 멈춤은 신호로만 온다.
+      // 시계를 옮기지 않는다. 멈춤은 신호로만 온다.
       const run = runner(defer, f, 10);
       await f.lifelines.connected("stubborn", 30_000);
       run.child.kill("SIGTERM");
-      assert.equal(await run.exited(), 128 + 15, run.output());
+      assert.equal(await run.ended(), 128 + 15, run.output());
       await f.lifelines.closed("stubborn", 2_000);
     });
   }
@@ -535,7 +572,7 @@ test("a runner that is killed leaves no worker", async () => {
     const run = runner(defer, f, 10);
     await f.lifelines.connected("stubborn", 30_000);
     run.child.kill("SIGKILL");
-    await run.exited();
+    await run.ended();
     await f.lifelines.closed("stubborn", 15_000);
   });
 });
