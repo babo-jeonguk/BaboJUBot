@@ -7,6 +7,7 @@ import { openLifelines } from "@babojubot/process/lifelines";
 import { killAndWait } from "@babojubot/process/testing";
 import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
 import { manualClock, within } from "@babojubot/process/test-support";
+import { settled } from "@babojubot/contracts";
 import { testFolders } from "./test-folders.ts";
 
 /**
@@ -43,6 +44,31 @@ const alive = processAlive;
 const stopRecorded = async (file: string) => {
   if (existsSync(file)) await killAndWait([Number(readFileSync(file, "utf8"))]);
 };
+
+/**
+ * `running`이 끝나기를 `deadline`(`AbortSignal.timeout`, 가짜 시계와 무관한 실제 시간)까지 기다린다. 지나면 `why`로 실패한다.
+ * `setTimeout`을 가짜 시계로 둔 동안의 상한이라 `within`(그 시계 위의 타이머)을 쓰지 않는다.
+ */
+const endedBefore = <T>(
+  running: Promise<T>,
+  deadline: AbortSignal,
+  why: string
+) =>
+  new Promise<T>((resolve, reject) => {
+    const expire = () => reject(new Error(why));
+    if (deadline.aborted) return expire();
+    deadline.addEventListener("abort", expire, { once: true });
+    running.then(
+      (value) => {
+        deadline.removeEventListener("abort", expire);
+        resolve(value);
+      },
+      (error: unknown) => {
+        deadline.removeEventListener("abort", expire);
+        reject(error);
+      }
+    );
+  });
 
 const run = async (
   script: string,
@@ -294,15 +320,22 @@ describe("runProbe", () => {
 
   // 프로그램이 끝났는데 그 출력을 물려받은 다른 프로그램이 남으면, 출력이 닫히기를 기다리지 않고 바로 트리를 끈다(공용 실행의 트리
   // 끄기). 출력을 쥔 그 프로그램까지 끝나 출력이 닫히고, 결과는 프로그램의 결과다. 예전에는 출력 닫힘을 1초 기다린 뒤 트리를 껐다
-  // (#268, 시간 기다림 제거). 그 기다림이 돌아오는지를 시간이 아니라 시계로 가린다: 이 시험 프로세스의 `setTimeout`을 가짜 시계로
-  // 두고 옮기지 않는다(#288 `lateReadyLine`과 같은 방식). 출력 닫힘을 시간으로 기다리는 어떤 대기도 지나지 않으므로, 그런 회귀는
-  // 끝나지 않고 이 시험의 실제 시간 상한(아래 `it`의 시한, 러너의 실제 시계)에서 실패한다. 공용 실행의 끄기 길에 있는 타이머
-  // (`runTree`의 `limitMs`, `within`, 실행기 끝 확인)는 모두 넘기면 실패하는 상한이라, 올바른 실행은 시계가 흐르지 않아도 끝난다.
-  // 실행 상한(`limitMs`)도 가짜 시계 위라 결과에 끼어들지 않는다. 예전의 500ms 실제 시한은 결함 없이도 부하가 큰 실행에서 프로그램
-  // 둘을 띄우는 준비만으로 닿았다(#213, #286 이월분). `node:timers/promises`의 기다림은 가짜 시계가 덮지 않는다(한계).
+  // (#268, 시간 기다림 제거). 그 기다림이 돌아오는지를 시간이 아니라 시계로 가린다: probe가 도는 동안 이 시험 프로세스의
+  // `setTimeout`을 가짜 시계로 두고 옮기지 않는다(#288 `lateReadyLine`과 같은 방식). 출력 닫힘을 시간으로 기다리는 어떤 대기도 지나지
+  // 않으므로, 그런 회귀는 끝나지 않고 가짜 시계와 무관한 실제 시간 상한(`AbortSignal.timeout`)에서 그 이유로 실패한다. 공용 실행의
+  // 끄기 길에 있는 타이머(`runTree`의 `limitMs`, `within`, 실행기 끝 확인)는 모두 넘기면 실패하는 상한이라, 올바른 실행은 시계가
+  // 흐르지 않아도 끝난다. 실행 상한(`limitMs`)도 가짜 시계 위라 결과에 끼어들지 않는다. probe가 끝나면 바로 실제 시계로 돌리고 그 뒤의
+  // 대기(출력을 쥔 프로그램의 끝)는 자기 상한으로 기다린다. 예전의 500ms 실제 시한은 결함 없이도 부하가 큰 실행에서 프로그램 둘을
+  // 띄우는 준비만으로 닿았다(#213, #286 이월분). `node:timers/promises`의 기다림은 가짜 시계가 덮지 않는다(한계).
   it("stops what the program left holding its output as soon as the program ends, and returns the program's result", async () => {
     const folder = await folders.make("babojubot-probe-");
     const holderFile = path.join(folder, "holder");
+    // 정리는 등록 역순이다. 출력을 쥔 프로그램을 먼저 끄고, 그 뒤 probe(그 트리)가 끝나기를 기다린 다음 폴더를 지운다. 상한에 닿은
+    // 회귀라면 probe의 기다림은 가짜 시계 위에 남아 끝나지 않고, 정리가 "the probe did not stop"으로 실패하며 폴더를 남긴다(그 트리는
+    // 감독 실행기가 쥐고, 시험 프로세스가 끝나 제어 통로가 닫히면 실행기가 끈다).
+    // probe는 아래에서 띄운다. 정리는 그 전에 등록하므로 띄운 것을 이 자리에 둔다.
+    const started: { probe?: Promise<unknown> } = {};
+    folders.own(() => settled(started.probe ?? Promise.resolve()), "the probe");
     folders.own(
       () => stopRecorded(holderFile),
       "the program holding the output"
@@ -312,14 +345,21 @@ describe("runProbe", () => {
     // 출력을 쥔 프로그램이 연결을 쥐었다고 알린 뒤에(넷째 핸들) 프로그램이 끝난다.
     const holder = `${lifelines.hold("holder", 'require("node:fs").writeSync(3, "ready\\n");')} setInterval(() => {}, 1000);`;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    onTestFinished(() => {
-      vi.useRealTimers();
-    });
-    const result = await probe(
+    // 상한은 가짜 시계와 무관한 실제 시간이다. probe를 띄우기 전에 잰다.
+    const deadline = AbortSignal.timeout(20_000);
+    const running = probe(
       `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
       // 가짜 시계 위의 실행 상한이라 지나지 않는다.
       5_000
     );
+    started.probe = running;
+    const result = await endedBefore(
+      running,
+      deadline,
+      "the probe did not end with the clock still; it may wait for the held output by time"
+    ).finally(() => {
+      vi.useRealTimers();
+    });
     expect(result.stdout).toBe("done\n");
     await lifelines.closed("holder");
   }, 30_000);
