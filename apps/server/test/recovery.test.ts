@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { Server as HttpServer } from "node:http";
 import net from "node:net";
 import path from "node:path";
 import {
@@ -39,7 +40,7 @@ import {
   type Gate,
 } from "@babojubot/runtime/testing";
 import WebSocket from "ws";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import {
   calls,
@@ -667,14 +668,21 @@ describe("server start recovery barrier", () => {
     const held = createGate();
     const holding = holdRow(database.db, late!.runId, held);
     await held.reached;
-    const port = await freePort();
-    const base = `http://127.0.0.1:${port}`;
-    const http = api(() => base);
+    // 서버는 복구가 끝나기 전에 듣기 시작한다. 시작이 끝나기 전에 그 주소가 필요하므로, 포트 0에서 듣게 하고 실제로 연 소켓의
+    // 주소를 읽는다.
+    const listening = nextHttpServerPort();
     const starting = startServer({
       db: database.db,
-      port,
+      port: 0,
       runtime: runtime.adapter,
     });
+    const port = await within(
+      Promise.race([listening, starting.then(() => listening)]),
+      eventuallyMs,
+      "the server did not start listening"
+    );
+    const base = `http://127.0.0.1:${port}`;
+    const http = api(() => base);
     // 붙잡은 행은 시험이 실패해도 풀고, 그 복구 저장이 끝나기를 기다린다.
     const stream = await withCleanup(async (defer) => {
       defer(async () => {
@@ -811,14 +819,29 @@ function holdRow(db: Database, runId: string, gate: Gate) {
   });
 }
 
-async function freePort() {
-  const probe = net.createServer();
-  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
-  const { port } = probe.address() as net.AddressInfo;
-  await new Promise<void>((resolve, reject) =>
-    probe.close((error) => (error ? reject(error) : resolve()))
-  );
-  return port;
+/**
+ * 다음에 듣기 시작하는 HTTP 서버가 실제로 연 포트. 서버를 포트 0에서 듣게 하면 운영체제가 빈 포트를 고르고, 그 서버가 듣기 시작할 때
+ * 주소를 읽는다. 시험이 고른 번호를 닫았다가 서버에 다시 쓰게 하면 그 사이 다른 프로그램이 그 번호를 잡아 결함 없이 실패한다
+ * (#294 외부 리뷰 2회차 STD-2).
+ */
+function nextHttpServerPort() {
+  const listen = net.Server.prototype.listen;
+  return new Promise<number>((resolve) => {
+    const spy = vi
+      .spyOn(net.Server.prototype, "listen")
+      .mockImplementation(function (this: net.Server, ...args: unknown[]) {
+        if (this instanceof HttpServer) {
+          spy.mockRestore();
+          this.once("listening", () =>
+            resolve((this.address() as net.AddressInfo).port)
+          );
+        }
+        return Reflect.apply(listen, this, args) as net.Server;
+      });
+    onTestFinished(() => {
+      spy.mockRestore();
+    });
+  });
 }
 
 async function until(check: () => Promise<boolean>) {
