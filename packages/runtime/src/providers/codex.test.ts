@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createCodexProvider as unownedCodexProvider,
   type CodexOptions,
@@ -9,7 +9,10 @@ import type { Clock } from "@babojubot/process";
 import { manualClock } from "@babojubot/process/test-support";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
-import { processAlive } from "@babojubot/process/test-cleanup";
+import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
+import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
+import { killUnlessGone, processAlive } from "@babojubot/process/test-cleanup";
+import { reportedPid } from "@babojubot/process/test-support";
 const folders = testFolders();
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
 const createCodexProvider = folders.owning(unownedCodexProvider);
@@ -397,6 +400,14 @@ describe("usage numbers outside the contract (#140)", () => {
 });
 
 describe("one app-server connection per call (#145)", () => {
+  // 가짜 app-server는 연결을 쥐고 돈다. 정리가 끄지 못한 프로그램은 연결이 열려 있음을 본 직후에만 그 번호로 끈다. 끝난 번호는 다른
+  // 프로그램에 다시 쓰일 수 있다.
+  let lifelines: Lifelines;
+  beforeAll(async () => {
+    lifelines = await openLifelines();
+  });
+  afterAll(() => lifelines.close());
+  let setups = 0;
   type Step = {
     /** Answer only once the test calls `release` with this name. */
     holdUntil?: string;
@@ -419,7 +430,15 @@ describe("one app-server connection per call (#145)", () => {
     const root = await folders.make("codex-lifetime-");
     const log = path.join(root, "received.jsonl");
     const script = path.join(root, "script.json");
-    await writeFile(script, JSON.stringify({ log, steps }));
+    const prefix = `codex-peer-${++setups}-`;
+    await writeFile(
+      script,
+      JSON.stringify({
+        log,
+        steps,
+        lifeline: { module: lifelines.module, port: lifelines.port, prefix },
+      })
+    );
     const provider = createCodexProvider({
       dataDir: root,
       command: [
@@ -430,8 +449,15 @@ describe("one app-server connection per call (#145)", () => {
       ...(timeouts ? { timeouts } : {}),
       ...(clock ? { clock } : {}),
     });
+    // 프로그램이 뜨기 전에는 기록이 없다. 그 밖의 읽기 실패는 그대로 드러낸다.
     const lines = async () =>
-      (await readFile(log, "utf8").catch(() => ""))
+      (
+        await orIfMissing(
+          () => readFile(log, "utf8"),
+          hasErrorCode("ENOENT"),
+          ""
+        )
+      )
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as Record<string, any>);
@@ -477,15 +503,15 @@ describe("one app-server connection per call (#145)", () => {
             () => false
           );
         if (ended) return;
-        const left = await alive();
-        for (const pid of left)
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch (error) {
-            // Ended on its own between the check and the kill; go on with the others.
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-          }
-        await expect.poll(running, { timeout: 10_000 }).toBe(false);
+        // 연결이 열려 있음을 본 직후(사이에 기다림 없이)에만 그 이름의 번호로 끄고, 끝은 연결의 닫힘으로 본다.
+        const left = lifelines
+          .names()
+          .filter((name) => name.startsWith(prefix) && lifelines.open(name));
+        for (const name of left)
+          killUnlessGone(
+            reportedPid(name.slice(prefix.length), `lifeline ${name}`)
+          );
+        for (const name of left) await lifelines.closed(name);
         throw new Error(
           `scripted programs ${left.join(", ")} still ran after their held answers were let go; stopped them`
         );

@@ -91,6 +91,11 @@ export async function openLifelines() {
   return {
     port,
     /**
+     * 연결을 쥐는 실제 파일(`test-fixtures/lifeline.mjs`)의 경로. 파일로 된 시험 프로그램(가짜 CLI)은 이 파일을 불러 그 `hold(port,
+     * name, then)`을 직접 부른다. 같은 프로그램이 여럿 뜨면 이름에 자기 번호를 붙여 서로 구별한다.
+     */
+    module: holder,
+    /**
      * 프로그램 안에 넣는 JavaScript 문장. 연결을 쥐는 일은 실제 파일(`test-fixtures/lifeline.mjs`)이 맡고, 이 문장은 그 파일을
      * 불러 부르기만 한다: 이 서버에 연결해 이름을 보내고 연결을 쥐며, 서버가 이름을 받았다고 답하면 `then`을 실행한다(그 뒤로는
      * 이 프로그램이 끝나면 닫힘이 반드시 보인다). 동기 `require`로 부르므로 CommonJS(`node -e`)와 ES 모듈 모두에서 돈다.

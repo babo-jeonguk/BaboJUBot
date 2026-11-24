@@ -6,9 +6,12 @@
 // { holdUntil?, delayMs?, result?, error?, silent?, frames?, exit? }: once the file `holdUntil` (a name next to the script) exists
 // and after `delayMs`, it answers with `error`, or `result` (default `{}`), unless `silent`; then writes `frames`; then exits with
 // `exit`. `holdUntil` lets a test decide when a request is answered. The peer exits when its input closes.
+// With `lifeline: { module, port, prefix }` it first holds a connection named `<prefix><pid>` to the test's lifeline server
+// (@babojubot/process/lifelines), so the test sees that this program still runs by the connection, not by its number.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
@@ -22,6 +25,14 @@ if (scriptFile === undefined)
     "usage: codex-peer.synthetic.mjs <script.json> [arguments...]"
   );
 const script = JSON.parse(readFileSync(scriptFile, "utf8"));
+if (script.lifeline) {
+  const { hold } = await import(pathToFileURL(script.lifeline.module).href);
+  hold(
+    script.lifeline.port,
+    `${script.lifeline.prefix}${process.pid}`,
+    () => {}
+  );
+}
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\n");
 /** 요청 이름별로 받은 수. 이름은 상대가 보낸 프레임에서 오므로 일반 객체 대신 Map에 센다. */
 const seen = new Map();
