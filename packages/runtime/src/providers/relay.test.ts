@@ -702,6 +702,85 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(refused).toEqual([]);
   });
 
+  // 목적지 쪽 요청에 넘긴 소켓의 오류는 그 요청의 끝 하나로만 알린다. 연결 단계의 오류 처리가 같은 실패를 따로 한 번 더 남기지
+  // 않는다(#296 외부 리뷰 1회차 SPEC-1). 중계가 목적지로 붙는 연결(`net.connect`)은 동작을 바꾸지 않는 spy로 기록만 하고, 목적지
+  // 포트로 간 그 소켓에 연결 끊김이 아닌 오류(실제 연결에서 결정적으로 만들 수 없는 오류)를 넣는다.
+  it("leaves a socket failure after the answer began once, as the answer's end", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const connecting = vi.spyOn(net, "connect");
+    onTestFinished(() => connecting.mockRestore());
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.write("part");
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve)
+    );
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          server.closeAllConnections();
+          server.close((error) => (error ? reject(error) : resolve()));
+        })
+    );
+    const port = (server.address() as net.AddressInfo).port;
+    /** 중계가 목적지 포트로 붙은 소켓들. */
+    const dialed = () =>
+      connecting.mock.calls.flatMap((args, index) => {
+        const options: unknown = args[0];
+        const result = connecting.mock.results[index];
+        return typeof options === "object" &&
+          options !== null &&
+          "port" in options &&
+          Number(options.port) === port &&
+          result?.type === "return"
+          ? [result.value]
+          : [];
+      });
+    const { relays, setResearch } = hub();
+    setResearch([
+      destination({
+        host: "localhost",
+        port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const received = await new Promise<{ status: number; ending: string }>(
+      (resolve, reject) => {
+        const req = http.request({
+          socketPath: path.join(relay.directory, "egress.sock"),
+          path: `http://localhost:${port}/page`,
+          agent: false,
+        });
+        // 답이 끝나지 않는 결함이 시험 시간 초과로 번지지 않게 한다.
+        req.setTimeout(10_000, () =>
+          reject(new Error("the relayed answer did not end within 10 s"))
+        );
+        req.on("response", (res) => {
+          const status = res.statusCode ?? 0;
+          res.once("data", () => {
+            for (const socket of dialed())
+              socket.destroy(
+                Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })
+              );
+          });
+          res.on("end", () => resolve({ status, ending: "ended" }));
+          res.on("error", () => resolve({ status, ending: "broken" }));
+        });
+        req.on("error", reject);
+        req.end();
+      }
+    );
+    expect(received).toEqual({ status: 200, ending: "broken" });
+    expect(dialed()).toHaveLength(1);
+    expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
+      "[provider] an allowed destination's answer broke off in the relay (ETIMEDOUT)",
+    ]);
+  });
+
   // 요청자가 답을 다 받기 전에 떠난 것은 답이다. 원인을 남기지 않고, 목적지 쪽 연결도 닫아 정리한다.
   it("closes the destination side without a warning when the requester leaves mid-answer", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
