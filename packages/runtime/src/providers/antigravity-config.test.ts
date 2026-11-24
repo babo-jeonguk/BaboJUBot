@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import {
+  chmod,
   mkdir,
   readdir,
   readFile,
@@ -14,10 +15,13 @@ import {
 } from "./antigravity.ts";
 import {
   clearOwnedConfig,
+  ConfigNotCleared,
   configScriptFile,
+  describeCleanup,
   ownerMark,
   readCleanupReasons,
 } from "./antigravity-config.ts";
+import { permissionDenial } from "@babojubot/process/test-support";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -293,11 +297,37 @@ it("clears only leftovers carrying our mark at server start", async () => {
   }
 });
 
-it("names both why the configuration script was stopped and the signal that ended it", async () => {
+// 끝까지 돌지 못한 끝남(시한·신호·다른 끝남 코드)도 그 끝남을 까닭 목록에 담는다. 끈 이유와 끝낸 신호가 함께 남는다(#286 리뷰 1회차
+// STD-2). 그 전에 낸 까닭 줄은 버리지 않는다(#296 외부 리뷰 2회차 SPEC-3).
+it("keeps the reasons given before the configuration script was stopped, with why it was stopped and the signal that ended it", async () => {
   const { cwd } = await workspace();
-  tree.run = stoppedBySignal;
-  await expect(clearOwnedConfig(cwd)).rejects.toThrow(
-    "the configuration script was stopped at its limit limit (signal SIGKILL)"
+  const given = {
+    reason: "kept_aside",
+    name: ".babojubot-left.tmp",
+    keptAs: ".babojubot-left.tmp.kept.removing",
+  };
+  tree.run = () => ({
+    ...stoppedBySignal(),
+    stderr: Buffer.from(`${JSON.stringify(given)}\n`),
+  });
+  const failed = await clearOwnedConfig(cwd).then(
+    () => {
+      throw new Error("expected the configuration not to be cleared");
+    },
+    (error: unknown) => error
+  );
+  if (!(failed instanceof ConfigNotCleared))
+    throw new Error(`expected ConfigNotCleared, got ${String(failed)}`);
+  expect(failed.reasons).toEqual([
+    given,
+    {
+      reason: "incomplete_run",
+      name: "",
+      code: "stopped: limit, signal SIGKILL",
+    },
+  ]);
+  expect(describeCleanup(failed.reasons)).toBe(
+    'kept_aside ".babojubot-left.tmp" as ".babojubot-left.tmp.kept.removing"; the script did not finish (stopped: limit, signal SIGKILL)'
   );
 });
 
@@ -315,6 +345,7 @@ it("keeps a configuration place that is not a regular file and says so", async (
 // 열기 결과를 주입한다: `plan.miss`에 맞는 이름(정규식)을 처음 열 때 한 번 "없음"(ENOENT)으로 실패한다. 그 자리는 그대로 있으므로
 // 바로 뒤 lstat은 일반 파일을 본다 — 확인하는 사이 자리가 바뀐 장면이다(실제 시간 지연 없이). `plan.take`가 있으면 그 실패 전에
 // 그 경로에 새 파일을 둔다(그 사이 다른 쪽이 원래 이름에 저장한 장면). `plan.code`가 있으면 "없음" 대신 그 오류 코드로 실패한다(읽기 실패).
+// `plan.linkFails`가 있으면 hard link 만들기가 모두 그 오류 코드로 실패한다(되돌리기의 예상 밖 실패).
 const missOnce = `{
   const fs = process.getBuiltinModule("node:fs");
   const plan = JSON.parse(process.env.PLAN);
@@ -330,6 +361,9 @@ const missOnce = `{
     }
     return real(...args);
   };
+  if (plan.linkFails)
+    fs.promises.link = () =>
+      Promise.reject(Object.assign(new Error(plan.linkFails), { code: plan.linkFails }));
   process.getBuiltinModule("node:module").syncBuiltinESMExports();
 }
 `;
@@ -437,3 +471,87 @@ it("names the read failure and where it kept the configuration when confirming i
   expect(await readFile(path.join(agents, keptAs), "utf8")).toBe(ownedLeftover);
   expect(await readFile(config, "utf8")).toBe("saved meanwhile");
 });
+
+// 확인이 실패했는데 되돌리기마저 예상 밖으로 실패하면(링크 만들기 오류) 두 원인은 서로 다른 칸에 남는다. 확인 실패는 `code`, 남긴 까닭은
+// `keptCode`다. 한 칸에 둘을 넣어 하나가 덮이지 않는다(#296 외부 리뷰 2회차 SPEC-4).
+it("keeps the confirmation failure and the unexpected put-back failure apart", async () => {
+  const { cwd, agents, config } = await workspace();
+  await writeFile(config, ownedLeftover);
+  const ended = await script(
+    cwd,
+    {
+      miss: "\\.mcp_config\\.json\\.[0-9a-f-]+\\.removing$",
+      code: "EIO",
+      linkFails: "ENOSPC",
+    },
+    missOnce
+  );
+  expect(ended.status).toBe(3);
+  const read = readCleanupReasons(ended.stderr, false);
+  expect(read).toEqual([
+    {
+      reason: "not_checkable",
+      name: "mcp_config.json",
+      code: "EIO",
+      keptAs: expect.stringMatching(
+        /^\.mcp_config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
+      ),
+      keptCode: "ENOSPC",
+    },
+  ]);
+  expect(await readFile(path.join(agents, read[0]!.keptAs!), "utf8")).toBe(
+    ownedLeftover
+  );
+  expect(describeCleanup(read)).toBe(
+    `not_checkable "mcp_config.json" as ${JSON.stringify(read[0]!.keptAs)} because ENOSPC (EIO)`
+  );
+});
+
+// 스크립트가 앞 파일의 까닭을 낸 뒤 다음 파일에서 죽어도(정리 실패 3이 아닌 끝남) 서버는 이미 받은 까닭을 버리지 않는다. 정해진 모양이
+// 아닌 줄(죽을 때의 스택)은 읽지 못한 출력으로, 끝남은 끝까지 돌지 못함으로 함께 남는다(#296 외부 리뷰 2회차 SPEC-3). 설정 파일을 읽을
+// 권한을 빼 스크립트가 죽게 한다(root는 권한을 무시하므로 건너뛴다).
+it.skipIf(!permissionDenial())(
+  "keeps the reasons the cleanup script gave before it died, with how it ended",
+  async () => {
+    const { cwd, agents, config } = await workspace();
+    const temporary = path.join(agents, ".babojubot-left.tmp");
+    await writeFile(temporary, ownedLeftover);
+    await writeFile(config, ownedLeftover);
+    await chmod(config, 0o000);
+    const ended = await script(
+      cwd,
+      {
+        miss: "\\.babojubot-left\\.tmp\\.[0-9a-f-]+\\.removing$",
+        take: temporary,
+      },
+      missOnce
+    );
+    expect(ended.status).toBe(1);
+    tree.run = () => ({
+      started: true,
+      code: 1,
+      signal: null,
+      stdout: Buffer.alloc(0),
+      stderr: Buffer.from(ended.stderr),
+    });
+    const failed = await clearOwnedConfig(cwd).then(
+      () => {
+        throw new Error("expected the configuration not to be cleared");
+      },
+      (error: unknown) => error
+    );
+    if (!(failed instanceof ConfigNotCleared))
+      throw new Error(`expected ConfigNotCleared, got ${String(failed)}`);
+    expect(failed.reasons).toEqual([
+      {
+        reason: "changed",
+        name: ".babojubot-left.tmp",
+        keptAs: expect.stringMatching(
+          /^\.\.babojubot-left\.tmp\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
+        ),
+      },
+      { reason: "unreadable_output", name: "" },
+      { reason: "incomplete_run", name: "", code: "exit 1" },
+    ]);
+  }
+);
