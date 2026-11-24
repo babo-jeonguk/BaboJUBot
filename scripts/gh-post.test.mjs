@@ -109,7 +109,7 @@ test("published text allows names, product settings, prose and committed links",
       "`~/.venv/bin`과 foo.reference-cache/x는 다른 것이다.",
       "[조사](https://github.com/acme/demo/blob/main/docs/research/issue-1-references.md)",
       "[다른 저장소](https://github.com/other/repo/blob/main/.scratch/x.md)",
-      "[밖](../../outside.md) 그리고 ::/0 같은 표기",
+      "::/0 같은 표기",
       "저장소 밖 임시 폴더에 남긴다.",
       // 코드 블록·코드 스팬 안 글은 링크가 아니다(CommonMark §4.5·§6.1). 점 폴더 경로는 코드 안도 따로 본다.
       "```\n[보고서](playwright-report/index.html)\n```",
@@ -195,6 +195,63 @@ test("a body with a local-only path is not posted", async () => {
   });
 });
 
+// 링크 경로는 아는 단순한 모양만 판정한다. 앞뒤 공백, 제어 문자(인코딩을 푼 탭 포함), 역슬래시, `//`로 시작, `..` 조각, `:`가 든
+// 경로는 GitHub·브라우저가 git과 다르게 풀 수 있어 판정할 수 없음이다. 저장소 밖(`../../outside.md`)도 `..`라 예전처럼 허용하지
+// 않는다(#295 외부 리뷰 1회차 SPEC-1).
+test("published text rejects a link path it cannot judge", async () => {
+  await withFixture((fixture) => {
+    const context = loadContext(fixture);
+    const cases = [
+      [
+        "[보고서](< playwright-report/index.html>)",
+        "a link path with space at either end",
+        " playwright-report/index.html",
+      ],
+      [
+        "[trace](test-results/a%09trace.zip)",
+        "a link path with a control character",
+        "test-results/a%09trace.zip",
+      ],
+      [
+        "[trace](test-results\\a\\trace.zip)",
+        "a link path with a backslash",
+        "test-results\\a\\trace.zip",
+      ],
+      [
+        "[trace](//github.com/acme/demo/blob/main/test-results/a/trace.zip)",
+        "a link path that starts with //",
+        "//github.com/acme/demo/blob/main/test-results/a/trace.zip",
+      ],
+      [
+        "[보고서](docs/../playwright-report/index.html)",
+        "a link path with a .. segment",
+        "docs/../playwright-report/index.html",
+      ],
+      [
+        "[밖](../../outside.md)",
+        "a link path with a .. segment",
+        "../../outside.md",
+      ],
+      [
+        "[trace](./test-results:a/trace.zip)",
+        "a link path with a colon",
+        "./test-results:a/trace.zip",
+      ],
+      [
+        "https://github.com/acme/demo/blob/main/test-results%5Ca%5Ctrace.zip",
+        "a link path with a backslash",
+        "https://github.com/acme/demo/blob/main/test-results%5Ca%5Ctrace.zip",
+      ],
+    ];
+    for (const [text, reason, url] of cases)
+      assert.deepEqual(
+        findLocalOnlyReferences(text, context),
+        [{ line: 1, undecidable: `${reason}: ${url}` }],
+        text
+      );
+  });
+});
+
 // 브라우저는 속성 값의 문자 참조를 풀어 `playwright-report/index.html`로 읽는다. 그 값을 글자 그대로 판정하면 열 수 없는 경로가
 // 게시된다. 판정할 수 없는 HTML 링크는 게시하지 않는다(#286 병합분 감사 항목 1).
 test("a body with an HTML link that cannot be read is not posted", async () => {
@@ -214,7 +271,7 @@ test("a body with an HTML link that cannot be read is not posted", async () => {
     assert.deepEqual(calls, []);
     assert.match(
       errors,
-      /Cannot tell where an HTML link points in published text body\.md:3: /
+      /Cannot tell where a link points in published text body\.md:3: href in raw HTML \(write the link in Markdown\)$/m
     );
   });
 });
