@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { text } from "node:stream/consumers";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   destinationSchema,
@@ -145,6 +146,25 @@ function expectEstablished(tunnel: Awaited<ReturnType<typeof openTunnel>>) {
 /** 터널이 닫히기를 상한 안에서 기다린다. 닫히지 않으면 그 이유로 실패한다(닫히지 않음을 시간으로 판정하지 않는다). */
 const tunnelClosed = (tunnel: Awaited<ReturnType<typeof openTunnel>>) =>
   within(tunnel.closed, 5_000, "the tunnel did not close");
+
+/**
+ * 중계를 거친 요청 하나의 답 본문. 답은 200이어야 하고, 본문은 끝까지 읽는다. 읽기는 정상 끝·오류·중간 닫힘을 함께 받아, 답이
+ * 중간에 끊기면 그 까닭으로 거절한다. 요청·답·본문은 각각 상한 안에 와야 한다.
+ */
+async function answerBody(options: http.RequestOptions) {
+  const answer = await within(
+    new Promise<http.IncomingMessage>((resolve, reject) => {
+      const req = http.request(options);
+      req.on("response", resolve);
+      req.on("error", reject);
+      req.end();
+    }),
+    5_000,
+    "the relay did not answer"
+  );
+  expect(answer.statusCode).toBe(200);
+  return within(text(answer), 5_000, "the relay's answer did not end");
+}
 
 /** egress.sock에 CONNECT를 보내고 중계가 연결을 끝낼 때까지 받은 응답 전체(UTF-8)를 상한 안에서 받는다. 거부의 답을 본다. */
 function answerVia(directory: string, target: string) {
@@ -290,19 +310,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ],
     });
     await relay.ready;
-    const body = await new Promise<string>((resolve, reject) => {
-      const req = http.request({
-        socketPath: path.join(relay.directory, "egress.sock"),
-        path: `http://localhost:${target.port}/page?x=1`,
-        headers: { host: `localhost:${target.port}` },
-      });
-      req.on("response", (res) => {
-        let text = "";
-        res.on("data", (chunk) => (text += chunk));
-        res.on("end", () => resolve(text));
-      });
-      req.on("error", reject);
-      req.end();
+    const body = await answerBody({
+      socketPath: path.join(relay.directory, "egress.sock"),
+      path: `http://localhost:${target.port}/page?x=1`,
+      headers: { host: `localhost:${target.port}` },
     });
     expect(JSON.parse(body)).toEqual({
       url: "/page?x=1",
@@ -1143,19 +1154,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const { relays } = hub();
     const relay = relays.open({ identity, required: [] });
     await relay.ready;
-    const body = await new Promise<string>((resolve, reject) => {
-      const req = http.request({
-        socketPath: path.join(relay.directory, "tools.sock"),
-        path: "/api/tools/mcp",
-        headers: { "x-babojubot-relay-run": "someone-else" },
-      });
-      req.on("response", (res) => {
-        let text = "";
-        res.on("data", (chunk) => (text += chunk));
-        res.on("end", () => resolve(text));
-      });
-      req.on("error", reject);
-      req.end();
+    const body = await answerBody({
+      socketPath: path.join(relay.directory, "tools.sock"),
+      path: "/api/tools/mcp",
+      headers: { "x-babojubot-relay-run": "someone-else" },
     });
     expect(JSON.parse(body)).toEqual({
       url: "/api/tools/mcp",
