@@ -2085,6 +2085,8 @@ test("a promise marked with awaitedLater may be awaited, collected, expected, re
     `const later = awaitedLater(p);\nexport async function run() {\n  await later;\n}\n`,
     `const later = awaitedLater(p);\ntest("waits", async () => {\n  await later;\n});\n`,
     `const later = awaitedLater(p);\nasync function inner() {\n  await later;\n}\nexport const outer = () => inner();\n`,
+    // 경계(CODING_STANDARDS.md#단언): 이름 없는 콜백은 넘겨받은 함수가 부른다고 본다. 그 함수가 부르지 않아도 lint는 세고, 리뷰가 본다.
+    `const later = awaitedLater(p);\nconst ignore = () => undefined;\nignore(async () => {\n  await later;\n});\n`,
     `import { within } from "./support.ts";\nconst later = awaitedLater(p);\nawait within(later, 1000);\n`,
     `import * as support from "./support.ts";\nconst later = awaitedLater(p);\nawait support.within(later, 1000);\n`,
     `const later = awaitedLater(p);\nawait expect(later).resolves.toBe(1);\n`,
