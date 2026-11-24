@@ -195,6 +195,30 @@ test("a body with a local-only path is not posted", async () => {
   });
 });
 
+// 브라우저는 속성 값의 문자 참조를 풀어 `playwright-report/index.html`로 읽는다. 그 값을 글자 그대로 판정하면 열 수 없는 경로가
+// 게시된다. 판정할 수 없는 HTML 링크는 게시하지 않는다(#286 병합분 감사 항목 1).
+test("a body with an HTML link that cannot be read is not posted", async () => {
+  await withFixture((fixture) => {
+    fs.writeFileSync(
+      path.join(fixture, "body.md"),
+      '요약\n\n<a href="playwright-report&#47;index.html">보고서</a>\n'
+    );
+    const { status, calls, errors } = post(fixture, [
+      "issue",
+      "comment",
+      "12",
+      "--body-file",
+      "body.md",
+    ]);
+    assert.equal(status, 1);
+    assert.deepEqual(calls, []);
+    assert.match(
+      errors,
+      /Cannot tell where an HTML link points in published text body\.md:3: /
+    );
+  });
+});
+
 test("every text option of issue and pr commands is checked", async () => {
   await withFixture((fixture) => {
     fs.writeFileSync(path.join(fixture, "bad.md"), "see .scratch/x\n");
