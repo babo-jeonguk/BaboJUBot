@@ -7,7 +7,6 @@ import { openLifelines } from "@babojubot/process/lifelines";
 import { killAndWait } from "@babojubot/process/testing";
 import { awaitedLater, processAlive } from "@babojubot/process/test-cleanup";
 import { manualClock, within } from "@babojubot/process/test-support";
-import { settled } from "@babojubot/contracts";
 import { testFolders } from "./test-folders.ts";
 
 /**
@@ -172,11 +171,15 @@ it("keeps the end of the error output for the caller", async () => {
 });
 
 describe("runProbe", () => {
-  const probe = (script: string, timeout = 5_000) =>
+  const probe = (
+    script: string,
+    timeout = 5_000,
+    signal = new AbortController().signal
+  ) =>
     runProbe([process.execPath, "-e", script], [], {
       env: { PATH: process.env.PATH },
       cwd: process.cwd(),
-      signal: new AbortController().signal,
+      signal,
       timeout,
       maxBuffer: 1024 * 1024,
     });
@@ -305,12 +308,16 @@ describe("runProbe", () => {
   it("stops what the program left holding its output as soon as the program ends, and returns the program's result", async () => {
     const folder = await folders.make("babojubot-probe-");
     const holderFile = path.join(folder, "holder");
-    // 정리는 등록 역순이다. 출력을 쥔 프로그램을 먼저 끄고, 그 뒤 probe(그 트리)가 끝나기를 기다린 다음 폴더를 지운다. 상한에 닿은
-    // 회귀라면 probe의 기다림은 가짜 시계 위에 남아 끝나지 않고, 정리가 "the probe did not stop"으로 실패하며 폴더를 남긴다(그 트리는
-    // 감독 실행기가 쥐고, 시험 프로세스가 끝나 제어 통로가 닫히면 실행기가 끈다).
+    // 정리는 등록 역순이다. 출력을 쥔 프로그램을 먼저 끄고, probe를 취소한 뒤 그 결과를 받고서 폴더를 지운다. probe의 성공(트리
+    // 전체가 끝난 것을 확인하고 종료 코드 0)만 정리 성공이다. 끝을 확인하지 못한 거절(`Program did not stop`)을 포함해 그 밖의
+    // 결과는 정리 실패로 넘겨 폴더를 남긴다.
     // probe는 아래에서 띄운다. 정리는 그 전에 등록하므로 띄운 것을 이 자리에 둔다.
     const started: { probe?: Promise<unknown> } = {};
-    folders.own(() => settled(started.probe ?? Promise.resolve()), "the probe");
+    const cancel = new AbortController();
+    folders.own(() => {
+      cancel.abort();
+      return started.probe ?? Promise.resolve();
+    }, "the probe");
     folders.own(
       () => stopRecorded(holderFile),
       "the program holding the output"
@@ -323,7 +330,8 @@ describe("runProbe", () => {
     const running = probe(
       `const holder = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(holder)}], { stdio: ["ignore", "inherit", "inherit", "pipe"] }); require("node:fs").writeFileSync(${JSON.stringify(holderFile)}, String(holder.pid)); holder.stdio[3].once("data", () => { holder.stdio[3].destroy(); holder.unref(); console.log("done"); });`,
       // 가짜 시계 위의 실행 상한이라 지나지 않는다.
-      5_000
+      5_000,
+      cancel.signal
     );
     started.probe = running;
     const result = await within(

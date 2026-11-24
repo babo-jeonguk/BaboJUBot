@@ -52,13 +52,15 @@ const roots: string[] = [];
 const writers: ReturnType<typeof keepAppending>[] = [];
 afterEach(async () => {
   tree.run = undefined;
-  // 진행 중인 덧붙이기를 정산한 뒤에 폴더를 지운다. 정리 실패는 hook 오류로 따로 보고되어 시험의 단언 실패를 가리지 않는다.
+  // 진행 중인 덧붙이기가 모두 끝난 것을 확인한 뒤에만 폴더를 지운다. 확인하지 못하면 폴더를 남기고 그 실패를 알린다. 정리 실패는
+  // hook 오류로 따로 보고되어 시험의 단언 실패를 가리지 않는다.
+  const folders = roots.splice(0);
   const stopped = await Promise.allSettled(
     writers.splice(0).map((w) => w.stop())
   );
-  await Promise.all(roots.splice(0).map(remove));
   const failed = stopped.find((result) => result.status === "rejected");
   if (failed) throw failed.reason;
+  await Promise.all(folders.map(remove));
 });
 const org = "organization-one";
 async function folder() {
