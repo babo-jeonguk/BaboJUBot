@@ -28,8 +28,10 @@ import {
 } from "vitest";
 import { probeTimeoutMs } from "./providers/process.ts";
 import {
+  activityLog,
   programCount,
   programsFrom,
+  settleProblems,
   watchingPrograms,
 } from "./providers/program-watch-support.ts";
 
@@ -255,8 +257,8 @@ export function describeRuntimeContract(
 ): void {
   if (!watchingPrograms())
     throw new Error(
-      `${name}: watch the programs runs start, so that "no program" is seen and not assumed: ` +
-        `vi.mock("./providers/process.ts", async (importOriginal) => (await import("./providers/program-watch-support.ts")).watchPrograms(await importOriginal()))`
+      `${name}: watch the programs runs start, so that "no program" is seen and not assumed: wrap ./providers/process.ts with ` +
+        "watchPrograms and @babojubot/process with watchProcessPackage (providers/program-watch-support.ts) through vi.mock"
     );
   const { capabilities } = adapter;
   if (capabilities?.resume && (!unusableSession || !resumes))
@@ -292,18 +294,17 @@ export function describeRuntimeContract(
       );
       const messages = tools.serve(request);
       const controller = new AbortController();
-      const activities: unknown[] = [];
-      const late: unknown[] = [];
+      const log = activityLog(name);
+      const { activities, late } = log;
       onTestFinished(() => {
         expect(
           late,
           `${name} emitted activities after the run returned`
         ).toEqual([]);
       });
-      let returned = false;
       const firstProgram = programCount();
       let atReturn:
-        { started: number; programs: number; running: number } | undefined;
+        { started: number; programs: number; notEnded: number } | undefined;
       // 활동 기록을 붙잡아 두면 풀어 줄 때까지 `emit`이 돌아오지 않는다. 기록은 그대로 한다.
       let gate: Promise<void> | undefined;
       let open: (() => void) | undefined;
@@ -331,24 +332,18 @@ export function describeRuntimeContract(
         .execute(request, {
           signal: controller.signal,
           emit: async (activity) => {
-            if (returned) {
-              late.push(activity);
-              throw new Error(
-                `${name} emitted an activity after the run returned: ${JSON.stringify(activity)}`
-              );
-            }
-            activities.push(activity);
+            log.record(activity);
             markWorking();
             await gate;
           },
         })
         .finally(() => {
-          returned = true;
+          log.markReturned();
           tools.onRequest.delete(markWorking);
           atReturn = {
             started: programCount() - firstProgram,
             programs: programCount(),
-            running: programsFrom(firstProgram).filter(
+            notEnded: programsFrom(firstProgram).filter(
               (p) => p.state !== "ended"
             ).length,
           };
@@ -384,7 +379,7 @@ export function describeRuntimeContract(
         working,
         holdActivities,
         get returned() {
-          return returned;
+          return log.returned;
         },
       };
     }
@@ -406,23 +401,14 @@ export function describeRuntimeContract(
       const atReturn = attempt.atReturn;
       if (!atReturn)
         throw new Error("expectSettled is called after the run returned");
-      if (launches === "programs")
-        expect(
-          atReturn.started,
-          "declares that its runs start programs, but this run started none through startProcess"
-        ).toBeGreaterThan(0);
-      else
-        expect(
-          atReturn.started,
-          "declares that it starts nothing, but this run started programs"
-        ).toBe(0);
       expect(
-        atReturn.running,
-        "programs the run started were still running or handling their output when it returned"
-      ).toBe(0);
-      expect(programCount(), "programs started after the run returned").toBe(
-        atReturn.programs
-      );
+        settleProblems({
+          launches,
+          started: atReturn.started,
+          notEnded: atReturn.notEnded,
+          startedAfterReturn: programCount() - atReturn.programs,
+        })
+      ).toEqual([]);
       await within(
         tools.settled(),
         settleMs,

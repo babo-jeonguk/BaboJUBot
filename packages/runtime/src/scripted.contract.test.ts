@@ -10,9 +10,15 @@ import {
 } from "./runtime-contract.ts";
 import { createScriptedRuntime, expiredFakeSession } from "./scripted.ts";
 
-// 실행 시도가 띄운 프로그램의 끝을 계약 시험이 신호로 본다(runtime-contract.ts 약속 2).
+// 실행 시도가 띄운 프로그램의 끝을 계약 시험이 신호로 본다(runtime-contract.ts 약속 2). 실행 시도의 프로그램(`startProcess`)과
+// 공용 실행(`launchTree`·`runTree`)을 모두 본다.
 vi.mock("./providers/process.ts", async (importOriginal) =>
   (await import("./providers/program-watch-support.ts")).watchPrograms(
+    await importOriginal()
+  )
+);
+vi.mock("@babojubot/process", async (importOriginal) =>
+  (await import("./providers/program-watch-support.ts")).watchProcessPackage(
     await importOriginal()
   )
 );
