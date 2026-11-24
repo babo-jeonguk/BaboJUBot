@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   destinationSchema,
   egressRefusalMessages,
+  isDisconnect,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
@@ -86,28 +87,64 @@ const identity = {
 };
 
 /**
- * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 응답 머리(빈 줄까지)를 받는다. 연 터널은 머리 뒤로 상대가 먼저 보내는 것이 없어
- * 받은 것이 머리뿐이어야 한다. 머리 뒤가 함께 오면 그것까지 `head`에 남겨 단언이 드러내게 한다.
+ * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내 터널을 연다. 응답 머리는 node:http 클라이언트의 파서가 다 읽은 것(`connect` 이벤트)이고,
+ * `head`는 머리 뒤에 함께 온 바이트다. 닫힘은 연 순간부터 듣는다(`closed`: 실제 `close` 이벤트, 상대가 끊어 난 오류는 닫힘의 일부).
+ * 시험이 끝나면 연결을 닫는다. 터널이 아닌 답(거부)의 전체는 `answerVia`가 본다.
  */
-function connectVia(directory: string, target: string) {
-  return new Promise<{ head: string; socket: net.Socket }>(
-    (resolve, reject) => {
-      const socket = net.connect(path.join(directory, "egress.sock"));
-      let buffer = "";
-      socket.once("error", reject);
-      socket.on("connect", () =>
-        socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`)
-      );
-      const onData = (chunk: Buffer) => {
-        buffer += chunk.toString("latin1");
-        if (buffer.indexOf("\r\n\r\n") < 0) return;
-        socket.off("data", onData);
-        resolve({ head: buffer, socket });
-      };
-      socket.on("data", onData);
-    }
+function openTunnel(directory: string, target: string) {
+  const request = http.request({
+    socketPath: path.join(directory, "egress.sock"),
+    method: "CONNECT",
+    path: target,
+    headers: { host: target },
+  });
+  return within(
+    new Promise<{
+      response: http.IncomingMessage;
+      socket: net.Socket;
+      head: Buffer;
+      closed: Promise<void>;
+    }>((resolve, reject) => {
+      request.once("error", reject);
+      request.once("connect", (response, socket: net.Socket, head: Buffer) => {
+        const closed = new Promise<void>((done, fail) => {
+          socket.on("error", (error) => {
+            if (!isDisconnect(error)) fail(error);
+          });
+          socket.once("close", () => done());
+        });
+        // 시험이 끝나면 연결을 닫고 그 닫힘을 상한 안에서 확인한다. 끊김 밖의 오류는 거기서(또는 먼저 기다린 곳에서) 드러난다.
+        onTestFinished(async () => {
+          socket.destroy();
+          await within(closed, 5_000, "the tunnel did not close");
+        });
+        resolve({ response, socket, head, closed });
+      });
+      request.end();
+    }),
+    5_000,
+    `the relay did not answer CONNECT ${target}`
   );
 }
+
+/** 중계가 터널을 연 답: 200 Connection Established, 머리 줄 없음, 머리 뒤에 먼저 온 바이트 없음. */
+function expectEstablished(tunnel: Awaited<ReturnType<typeof openTunnel>>) {
+  expect({
+    status: tunnel.response.statusCode,
+    message: tunnel.response.statusMessage,
+    headers: tunnel.response.rawHeaders,
+    after: tunnel.head.length,
+  }).toEqual({
+    status: 200,
+    message: "Connection Established",
+    headers: [],
+    after: 0,
+  });
+}
+
+/** 터널이 닫히기를 상한 안에서 기다린다. 닫히지 않으면 그 이유로 실패한다(닫히지 않음을 시간으로 판정하지 않는다). */
+const tunnelClosed = (tunnel: Awaited<ReturnType<typeof openTunnel>>) =>
+  within(tunnel.closed, 5_000, "the tunnel did not close");
 
 /** egress.sock에 CONNECT를 보내고 중계가 연결을 끝낼 때까지 받은 응답 전체(UTF-8)를 상한 안에서 받는다. 거부의 답을 본다. */
 function answerVia(directory: string, target: string) {
@@ -128,8 +165,6 @@ function answerVia(directory: string, target: string) {
   );
 }
 
-/** 중계가 연 터널의 답. */
-const established = "HTTP/1.1 200 Connection Established\r\n\r\n";
 /** 중계가 `reason`으로 거부할 때 보내는 답 전체: 403 머리와 사용자 안내 본문. */
 function refusal(reason: EgressRefusal) {
   const body = `${egressRefusalMessages[reason]}\n`;
@@ -143,26 +178,25 @@ function refusal(reason: EgressRefusal) {
   );
 }
 
-/** 보낸 것이 되돌아온 첫 조각을 상한 안에서 받는다. */
+/** 터널로 보낸 것이 그 바이트 수만큼 되돌아오기를 상한 안에서 기다리고, 받은 것을 돌려준다. */
 const roundTrip = (socket: net.Socket, text: string) =>
   within(
     new Promise<string>((resolve) => {
-      socket.once("data", (chunk) => resolve(chunk.toString()));
+      const expected = Buffer.byteLength(text);
+      const chunks: Buffer[] = [];
+      let size = 0;
+      const read = (chunk: Buffer) => {
+        chunks.push(chunk);
+        size += chunk.length;
+        if (size < expected) return;
+        socket.off("data", read);
+        resolve(Buffer.concat(chunks).toString());
+      };
+      socket.on("data", read);
       socket.write(text);
     }),
     5_000,
-    "the tunnel did not answer"
-  );
-
-/** 연결이 닫히기를 상한 안에서 기다린다. 닫히지 않으면 그 이유로 실패한다(닫히지 않음을 시간으로 판정하지 않는다). */
-const closed = (socket: net.Socket) =>
-  within(
-    new Promise<void>((resolve) => {
-      if (socket.destroyed) return resolve();
-      socket.once("close", () => resolve());
-    }),
-    5_000,
-    "the connection did not close"
+    "the tunnel did not send back what it was given"
   );
 
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
@@ -181,8 +215,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ],
     });
     await relay.ready;
-    const ok = await connectVia(relay.directory, `localhost:${target.port}`);
-    expect(ok.head).toBe(established);
+    const ok = await openTunnel(relay.directory, `localhost:${target.port}`);
+    expectEstablished(ok);
     expect(await roundTrip(ok.socket, "ping")).toBe("ping");
     ok.socket.destroy();
 
@@ -349,11 +383,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       refusal("destination_not_allowed")
     );
     setResearch([entry]);
-    const open = await connectVia(relay.directory, `localhost:${target.port}`);
-    expect(open.head).toBe(established);
+    const open = await openTunnel(relay.directory, `localhost:${target.port}`);
+    expectEstablished(open);
     setResearch([]);
     await relays.revalidate(identity.organizationId);
-    await closed(open.socket);
+    await tunnelClosed(open);
     expect(refused.at(-1)).toEqual({
       host: "localhost",
       port: target.port,
@@ -373,12 +407,12 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         addresses: ["127.0.0.1", "::1"],
       }),
     ]);
-    const open = await connectVia(relay.directory, `localhost:${target.port}`);
-    expect(open.head).toBe(established);
+    const open = await openTunnel(relay.directory, `localhost:${target.port}`);
+    expectEstablished(open);
     // 이름·포트는 그대로 두고 내부 주소 예외만 지운다. 새 연결은 거부되므로 열린 연결도 닫혀야 한다.
     setResearch([destination({ host: "localhost", port: target.port })]);
     await relays.revalidate(identity.organizationId);
-    await closed(open.socket);
+    await tunnelClosed(open);
     expect(refused.at(-1)).toEqual({
       host: "localhost",
       port: target.port,
@@ -412,18 +446,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
     const relay = env.relays.open({ identity, required: [] });
     await relay.ready;
-    const socket = net.connect(path.join(relay.directory, "egress.sock"));
-    onTestFinished(() => void socket.destroy());
-    socket.on("error", () => {});
-    // 응답을 읽어야 끝(FIN)을 받고 닫힌다.
-    let answer = "";
-    socket.on("data", (chunk: Buffer) => (answer += chunk.toString("latin1")));
-    socket.write(
-      `CONNECT localhost:${target.port} HTTP/1.1\r\nHost: localhost:${target.port}\r\n\r\n`
-    );
-    await closed(socket);
     // 판정 뒤 정책이 바뀌어 다시 본 연결은 열지 않고 그 이유로 거부한다(200을 보내지 않는다).
-    expect(Buffer.from(answer, "latin1").toString("utf8")).toBe(
+    expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
       refusal("policy_changed")
     );
     expect(env.refused.at(-1)).toEqual({
@@ -960,9 +984,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ],
     });
     await relay.ready;
-    const answer = await connectVia(relay.directory, `127.0.0.1:${port}`);
-    answer.socket.destroy();
-    expect(answer.head).toBe(
+    expect(await answerVia(relay.directory, `127.0.0.1:${port}`)).toBe(
       "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     );
     expect(refusing.dialed.mock.calls).toEqual([[{ host: "127.0.0.1", port }]]);
@@ -1106,13 +1128,15 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ],
     });
     await relay.ready;
-    const open = await connectVia(relay.directory, `localhost:${target.port}`);
+    const open = await openTunnel(relay.directory, `localhost:${target.port}`);
+    expectEstablished(open);
     await relay.close();
-    await closed(open.socket);
+    await tunnelClosed(open);
     expect(existsSync(path.join(relay.directory, "egress.sock"))).toBe(false);
+    // 지운 소켓 파일에는 연결할 곳이 없다.
     await expect(
-      connectVia(relay.directory, `localhost:${target.port}`)
-    ).rejects.toThrow();
+      openTunnel(relay.directory, `localhost:${target.port}`)
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("passes organization tool requests to the tools handler with this run's identity, overriding what the container claims", async () => {
