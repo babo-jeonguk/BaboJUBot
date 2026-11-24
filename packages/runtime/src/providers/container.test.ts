@@ -24,12 +24,23 @@ import { tmpdir } from "node:os";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import type {
-  EgressRefusal,
-  ProviderConnection,
-  RunRequest,
+import {
+  hasErrorCode,
+  orIfMissing,
+  type EgressRefusal,
+  type ProviderConnection,
+  type RunRequest,
 } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import {
   createCodexProvider as unownedCodexProvider,
@@ -43,7 +54,8 @@ import {
   removeContainer,
   runDocker,
 } from "./container.ts";
-import { killAndWait } from "@babojubot/process/testing";
+import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
+import { lifelineHolder } from "@babojubot/process/test-cleanup";
 import { manualClock, probeEnvironment } from "@babojubot/process/test-support";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { refusing, resetRefusing } from "./connect-failure-support.ts";
@@ -173,6 +185,28 @@ vi.mock("./egress-policy.ts", async (importOriginal) => {
 });
 
 const folders = testFolders();
+let lifelines: Lifelines;
+beforeAll(async () => {
+  lifelines = await openLifelines();
+});
+afterAll(() => lifelines.close());
+let leftCount = 0;
+/**
+ * 프로그램이 남길 자식의 연결 쥐기(`code`, 연결을 쥔 뒤 준비 프레임을 낸다)와 그 정리. 자식은 시험 폴더에서 돈다. 정리는 폴더를
+ * 지우기 전에 연결이 열려 있음을 본 직후에만 그 번호로 끄고 연결의 닫힘을 기다린다. 이미 끝났으면 신호하지 않는다.
+ */
+async function leftChild() {
+  const folder = await folders.make("babojubot-left-child-");
+  const name = `left-child-${++leftCount}`;
+  const held = lifelineHolder(
+    lifelines,
+    name,
+    path.join(folder, "pid"),
+    "console.log(JSON.stringify({ ready: true }));"
+  );
+  folders.own(held.end, "the child the program left");
+  return { name, code: held.code };
+}
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
 const createClaudeProvider = folders.owning(unownedClaudeProvider);
 const createCodexProvider = folders.owning(unownedCodexProvider);
@@ -293,7 +327,11 @@ async function setup(programs: Record<string, string[]>, base = tmpdir()) {
 
 // A container program that leaves a child sharing its output. The child records whether the relay is still open when it is told
 // to stop, then ends. The program ends on its first input line, or, after its input closes, once the file `<log>.exit` exists.
-const leftBehind = `
+/**
+ * 자식 하나를 남기고 끝나는 프로그램. 자식은 끄라는 신호(SIGTERM)를 받을 때 중계가 아직 열려 있었는지 기록하고 끝난다. 자식은
+ * 연결(`held`)을 쥔 뒤 준비 프레임을 낸다. 시험이 끄지 못한 자식은 정리가 그 연결이 열려 있음을 본 직후에만 그 번호로 끈다.
+ */
+const leftBehind = (held: string) => `
   const fs = require("node:fs"), path = require("node:path");
   const relay = JSON.parse(process.env.FAKE_DOCKER_MOUNTS).find((m) => m.target === "/run/babojubot").source;
   const record = JSON.stringify([process.argv[1], path.join(relay, "egress.sock")]);
@@ -304,8 +342,7 @@ const leftBehind = `
       process.exit(0);
     });
     setInterval(() => {}, 1000);
-    console.log(JSON.stringify({ pid: process.pid }));
-  \`], { stdio: ["ignore", "inherit", "ignore"] });
+  \` + ${JSON.stringify(held)}], { stdio: ["ignore", "inherit", "ignore"] });
   process.stdin.once("data", () => process.exit(0));
   // Cancelled: the input closes, and the program ends when the test lets it.
   process.stdin.on("end", () =>
@@ -573,15 +610,13 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
   });
 
   it("takes the relay back before stopping what a finished program left running, even when that keeps its output open", async () => {
-    const env = await setup({ codex: [process.execPath, "-e", leftBehind] });
+    const left = await leftChild();
+    const env = await setup({
+      codex: [process.execPath, "-e", leftBehind(left.code)],
+    });
     // The program shares the Docker program's output, so the child it leaves holds that output open after both end.
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
-    let child = 0;
-    // 프로그램이 남긴 자식은 시험 폴더에서 돈다. 폴더를 지우기 전에 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
-    folders.own(async () => {
-      if (child) await killAndWait([child]);
-    }, "the child the program left");
     const started = startProcess({
       command: ["unused"],
       args: [log],
@@ -595,8 +630,7 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         env: {},
         relay: { identity: { organizationId: env.org }, required: [] },
       },
-      onFrame: async (frame) => {
-        child = (frame as { pid: number }).pid;
+      onFrame: async () => {
         started.write({ go: true });
       },
     });
@@ -607,14 +641,12 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
   }, 20_000);
 
   it("takes the relay back before stopping what a cancelled program left running, when the program ends before its stop timer", async () => {
-    const env = await setup({ codex: [process.execPath, "-e", leftBehind] });
+    const left = await leftChild();
+    const env = await setup({
+      codex: [process.execPath, "-e", leftBehind(left.code)],
+    });
     await writeFile(path.join(env.state, "pass-output"), "");
     const log = path.join(env.root, "relay-at-stop");
-    let child = 0;
-    // 프로그램이 남긴 자식은 시험 폴더에서 돈다. 폴더를 지우기 전에 끄고 끝나기를 기다린다. 이미 끝났으면 넘어간다.
-    folders.own(async () => {
-      if (child) await killAndWait([child]);
-    }, "the child the program left");
     // The stop timer (2 s after the cancel) runs on the test clock, so the program ends before it by state, not by racing it on a
     // slow machine. Once the program ends, the run takes the relay back and stops the tree at once; nothing waits on the clock for
     // the output (#268; before, a 1 s output wait ran on this clock too).
@@ -633,8 +665,7 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         env: {},
         relay: { identity: { organizationId: env.org }, required: [] },
       },
-      onFrame: async (frame) => {
-        child = (frame as { pid: number }).pid;
+      onFrame: async () => {
         // Cancel: close the input. The stop timer would signal the group 2 s later.
         started.end();
       },
@@ -1016,7 +1047,20 @@ describe.skipIf(process.platform === "win32")(
     ] as const)(
       "keeps a %s login that a run with isolation off set aside out of every folder a later isolated run of the organization mounts (PR #171 SP-1)",
       async (_name, id, create, file, original, program) => {
-        const env = await setup({});
+        // 컨테이너 안의 프로그램은 붙인 자리를 실행 중에 모두 훑어 남은 로그인 내용이 든 파일을 기록한다. 실행 시도의 임시 자리는
+        // 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다(`test-fixtures/mount-scan.ts`).
+        const scans = path.join(
+          tmpdir(),
+          `babojubot-mount-scan-${crypto.randomUUID()}.jsonl`
+        );
+        const scanner = [
+          process.execPath,
+          fixture("mount-scan.ts"),
+          scans,
+          "left-in-organization",
+        ];
+        const env = await setup({ codex: scanner, agy: scanner });
+        onTestFinished(() => rm(scans, { force: true }));
         const connection = path.join(env.root, "providers", id);
         const login = path.join(connection, "login", original);
         await mkdir(path.dirname(login), { recursive: true });
@@ -1042,20 +1086,19 @@ describe.skipIf(process.platform === "win32")(
           .map((spec) => /(?:^|,)source=([^,]+)/.exec(spec)?.[1])
           .filter((source): source is string => Boolean(source));
         expect(sources.length).toBeGreaterThan(0);
-        const holding: string[] = [];
-        const look = async (at: string): Promise<void> => {
-          const info = await lstat(at).catch(() => undefined);
-          if (info?.isDirectory())
-            for (const name of await readdir(at))
-              await look(path.join(at, name));
-          else if (
-            info?.isFile() &&
-            (await readFile(at, "utf8")).includes("left-in-organization")
+        // 격리 실행의 붙인 자리는 실행 중에 모두 훑었고, 남은 로그인 내용이 든 파일은 없다.
+        expect(
+          (
+            await orIfMissing(
+              () => readFile(scans, "utf8"),
+              hasErrorCode("ENOENT"),
+              ""
+            )
           )
-            holding.push(at);
-        };
-        for (const source of sources) await look(source);
-        expect(holding).toEqual([]);
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as unknown)
+        ).toEqual([{ sources, holding: [] }]);
         // 치운 로그인은 버리지 않고 이 컴퓨터만 쓰는 연결 폴더에 남긴다.
         const kept = path.join(connection, "set-aside");
         const names = await readdir(kept);
@@ -1549,8 +1592,15 @@ describe.skipIf(process.platform === "win32")(
         [process.execPath, fixture("codex-refresh.mjs"), log, mode],
         timeouts
       );
+      // 처음 갱신 전에는 기록이 없다. 없음만 0으로 보고, 그 밖의 읽기 실패는 드러낸다.
       const refreshes = async () =>
-        (await readFile(log, "utf8").catch(() => ""))
+        (
+          await orIfMissing(
+            () => readFile(log, "utf8"),
+            hasErrorCode("ENOENT"),
+            ""
+          )
+        )
           .split("\n")
           .filter(Boolean).length;
       return { ...t, refreshes };
@@ -2626,8 +2676,13 @@ describe.skipIf(process.platform === "win32")(
       /** 연결 폴더 안에서 그 값을 담은 보통 파일. */
       const holding = async (secret: string) => {
         const found: string[] = [];
+        // 연결 폴더가 아직 없으면 담은 파일이 없다. 그 밖의 조회 실패(권한·디스크)는 접지 않고 드러낸다.
         const look = async (at: string): Promise<void> => {
-          const info = await lstat(at).catch(() => undefined);
+          const info = await orIfMissing(
+            () => lstat(at),
+            hasErrorCode("ENOENT"),
+            undefined
+          );
           if (info?.isDirectory())
             for (const name of await readdir(at))
               await look(path.join(at, name));

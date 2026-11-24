@@ -234,26 +234,15 @@ async function setup(connection: (typeof connections)[number]) {
   roots.push(root);
   // 받은 환경을 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 프로세스를 띄웠는지·어느 폴더로 띄웠는지는 남는다.
   // 컨테이너 안에서 돌면(가짜 docker가 붙인 자리를 FAKE_DOCKER_MOUNTS로 준다) 붙인 자리를 그때 모두 훑어 로그인 내용이 든 파일을
-  // 남긴다. 실행 시도의 임시 자리는 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다. 조회 실패는 접지 않아, 훑지 못하면 기록이 없다.
+  // 남긴다(`test-fixtures/mount-scan.ts`). 실행 시도의 임시 자리는 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다.
   const script = path.join(root, "dump-env.cjs");
   const dump = path.join(root, "env.jsonl");
   const scans = path.join(root, "mount-scans.jsonl");
   await writeFile(
     script,
-    `const fs = require("node:fs");
-const path = require("node:path");
-fs.appendFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env) + "\\n");
-if (process.env.FAKE_DOCKER_MOUNTS !== undefined) {
-  const sources = JSON.parse(process.env.FAKE_DOCKER_MOUNTS).map((mount) => mount.source);
-  const holding = [];
-  const look = (at) => {
-    const info = fs.lstatSync(at);
-    if (info.isDirectory()) for (const name of fs.readdirSync(at)) look(path.join(at, name));
-    else if (info.isFile() && fs.readFileSync(at, "utf8").includes("synthetic-login")) holding.push(at);
-  };
-  for (const source of sources) look(source);
-  fs.appendFileSync(${JSON.stringify(scans)}, JSON.stringify({ sources, holding }) + "\\n");
-}`
+    `require("node:fs").appendFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env) + "\\n");
+if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
+  require(${JSON.stringify(fixture("mount-scan.ts"))}).scanMounts(${JSON.stringify(scans)}, "synthetic-login");`
   );
   const dumper: [string, ...string[]] = [process.execPath, script];
   const state = path.join(root, "docker-state");
