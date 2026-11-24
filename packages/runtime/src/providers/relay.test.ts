@@ -143,23 +143,27 @@ function refusal(reason: EgressRefusal) {
   );
 }
 
+/** 보낸 것이 되돌아온 첫 조각을 상한 안에서 받는다. */
 const roundTrip = (socket: net.Socket, text: string) =>
-  new Promise<string>((resolve) => {
-    socket.once("data", (chunk) => resolve(chunk.toString()));
-    socket.write(text);
-  });
+  within(
+    new Promise<string>((resolve) => {
+      socket.once("data", (chunk) => resolve(chunk.toString()));
+      socket.write(text);
+    }),
+    5_000,
+    "the tunnel did not answer"
+  );
 
+/** 연결이 닫히기를 상한 안에서 기다린다. 닫히지 않으면 그 이유로 실패한다(닫히지 않음을 시간으로 판정하지 않는다). */
 const closed = (socket: net.Socket) =>
-  new Promise<void>((resolve) => {
-    if (socket.destroyed) return resolve();
-    socket.once("close", () => resolve());
-  });
-/** 정해진 시간 안에 닫혔는지. 닫히지 않는 결함이 시험 시간 초과로 번지지 않게 한다. */
-const closedWithin = (socket: net.Socket, ms = 2000) =>
-  Promise.race([
-    closed(socket).then(() => "closed"),
-    new Promise((resolve) => setTimeout(() => resolve("open"), ms)),
-  ]);
+  within(
+    new Promise<void>((resolve) => {
+      if (socket.destroyed) return resolve();
+      socket.once("close", () => resolve());
+    }),
+    5_000,
+    "the connection did not close"
+  );
 
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
 describe.skipIf(process.platform === "win32")("isolated run relay", () => {
@@ -374,7 +378,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     // 이름·포트는 그대로 두고 내부 주소 예외만 지운다. 새 연결은 거부되므로 열린 연결도 닫혀야 한다.
     setResearch([destination({ host: "localhost", port: target.port })]);
     await relays.revalidate(identity.organizationId);
-    expect(await closedWithin(open.socket)).toBe("closed");
+    await closed(open.socket);
     expect(refused.at(-1)).toEqual({
       host: "localhost",
       port: target.port,
@@ -417,7 +421,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     socket.write(
       `CONNECT localhost:${target.port} HTTP/1.1\r\nHost: localhost:${target.port}\r\n\r\n`
     );
-    expect(await closedWithin(socket)).toBe("closed");
+    await closed(socket);
     // 판정 뒤 정책이 바뀌어 다시 본 연결은 열지 않고 그 이유로 거부한다(200을 보내지 않는다).
     expect(Buffer.from(answer, "latin1").toString("utf8")).toBe(
       refusal("policy_changed")
