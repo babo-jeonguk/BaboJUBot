@@ -164,19 +164,17 @@ it("cleans up a descendant that connects and never answers, and fails only for t
   });
 });
 
-/** 프로그램이 오류 출력의 첫 줄로 알린 자손의 번호. 줄 없이 출력이 끝나면 거절한다. */
+/**
+ * 프로그램이 오류 출력의 첫 줄로 알린 자손의 번호. 줄 없이 출력이 끝나면 거절하고, 번호가 아니면 받은 값과 함께 거절한다. 출력의
+ * 이벤트 콜백은 줄을 모으기만 하고(던질 일이 없다), 확인은 그 뒤 Promise 사슬에서 한다: 콜백 안에서 던지면 기다리는 쪽에 가지 않고
+ * 처리되지 않은 예외가 된다(#288 외부 리뷰 4회차 STD-5/SPEC-2).
+ */
 function reportedDescendant(errors: Readable) {
-  return new Promise<number>((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     let text = "";
     errors.on("data", (chunk: Buffer) => {
       text += String(chunk);
-      if (text.includes("\n"))
-        resolve(
-          reportedPid(
-            text.slice(0, text.indexOf("\n")),
-            "the descendant the program reported"
-          )
-        );
+      if (text.includes("\n")) resolve(text.slice(0, text.indexOf("\n")));
     });
     errors.once("end", () =>
       reject(
@@ -185,7 +183,7 @@ function reportedDescendant(errors: Readable) {
         )
       )
     );
-  });
+  }).then((line) => reportedPid(line, "the descendant the program reported"));
 }
 
 // #288 외부 리뷰 4회차 STD-5/SPEC-2: 프로그램이 번호 아닌 것을 알리면, 그 번호를 기다리는 쪽이 받은 값과 함께 거절된다. 출력
