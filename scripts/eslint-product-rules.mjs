@@ -1877,7 +1877,13 @@ const optionNames = (text) => new Set(text.split(/\s+/).filter(Boolean));
  * - `free`: 값을 받지 않는 옵션. 긴 옵션은 값을 `=`로 붙여서만 받는 선택 값 옵션(`--porcelain[=<version>]`)도 다음 낱말을 받지 않아
  *   여기 둔다.
  * - `optional`: 값을 붙여서만 받는 짧은 선택 값 옵션(`-u[<mode>]`, `-M[<n>]`). 묶음의 나머지가 그 값이고, 다음 낱말은 받지 않는다.
- * - `nul`: NUL 구분 출력을 켜는 긴 옵션(짧은 옵션은 모두 `-z`).
+ * - `sets`: 판정이 보는 상태(`lists`: 경로 목록을 내는가, `nul`: NUL로 끊는가)를 정하는 옵션과 그 옵션이 남기는 값. 같은 상태를 정하는
+ *   옵션은 마지막 것이 이긴다(git은 한 변수에 덮어 쓴다).
+ * - `negatable`: `--no-…`로 끌 수 있는 `sets`의 긴 옵션. `git <명령> -h`가 `--[no-]…`로 보이는 것만 둔다. 끄면 그 상태가 꺼진다
+ *   (`status`의 출력 형식은 하나의 변수라 `--no-short`·`--no-porcelain`·`--no-long`은 형식을 정하지 않은 처음으로 돌아가 긴 형식이 된다).
+ *   diff 계열의 `--name-only`·`--name-status`는 부정형을 받지 않고(`git diff --no-name-only`는 사용법 오류로 129), `-z`는 긴 이름이
+ *   없다.
+ * - `listsFrom`: 옵션이 없을 때 경로 목록을 내는가. `ls-files`·`ls-tree`는 언제나 낸다.
  * 그 밖의 옵션(값을 받는 옵션, 모르는 옵션)은 묶음의 나머지나 다음 낱말을 값으로 받을 수 있다.
  */
 const diffFree =
@@ -1885,7 +1891,22 @@ const diffFree =
 const diffOptional = optionNames("-M -C -B");
 const logFree =
   "--first-parent --no-merges --merges --reverse --all --oneline --no-walk -q --quiet --source --use-mailmap --mailmap";
-/** @typedef {{ free: Set<string>, optional: Set<string>, nul: Set<string> }} GitListOptions */
+/** @typedef {{ state: "lists" | "nul", on: boolean }} GitSet */
+/**
+ * @typedef {{
+ *   free: Set<string>,
+ *   optional: Set<string>,
+ *   sets: Map<string, GitSet>,
+ *   negatable: Set<string>,
+ *   listsFrom: boolean,
+ * }} GitListOptions
+ */
+/** @type {GitSet} */
+const nulOn = { state: "nul", on: true };
+/** @type {GitSet} */
+const listsOn = { state: "lists", on: true };
+/** @type {GitSet} */
+const listsOff = { state: "lists", on: false };
 /** @type {Map<string, GitListOptions>} */
 const gitListOptions = new Map(
   /** @type {[string, GitListOptions][]} */ ([
@@ -1896,7 +1917,9 @@ const gitListOptions = new Map(
           "-z -t -v -f -c --cached -d --deleted -m --modified -o --others -i --ignored -s --stage -k --killed --directory --eol --empty-directory -u --unmerged --resolve-undo --exclude-standard --full-name --recurse-submodules --error-unmatch --abbrev --debug --deduplicate --sparse"
         ),
         optional: new Set(),
-        nul: new Set(),
+        sets: new Map([["-z", nulOn]]),
+        negatable: new Set(),
+        listsFrom: true,
       },
     ],
     [
@@ -1906,7 +1929,9 @@ const gitListOptions = new Map(
           "-d -r -t -z -l --long --name-only --name-status --object-only --full-name --full-tree --abbrev"
         ),
         optional: new Set(),
-        nul: new Set(),
+        sets: new Map([["-z", nulOn]]),
+        negatable: new Set(),
+        listsFrom: true,
       },
     ],
     [
@@ -1916,7 +1941,16 @@ const gitListOptions = new Map(
           "-v --verbose -s --short -b --branch --show-stash --ahead-behind --porcelain --long -z --null --untracked-files --ignored --ignore-submodules --column --no-renames --renames --find-renames"
         ),
         optional: optionNames("-u -M"),
-        nul: new Set(["--null"]),
+        sets: new Map([
+          ["-s", listsOn],
+          ["--short", listsOn],
+          ["--porcelain", listsOn],
+          ["--long", listsOff],
+          ["-z", nulOn],
+          ["--null", nulOn],
+        ]),
+        negatable: optionNames("--short --porcelain --long --null"),
+        listsFrom: false,
       },
     ],
     ...[...gitDiffCommands].map((command) => [
@@ -1928,39 +1962,85 @@ const gitListOptions = new Map(
             : `${diffFree} ${logFree}`
         ),
         optional: diffOptional,
-        nul: new Set(),
+        // `-s`·`--no-patch`는 출력을 끈다(`git diff --name-only -s`는 아무것도 내지 않는다).
+        sets: new Map([
+          ["--name-only", listsOn],
+          ["--name-status", listsOn],
+          ["-s", listsOff],
+          ["--no-patch", listsOff],
+          ["-z", nulOn],
+        ]),
+        negatable: new Set(),
+        listsFrom: false,
       },
     ]),
   ])
 );
 
 /**
- * 하위 명령 `known`의 옵션 낱말들(`--` 앞)을 git parse-options처럼 왼쪽부터 읽어, 짧은 옵션 글자 `letter`나 긴 옵션 `names`가 옵션으로
- * 쓰였는지 판정한다: "yes", 앞 옵션의 값일 수 있으면 "maybe", 없으면 "no". 짧은 옵션 묶음(`-sz`)은 왼쪽부터 읽어 값을 받지 않는 옵션만
- * 넘는다. 값을 받는 옵션이나 모르는 글자를 만나면 묶음의 나머지가 그 값이고(git parse-options), 나머지가 없으면 다음 낱말이 값일 수 있다.
- * 값을 붙여서만 받는 선택 값 옵션은 나머지를 값으로 받고 다음 낱말은 받지 않는다. 긴 옵션은 `--opt=value`(값을 붙여 받음)와 부정형
- * `--no-…`(값을 받지 않음)이면 다음 낱말을 받지 않고, 값을 받지 않는 옵션이 아니면 다음 낱말이 값일 수 있다. git은 긴 옵션을
- * 앞부분만 써도 받으므로(parse-options의 줄여 쓰기) 찾는 긴 옵션의 앞부분은 "maybe"다. 모르는 인수(글자가 아님)도 다음 낱말을 값으로
- * 받을 수 있다.
+ * 하위 명령 `known`의 옵션 낱말들(옵션 끝 앞)을 git parse-options처럼 왼쪽부터 읽어, 판정이 보는 상태(`lists`, `nul`)의 마지막 값을
+ * 정한다: 켜졌으면 "on", 꺼졌으면 "off", 정해지지 않으면 "maybe". 옵션이 있는지가 아니라 읽은 뒤의 상태로 본다(뒤의 부정형이나 같은
+ * 상태를 정하는 옵션이 앞을 덮는다, #291 외부 리뷰 4회차 SPEC-4).
+ * - 짧은 옵션 묶음(`-sz`)은 왼쪽부터 읽어 값을 받지 않는 옵션만 넘는다. 값을 받는 옵션이나 모르는 글자를 만나면 묶음의 나머지가 그
+ *   값이고(나머지에 상태를 정하는 글자가 있으면 정했을 수 있다), 나머지가 없으면 다음 낱말이 값일 수 있다. 값을 붙여서만 받는 선택 값
+ *   옵션은 나머지를 값으로 받고 다음 낱말은 받지 않는다.
+ * - 긴 옵션은 이름이 같으면 그 옵션, `--no-<이름>`이고 그 이름이 `negatable`이면 그 상태를 끈다. git은 긴 옵션을(부정형도) 앞부분만
+ *   써도 받으므로(parse-options의 줄여 쓰기), 이름이 같은 옵션이 없고 상태를 정하는 옵션이나 그 부정형의 앞부분이면 정했을 수 있다.
+ *   `--opt=value`(값을 붙여 받음)와 부정형 `--no-…`(값을 받지 않음)이면 다음 낱말을 받지 않고, 값을 받지 않는 옵션이 아니면 다음
+ *   낱말이 값일 수 있다.
+ * - 앞 낱말의 값일 수 있는 낱말은 상태를 정했을 수 있다(정해지지 않음).
+ * - 모르는 인수(글자가 아님)는 상태를 정하는 어떤 옵션(부정형 포함)이었을 수 있고, 옵션 끝(`--`)이었을 수 있어 그 뒤 낱말도 상태를
+ *   정했을 수 있을 뿐이며, 다음 낱말을 값으로 받을 수 있다. 글자가 아닌 인수는 옵션 끝(`--`·`--end-of-options`) 뒤에 두면 판정에 들지
+ *   않는다.
+ * "정했을 수 있다"는 그 상태가 이미 같은 값이면 그대로이고, 아니면 정해지지 않는다.
+ * @param {({ value: string } | { unknown: true })[]} options
+ * @param {GitListOptions} known
  */
-function gitOptionUse(options, known, letter, names) {
-  let found = "no";
+function gitFinalState(options, known) {
+  /** @type {{ lists: "on" | "off" | "maybe", nul: "on" | "off" | "maybe" }} */
+  const state = { lists: known.listsFrom ? "on" : "off", nul: "off" };
+  /** @param {GitSet} set @param {boolean} sure */
+  const apply = (set, sure) => {
+    const value = set.on ? "on" : "off";
+    if (sure) state[set.state] = value;
+    else if (state[set.state] !== value) state[set.state] = "maybe";
+  };
+  /** @type {[string, GitSet][]} 상태를 정하는 긴 옵션과, 끌 수 있는 것의 부정형. */
+  const longSets = [...known.sets].flatMap(([name, set]) => {
+    if (!name.startsWith("--")) return [];
+    /** @type {[string, GitSet][]} */
+    const named = [[name, set]];
+    if (known.negatable.has(name))
+      named.push([`--no-${name.slice(2)}`, { state: set.state, on: false }]);
+    return named;
+  });
   // 앞 낱말이 이 낱말을 값으로 받을 수 있는가.
   let mayBeValue = false;
+  // 앞의 모르는 인수가 옵션 끝이었을 수 있는가(그러면 뒤 낱말은 경로나 리비전일 수 있다).
+  let mayHaveEnded = false;
   for (const part of options) {
     if (!("value" in part)) {
+      // 모르는 인수는 상태를 정하는 어떤 옵션(부정형 포함)일 수도, 옵션 끝(`--`)일 수도, 다음 낱말을 값으로 받는 옵션일 수도 있다.
+      for (const set of known.sets.values()) apply(set, false);
+      for (const [, set] of longSets) apply(set, false);
+      mayHaveEnded = true;
       mayBeValue = true;
       continue;
     }
     const word = part.value;
-    let here = "no";
+    /** @type {[GitSet, boolean][]} 이 낱말을 옵션으로 읽을 때 정하는 상태와, 확실히 정하는지. */
+    const found = [];
     let takesNext = false;
-    if (word.startsWith("--")) {
-      const name = word.split("=")[0];
-      if (names.includes(name)) here = "yes";
-      // git은 긴 옵션의 앞부분만 써도(겹치지 않으면) 그 옵션으로 받는다. 찾는 옵션의 앞부분이면 그 옵션일 수 있다.
-      else if (name.length > 2 && names.some((each) => each.startsWith(name)))
-        here = "maybe";
+    if (word.startsWith("--") && word !== "--") {
+      const equals = word.indexOf("=");
+      const name = equals === -1 ? word : word.slice(0, equals);
+      const exact = longSets.find(([each]) => each === name);
+      if (exact) found.push([exact[1], true]);
+      else if (!known.free.has(name))
+        // 이름이 같은 옵션이 없으면 앞부분이 같은 옵션으로 받을 수 있다(겹치면 git이 거절한다).
+        for (const [each, set] of longSets)
+          if (name.length > 2 && each.startsWith(name))
+            found.push([set, false]);
       takesNext =
         !word.includes("=") &&
         !word.startsWith("--no-") &&
@@ -1968,29 +2048,32 @@ function gitOptionUse(options, known, letter, names) {
     } else if (word.startsWith("-") && word !== "-")
       for (let at = 1; at < word.length; at += 1) {
         const option = `-${word[at]}`;
-        if (word[at] === letter) here = "yes";
+        const set = known.sets.get(option);
+        if (set) found.push([set, true]);
         if (known.free.has(option)) continue;
         if (known.optional.has(option)) break;
-        const rest = word.slice(at + 1);
-        if (letter && rest.includes(letter) && here === "no") here = "maybe";
-        takesNext = rest === "";
+        // 값을 받는 옵션이나 모르는 글자: 묶음의 나머지가 그 값이다.
+        for (const letter of word.slice(at + 1)) {
+          const inValue = known.sets.get(`-${letter}`);
+          if (inValue) found.push([inValue, false]);
+        }
+        takesNext = at + 1 === word.length;
         break;
       }
     // 앞 낱말의 값일 수 있으면, 옵션으로 읽은 결과는 "그럴 수 있다"다. 다음 낱말의 판정은 옵션으로 읽은 쪽을 따른다(값이었다면 다음은
     // 값이 아니므로, 옵션으로 읽어 값을 받지 않을 때만 다음을 옵션으로 확정한다).
-    if (here !== "no" && mayBeValue) here = "maybe";
-    if (here === "yes") found = "yes";
-    else if (here === "maybe" && found === "no") found = "maybe";
+    for (const [set, sure] of found)
+      apply(set, sure && !mayBeValue && !mayHaveEnded);
     mayBeValue = takesNext;
   }
-  return found;
+  return state;
 }
 
 /**
  * git 인수(`{ value }`는 글자, `{ unknown }`은 모르는 인수)를 판정한다: 경로 목록을 -z 없이 읽으면 `{ command }`, 하위 명령을
- * 모르거나(전역 옵션 뒤 첫 인수가 모르는 값) 경로 목록인지·-z가 옵션인지가 앞 옵션의 값일 수 있어 정해지지 않으면 `{ unjudged: true }`,
- * 아니면 undefined. 경로 목록: `ls-files`, `ls-tree`, diff 계열·`log`·`show`의 `--name-only`·`--name-status`, `status`의
- * `--porcelain`·`--short`·`-s`. -z(`status`는 `--null`도)는 따로 적거나 짧은 옵션 묶음(`-sz`)에 든다(gitOptionUse).
+ * 모르거나(전역 옵션 뒤 첫 인수가 모르는 값) 경로 목록인지·-z인지가 정해지지 않으면 `{ unjudged: true }`, 아니면 undefined. 경로
+ * 목록: `ls-files`, `ls-tree`, diff 계열·`log`·`show`의 `--name-only`·`--name-status`, `status`의 `--porcelain`·`--short`·`-s`.
+ * -z(`status`는 `--null`도)는 따로 적거나 짧은 옵션 묶음(`-sz`)에 든다. 둘 다 왼쪽부터 읽은 마지막 상태로 본다(gitFinalState).
  */
 function gitPathListWithoutNul(parts) {
   let at = 0;
@@ -2005,24 +2088,18 @@ function gitPathListWithoutNul(parts) {
   if (!command || "unknown" in command) return { unjudged: true };
   const known = gitListOptions.get(command.value);
   if (!known) return undefined;
-  // 옵션 끝(`--`) 뒤는 경로다.
+  // 옵션 끝(`--`, 리비전을 받는 자리는 `--end-of-options`) 뒤는 경로나 리비전이다.
   const afterCommand = parts.slice(at + 1);
   const end = afterCommand.findIndex(
-    (part) => "value" in part && part.value === "--"
+    (part) =>
+      "value" in part &&
+      (part.value === "--" || part.value === "--end-of-options")
   );
-  const options = end === -1 ? afterCommand : afterCommand.slice(0, end);
-  const lists =
-    command.value === "ls-files" || command.value === "ls-tree"
-      ? "yes"
-      : command.value === "status"
-        ? gitOptionUse(options, known, "s", ["--porcelain", "--short"])
-        : gitOptionUse(options, known, undefined, [
-            "--name-only",
-            "--name-status",
-          ]);
-  if (lists === "no") return undefined;
-  const nul = gitOptionUse(options, known, "z", [...known.nul]);
-  if (nul === "yes") return undefined;
+  const { lists, nul } = gitFinalState(
+    end === -1 ? afterCommand : afterCommand.slice(0, end),
+    known
+  );
+  if (lists === "off" || nul === "on") return undefined;
   if (lists === "maybe" || nul === "maybe") return { unjudged: true };
   return { command: command.value };
 }
@@ -2047,7 +2124,7 @@ const gitPathListNul = {
       missing:
         "git {{command}}의 경로 목록을 -z 없이 읽습니다. 줄 단위 출력은 줄바꿈·따옴표·탭·ASCII 밖 글자가 든 이름을 따옴표로 감싸 이스케이프하므로(core.quotePath) 그 이름을 다른 경로로 읽습니다. -z를 더해 NUL 구분 목록을 받고 \\0으로 나누세요.",
       unjudged:
-        "git 호출의 하위 명령을 읽지 못해 경로 목록을 -z로 읽는지 판정할 수 없습니다. 하위 명령과 그 앞 옵션을 글자로 적고, git 인수를 넘기는 감싸기 함수는 같은 파일에서 이름으로 부르세요(내보내거나 값으로 넘기지 않음).",
+        "git 호출의 하위 명령이나 옵션의 마지막 상태를 읽지 못해 경로 목록을 -z로 읽는지 판정할 수 없습니다. 하위 명령과 옵션은 글자로, 줄여 쓰지 않고 적으세요. 글자가 아닌 인수(변수 등)는 옵션 끝(`--`나 `--end-of-options`) 뒤에 두고, git 인수를 넘기는 감싸기 함수는 같은 파일에서 이름으로 부르세요(내보내거나 값으로 넘기지 않음).",
     },
   },
   create(context) {
