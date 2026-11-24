@@ -16,6 +16,7 @@ import {
   clearOwnedConfig,
   configScriptFile,
   ownerMark,
+  readCleanupReasons,
 } from "./antigravity-config.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -312,7 +313,8 @@ it("keeps a configuration place that is not a regular file and says so", async (
 });
 
 // 열기 결과를 주입한다: `plan.miss`에 맞는 이름(정규식)을 처음 열 때 한 번 "없음"(ENOENT)으로 실패한다. 그 자리는 그대로 있으므로
-// 바로 뒤 lstat은 일반 파일을 본다 — 확인하는 사이 자리가 바뀐 장면이다(실제 시간 지연 없이).
+// 바로 뒤 lstat은 일반 파일을 본다 — 확인하는 사이 자리가 바뀐 장면이다(실제 시간 지연 없이). `plan.take`가 있으면 그 실패 전에
+// 그 경로에 새 파일을 둔다(그 사이 다른 쪽이 원래 이름에 저장한 장면).
 const missOnce = `{
   const fs = process.getBuiltinModule("node:fs");
   const plan = JSON.parse(process.env.PLAN);
@@ -322,6 +324,7 @@ const missOnce = `{
   fs.promises.open = (...args) => {
     if (!missed && pattern.test(String(args[0]))) {
       missed = true;
+      if (plan.take) fs.writeFileSync(plan.take, "saved meanwhile");
       return Promise.reject(Object.assign(new Error("no such file"), { code: "ENOENT" }));
     }
     return real(...args);
@@ -375,4 +378,30 @@ it("puts the configuration back and says it changed when the moved file changes 
   ]);
   expect(await readFile(config, "utf8")).toBe(ownedLeftover);
   expect(await readdir(agents)).toEqual(["mcp_config.json"]);
+});
+
+// 옮긴 설정을 확인하지 못했는데 그 사이 원래 이름이 차지돼 되돌리지 못하면, 옮긴 이름에 남긴 위치를 정해진 모양(JSON 한 줄)의 까닭에
+// 담는다. 사람이 읽을 글로 쓰지 않으므로 서버가 그 위치까지 읽는다(#296 외부 리뷰 1회차 STD-1·SPEC-2).
+it("names where it kept the configuration when it could neither confirm it nor put it back, up to the server's reading", async () => {
+  const { cwd, agents, config } = await workspace();
+  await writeFile(config, ownedLeftover);
+  const ended = await script(
+    cwd,
+    { miss: "\\.mcp_config\\.json\\.[0-9a-f-]+\\.removing$", take: config },
+    missOnce
+  );
+  expect(ended.status).toBe(3);
+  const read = readCleanupReasons(ended.stderr, false);
+  expect(read).toEqual([
+    {
+      reason: "changed",
+      name: "mcp_config.json",
+      keptAs: expect.stringMatching(
+        /^\.mcp_config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
+      ),
+    },
+  ]);
+  const keptAs = read[0]!.keptAs!;
+  expect(await readFile(path.join(agents, keptAs), "utf8")).toBe(ownedLeftover);
+  expect(await readFile(config, "utf8")).toBe("saved meanwhile");
 });

@@ -2,7 +2,7 @@ import { readdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { testFolders } from "@babojubot/process/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { removeConfirmed } from "./remove-confirmed.ts";
+import { ConfirmFailed, removeConfirmed } from "./remove-confirmed.ts";
 
 // 링크를 만들 수 없는 디스크(#209)를 흉내 낸다. 이 코드가 있으면 hard link 만들기가 그 오류로 실패한다.
 const disk = vi.hoisted(() => ({ linkFails: undefined as string | undefined }));
@@ -66,80 +66,93 @@ describe("removing a file in a place others can change, only the one confirmed",
     expect(await readdir(root)).toEqual(["config.json"]);
   });
 
-  // 링크를 만들 수 없는 디스크에서는 한 번에 되돌릴 길이 없다. 옮긴 이름을 다시 열어 복사하면 그사이 그 이름에 놓인 다른 것(링크라면
-  // 그 너머)을 제자리에 옮겨 놓을 수 있다. 되돌리지 않고 옮긴 이름에 그대로 두어 그 자리를 알린다(#286 병합분 항목 12).
-  it.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
-    "keeps a file it does not confirm under its moved name on a disk that cannot link (%s), without copying it back",
-    async (code) => {
+  // 확인하지 못한 파일을 한 번에 되돌릴 수 없으면 옮긴 이름에 그대로 두고 그 이름을 알린다. 그 이름이 차지됐으면 새 파일을 바꾸지
+  // 않고, 링크를 만들 수 없는 디스크에서는 옮긴 이름을 다시 열어 복사하지 않는다(그사이 놓인 다른 것을 제자리에 둘 수 있다, #286
+  // 병합분 항목 12). 확인이 "아님"이든 확인이 실패했든 남긴 이름(같은 폴더 안의 파일 이름)이 부른 쪽에 닿는다. 확인이 실패하면 그
+  // 실패와 남긴 이름을 함께 던진다(#296 외부 리뷰 1회차 STD-1·SPEC-2).
+  const takeName = async (root: string, file: string) => {
+    await writeFile(path.join(root, "saving"), "second save");
+    await rename(path.join(root, "saving"), file);
+  };
+  const kept =
+    /^\.config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/;
+  const failure = Object.assign(new Error("could not read"), { code: "EIO" });
+  /** 확인이 실패했을 때 던진 것. 그 실패와 남긴 결과를 담은 `ConfirmFailed`여야 한다. */
+  const confirmFailure = async (attempt: Promise<unknown>) => {
+    const failed = await attempt.then(
+      (result) => result,
+      (error: unknown) => error
+    );
+    if (!(failed instanceof ConfirmFailed))
+      throw new Error(`expected a confirm failure, got ${String(failed)}`);
+    return failed;
+  };
+  it.each([
+    ["another file took the name", undefined, true],
+    ["the disk cannot link (EPERM)", "EPERM", false],
+    ["the disk cannot link (ENOTSUP)", "ENOTSUP", false],
+    ["the disk cannot link (EOPNOTSUPP)", "EOPNOTSUPP", false],
+  ] as const)(
+    "keeps a file it does not confirm under its moved name and names it when %s",
+    async (_case, linkFails, taken) => {
       const root = await folders.make("babojubot-remove-");
       const file = path.join(root, "config.json");
-      await writeFile(file, "someone else's");
-      disk.linkFails = code;
-      const result = await removeConfirmed(file, async () => false);
+      await writeFile(file, "first save");
+      disk.linkFails = linkFails;
+      const result = await removeConfirmed(file, async () => {
+        if (taken) await takeName(root, file);
+        return false;
+      });
       if (typeof result !== "object")
         throw new Error(`expected the moved file to be kept, got ${result}`);
-      expect(await readdir(root)).toEqual([path.basename(result.keptAs)]);
-      expect(path.dirname(result.keptAs)).toBe(root);
-      expect(await readFile(result.keptAs, "utf8")).toBe("someone else's");
+      expect(result).toEqual({ keptAs: expect.stringMatching(kept) });
+      expect(await readFile(path.join(root, result.keptAs), "utf8")).toBe(
+        "first save"
+      );
+      expect((await readdir(root)).sort()).toEqual(
+        (taken ? ["config.json", result.keptAs] : [result.keptAs]).sort()
+      );
     }
   );
 
-  it("keeps a file it does not confirm under its moved name on a disk that cannot link, when another file took the name meanwhile", async () => {
-    const root = await folders.make("babojubot-remove-");
-    const file = path.join(root, "config.json");
-    await writeFile(file, "first save");
-    disk.linkFails = "EPERM";
-    const result = await removeConfirmed(file, async () => {
-      await writeFile(path.join(root, "saving"), "second save");
-      await rename(path.join(root, "saving"), file);
-      return false;
-    });
-    if (typeof result !== "object")
-      throw new Error(`expected the moved file to be kept, got ${result}`);
-    expect(await readFile(file, "utf8")).toBe("second save");
-    // 옮긴 이름은 같은 폴더의 `.<이름>.<UUID>.removing`이다(UUID만 무작위).
-    expect(path.relative(root, result.keptAs)).toMatch(
-      /^\.config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
-    );
-    expect(await readFile(result.keptAs, "utf8")).toBe("first save");
-  });
+  it.each([
+    ["another file took the name", undefined, true],
+    ["the disk cannot link (EPERM)", "EPERM", false],
+  ] as const)(
+    "throws the confirmation's failure together with the moved name it kept when %s",
+    async (_case, linkFails, taken) => {
+      const root = await folders.make("babojubot-remove-");
+      const file = path.join(root, "config.json");
+      await writeFile(file, "first save");
+      disk.linkFails = linkFails;
+      const failed = await confirmFailure(
+        removeConfirmed(file, async () => {
+          if (taken) await takeName(root, file);
+          throw failure;
+        })
+      );
+      expect(failed.cause).toBe(failure);
+      expect(failed.kept).toEqual({ keptAs: expect.stringMatching(kept) });
+      if (typeof failed.kept !== "object")
+        throw new Error("expected the moved file to be kept");
+      expect(await readFile(path.join(root, failed.kept.keptAs), "utf8")).toBe(
+        "first save"
+      );
+    }
+  );
 
-  // 되돌리는 사이 그 이름에 또 새 파일이 저장됐으면 그 새 파일을 바꾸지 않는다. 옮긴 파일은 지우지 않고 그 이름으로 남겨 알린다.
-  it("keeps a file it does not confirm under its moved name when another file took the name meanwhile", async () => {
-    const root = await folders.make("babojubot-remove-");
-    const file = path.join(root, "config.json");
-    await writeFile(file, "first save");
-    const result = await removeConfirmed(file, async () => {
-      await writeFile(path.join(root, "saving"), "second save");
-      await rename(path.join(root, "saving"), file);
-      return false;
-    });
-    if (typeof result !== "object")
-      throw new Error(`expected the moved file to be kept, got ${result}`);
-    expect(await readFile(file, "utf8")).toBe("second save");
-    // 옮긴 이름은 같은 폴더의 `.<이름>.<UUID>.removing`이다(UUID만 무작위).
-    expect(path.relative(root, result.keptAs)).toMatch(
-      /^\.config\.json\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.removing$/
-    );
-    expect(await readFile(result.keptAs, "utf8")).toBe("first save");
-    expect((await readdir(root)).sort()).toEqual(
-      ["config.json", path.basename(result.keptAs)].sort()
-    );
-  });
-
-  // 확인이 실패하면 확인하지 못한 것이다. 지우지 않고 되돌린 뒤 그 실패를 던진다.
+  // 확인이 실패하면 확인하지 못한 것이다. 지우지 않고 되돌린 뒤 그 실패를 되돌렸다는 결과와 함께 던진다.
   it("puts the file back and throws when the confirmation fails", async () => {
     const root = await folders.make("babojubot-remove-");
     const file = path.join(root, "config.json");
     await writeFile(file, "unknown");
-    const failure = Object.assign(new Error("could not read"), {
-      code: "EIO",
-    });
-    await expect(
+    const failed = await confirmFailure(
       removeConfirmed(file, async () => {
         throw failure;
       })
-    ).rejects.toBe(failure);
+    );
+    expect(failed.cause).toBe(failure);
+    expect(failed.kept).toBe("restored");
     expect(await readFile(file, "utf8")).toBe("unknown");
     expect(await readdir(root)).toEqual(["config.json"]);
   });
