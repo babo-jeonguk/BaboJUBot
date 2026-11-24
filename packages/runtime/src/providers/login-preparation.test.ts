@@ -25,7 +25,7 @@ import { attachedRelayHub, request } from "./test-support.ts";
 import { within } from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
-import { attemptAll } from "@babojubot/contracts";
+import { attemptAll, hasErrorCode, orIfMissing } from "@babojubot/contracts";
 
 // 로그인을 파일로 같이 쓰는 Codex·Antigravity의 실행 준비(#146). 조직 신원 확인 → 연결 로그인 준비 → 격리 실행이면 흔적 검사·
 // 실행 시도 전용 로그인 파일, 격리를 끈 실행이면 조직 자리 링크 → 돌 제품 폴더 → 프로세스 시작. 준비 중에 취소하면 시작한
@@ -233,11 +233,27 @@ async function setup(connection: (typeof connections)[number]) {
   );
   roots.push(root);
   // 받은 환경을 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 프로세스를 띄웠는지·어느 폴더로 띄웠는지는 남는다.
+  // 컨테이너 안에서 돌면(가짜 docker가 붙인 자리를 FAKE_DOCKER_MOUNTS로 준다) 붙인 자리를 그때 모두 훑어 로그인 내용이 든 파일을
+  // 남긴다. 실행 시도의 임시 자리는 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다. 조회 실패는 접지 않아, 훑지 못하면 기록이 없다.
   const script = path.join(root, "dump-env.cjs");
   const dump = path.join(root, "env.jsonl");
+  const scans = path.join(root, "mount-scans.jsonl");
   await writeFile(
     script,
-    `require("node:fs").appendFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env) + "\\n");`
+    `const fs = require("node:fs");
+const path = require("node:path");
+fs.appendFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env) + "\\n");
+if (process.env.FAKE_DOCKER_MOUNTS !== undefined) {
+  const sources = JSON.parse(process.env.FAKE_DOCKER_MOUNTS).map((mount) => mount.source);
+  const holding = [];
+  const look = (at) => {
+    const info = fs.lstatSync(at);
+    if (info.isDirectory()) for (const name of fs.readdirSync(at)) look(path.join(at, name));
+    else if (info.isFile() && fs.readFileSync(at, "utf8").includes("synthetic-login")) holding.push(at);
+  };
+  for (const source of sources) look(source);
+  fs.appendFileSync(${JSON.stringify(scans)}, JSON.stringify({ sources, holding }) + "\\n");
+}`
   );
   const dumper: [string, ...string[]] = [process.execPath, script];
   const state = path.join(root, "docker-state");
@@ -319,11 +335,22 @@ async function setup(connection: (typeof connections)[number]) {
     path.join(folder, "organizations", organizationId);
   const loginAt = (organizationId: string) =>
     path.join(organization(organizationId), ...connection.place);
-  const dumps = async (): Promise<NodeJS.ProcessEnv[]> =>
-    (await readFile(dump, "utf8").catch(() => ""))
+  /** 프로그램이 남긴 줄. 프로그램이 돌기 전에는 파일이 없다(없음만 빈 기록으로 보고, 그 밖의 읽기 실패는 드러낸다). */
+  const records = async (file: string) =>
+    (
+      await orIfMissing(
+        () => readFile(file, "utf8"),
+        hasErrorCode("ENOENT"),
+        ""
+      )
+    )
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as NodeJS.ProcessEnv);
+      .map((line) => JSON.parse(line) as unknown);
+  const dumps = async () => (await records(dump)) as NodeJS.ProcessEnv[];
+  /** 컨테이너 실행마다 붙인 자리와 그 안에서 로그인 내용이 든 파일(실행 중에 훑은 것). */
+  const mountScans = async () =>
+    (await records(scans)) as { sources: string[]; holding: string[] }[];
   const runMounts = async () =>
     (await readFile(path.join(state, "calls.jsonl"), "utf8"))
       .trim()
@@ -353,6 +380,7 @@ async function setup(connection: (typeof connections)[number]) {
     loginAt,
     dumps,
     runMounts,
+    mountScans,
   };
 }
 
@@ -462,7 +490,12 @@ describe.each(connections)("$name", (connection) => {
       expect(await env.relayStatus(env.grants[0]!)).toBe(401);
       await expect(stat(path.dirname(attemptFile))).rejects.toThrow();
       // 조직 폴더에는 권한이 남지 않고, 원본은 그대로다.
-      const left = await readFile(env.loginAt(a), "utf8").catch(() => "");
+      // 없으면 남은 것이 없다. 그 밖의 읽기 실패는 남았는지 모르는 것이라 드러낸다.
+      const left = await orIfMissing(
+        () => readFile(env.loginAt(a), "utf8"),
+        hasErrorCode("ENOENT"),
+        ""
+      );
       expect(left).not.toContain(env.grants[0]!);
       expect(await readFile(env.original, "utf8")).toBe(
         '{"synthetic-login":1}'
@@ -496,19 +529,8 @@ describe.each(connections)("$name", (connection) => {
       expect(sources.filter((source) => inside(env.folder, source))).toEqual([
         env.organization(a),
       ]);
-      const holding: string[] = [];
-      const look = async (at: string): Promise<void> => {
-        const info = await lstat(at).catch(() => undefined);
-        if (info?.isDirectory())
-          for (const name of await readdir(at)) await look(path.join(at, name));
-        else if (
-          info?.isFile() &&
-          (await readFile(at, "utf8")).includes("synthetic-login")
-        )
-          holding.push(at);
-      };
-      for (const source of sources) await look(source);
-      expect(holding).toEqual([]);
+      // 붙인 자리는 실행 중에 모두 훑었고(실행이 끝나면 임시 자리는 지워진다), 로그인 내용이 든 파일은 없다.
+      expect(await env.mountScans()).toEqual([{ sources, holding: [] }]);
       expect((await env.dumps()).map((one) => one.HOME)).toEqual([
         env.organization(a),
       ]);
