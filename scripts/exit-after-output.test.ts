@@ -16,6 +16,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 // 같은 폴더의 도움을 URL로 바로 푼다. URL의 pathname은 퍼센트 인코딩된 글이라 파일 경로나 다른 파일 URL의 재료가 아니다.
@@ -84,14 +85,18 @@ test("runs from a checkout path holding a space and a percent sign", (context) =
 });
 
 // 출력을 다 쓰지 못하면 성공 코드(0)로 끝내지 않고 1로 끝내며, 0이 아닌 코드는 그대로 둔다(#292 외부 리뷰 1회차 권고). 부모가 자식
-// 표준 출력의 읽는 쪽을 먼저 닫아 쓰기가 EPIPE로 실패하게 한다. 자식은 신호(표준 입력)를 받은 뒤에야 쓴다.
-test("hands back 1 instead of 0, and keeps any other code, when the output cannot be written", async (context) => {
-  const folder = mkdtempSync(path.join(tmpdir(), "exit-after-output-pipe-"));
-  context.after(() => removeFolder(folder));
-  const driver = path.join(folder, "driver.mjs");
-  writeFileSync(
-    driver,
-    `import { afterOutput } from ${JSON.stringify(helper)};
+// 표준 출력의 읽는 쪽을 먼저 닫아 쓰기가 EPIPE로 실패하게 한다. 자식은 신호(표준 입력)를 받은 뒤에야 쓴다. 종료와 출력의 끝(표준
+// 오류의 end, 닫은 표준 출력의 close)을 띄운 직후 각각 기록하고, 모두 상한 안에 끝난 뒤 단언한다: exit 때는 표준 오류가 아직 열려
+// 있을 수 있다(CODING_STANDARDS.md, #292 외부 리뷰 2회차 STD-2). 정리는 자식을 끄고 끝을 확인한 뒤 폴더를 지운다.
+test("hands back 1 instead of 0, and keeps any other code, when the output cannot be written", () =>
+  withCleanup(async (defer) => {
+    const folder = mkdtempSync(path.join(tmpdir(), "exit-after-output-pipe-"));
+    const { own, cleanUp } = folderCleanup(() => removeFolder(folder));
+    defer(cleanUp);
+    const driver = path.join(folder, "driver.mjs");
+    writeFileSync(
+      driver,
+      `import { afterOutput } from ${JSON.stringify(helper)};
 process.stdin.once("data", async () => {
   process.stdout.write("x".repeat(${1 << 20}));
   const code = await afterOutput(Number(process.argv[2]));
@@ -99,21 +104,36 @@ process.stdin.once("data", async () => {
   process.exit(code);
 });
 `
-  );
-  for (const [asked, expected] of [
-    [0, 1],
-    [3, 3],
-  ] as const) {
-    const child = spawn(process.execPath, [driver, String(asked)], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => (stderr += String(chunk)));
-    const exited = once(child, "exit");
-    child.stdout.destroy();
-    child.stdin.write("go\n");
-    const [code] = await within(exited, 60_000, "the driver did not end");
-    assert.equal(code, expected, stderr);
-    assert.match(stderr, new RegExp(`^handed back ${expected}$`, "m"));
-  }
-});
+    );
+    for (const [asked, expected] of [
+      [0, 1],
+      [3, 3],
+    ] as const) {
+      const child = spawn(process.execPath, [driver, String(asked)], {
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      const exited = once(child, "exit");
+      const ended = Promise.all([
+        exited,
+        once(child.stderr, "end"),
+        once(child.stdout, "close"),
+      ]);
+      // 자식 객체로 끈다: Node는 끝을 본 자식에는 신호를 보내지 않는다.
+      own(async () => {
+        if (child.exitCode === null && child.signalCode === null)
+          child.kill("SIGKILL");
+        await within(exited, 10_000, "a killed driver did not exit");
+      });
+      let stderr = "";
+      child.stderr.on("data", (chunk: Buffer) => (stderr += String(chunk)));
+      child.stdout.destroy();
+      child.stdin.write("go\n");
+      const [[code]] = await within(
+        ended,
+        60_000,
+        "the driver or its output did not end"
+      );
+      assert.equal(code, expected, stderr);
+      assert.match(stderr, new RegExp(`^handed back ${expected}$`, "m"));
+    }
+  }));

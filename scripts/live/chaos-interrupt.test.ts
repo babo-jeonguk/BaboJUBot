@@ -9,60 +9,67 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 const handler = new URL("./chaos-interrupt.ts", import.meta.url).href;
 
-test("a second Ctrl-C ends at once even when nobody reads the output", async (context) => {
-  const folder = mkdtempSync(path.join(tmpdir(), "chaos-interrupt-"));
-  context.after(() => removeFolder(folder));
-  const driver = path.join(folder, "driver.mjs");
-  writeFileSync(
-    driver,
-    `import { installUserInterrupt } from ${JSON.stringify(handler)};
+// 정리는 자원을 잡은 직후 등록하고 의존 순서를 지킨다: 프로그램을 끄고 끝을 확인한 뒤 폴더를 지운다(CODING_STANDARDS.md#정리, #292
+// 외부 리뷰 2회차 STD-3). 정상과 실패가 같은 길이다.
+test("a second Ctrl-C ends at once even when nobody reads the output", () =>
+  withCleanup(async (defer) => {
+    const folder = mkdtempSync(path.join(tmpdir(), "chaos-interrupt-"));
+    const { own, cleanUp } = folderCleanup(() => removeFolder(folder));
+    defer(cleanUp);
+    const driver = path.join(folder, "driver.mjs");
+    writeFileSync(
+      driver,
+      `import { installUserInterrupt } from ${JSON.stringify(handler)};
 installUserInterrupt(new AbortController());
 process.stdout.write("o".repeat(${4 << 20}));
 process.stderr.write("ready\\n");
 setInterval(() => undefined, 1000);
 `
-  );
-  const child = spawn(process.execPath, [driver], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  context.after(() => {
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-  });
-  // 표준 출력은 읽지 않는다(파이프가 차서 프로그램의 쓰기가 끝나지 않는다).
-  child.stdout.pause();
-  let stderr = "";
-  const stderrHas = (text: string) =>
-    new Promise<void>((resolve) => {
-      const check = () => {
-        if (!stderr.includes(text)) return;
-        child.stderr.off("data", onData);
-        resolve();
-      };
-      const onData = (chunk: Buffer) => {
-        stderr += String(chunk);
-        check();
-      };
-      child.stderr.on("data", onData);
-      check();
+    );
+    const child = spawn(process.execPath, [driver], {
+      stdio: ["ignore", "pipe", "pipe"],
     });
-  const exited = once(child, "exit");
-  await within(stderrHas("ready"), 30_000, "the driver did not get ready");
-  child.kill("SIGINT");
-  await within(
-    stderrHas("Stopping"),
-    30_000,
-    "the first Ctrl-C was not handled"
-  );
-  child.kill("SIGINT");
-  const [code] = await within(
-    exited,
-    10_000,
-    "the second Ctrl-C did not end the program"
-  );
-  assert.equal(code, 130);
-});
+    const exited = once(child, "exit");
+    // 자식 객체로 끈다: Node는 끝을 본 자식에는 신호를 보내지 않는다.
+    own(async () => {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      await within(exited, 10_000, "a killed driver did not exit");
+    });
+    // 표준 출력은 읽지 않는다(파이프가 차서 프로그램의 쓰기가 끝나지 않는다).
+    child.stdout.pause();
+    let stderr = "";
+    const stderrHas = (text: string) =>
+      new Promise<void>((resolve) => {
+        const check = () => {
+          if (!stderr.includes(text)) return;
+          child.stderr.off("data", onData);
+          resolve();
+        };
+        const onData = (chunk: Buffer) => {
+          stderr += String(chunk);
+          check();
+        };
+        child.stderr.on("data", onData);
+        check();
+      });
+    await within(stderrHas("ready"), 30_000, "the driver did not get ready");
+    child.kill("SIGINT");
+    await within(
+      stderrHas("Stopping"),
+      30_000,
+      "the first Ctrl-C was not handled"
+    );
+    child.kill("SIGINT");
+    const [code] = await within(
+      exited,
+      10_000,
+      "the second Ctrl-C did not end the program"
+    );
+    assert.equal(code, 130);
+  }));
