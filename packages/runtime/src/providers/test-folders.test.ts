@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { within } from "@babojubot/process/test-support";
 import { expect, it, onTestFinished } from "vitest";
 import { testFolders } from "./test-folders.ts";
 import type { RunResult, RuntimeAdapter } from "@babojubot/contracts";
@@ -51,6 +52,25 @@ function stuckRun() {
   return { stuck, letGo };
 }
 
+/**
+ * 시험이 붙잡은 실행을 남긴 폴더의 정리. 시험이 풀기 전에 실패해도 실행을 풀고, 그 실행이 돌아온 것을 상한 안에서 확인한 뒤에만
+ * 폴더를 지운다(한 정리 안의 차례). 돌아오지 않으면 폴더를 남기고 실패한다.
+ */
+async function endHeldRun(
+  letGo: () => void,
+  { run }: { run?: Promise<RunResult> },
+  root: string
+) {
+  letGo();
+  if (run)
+    await within(
+      run,
+      5_000,
+      "the held provider run did not end after it was let go"
+    );
+  await removeFolder(root);
+}
+
 const runOptions = () => ({
   signal: new AbortController().signal,
   emit: async () => {},
@@ -72,11 +92,12 @@ it("stops a provider run a failed test left in progress and removes the folder o
 it("keeps the folder and fails by name when a provider run does not end after the stop", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
-  onTestFinished(() => removeFolder(root));
   const { stuck, letGo } = stuckRun();
+  const held: { run?: Promise<RunResult> } = {};
+  onTestFinished(() => endHeldRun(letGo, held, root));
   const order: string[] = [];
   const provider = test.ownProvider(heldProvider(order, root, stuck));
-  const run = provider.adapter.execute(request(), runOptions());
+  const run = (held.run = provider.adapter.execute(request(), runOptions()));
   await expect(test.cleanup()).rejects.toThrow(
     "provider run did not stop within 50 ms"
   );
@@ -107,12 +128,13 @@ it("owns the runs of providers made by a factory passed around as a value", asyn
 it("owns a provider once even when it is handed to cleanup twice", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
-  onTestFinished(() => removeFolder(root));
   const { stuck, letGo } = stuckRun();
+  const held: { run?: Promise<RunResult> } = {};
+  onTestFinished(() => endHeldRun(letGo, held, root));
   // owning으로 묶은 factory가 만든 연결을 다시 ownProvider로 감싸도 실행은 정리에 한 번만 맡겨진다.
   const create = test.owning(() => heldProvider([], root, stuck));
   const provider = test.ownProvider(create());
-  const run = provider.adapter.execute(request(), runOptions());
+  const run = (held.run = provider.adapter.execute(request(), runOptions()));
   const failure = await test.cleanup().catch((error: unknown) => error);
   expect(failure).not.toBeInstanceOf(AggregateError);
   expect(failure).toMatchObject({
