@@ -1,6 +1,7 @@
 import { lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, lstat, open, rm, writeFile } from "node:fs/promises";
+import { setTimeout as pause } from "node:timers/promises";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -95,13 +96,35 @@ function failedExecution(error: unknown): RunResult {
     };
   return failure();
 }
+/** 서버가 실패로 답한 요청. 진단에는 HTTP 상태가 코드(`HTTP_503` 등)로 남는다. */
 class HttpFailure extends Error {
   readonly status: number;
+  readonly code: string;
   constructor(status: number) {
-    super("Provider request failed");
+    super(`Provider request failed (HTTP ${status})`);
     this.status = status;
+    this.code = `HTTP_${status}`;
   }
 }
+/**
+ * OpenCode가 Location의 plugin 활성화를 다 기다리지 못했다는 답인가. 2.2.6은 서버를 연 뒤에도 plugin 활성화를 이어 가고, 모델 목록 등
+ * Location 경로는 활성화를 5초 기다린 뒤에도 끝나지 않으면 503 `{ _tag: "ServiceUnavailableError", service: "plugin" }`으로 답한다
+ * (server/src/location.ts `awaitPlugins`). 준비를 알리는 신호(stdout 줄·event·상태 경로)는 없다. 이 모양만 "준비 중"으로 보고, 그 밖의
+ * 실패 답은 실패다.
+ */
+const pluginsActivating = (body: unknown) => {
+  const answer = record(body);
+  return (
+    answer._tag === "ServiceUnavailableError" && answer.service === "plugin"
+  );
+};
+/**
+ * 서버 주소를 받은 뒤 plugin 활성화를 기다리는 상한. 그 안에서는 "준비 중" 답만 다시 묻는다(공식 Desktop 클라이언트도 이 답에만 다시
+ * 묻는다: client/src/service-probe.ts). 넘기면 그 답(HTTP 503)으로 실패한다.
+ */
+const pluginActivationMs = 60_000;
+/** "준비 중" 답 뒤 다시 묻기 전의 쉼. 서버가 답하기 전에 이미 5초 기다리므로, 곧바로 답한 경우에도 연달아 묻지 않게만 한다. */
+const activationPauseMs = 1_000;
 /** 서버 요청의 응답 제한. 모델 목록은 실제로 몇 초씩 걸린다. */
 const requestTimeoutMs = 60_000;
 /** 끼워 넣기 응답 제한. */
@@ -686,29 +709,45 @@ export function createOpenCodeProvider(options: {
           "Basic " + Buffer.from("opencode:" + password).toString("base64"),
         "content-type": "application/json",
       };
+      const activationUntil = Date.now() + pluginActivationMs;
       const request = async (
         route: string,
         method = "GET",
         body?: unknown,
         timeout = requestTimeoutMs
-      ) => {
-        const response = await fetch(base + route, {
-          method,
-          headers,
-          body: body === undefined ? undefined : JSON.stringify(body),
-          signal:
+      ): Promise<Response> => {
+        for (;;) {
+          const signal =
             timeout === 0
               ? lifetime.signal
               : AbortSignal.any([
                   lifetime.signal,
                   AbortSignal.timeout(timeout),
-                ]),
-        });
-        if (!response.ok) {
-          await response.body?.cancel();
+                ]);
+          const response = await fetch(base + route, {
+            method,
+            headers,
+            body: body === undefined ? undefined : JSON.stringify(body),
+            signal,
+          });
+          if (response.ok) return response;
+          // plugin 활성화 중이라는 답만 상한 안에서 다시 묻는다(`pluginsActivating`).
+          if (response.status === 503 && Date.now() < activationUntil) {
+            // 본문을 읽지 못한 실패는 그대로 드러낸다. JSON이 아닌 본문은 "준비 중"이 아니다.
+            const text = await response.text();
+            if (
+              pluginsActivating(
+                orIfUnreadable(() => JSON.parse(text) as unknown, undefined)
+              )
+            ) {
+              await pause(activationPauseMs, undefined, {
+                signal: lifetime.signal,
+              });
+              continue;
+            }
+          } else await response.body?.cancel();
           throw new HttpFailure(response.status);
         }
-        return response;
       };
       return {
         request,
