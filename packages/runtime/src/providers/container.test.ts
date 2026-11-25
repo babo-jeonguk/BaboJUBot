@@ -1060,7 +1060,8 @@ describe.skipIf(process.platform === "win32")(
       async (_name, id, create, file, original, program) => {
         // 컨테이너 안의 프로그램은 붙인 자리를 실행 중에 모두 훑어 남은 로그인 내용이 든 파일을 기록한다. 실행 시도의 임시 자리는
         // 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다(`test-fixtures/mount-scan.ts`).
-        // 기록 파일은 시험 폴더에 둔다. 폴더 정리가 실행 시도(그 프로그램)의 끝을 확인한 뒤에만 지우고, 확인하지 못하면 남긴다.
+        // 기록 파일은 시험 폴더에 둔다. 폴더 정리는 프로바이더 호출이 돌아온 뒤에만 지운다. 호출의 반환은 그 프로그램의 끝을
+        // 확인하지 않는다(`ownCall`). 끝의 확인은 #286 3b-3에서 더한다.
         const scans = path.join(
           await folders.make("babojubot-mount-scan-"),
           "scans.jsonl"
