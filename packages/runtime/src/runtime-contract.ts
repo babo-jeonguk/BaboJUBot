@@ -306,9 +306,6 @@ export function describeRuntimeContract(
       const controller = new AbortController();
       const owner = newOwner(name);
       const { activities, late } = owner;
-      onTestFinished(() => {
-        expect(lateProblems(owner)).toEqual([]);
-      });
       // 활동 기록을 붙잡아 두면 풀어 줄 때까지 `emit`이 돌아오지 않는다. 기록은 그대로 한다.
       let gate: Promise<void> | undefined;
       let open: (() => void) | undefined;
@@ -344,6 +341,18 @@ export function describeRuntimeContract(
       ).finally(() => {
         owner.markReturned();
         tools.onRequest.delete(markWorking);
+      });
+      // 시험이 어디서 끝나든(단언 실패·시한 초과 포함) 실행 시도를 취소하고 돌아오기를 취소 시한 안에서 확인한다. 돌아오지 않은 실행
+      // 시도가 다음 시험까지 돌며 프로그램·도구 호출을 남기지 않게 한다. 늦은 활동 확인은 돌아온 것을 확인한 뒤에만 한다(한 정리 안의
+      // 차례라 등록 순서에 기대지 않는다).
+      onTestFinished(async () => {
+        controller.abort();
+        await within(
+          settled(result),
+          cancelWithinMs,
+          "did not return after the test ended and cancelled it"
+        );
+        expect(lateProblems(owner)).toEqual([]);
       });
       /**
        * 일을 시작했다는 신호를 `startWithinMs` 안에 기다린다. 준비가 끝난 뒤에 취소·완료 시한을 재려고 쓴다. 신호 없이 끝나면
@@ -634,13 +643,23 @@ export function describeRuntimeContract(
         const before = tools.requests;
         // 준비 확인도 자기 문맥에서 돌아, 띄운 확인 명령이 돌아올 때 모두 끝났는지 본다.
         const owner = newOwner(`${name} readiness check`);
-        onTestFinished(() => {
+        const controller = new AbortController();
+        const checking = runAs(owner, () =>
+          adapter.checkReadiness(controller.signal)
+        ).finally(() => owner.markReturned());
+        // 시한을 넘기거나 단언이 실패해도 준비 확인을 취소하고 돌아오기를 취소 시한 안에서 확인한다. 늦은 활동 확인은 돌아온 것을
+        // 확인한 뒤에만 한다(한 정리 안의 차례).
+        onTestFinished(async () => {
+          controller.abort();
+          await within(
+            settled(checking),
+            cancelWithinMs,
+            "did not return from the readiness check after the test ended and cancelled it"
+          );
           expect(lateProblems(owner)).toEqual([]);
         });
         const result = await within(
-          runAs(owner, () =>
-            adapter.checkReadiness(new AbortController().signal)
-          ).finally(() => owner.markReturned()),
+          checking,
           readinessWithinMs,
           "did not check readiness"
         );

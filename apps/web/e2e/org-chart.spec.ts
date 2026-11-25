@@ -112,16 +112,26 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
   await expect(watched.getByRole("link", { name: /통계 담당/ })).toBeVisible();
   await shot(page, "agent-detail-1440");
 
-  // 얼굴 꾸미기: 고르는 대로 미리 보이고, 저장하면 다른 탭의 조직도도 바뀐다.
+  // 얼굴 꾸미기: 고르는 대로 미리 보이고, 저장하면 다른 탭의 조직도도 바뀐다. 바뀌는 것을 보려면 고르는 얼굴이 지금 얼굴과 달라야
+  // 한다. 기본 얼굴은 매번 새 ID에서 정해지므로 지금 얼굴을 읽어 색을 그와 다른 것으로 고른다.
+  const current = (
+    (await (
+      await page.request.get(org.api(`/agents/${worker!.id}`))
+    ).json()) as { appearance: { color: string } }
+  ).appearance;
+  const color =
+    current.color === "lilac"
+      ? { value: "sky", label: "하늘색" }
+      : { value: "lilac", label: "라벤더색" };
   await page.getByRole("button", { name: "얼굴 꾸미기" }).click();
   const dialog = page.getByRole("dialog", { name: "얼굴 꾸미기" });
-  await dialog.getByRole("radio", { name: "라벤더색" }).check();
+  await dialog.getByRole("radio", { name: color.label }).check();
   await dialog.getByRole("radio", { name: "반짝이는 눈" }).check();
   await dialog.getByRole("radio", { name: "활짝 웃는 입" }).check();
   await dialog.getByRole("radio", { name: "안경" }).check();
   const preview = dialog.getByRole("img", { name: /얼굴 미리 보기/ });
   await expect(preview).toHaveAttribute("data-accessory", "glasses");
-  await expect(preview).toHaveAttribute("data-color", "lilac");
+  await expect(preview).toHaveAttribute("data-color", color.value);
   await shot(page, "face-customizer-1440");
   await dialog.getByRole("button", { name: "저장" }).click();
   await expect(dialog).toBeHidden();
@@ -129,7 +139,7 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
     await page.request.get(org.api(`/agents/${worker!.id}`))
   ).json()) as { appearance: unknown };
   expect(saved.appearance).toEqual({
-    color: "lilac",
+    color: color.value,
     eyes: "sparkle",
     mouth: "grin",
     accessory: "glasses",
@@ -137,7 +147,7 @@ test("the owner sees the team as an org chart, renames a worker and customizes i
   await expect(
     watched
       .getByRole("link", { name: /통계 담당/ })
-      .locator('svg[data-accessory="glasses"][data-color="lilac"]')
+      .locator(`svg[data-accessory="glasses"][data-color="${color.value}"]`)
   ).toBeVisible();
   await watcher.close();
 

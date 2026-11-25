@@ -4,6 +4,7 @@ import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { hasErrorCode } from "@babojubot/contracts";
+import { fileLinks } from "@babojubot/process/test-support";
 import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -77,7 +78,8 @@ describe.each(readers)(
       ]);
     });
 
-    it.skipIf(windows)(
+    // 파일 링크를 만들 권한이 없는 Windows에서는 이유와 함께 건너뛴다. CI는 필수로 정한다(`fileLinks`, #286 항목 16).
+    it.skipIf(!fileLinks())(
       "skips a link in place of the transcript, saying it is not a regular file",
       async () => {
         const home = await folders.make("babojubot-transcript-");

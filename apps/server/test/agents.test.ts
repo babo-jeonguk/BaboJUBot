@@ -2,6 +2,7 @@ import {
   agentDetailSchema,
   agentNameMaxLength,
   defaultAgentAppearance,
+  faceColors,
   organizationDetailSchema,
   type AgentAppearance,
 } from "@babojubot/contracts";
@@ -24,7 +25,8 @@ const patch = (orgId: string, agentId: string, body: unknown) =>
 const organization = async (orgId: string) =>
   organizationDetailSchema.parse(await get(`/api/organizations/${orgId}`));
 
-const owlFace: AgentAppearance = {
+/** 입력 검사에 쓰는 올바른 얼굴. 바꿀 얼굴로는 쓰지 않는다(지금 얼굴과 같을 수 있다). */
+const validFace: AgentAppearance = {
   color: "lilac",
   eyes: "sparkle",
   mouth: "grin",
@@ -40,10 +42,17 @@ describe("agent profile", () => {
     const [worker] = org.workers;
 
     // 고르지 않은 에이전트는 ID에서 정한 기본 얼굴이다.
+    const current = defaultAgentAppearance(worker!.id);
     expect(
       (await organization(org.id)).agents.find((a) => a.id === worker!.id)
         ?.appearance
-    ).toEqual(defaultAgentAppearance(worker!.id));
+    ).toEqual(current);
+    // 바꿀 얼굴은 지금 얼굴과 반드시 다르다: 색을 지금과 다른 값으로 둔다. 기본 얼굴은 매번 새 ID에서 정해지므로, 고정 얼굴은
+    // 우연히 기본 얼굴과 같아 바뀐 것이 없게 될 수 있다(main CI run 45433539031: 그 ID의 기본 얼굴이 이 시험의 고정 얼굴이었다).
+    const chosen: AgentAppearance = {
+      ...current,
+      color: faceColors.find((color) => color !== current.color)!,
+    };
 
     const stream = await t.subscribe({
       kind: "organization",
@@ -51,13 +60,13 @@ describe("agent profile", () => {
     });
     const renamed = await patch(org.id, worker!.id, {
       name: "  통계 담당  ",
-      appearance: owlFace,
+      appearance: chosen,
     });
     expect(renamed.status).toBe(200);
     expect(agentDetailSchema.parse(renamed.body)).toMatchObject({
       id: worker!.id,
       name: "통계 담당",
-      appearance: owlFace,
+      appearance: chosen,
     });
     expect(await stream.next()).toMatchObject({
       type: "agent.profile_changed",
@@ -66,7 +75,7 @@ describe("agent profile", () => {
         by: "owner",
         agentId: worker!.id,
         name: { from: worker!.name, to: "통계 담당" },
-        appearance: owlFace,
+        appearance: chosen,
       },
     });
     stream.close();
@@ -75,7 +84,7 @@ describe("agent profile", () => {
     const after = await organization(org.id);
     expect(after.agents.find((a) => a.id === worker!.id)).toMatchObject({
       name: "통계 담당",
-      appearance: owlFace,
+      appearance: chosen,
     });
     expect((await organization(other.id)).agents.map((a) => a.name)).toEqual([
       other.lead.name,
@@ -192,8 +201,8 @@ describe("agent profile", () => {
       { name: "가".repeat(agentNameMaxLength + 1) },
       { name: "두 줄\n이름" },
       { name: 3 },
-      { appearance: { ...owlFace, color: "neon" } },
-      { appearance: { ...owlFace, hat: "top" } },
+      { appearance: { ...validFace, color: "neon" } },
+      { appearance: { ...validFace, hat: "top" } },
       { name: "Lead", role: "worker" },
     ]) {
       const refused = await patch(org.id, lead.id, body);

@@ -6,6 +6,7 @@
 // on exit it ends (code 1) instead of answering it, and on stall it answers initialize and `account/read` each after 700 ms.
 // On fail-once it fails like fail the first time (leaving `<log>.failed`) and refreshes like ok after that.
 import { createInterface } from "node:readline";
+import { hasErrorCode, orIfMissing } from "@babojubot/contracts/failure";
 import {
   access,
   appendFile,
@@ -43,8 +44,10 @@ async function refresh() {
   const login = JSON.parse(await readFile(target, "utf8"));
   if (mode === "slow") await pause(300);
   const count =
-    (await readFile(log, "utf8").catch(() => "")).split("\n").filter(Boolean)
-      .length + 1;
+    // 처음 갱신이면 기록이 없다. 그 밖의 읽기 실패는 숨기지 않는다.
+    (await orIfMissing(() => readFile(log, "utf8"), hasErrorCode("ENOENT"), ""))
+      .split("\n")
+      .filter(Boolean).length + 1;
   login.tokens.access_token = jwt({
     exp: Math.floor(Date.now() / 1000) + 3600,
     sub: `refreshed-${count}`,

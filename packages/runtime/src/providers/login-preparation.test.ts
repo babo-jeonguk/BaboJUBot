@@ -16,7 +16,7 @@ import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
@@ -25,7 +25,7 @@ import { attachedRelayHub, request } from "./test-support.ts";
 import { within } from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
-import { attemptAll } from "@babojubot/contracts";
+import { attemptAll, hasErrorCode, orIfMissing } from "@babojubot/contracts";
 
 // 로그인을 파일로 같이 쓰는 Codex·Antigravity의 실행 준비(#146). 조직 신원 확인 → 연결 로그인 준비 → 격리 실행이면 흔적 검사·
 // 실행 시도 전용 로그인 파일, 격리를 끈 실행이면 조직 자리 링크 → 돌 제품 폴더 → 프로세스 시작. 준비 중에 취소하면 시작한
@@ -109,13 +109,16 @@ const roots: string[] = [];
 const servers: http.Server[] = [];
 /** 시험이 붙잡은 작업을 푸는 함수. 단언이 실패해 시험이 풀지 못한 것도 정리가 푼다. */
 const holds: (() => void)[] = [];
-/** 시험이 시작한 실행. 정리는 붙잡은 작업을 푼 뒤 시한 안에서 이것들이 끝나기를 기다린다. */
+/**
+ * 시험이 시작한 실행. 정리는 붙잡은 작업을 푼 뒤 시한 안에서 이것들이 돌아오기를 기다린다. 돌아온 것은 그 프로그램이 끝났다는
+ * 증거가 아니다(제품 프로바이더는 프로그램의 끝을 확인하지 못해도 정상으로 돌아온다). 끝의 확인은 #286 3b-3에서 더한다.
+ */
 const runs: Promise<unknown>[] = [];
 afterEach(async () => {
   gate = undefined;
   for (const release of holds.splice(0)) release();
   const folders = roots.splice(0);
-  // 풀려난 실행이 끝나기를 시한 안에서 기다린다. 끝나든 시한이 지나든 서버를 닫고 상태를 되돌린다.
+  // 풀려난 실행이 돌아오기를 시한 안에서 기다린다. 돌아오든 시한이 지나든 서버를 닫고 상태를 되돌린다.
   await withCleanup(async (defer) => {
     defer(() =>
       attemptAll(
@@ -135,11 +138,11 @@ afterEach(async () => {
     await within(
       Promise.allSettled(runs.splice(0)),
       10_000,
-      "a run did not end after cleanup"
+      "a run did not return after cleanup"
     );
   });
-  // 실행이 모두 끝났을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 끝나지 않은 실행이
-  // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다.
+  // 실행이 모두 돌아왔을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 돌아오지 않은 실행이
+  // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다. 프로그램의 끝은 확인하지 못한다(위 `runs`).
   await attemptAll(folders.map((root) => () => removeFolder(root)));
 });
 /** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
@@ -233,11 +236,16 @@ async function setup(connection: (typeof connections)[number]) {
   );
   roots.push(root);
   // 받은 환경을 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 프로세스를 띄웠는지·어느 폴더로 띄웠는지는 남는다.
+  // 컨테이너 안에서 돌면(가짜 docker가 붙인 자리를 FAKE_DOCKER_MOUNTS로 준다) 붙인 자리를 그때 모두 훑어 로그인 내용이 든 파일을
+  // 남긴다(`test-fixtures/mount-scan.ts`). 실행 시도의 임시 자리는 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다.
   const script = path.join(root, "dump-env.cjs");
   const dump = path.join(root, "env.jsonl");
+  const scans = path.join(root, "mount-scans.jsonl");
   await writeFile(
     script,
-    `require("node:fs").appendFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env) + "\\n");`
+    `require("node:fs").appendFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env) + "\\n");
+if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
+  require(${JSON.stringify(fixture("mount-scan.ts"))}).scanMounts(${JSON.stringify(scans)}, "synthetic-login");`
   );
   const dumper: [string, ...string[]] = [process.execPath, script];
   const state = path.join(root, "docker-state");
@@ -270,8 +278,6 @@ async function setup(connection: (typeof connections)[number]) {
     container,
     relay: { upstream, verified: true },
   });
-  /** 발급한 실행 시도 권한. */
-  const grants: string[] = [];
   const execute = provider.adapter.execute.bind(provider.adapter);
   provider.adapter.execute = (...args) => {
     const run = execute(...args);
@@ -279,12 +285,10 @@ async function setup(connection: (typeof connections)[number]) {
     return run;
   };
   const relay = provider.credentialRelay as CredentialRelay;
-  const grant = relay.grant.bind(relay);
-  relay.grant = (scope) => {
-    const issued = grant(scope);
-    grants.push(issued.token);
-    return issued;
-  };
+  // 발급을 바꾸지 않고 기록만 하는 관찰 spy.
+  const granted = vi.spyOn(relay, "grant");
+  onTestFinished(() => granted.mockRestore());
+  const grants = () => granted.mock.results.map(({ value }) => value.token);
   /** 중계가 받은 요청을 넘겨받은 뒤 부르는 함수. */
   const handed: { then?: () => void } = {};
   const relayUrl = await listen((req, res) => {
@@ -319,11 +323,22 @@ async function setup(connection: (typeof connections)[number]) {
     path.join(folder, "organizations", organizationId);
   const loginAt = (organizationId: string) =>
     path.join(organization(organizationId), ...connection.place);
-  const dumps = async (): Promise<NodeJS.ProcessEnv[]> =>
-    (await readFile(dump, "utf8").catch(() => ""))
+  /** 프로그램이 남긴 줄. 프로그램이 돌기 전에는 파일이 없다(없음만 빈 기록으로 보고, 그 밖의 읽기 실패는 드러낸다). */
+  const records = async (file: string) =>
+    (
+      await orIfMissing(
+        () => readFile(file, "utf8"),
+        hasErrorCode("ENOENT"),
+        ""
+      )
+    )
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as NodeJS.ProcessEnv);
+      .map((line) => JSON.parse(line) as unknown);
+  const dumps = async () => (await records(dump)) as NodeJS.ProcessEnv[];
+  /** 컨테이너 실행마다 붙인 자리와 그 안에서 로그인 내용이 든 파일(실행 중에 훑은 것). */
+  const mountScans = async () =>
+    (await records(scans)) as { sources: string[]; holding: string[] }[];
   const runMounts = async () =>
     (await readFile(path.join(state, "calls.jsonl"), "utf8"))
       .trim()
@@ -353,6 +368,7 @@ async function setup(connection: (typeof connections)[number]) {
     loginAt,
     dumps,
     runMounts,
+    mountScans,
   };
 }
 
@@ -451,19 +467,24 @@ describe.each(connections)("$name", (connection) => {
         control(cancel.signal)
       );
       const attemptFile = await held.reached;
-      expect(env.grants).toHaveLength(1);
+      expect(env.grants()).toHaveLength(1);
       // 살아 있는 권한은 경로 밖 요청에서 거절(403)될 뿐 권한 오류가 아니다.
-      expect(await env.relayStatus(env.grants[0]!)).toBe(403);
+      expect(await env.relayStatus(env.grants()[0]!)).toBe(403);
       cancel.abort();
       held.release();
       const result = await running;
       expect(result.stopReason).toBe("cancelled");
       expect(spawned).toEqual([]);
-      expect(await env.relayStatus(env.grants[0]!)).toBe(401);
+      expect(await env.relayStatus(env.grants()[0]!)).toBe(401);
       await expect(stat(path.dirname(attemptFile))).rejects.toThrow();
       // 조직 폴더에는 권한이 남지 않고, 원본은 그대로다.
-      const left = await readFile(env.loginAt(a), "utf8").catch(() => "");
-      expect(left).not.toContain(env.grants[0]!);
+      // 없으면 남은 것이 없다. 그 밖의 읽기 실패는 남았는지 모르는 것이라 드러낸다.
+      const left = await orIfMissing(
+        () => readFile(env.loginAt(a), "utf8"),
+        hasErrorCode("ENOENT"),
+        ""
+      );
+      expect(left).not.toContain(env.grants()[0]!);
       expect(await readFile(env.original, "utf8")).toBe(
         '{"synthetic-login":1}'
       );
@@ -496,19 +517,8 @@ describe.each(connections)("$name", (connection) => {
       expect(sources.filter((source) => inside(env.folder, source))).toEqual([
         env.organization(a),
       ]);
-      const holding: string[] = [];
-      const look = async (at: string): Promise<void> => {
-        const info = await lstat(at).catch(() => undefined);
-        if (info?.isDirectory())
-          for (const name of await readdir(at)) await look(path.join(at, name));
-        else if (
-          info?.isFile() &&
-          (await readFile(at, "utf8")).includes("synthetic-login")
-        )
-          holding.push(at);
-      };
-      for (const source of sources) await look(source);
-      expect(holding).toEqual([]);
+      // 붙인 자리는 실행 중에 모두 훑었고(실행이 끝나면 임시 자리는 지워진다), 로그인 내용이 든 파일은 없다.
+      expect(await env.mountScans()).toEqual([{ sources, holding: [] }]);
       expect((await env.dumps()).map((one) => one.HOME)).toEqual([
         env.organization(a),
       ]);
