@@ -174,7 +174,14 @@ const tunnelClosed = (tunnel: Awaited<ReturnType<typeof openTunnel>>) =>
 /** egress.sock에 CONNECT를 보내고 중계가 연결을 끝낼 때까지 받은 응답 전체(UTF-8)를 상한 안에서 받는다. 거부의 답을 본다. */
 function answerVia(directory: string, target: string) {
   const socket = net.connect(path.join(directory, "egress.sock"));
-  onTestFinished(() => void socket.destroy());
+  // 연결을 만든 직후 정리를 맡긴다. 정리는 연결을 닫고 그 닫힘(`close`)을 상한 안에서 확인한다.
+  const closed = new Promise<void>((resolve) =>
+    socket.once("close", () => resolve())
+  );
+  onTestFinished(async () => {
+    socket.destroy();
+    await within(closed, 5_000, "the CONNECT connection did not close");
+  });
   const chunks: Buffer[] = [];
   socket.on("data", (chunk: Buffer) => chunks.push(chunk));
   socket.on("connect", () =>

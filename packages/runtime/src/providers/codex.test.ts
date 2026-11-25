@@ -506,12 +506,19 @@ describe("one app-server connection per call (#145)", () => {
       .flat()
       .flatMap((step) => (step.holdUntil ? [step.holdUntil] : []));
     folders.own(async () => {
-      await Promise.all(held.map(release));
+      // 풀기 하나가 실패해도 나머지를 풀고 프로그램 확인으로 넘어간다. 그 실패는 마지막에 함께 알린다.
+      const unreleased = await attemptEach(
+        held.map((name) => () => release(name))
+      );
       const mine = programs();
       const closedBy = (deadline: number) => (name: string) => () =>
         lifelines.closed(name, Math.max(1, deadline - Date.now()));
       const late = await attemptEach(mine.map(closedBy(Date.now() + endingMs)));
-      if (late.length === 0) return;
+      if (late.length === 0) {
+        if (unreleased.length > 0)
+          throw combinedFailure(unreleased, "held answers could not be let go");
+        return;
+      }
       // 끝나지 않은 프로그램은 그 연결이 열려 있음을 본 직후(사이에 기다림 없이)에만 그 이름의 번호로 끈다. 하나를 끄지 못해도 나머지를
       // 끄고, 끝은 연결의 닫힘으로 본다.
       const left = mine.filter((name) => lifelines.open(name));
@@ -527,7 +534,7 @@ describe("one app-server connection per call (#145)", () => {
         left.map(closedBy(Date.now() + stoppedMs))
       );
       throw combinedFailure(
-        [...late, ...stopping, ...unclosed],
+        [...unreleased, ...late, ...stopping, ...unclosed],
         `scripted programs ${left.join(", ")} still ran after the provider's calls ended; stopped them`
       );
     }, "scripted programs");
