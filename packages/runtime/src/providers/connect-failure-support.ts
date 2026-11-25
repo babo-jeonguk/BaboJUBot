@@ -9,6 +9,10 @@ import { vi } from "vitest";
 //
 // 시험 파일에서: `vi.mock("node:net", async (importOriginal) => (await import("./connect-failure-support.ts")).failingNet(await importOriginal()))`
 // (`http.request`로 붙는 코드면 `node:http`와 `failingHttp`). 시험마다 `refusing.refuse`를 정하고 끝나면 `resetRefusing()`으로 푼다.
+//
+// 같은 대역은 서버 경계(`net.createServer`·`http.createServer`)도 감싼다. 시험이 `serverFaults`를 정하면, 대역이 만든 서버의 다음 듣기
+// 하나나 정한 주소에서 듣는 서버의 닫기가 그 오류로 실패한다(객체·prototype의 메서드를 바꾸지 않고, 대역이 만든 서버만 다르게 답한다).
+// 정한 것이 없으면 진짜 서버와 같다. 시험이 끝나면 `resetRefusing()`이 함께 푼다.
 
 export const refusing = {
   /** 실패시킬 포트와 오류 코드. 없으면 아무 연결도 대역하지 않는다. */
@@ -17,9 +21,70 @@ export const refusing = {
   dialed: vi.fn<(target: { host: unknown; port: number }) => void>(),
 };
 
+/** 서버 경계의 결함. 정한 것이 없으면 대역이 만든 서버도 진짜와 같다. */
+export const serverFaults = {
+  /** 대역이 만든 서버의 다음 듣기 하나를 이 코드의 오류(`error` 이벤트)로 끝낸다. 그 서버는 듣지 않는다. */
+  listen: undefined as { code: string } | undefined,
+  /** 실패시킨 듣기가 받은 주소. */
+  refusedListen: vi.fn<(address: unknown) => void>(),
+  /**
+   * 들은 주소가 `at`에 맞는 서버의 닫기가 실제로 닫은 뒤 이 코드로 실패를 알린다(닫기 콜백의 오류). 닫을 것이 없던 서버의 원래
+   * 오류(ERR_SERVER_NOT_RUNNING)는 그대로 넘긴다.
+   */
+  close: undefined as
+    { code: string; at: (address: string) => boolean } | undefined,
+  /** 실패를 알린 닫기의 서버가 들은 주소. */
+  failedClose: vi.fn<(address: string) => void>(),
+};
+
 export function resetRefusing() {
   refusing.refuse = undefined;
   refusing.dialed.mockReset();
+  serverFaults.listen = undefined;
+  serverFaults.refusedListen.mockReset();
+  serverFaults.close = undefined;
+  serverFaults.failedClose.mockReset();
+}
+
+const codeError = (message: string, code: string) =>
+  Object.assign(new Error(message), { code });
+
+/** 대역이 만드는 서버: `serverFaults`가 정한 듣기·닫기만 실패로 답하고, 그 밖에는 진짜 서버(`Base`)와 같다. */
+function faultyServer(Base: typeof netModule.Server) {
+  return class extends Base {
+    /** 이 서버가 들은 주소(파일 소켓 경로나 포트). 닫기 결함의 대상을 고를 때 본다. */
+    listenedAt: string | undefined;
+    override listen(...args: unknown[]) {
+      const fault = serverFaults.listen;
+      const [address] = args;
+      if (fault) {
+        serverFaults.listen = undefined;
+        serverFaults.refusedListen(address);
+        process.nextTick(() =>
+          this.emit("error", codeError("listen failed", fault.code))
+        );
+        return this;
+      }
+      this.listenedAt = typeof address === "string" ? address : undefined;
+      return (super.listen as (...args: unknown[]) => this)(...args);
+    }
+    override close(callback?: (error?: Error) => void) {
+      const fault = serverFaults.close;
+      const at = this.listenedAt;
+      if (!fault || at === undefined || !fault.at(at))
+        return super.close(callback);
+      return super.close((error?: Error) => {
+        if (!error) serverFaults.failedClose(at);
+        callback?.(error ?? codeError("close failed", fault.code));
+      });
+    }
+  };
+}
+
+/** 대역 서버를 만드는 `createServer`. 인수는 진짜 `createServer`와 같이 받는다(선택 사항, 처리기). */
+function creating(Server: typeof netModule.Server) {
+  return (...args: ConstructorParameters<typeof netModule.Server>) =>
+    new Server(...args);
 }
 
 /** `options`가 정한 포트로 가는 연결이면 그 실패를 돌려준다. 실제 연결에서 나오는 오류와 같은 모양(`code`·`syscall`)이다. */
@@ -60,12 +125,15 @@ export function failingNet(real: typeof netModule) {
     const failure = refusal(args[0]);
     return failure ? failedSocket(real, failure) : passThrough(...args);
   }) as typeof real.connect;
-  return {
-    ...real,
+  const Server = faultyServer(real.Server);
+  const createServer = creating(Server) as typeof real.createServer;
+  const replaced = {
     connect,
     createConnection: connect,
-    default: { ...real, connect, createConnection: connect },
+    Server,
+    createServer,
   };
+  return { ...real, ...replaced, default: { ...real, ...replaced } };
 }
 
 /** `node:http` 대역: 정한 포트로 가는 `request`를 그 연결의 실패로 끝낸다(요청은 진짜 ClientRequest가 소켓 오류를 알린다). */
@@ -85,5 +153,8 @@ export function failingHttp(real: typeof httpModule, net: typeof netModule) {
       ...rest
     );
   }) as typeof real.request;
-  return { ...real, request, default: { ...real, request } };
+  const Server = faultyServer(real.Server);
+  const createServer = creating(Server) as typeof real.createServer;
+  const replaced = { request, Server, createServer };
+  return { ...real, ...replaced, default: { ...real, ...replaced } };
 }
