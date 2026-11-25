@@ -259,9 +259,14 @@ export function startProcess(options: {
     });
   let broken = false,
     leaderExited = false;
+  /** `broken`이 된 까닭(실패 코드). 실행 시도 폴더를 남길 때 그 원인으로 알린다. */
+  const causes: string[] = [];
   void tree.started.then((start) => {
     if (start.kind === "failed") {
       broken = true;
+      causes.push(
+        start.error === undefined ? "start_failed" : failureCode(start.error)
+      );
       // 띄우지 못한 이유를 남긴다. 시작 오류(ENOENT 등)는 문구 대신 짧은 이름만(경로·로그인 내용이 섞일 수 있음).
       console.error(
         start.error === undefined
@@ -334,6 +339,7 @@ export function startProcess(options: {
         `[provider] writing to the program's input failed (${failureCode(error)})`
       );
     broken = true;
+    causes.push(failureCode(error));
     reportInputFailure();
     end();
   });
@@ -376,6 +382,8 @@ export function startProcess(options: {
   const done = new Promise<{
     code: number | null;
     broken: boolean;
+    /** `broken`의 까닭(실패 코드). `broken`이 아니면 비어 있다. */
+    causes: readonly string[];
     stderr: string;
   }>((resolve) => {
     /**
@@ -478,14 +486,17 @@ export function startProcess(options: {
             }
           ),
         ]);
-        if (failures.length > 0) broken = true;
+        if (failures.length > 0) {
+          broken = true;
+          causes.push(...failures.map(failureCode));
+        }
         if (code)
           console.warn(
             `[provider] program exited with code ${code}: ${stderr
               .slice(-500)
               .replace(/\S{32,}/g, "<hidden>")}`
           );
-        resolve({ code, broken, stderr });
+        resolve({ code, broken, causes: [...causes], stderr });
       })();
     };
     finishWithoutLeader = () => finish(null);

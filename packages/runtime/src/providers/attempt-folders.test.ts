@@ -215,3 +215,35 @@ describe("an OpenCode server that cannot be prepared", () => {
     expect(await attemptFolders(root)).toEqual([]);
   }, 20_000);
 });
+
+// 프로그램의 끝을 확인하지 못한 실행 시도(`done.broken`)의 폴더는 그 프로그램이 아직 쓸 수 있다. 폴더는 남기고, 제품이 그 안에 넣은
+// 자격 증명 사본(Claude Code는 조직 도구 토큰이 든 MCP 설정)만 지운 뒤 폴더 위치와 원인을 알린다(#286 3b-3, 사용자 결정).
+// 띄우지 못한 프로그램(없는 실행 파일)이 그런 실행 시도를 결정적으로 만든다.
+describe("an attempt whose programs were not confirmed ended", () => {
+  it("keeps the Claude Code attempt folder without its credential copy, and says where and why", async () => {
+    const root = await folders.make("babojubot-claude-");
+    await mkdir(path.join(root, "providers/claude"), { recursive: true });
+    await writeFile(
+      path.join(root, "providers/claude/setup-token"),
+      "synthetic-login",
+      { mode: 0o600 }
+    );
+    const provider = createClaudeProvider({
+      dataDir: root,
+      command: [path.join(root, "no-such-program")],
+    });
+    const input = request();
+    const logged = diagnostics();
+
+    const result = await provider.adapter.execute(input, control());
+
+    expect(result.stopReason).toBe("failed");
+    const kept = await attemptFolders(root);
+    expect(kept).toHaveLength(1);
+    expect(await readdir(kept[0]!)).toEqual(["instructions.md"]);
+    expect(logged()).toContain(
+      `[provider] the programs of run ${input.runId} on connection claude were not confirmed ended (ENOENT); its attempt folder is kept at ${kept[0]} without the credential copies put in it`
+    );
+    expect(logged().join("\n")).not.toContain("private-run-token");
+  });
+});
