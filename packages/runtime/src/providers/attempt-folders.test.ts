@@ -7,6 +7,10 @@ import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
+// 이 파일이 띄우는 트리는 공용 실행 경계 대역이 띄운 직후 정리에 맡긴다. 장면(`treeScene`)으로 제품의 끄기를 실패로 답하게 한다.
+vi.mock("@babojubot/process", async (original) =>
+  (await import("./test-folders.ts")).owningLaunchTree(await original())
+);
 // 실행 시도가 쓰고 지우는 폴더(실행 시도 폴더, Antigravity 기록 폴더)를 지우다 실패하게 한다. 실패는 Windows에서 파일이
 // 잠깐 잠겼을 때와 같은 오류(EBUSY)로, 다시 시도해도 계속 실패한다. 설정 파일 쓰기 실패도 같은 방법으로 만든다.
 const inject = vi.hoisted(() => ({
@@ -216,11 +220,13 @@ describe("an OpenCode server that cannot be prepared", () => {
   }, 20_000);
 });
 
-// 프로그램의 끝을 확인하지 못한 실행 시도(`done.broken`)의 폴더는 그 프로그램이 아직 쓸 수 있다. 폴더는 남기고, 제품이 그 안에 넣은
-// 자격 증명 사본(Claude Code는 조직 도구 토큰이 든 MCP 설정)만 지운 뒤 폴더 위치와 원인을 알린다(#286 3b-3, 사용자 결정).
-// 띄우지 못한 프로그램(없는 실행 파일)이 그런 실행 시도를 결정적으로 만든다.
+// 프로그램의 끝을 확인하지 못한 실행 시도(`done.ended`가 거짓)의 폴더는 그 프로그램이 아직 쓸 수 있다. 폴더는 남기고, 제품이 그 안에
+// 넣은 자격 증명 사본(Claude Code는 조직 도구 토큰이 든 MCP 설정)만 지운 뒤 폴더 위치와 원인을 알린다(#286 3b-3, 사용자 결정).
+// 공용 실행 경계 대역이 제품의 끄기를 실패로 답하게 해(트리는 실제로 끈다) 그런 실행 시도를 결정적으로 만든다. 끝을 확인한 실행
+// 시도는 시작에 실패했어도 폴더를 지운다.
 describe("an attempt whose programs were not confirmed ended", () => {
-  it("keeps the Claude Code attempt folder without its credential copy, and says where and why", async () => {
+  /** 연결의 로그인을 둔 Claude Code 연결. */
+  async function claude(command: [string, ...string[]]) {
     const root = await folders.make("babojubot-claude-");
     await mkdir(path.join(root, "providers/claude"), { recursive: true });
     await writeFile(
@@ -228,29 +234,47 @@ describe("an attempt whose programs were not confirmed ended", () => {
       "synthetic-login",
       { mode: 0o600 }
     );
-    const provider = createClaudeProvider({
-      dataDir: root,
-      command: [path.join(root, "no-such-program")],
-    });
+    return { root, provider: createClaudeProvider({ dataDir: root, command }) };
+  }
+
+  it("keeps the Claude Code attempt folder without its credential copy, and says where and why", async () => {
+    const { root, provider } = await claude([
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      path.resolve("test-fixtures/claude-finish.synthetic.json"),
+    ]);
+    folders.treeScene({ failProductStop: "after-stopping" });
     const input = request();
     const logged = diagnostics();
 
-    const result = await provider.adapter.execute(input, control());
+    await provider.adapter.execute(input, control());
 
-    expect(result.stopReason).toBe("failed");
     const kept = await attemptFolders(root);
     expect(kept).toHaveLength(1);
     expect(await readdir(kept[0]!)).toEqual(["instructions.md"]);
-    // 원인은 띄우지 못한 것(ENOENT)이고, 그 프로그램에 입력을 쓰다 끊긴 것(EPIPE)이 함께 올 수 있다(두 사건의 차례는 정해지지 않는다).
-    const prefix = `[provider] the programs of run ${input.identity.runId} on connection claude were not confirmed ended (`;
-    const suffix = `); its attempt folder is kept at ${kept[0]} without the credential copies put in it`;
-    const lines = logged().filter((line) => line.startsWith(prefix));
-    expect(lines).toHaveLength(1);
-    expect(lines[0]!.endsWith(suffix)).toBe(true);
-    const causes = lines[0]!.slice(prefix.length, -suffix.length).split(", ");
-    expect([["ENOENT"], ["ENOENT", "EPIPE"]]).toContainEqual(
-      [...causes].sort()
-    );
+    expect(
+      logged().filter((line) => line.includes("were not confirmed ended"))
+    ).toEqual([
+      `[provider] the programs of run ${input.identity.runId} on connection claude were not confirmed ended (TREE_LEFT); its attempt folder is kept at ${kept[0]} without the credential copies put in it`,
+    ]);
     expect(logged().join("\n")).not.toContain("private-run-token");
+  });
+
+  it("removes the folder of an attempt whose program could not start, since nothing is left to use it", async () => {
+    const { root, provider } = await claude([
+      path.resolve("test-fixtures/no-such-program"),
+    ]);
+    const logged = diagnostics();
+
+    const result = await provider.adapter.execute(request(), control());
+
+    expect(result.stopReason).toBe("failed");
+    expect(await attemptFolders(root)).toEqual([]);
+    expect(logged()).toContain(
+      "[provider] the program could not start (ENOENT)"
+    );
+    expect(
+      logged().filter((line) => line.includes("were not confirmed ended"))
+    ).toEqual([]);
   });
 });

@@ -83,8 +83,12 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
       stop: async (...received: Parameters<T["stop"]>) => {
         calls.push(received);
         if (failProductStop === "after-stopping") await tree.stop(...received);
-        throw new Error(
-          "programs of this tree did not end (left: 1 (the tree did not end))"
+        // 실제 끄기가 남은 프로그램을 알릴 때와 같은 코드(`TREE_LEFT`, @babojubot/process `supervised.ts`)다.
+        throw Object.assign(
+          new Error(
+            "programs of this tree did not end (left: 1 (the tree did not end))"
+          ),
+          { code: "TREE_LEFT" }
         );
       },
     };

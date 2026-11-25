@@ -7,7 +7,7 @@ import { removeFolder } from "@babojubot/process/remove-folder";
 /** 실행 시도 폴더를 쓰는 프로그램. 지우기 전에 끝내고(`end`), 그 끝(`done`)을 기다린다. */
 type Program = {
   end(): void;
-  done: Promise<{ broken: boolean; causes: readonly string[] }>;
+  done: Promise<{ ended: boolean; causes: readonly string[] }>;
 };
 /** 진단에 적을 폴더의 종류와 실행 시도. */
 type About = {
@@ -21,9 +21,9 @@ type About = {
  * - 제품이 이 폴더에 자격 증명 사본(로그인 파일, 조직 도구 토큰이 든 설정)을 쓸 때는 쓰기 전에 `credential`로 그 이름을 받아 쓴다.
  *   남길 때 지울 목록은 이 기록 하나다(이름 모양으로 찾지 않는다).
  * - 이 폴더를 쓰는 프로그램은 띄운 직후 `usedBy`로 맡긴다.
- * - `remove`는 맡은 프로그램을 끝내고 그 끝을 기다린 뒤, 모두 끝을 확인했으면(`broken`이 아님) 폴더를 지운다. 하나라도 끝을 확인하지
- *   못했으면 그 프로그램이 아직 폴더를 쓸 수 있으므로 폴더는 남기고 기록한 자격 증명 사본만 지운 뒤, 폴더 위치와 원인(실패 코드)을
- *   경고로 남긴다. 남은 폴더를 거두는 곳은 아직 없다. 자격 증명 사본을 지우지 못하면 그 실패도 경고에 담는다. 실행 결과는 바꾸지 않는다.
+ * - `remove`는 맡은 프로그램을 끝내고 그 끝을 기다린 뒤, 모두 끝을 확인했으면(`done.ended`: 트리와 컨테이너의 끝) 폴더를 지운다.
+ *   하나라도 끝을 확인하지 못했으면 그 프로그램이 아직 폴더를 쓸 수 있으므로 폴더는 남기고 기록한 자격 증명 사본만 지운 뒤, 폴더 위치와
+ *   그 실행 시도가 남긴 실패 코드(`done.causes`)를 경고로 남긴다. 시작 실패·입력 실패처럼 끝을 확인한 실행 시도는 폴더를 지운다. 남은 폴더를 거두는 곳은 아직 없다. 자격 증명 사본을 지우지 못하면 그 실패도 경고에 담는다. 실행 결과는 바꾸지 않는다.
  * 폴더는 이 사용자만 접근하는 곳에 만들지만, 이 컴퓨터에서 도는 프로그램은 같은 사용자라 그 안을 바꿀 수 있다. 그래서 자격 증명
  * 사본은 확인한 폴더를 거쳐 그 이름을 지운다(`inFolder`, CODING_STANDARDS 「제품 코드」).
  */
@@ -63,8 +63,8 @@ export function attemptFolder(folder: string, about: About) {
     async remove(): Promise<void> {
       for (const program of programs) program.end();
       const ended = await Promise.all(programs.map((program) => program.done));
-      const causes = ended.flatMap((end) => (end.broken ? end.causes : []));
-      if (!ended.some((end) => end.broken)) {
+      const causes = ended.flatMap((end) => (end.ended ? [] : end.causes));
+      if (ended.every((end) => end.ended)) {
         await removeWhole(folder, about);
         return;
       }

@@ -381,6 +381,11 @@ export function startProcess(options: {
   const done = new Promise<{
     code: number | null;
     broken: boolean;
+    /**
+     * 이 실행 시도가 띄운 것의 끝을 확인했는가: 트리 전체가 끝났고(끄기 성공), 컨테이너로 돌았으면 그 컨테이너도 없어졌다. 시작
+     * 실패·입력 실패처럼 끝을 확인한 뒤의 `broken`과 다르다. 실행 시도 폴더는 이 값으로 지울지 정한다(`attemptFolder`).
+     */
+    ended: boolean;
     /** `broken`의 까닭(실패 코드). `broken`이 아니면 비어 있다. */
     causes: readonly string[];
     stderr: string;
@@ -407,6 +412,8 @@ export function startProcess(options: {
           };
         /** 트리 전체가 끝난 것을 확인했는가. 확인하기 전에는 기록을 지우지 않는다(#219). */
         let stopped = false;
+        /** 컨테이너가 없어진 것을 확인했는가(컨테이너로 돌지 않았으면 처음부터 참). */
+        let containerGone = !options.container;
         const failures = await attemptEach([
           // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
           reported(
@@ -474,6 +481,7 @@ export function startProcess(options: {
                   new Error("it was still there after removing it"),
                   { code: "container_left" }
                 );
+              containerGone = true;
             }
           ),
           reported(
@@ -497,7 +505,13 @@ export function startProcess(options: {
               .slice(-500)
               .replace(/\S{32,}/g, "<hidden>")}`
           );
-        resolve({ code, broken, causes, stderr });
+        resolve({
+          code,
+          broken,
+          ended: stopped && containerGone,
+          causes,
+          stderr,
+        });
       })();
     };
     finishWithoutLeader = () => finish(null);
