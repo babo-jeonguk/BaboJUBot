@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Event, ProviderConnection } from "@babojubot/contracts";
 import { createFakeProviders } from "@babojubot/runtime";
 import { WebSocketServer, type WebSocket } from "ws";
-import { openEventStream, startTestServer } from "./support.ts";
+import {
+  eventuallyMs,
+  openEventStream,
+  startTestServer,
+  within,
+} from "./support.ts";
 
 // 시험 서버 helper가 서버를 넘기기 전에 실패하면, 자기가 만든 것(서버·DB·작업 폴더)을 치우고 원래 오류로 실패한다.
 // 작업 폴더는 운영체제 임시 폴더에 만들므로, 이 시험만의 임시 폴더를 운영체제 임시 폴더로 정해 남은 것을 본다.
@@ -126,8 +131,14 @@ describe("an Event stream subscription", () => {
    */
   async function subscribed() {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-    onTestFinished(
-      () => new Promise<void>((resolve) => server.close(() => resolve()))
+    onTestFinished(() =>
+      within(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        ),
+        eventuallyMs,
+        "the local Event stream server did not close"
+      )
     );
     const peer = new Promise<WebSocket>((resolve) =>
       server.once("connection", (socket) => {
@@ -137,10 +148,14 @@ describe("an Event stream subscription", () => {
         resolve(socket);
       })
     );
-    await new Promise<void>((resolve, reject) => {
-      server.once("listening", resolve);
-      server.once("error", reject);
-    });
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      }),
+      eventuallyMs,
+      "the local Event stream server did not start listening"
+    );
     const { port } = server.address() as { port: number };
     const { subscription } = await openEventStream(`ws://127.0.0.1:${port}`, {
       opened: (terminate) => onTestFinished(terminate),

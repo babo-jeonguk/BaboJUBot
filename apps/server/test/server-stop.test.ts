@@ -103,10 +103,14 @@ async function openEventStream(baseUrl: string) {
   const closed = new Promise<void>((resolve) =>
     socket.once("close", () => resolve())
   );
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", () => resolve());
-    socket.once("error", reject);
-  });
+  await within(
+    new Promise<void>((resolve, reject) => {
+      socket.once("open", () => resolve());
+      socket.once("error", reject);
+    }),
+    10_000,
+    "the Event stream did not open"
+  );
   return { closed };
 }
 

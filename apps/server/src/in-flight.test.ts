@@ -2,26 +2,35 @@ import http from "node:http";
 import type net from "node:net";
 import express from "express";
 import { awaitedLater } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { InFlight, trackHandlers } from "./in-flight.ts";
 
 let server: http.Server | undefined;
 afterEach(async () => {
   server?.closeAllConnections();
-  await new Promise<void>((resolve, reject) =>
-    server
-      ? server.close((error) => (error ? reject(error) : resolve()))
-      : resolve()
+  await within(
+    new Promise<void>((resolve, reject) =>
+      server
+        ? server.close((error) => (error ? reject(error) : resolve()))
+        : resolve()
+    ),
+    10_000,
+    "the test HTTP server did not close"
   );
   server = undefined;
 });
 
 async function serve(app: express.Express) {
   server = http.createServer(app);
-  await new Promise<void>((resolve, reject) => {
-    server!.once("error", reject);
-    server!.listen(0, "127.0.0.1", resolve);
-  });
+  await within(
+    new Promise<void>((resolve, reject) => {
+      server!.once("error", reject);
+      server!.listen(0, "127.0.0.1", resolve);
+    }),
+    10_000,
+    "the test HTTP server did not start listening"
+  );
   return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
 }
 

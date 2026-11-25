@@ -26,7 +26,12 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import {
+  eventuallyMs,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
@@ -900,14 +905,22 @@ describe("channel replies", () => {
   it("still frees the port and reports the start error when closing the failed channel also throws", async () => {
     const database = await createTestDatabase();
     const listening = (port: number) =>
-      new Promise<net.Server>((resolve, reject) => {
-        const probe = net.createServer();
-        probe.once("error", reject);
-        probe.listen(port, "127.0.0.1", () => resolve(probe));
-      });
+      within(
+        new Promise<net.Server>((resolve, reject) => {
+          const probe = net.createServer();
+          probe.once("error", reject);
+          probe.listen(port, "127.0.0.1", () => resolve(probe));
+        }),
+        eventuallyMs,
+        `the port probe did not start listening on ${port}`
+      );
     const closing = (probe: net.Server) =>
-      new Promise<void>((resolve, reject) =>
-        probe.close((error) => (error ? reject(error) : resolve()))
+      within(
+        new Promise<void>((resolve, reject) =>
+          probe.close((error) => (error ? reject(error) : resolve()))
+        ),
+        eventuallyMs,
+        "the port probe did not close"
       );
     onTestFinished(() => database.close());
     const probe = await listening(0);

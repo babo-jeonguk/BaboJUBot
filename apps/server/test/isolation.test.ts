@@ -20,10 +20,16 @@ import {
   type DockerEnvironment,
   type IsolationProbe,
 } from "@babojubot/runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { jsonBodyLimitBytes } from "../src/app.ts";
 import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
-import { eventually, startTestServer, type TestServer } from "./support.ts";
+import {
+  eventually,
+  eventuallyMs,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
 import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
@@ -279,7 +285,11 @@ function realConnection(
               required: [],
             });
             defer(() => own.close());
+            // 닫을 때 남은 연결을 끊는다. 서버 닫기는 연결이 모두 끝나야 끝난다.
+            const clients = new Set<net.Socket>();
             const bridge = net.createServer((client) => {
+              clients.add(client);
+              client.once("close", () => clients.delete(client));
               const upstream = net.connect(
                 path.join(own.directory, "tools.sock")
               );
@@ -287,10 +297,24 @@ function realConnection(
               upstream.on("error", () => client.destroy());
               client.pipe(upstream).pipe(client);
             });
-            defer(() => bridge.close());
+            defer(() => {
+              for (const client of clients) client.destroy();
+              return within(
+                new Promise<void>((resolve, reject) =>
+                  bridge.close((error) => (error ? reject(error) : resolve()))
+                ),
+                eventuallyMs,
+                "the tools bridge did not close"
+              );
+            });
             await own.ready;
-            await new Promise<void>((resolve) =>
-              bridge.listen(0, "127.0.0.1", resolve)
+            await within(
+              new Promise<void>((resolve, reject) => {
+                bridge.once("error", reject);
+                bridge.listen(0, "127.0.0.1", resolve);
+              }),
+              eventuallyMs,
+              "the tools bridge did not start listening"
             );
             const port = (bridge.address() as net.AddressInfo).port;
             return await fake!.adapter.execute(
@@ -638,24 +662,32 @@ describe("isolated runs", () => {
 describe("organization network allow list", () => {
   const { get, create, researching } = serverHelpers(() => t!);
 
-  /** 연결 수를 세는 loopback echo listener. */
+  /** 연결 수를 세는 loopback echo listener. 듣기 시작한 직후 닫기를 시험 정리에 맡긴다. */
   async function echo() {
     const accepted: net.Socket[] = [];
     const server = net.createServer((socket) => {
       accepted.push(socket);
       socket.pipe(socket);
     });
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve)
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+      }),
+      eventuallyMs,
+      "the echo listener did not start listening"
     );
-    return {
-      port: (server.address() as net.AddressInfo).port,
-      accepted,
-      close: () => {
-        for (const socket of accepted) socket.destroy();
-        server.close();
-      },
-    };
+    onTestFinished(() => {
+      for (const socket of accepted) socket.destroy();
+      return within(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        ),
+        eventuallyMs,
+        "the echo listener did not close"
+      );
+    });
+    return { port: (server.address() as net.AddressInfo).port, accepted };
   }
 
   it("is empty for a new organization and only the owner replaces it, normalized, leaving an Event", async () => {
@@ -740,97 +772,93 @@ describe("organization network allow list", () => {
       isolation: { docker: fake.docker, protectedPorts: [] },
     });
     const target = await echo();
-    try {
-      const entry = {
-        host: "localhost",
-        port: target.port,
-        addresses: ["127.0.0.1", "::1"],
-      };
-      const relayFor = (organizationId: string, agentId: string) =>
-        fake.relay.open({
-          identity: { organizationId, agentId, runId: crypto.randomUUID() },
-          required: [],
-        });
-
-      // 계획 수립 중에는 목록에 있어도 연구 목적지를 열지 않는다.
-      const planning = await create("승인 전 조직");
-      await t.request(
-        "PUT",
-        `/api/organizations/${planning.id}/network-policy`,
-        {
-          destinations: [entry],
-        }
-      );
-      const early = relayFor(planning.id, planning.agents[0]!.id);
-      await early.ready;
-      expect(
-        (await connectOver(early.directory, `localhost:${target.port}`)).head
-      ).toMatch(/403[^]*destination_not_allowed/);
-      await early.close();
-
-      const org = await researching(agents, "연구 조직");
-      await t.request("PUT", `/api/organizations/${org.id}/network-policy`, {
-        destinations: [entry],
+    const entry = {
+      host: "localhost",
+      port: target.port,
+      addresses: ["127.0.0.1", "::1"],
+    };
+    // 연 중계는 바로 시험 정리에 맡긴다. 시험 안에서 먼저 닫아도 된다(닫기는 한 번만 돈다).
+    const relayFor = (organizationId: string, agentId: string) => {
+      const opened = fake.relay.open({
+        identity: { organizationId, agentId, runId: crypto.randomUUID() },
+        required: [],
       });
-      const relay = relayFor(org.id, org.lead.id);
-      await relay.ready;
-      const open = await connectOver(
-        relay.directory,
-        `localhost:${target.port}`
-      );
-      expect(open.head).toMatch(/^HTTP\/1\.1 200/);
-      // 다른 조직의 목록은 이 조직의 중계에 쓰이지 않는다.
-      const other = relayFor(planning.id, planning.agents[0]!.id);
-      await other.ready;
-      expect(
-        (await connectOver(other.directory, `localhost:${target.port}`)).head
-      ).toMatch(/403/);
-      await other.close();
+      onTestFinished(() => opened.close());
+      return opened;
+    };
 
-      const closed = new Promise<void>((resolve) =>
-        open.socket.once("close", () => resolve())
-      );
-      expect(
-        (
-          await t.request(
-            "PUT",
-            `/api/organizations/${org.id}/network-policy`,
-            {
-              destinations: [],
-            }
-          )
-        ).status
-      ).toBe(200);
-      await closed;
-      expect(
-        (await connectOver(relay.directory, `localhost:${target.port}`)).head
-      ).toMatch(/403/);
-      expect(target.accepted).toHaveLength(1);
+    // 계획 수립 중에는 목록에 있어도 연구 목적지를 열지 않는다.
+    const planning = await create("승인 전 조직");
+    await t.request("PUT", `/api/organizations/${planning.id}/network-policy`, {
+      destinations: [entry],
+    });
+    const early = relayFor(planning.id, planning.agents[0]!.id);
+    await early.ready;
+    expect(
+      (await connectOver(early.directory, `localhost:${target.port}`)).head
+    ).toMatch(/403[^]*destination_not_allowed/);
+    await early.close();
 
-      // 단계가 바뀌어 연구 목적지가 닫혀도(중단) 열린 연결을 끊는다.
-      await t.request("PUT", `/api/organizations/${org.id}/network-policy`, {
-        destinations: [entry],
-      });
-      const again = await connectOver(
-        relay.directory,
-        `localhost:${target.port}`
-      );
-      expect(again.head).toMatch(/^HTTP\/1\.1 200/);
-      const stopped = new Promise<void>((resolve) =>
-        again.socket.once("close", () => resolve())
-      );
-      expect(
-        (await t.request("POST", `/api/organizations/${org.id}/stop`, {}))
-          .status
-      ).toBe(200);
-      await stopped;
-      expect(
-        (await connectOver(relay.directory, `localhost:${target.port}`)).head
-      ).toMatch(/403/);
-      await relay.close();
-    } finally {
-      target.close();
-    }
+    const org = await researching(agents, "연구 조직");
+    await t.request("PUT", `/api/organizations/${org.id}/network-policy`, {
+      destinations: [entry],
+    });
+    const relay = relayFor(org.id, org.lead.id);
+    await relay.ready;
+    const open = await connectOver(relay.directory, `localhost:${target.port}`);
+    expect(open.head).toMatch(/^HTTP\/1\.1 200/);
+    // 다른 조직의 목록은 이 조직의 중계에 쓰이지 않는다.
+    const other = relayFor(planning.id, planning.agents[0]!.id);
+    await other.ready;
+    expect(
+      (await connectOver(other.directory, `localhost:${target.port}`)).head
+    ).toMatch(/403/);
+    await other.close();
+
+    const closed = new Promise<void>((resolve) =>
+      open.socket.once("close", () => resolve())
+    );
+    expect(
+      (
+        await t.request("PUT", `/api/organizations/${org.id}/network-policy`, {
+          destinations: [],
+        })
+      ).status
+    ).toBe(200);
+    await within(
+      closed,
+      eventuallyMs,
+      "the relay did not close the connection the owner removed"
+    );
+    expect(
+      (await connectOver(relay.directory, `localhost:${target.port}`)).head
+    ).toMatch(/403/);
+    expect(target.accepted).toHaveLength(1);
+
+    // 단계가 바뀌어 연구 목적지가 닫혀도(중단) 열린 연결을 끊는다.
+    await t.request("PUT", `/api/organizations/${org.id}/network-policy`, {
+      destinations: [entry],
+    });
+    const again = await connectOver(
+      relay.directory,
+      `localhost:${target.port}`
+    );
+    expect(again.head).toMatch(/^HTTP\/1\.1 200/);
+    const stopped = new Promise<void>((resolve) =>
+      again.socket.once("close", () => resolve())
+    );
+    expect(
+      (await t.request("POST", `/api/organizations/${org.id}/stop`, {})).status
+    ).toBe(200);
+    await within(
+      stopped,
+      eventuallyMs,
+      "the relay did not close the connection after the stop"
+    );
+    expect(
+      (await connectOver(relay.directory, `localhost:${target.port}`)).head
+    ).toMatch(/403/);
+    await relay.close();
   });
 
   it("shows a refused destination in the run's activity with the reason and how to allow it", async () => {

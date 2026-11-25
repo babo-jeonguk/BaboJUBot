@@ -231,15 +231,22 @@ it.each(stopRequests)(
 // HTTP 서버가 시작하지 못하면 그 오류로 실패한다. 뒤이어 DB를 닫다 난 오류는 원래 오류를 덮지 않고 따로 남는다.
 it("ends with the HTTP start error and records the database close failure when both fail", async () => {
   const taken = createServer();
-  await new Promise<void>((resolve, reject) => {
-    taken.once("error", reject);
-    taken.listen(0, "127.0.0.1", resolve);
-  });
-  onTestFinished(
-    () =>
+  await within(
+    new Promise<void>((resolve, reject) => {
+      taken.once("error", reject);
+      taken.listen(0, "127.0.0.1", resolve);
+    }),
+    10_000,
+    "the port-taking server did not start listening"
+  );
+  onTestFinished(() =>
+    within(
       new Promise<void>((resolve, reject) =>
         taken.close((error) => (error ? reject(error) : resolve()))
-      )
+      ),
+      10_000,
+      "the port-taking server did not close"
+    )
   );
   const { port } = taken.address() as { port: number };
   const child = startMain(
@@ -365,8 +372,12 @@ it("keeps serving after messages that are not a stop request", async () => {
   await child.ready();
   const url = child.stdoutText().match(/BaboJUBot server on (\S+)/)![1]!;
   for (const message of ["shutdown", { type: "stop" }, { id: 1 }])
-    await new Promise<void>((resolve, reject) =>
-      child.send(message, (error) => (error ? reject(error) : resolve()))
+    await within(
+      new Promise<void>((resolve, reject) =>
+        child.send(message, (error) => (error ? reject(error) : resolve()))
+      ),
+      10_000,
+      `the server did not take the message ${JSON.stringify(message)}`
     );
   const res = await fetch(`${url}/api/organizations`, {
     method: "POST",

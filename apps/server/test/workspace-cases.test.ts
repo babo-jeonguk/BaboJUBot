@@ -28,6 +28,7 @@ import {
   windows,
 } from "./files-volume.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 
 // #153: 파일 경로 격리의 사례 표(C01–C37, F1–F6)를 지금 이 파일 시스템에서 확인한다. 같은 파일이 일반 PR의 세 OS와
 // 환경별 전체 검증의 각 디스크(NTFS·FAT·SMB, APFS·HFS+)에서 돈다. 사례마다 결과를 test meta(`cases`)에 남기고
@@ -682,12 +683,16 @@ it("C17 refuses a Unix socket", async (context) => {
   // socket 파일은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 닫는다.
   await withCleanup(async (defer) => {
     const server = createServer();
-    const listening = await new Promise<string>((resolve) => {
-      server.once("error", (error: NodeJS.ErrnoException) =>
-        resolve(error.code ?? String(error))
-      );
-      server.listen(path.join(shared, "s"), () => resolve(""));
-    });
+    const listening = await within(
+      new Promise<string>((resolve) => {
+        server.once("error", (error: NodeJS.ErrnoException) =>
+          resolve(error.code ?? String(error))
+        );
+        server.listen(path.join(shared, "s"), () => resolve(""));
+      }),
+      10_000,
+      "the socket file server did not start listening"
+    );
     if (listening)
       without(
         context,
@@ -696,11 +701,14 @@ it("C17 refuses a Unix socket", async (context) => {
         `socket을 만들지 못함: ${listening}`
       );
     // 연 서버만 닫는다. 열지 못한 서버를 닫으면 ERR_SERVER_NOT_RUNNING으로 실패한다.
-    defer(
-      () =>
+    defer(() =>
+      within(
         new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve()))
-        )
+        ),
+        10_000,
+        "the socket file server did not close"
+      )
     );
     expect(await read("s")).toEqual(refusal("not_regular_file"));
   });
