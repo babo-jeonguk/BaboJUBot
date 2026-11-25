@@ -175,40 +175,30 @@ export async function startTestServer({
     // 서버 시작의 준비 확인이 끝난 뒤에 검사를 시작한다. 그래야 그 확인의 설정 변경 신호가 검사가 센 신호에 섞이지 않는다.
     // 조회가 실패하면(응답이 깨짐 등) 다시 묻지 않고 그 오류로 실패한다.
     let unsettled: string[] | undefined;
-    let failed: { error: unknown } | undefined;
-    await vi
-      .waitUntil(
-        async () => {
-          try {
-            const { body } = await request("GET", "/api/providers");
-            unsettled = body.providers
-              .filter(
-                (p: {
-                  readiness: { checking: boolean; reason: string | null };
-                }) =>
-                  p.readiness.checking || p.readiness.reason === "not_checked"
-              )
-              .map(
-                (p: {
-                  id: string;
-                  readiness: { checking: boolean; reason: string | null };
-                }) =>
-                  `${p.id} (${p.readiness.checking ? "checking" : "not_checked"})`
-              );
-            return unsettled!.length === 0;
-          } catch (error) {
-            failed = { error };
-            return true;
-          }
-        },
-        { timeout: settleMs, interval: 10 }
-      )
-      .catch(() => {
-        throw new Error(
-          `the test server's providers did not finish their startup readiness check in ${settleMs}ms: ${unsettled ? unsettled.join(", ") : "no answer from GET /api/providers yet"}`
-        );
-      });
-    if (failed) throw failed.error;
+    await pollUntil(
+      async () => {
+        const { body } = await request("GET", "/api/providers");
+        unsettled = body.providers
+          .filter(
+            (p: { readiness: { checking: boolean; reason: string | null } }) =>
+              p.readiness.checking || p.readiness.reason === "not_checked"
+          )
+          .map(
+            (p: {
+              id: string;
+              readiness: { checking: boolean; reason: string | null };
+            }) =>
+              `${p.id} (${p.readiness.checking ? "checking" : "not_checked"})`
+          );
+        return unsettled!.length === 0 || undefined;
+      },
+      {
+        timeoutMs: settleMs,
+        intervalMs: 10,
+        timedOut: () =>
+          `the test server's providers did not finish their startup readiness check in ${settleMs}ms: ${unsettled ? unsettled.join(", ") : "no answer from GET /api/providers yet"}`,
+      }
+    );
   } catch (error) {
     // 원래 실패를 그대로 알린다. 서버가 닫힌 것을 확인한 뒤에만 그 서버가 쓰는 DB와 폴더를 닫고 지운다. 확인하지 못하면 둘 다
     // 남긴다(`folderCleanup`). 치우기가 실패하면 그 실패를 원래 실패와 함께 알린다.
@@ -411,3 +401,38 @@ export async function openEventStream(
 
 /** 막힌 순서를 시한 안에 그 이름으로 알린다. 테스트 전체 시한까지 기다리지 않는다. 공용 시험 도움을 그대로 내보낸다. */
 export { within };
+
+/**
+ * `check`를 바로 한 번, 그 뒤 `intervalMs`마다 묻는다. 값을 돌려주면(`undefined`는 "아직") 그 값으로 끝나고, 던지면 다시 묻지 않고
+ * 그 실패로 끝난다. 실패를 "아직"으로 세면 원인을 버리고 상한까지 기다렸다(#286). 상한이 지나면 `timedOut()`의 문구로 실패한다.
+ * `vi.waitUntil`은 확인의 실패와 상한을 같은 거절로 돌려주므로, 확인의 실패는 받아 두어 대기를 끝내고 대기가 끝난 뒤 다시 던진다.
+ */
+export async function pollUntil<T>(
+  check: () => T | undefined | Promise<T | undefined>,
+  {
+    timeoutMs,
+    intervalMs,
+    timedOut,
+  }: { timeoutMs: number; intervalMs: number; timedOut: () => string }
+): Promise<T> {
+  let seen: { value: T } | { error: unknown } | undefined;
+  await vi
+    .waitUntil(
+      async () => {
+        try {
+          const value = await check();
+          if (value !== undefined) seen = { value };
+        } catch (error) {
+          seen = { error };
+        }
+        return seen !== undefined;
+      },
+      { timeout: timeoutMs, interval: intervalMs }
+    )
+    // 확인의 실패는 위에서 받아 대기를 끝내므로, 여기 오는 것은 상한뿐이다.
+    .catch(() => {
+      throw new Error(timedOut());
+    });
+  if ("error" in seen!) throw seen.error;
+  return seen!.value;
+}

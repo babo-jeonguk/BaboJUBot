@@ -25,6 +25,7 @@ import {
 import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
+import { pollUntil } from "./support.ts";
 import { psField } from "@babojubot/process";
 import { reportedPid, within } from "@babojubot/process/test-support";
 import {
@@ -632,25 +633,22 @@ async function endServer(child: MainProcess, { group }: { group: boolean }) {
 }
 
 async function waitForPath(child: MainProcess, target: string) {
-  let ended: Error | undefined;
-  await vi
-    .waitUntil(
-      () => {
-        if (existsSync(target)) return true;
-        if (child.exitCode !== null || child.signalCode !== null)
-          ended = new Error(
-            `server ended before ${target} appeared (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
-          );
-        return ended !== undefined;
-      },
-      { timeout: readyTimeoutMs, interval: 10 }
-    )
-    .catch(() => {
-      throw new Error(
-        `${target} did not appear in ${readyTimeoutMs}ms: ${child.stderrText()}`
-      );
-    });
-  if (ended) throw ended;
+  await pollUntil(
+    () => {
+      if (existsSync(target)) return true;
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new Error(
+          `server ended before ${target} appeared (code ${child.exitCode}, signal ${child.signalCode}): ${child.stderrText()}`
+        );
+      return undefined;
+    },
+    {
+      timeoutMs: readyTimeoutMs,
+      intervalMs: 10,
+      timedOut: () =>
+        `${target} did not appear in ${readyTimeoutMs}ms: ${child.stderrText()}`,
+    }
+  );
 }
 
 /**

@@ -36,7 +36,7 @@ import {
   writes,
   type Gate,
 } from "@babojubot/runtime/testing";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import {
   calls,
@@ -49,6 +49,7 @@ import {
 import {
   eventuallyMs,
   openEventStream,
+  pollUntil,
   startTestServer,
   within,
   type TestServer,
@@ -536,10 +537,13 @@ async function crashAndRestart(
       ? await insertLegacyOrganization(database!.db, "crash 조직")
       : await before.createOrganization("crash 조직");
     if (say) await before.say(org.id, say);
-    await until(
-      () => committed(before, org.id),
-      `${stopAfter} to be committed`,
-      5_000
+    await pollUntil(
+      async () => (await committed(before, org.id)) || undefined,
+      {
+        timeoutMs: 5_000,
+        intervalMs: 25,
+        timedOut: () => `waited 5000ms for ${stopAfter} to be committed`,
+      }
     );
     if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
@@ -724,9 +728,15 @@ describe("server start recovery barrier", () => {
       eventuallyMs,
       "the server did not start listening"
     );
-    await until(
-      async () => (await runStatus(early!.runId)) === "server_restart",
-      "the early run to end with server_restart"
+    await pollUntil(
+      async () =>
+        (await runStatus(early!.runId)) === "server_restart" || undefined,
+      {
+        timeoutMs: 10_000,
+        intervalMs: 25,
+        timedOut: () =>
+          "waited 10000ms for the early run to end with server_restart",
+      }
     );
     const stream = await listen(base);
     // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
@@ -864,35 +874,6 @@ function holdRow(db: Database, runId: string, gate: Gate) {
     await tx.execute(`select id from runs where id = '${runId}' for update`);
     await gate.wait(new AbortController().signal);
   });
-}
-
-/**
- * `check`가 참이 될 때까지 다시 묻는다. 확인이 실패하면(조회 오류) 다시 묻지 않고 그 실패로 끝난다. 실패를 "아직"으로 세면 원인을
- * 버리고 상한까지 기다렸다(#286). 상한이 지나면 무엇(`what`)을 기다렸는지 밝힌다.
- */
-async function until(
-  check: () => Promise<boolean>,
-  what: string,
-  timeoutMs = 10_000
-) {
-  let failed: { error: unknown } | undefined;
-  await vi
-    .waitUntil(
-      async () => {
-        try {
-          return await check();
-        } catch (error) {
-          failed = { error };
-          return true;
-        }
-      },
-      { timeout: timeoutMs, interval: 25 }
-    )
-    // 확인의 실패는 위에서 받아 대기를 끝내므로, 여기 오는 것은 상한뿐이다.
-    .catch(() => {
-      throw new Error(`waited ${timeoutMs}ms for ${what}`);
-    });
-  if (failed) throw failed.error;
 }
 
 /**
