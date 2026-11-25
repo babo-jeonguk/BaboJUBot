@@ -57,16 +57,16 @@ export async function runChaos({
   const results = [];
   const fake = connection !== "opencode";
   // 실행 기록·예산 폴더는 만든 직후 지우기를 등록한다. 장면 서버들이 이 폴더의 기록·예산 파일을 쓰므로, 띄운 장면의 정리가 모두
-  // 끝났을 때만 지운다. 정리가 끝나지 않은 장면이 있으면 폴더를 남기고 알린다(그 장면은 이미 실패로 결과에 남는다). 지우기 실패는
-  // 장면의 실패와 함께 알린다.
-  /** 정리가 끝나지 않은 장면. */
+  // 끝났음을 봤을 때만 지운다. 아니면 폴더를 남기고 알린다(정리가 끝나지 않은 장면은 실패 결과로 남고, 결과 없이 던진 장면은 그 오류가
+  // 이 실행의 실패로 나간다). 지우기 실패는 장면의 실패와 함께 알린다.
+  /** 띄웠지만 정리가 끝났음을 보지 못한 장면. 띄우기 전에 넣고, 정리가 끝났음을 본 뒤에만 뺀다. */
   const uncleaned = [];
   await withCleanup(async (defer) => {
     const runDir = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-run-"));
     defer(async () => {
       if (uncleaned.length) {
         console.error(
-          `[chaos] the run folder ${runDir} is kept: the cleanup of ${uncleaned.join(", ")} did not end`
+          `[chaos] the run folder ${runDir} is kept: the cleanup of ${uncleaned.join(", ")} was not confirmed`
         );
         return;
       }
@@ -106,6 +106,8 @@ export async function runChaos({
         continue;
       }
       log(`${scene.id} ${scene.title}: 시작`);
+      // 정리가 끝났음을 본 뒤에만 뺀다. 장면이 결과 없이 던지면(정리 뒤의 읽기 실패 등) 정리됐다고 볼 근거가 없어 남는다.
+      uncleaned.push(scene.id);
       results.push(
         await runScene({
           scene,
@@ -122,7 +124,7 @@ export async function runChaos({
         })
       );
       const last = results.at(-1);
-      if (!sceneCleanedUp(last.cleanup)) uncleaned.push(scene.id);
+      if (sceneCleanedUp(last.cleanup)) uncleaned.pop();
       log(
         `${scene.id} ${scene.title}: ${last.outcome}${last.reason ? ` (${last.reason})` : ""}`
       );
