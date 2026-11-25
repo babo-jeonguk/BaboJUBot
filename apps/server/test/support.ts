@@ -1,4 +1,5 @@
 import { mkdtemp } from "node:fs/promises";
+import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -6,6 +7,7 @@ import {
   attemptEach,
   combinedFailure,
   eventStreamPath,
+  hasErrorCode,
   streamFrameSchema,
   type Event,
   type NotificationChannel,
@@ -38,6 +40,14 @@ export const eventually = { timeout: eventuallyMs };
  * 실패했는지 알린다. 검사가 기다리는 신호의 상한(`eventuallyMs`)과 따로 두는 것은 이 대기가 검사가 아닌 공용 준비라서다.
  */
 export const readinessSettleMs = 100_000;
+/**
+ * 시험이 띄운 서버(`startServer`의 결과)의 끄기를 기다리는 상한. 제품의 서버 끄기(`app.ts`의 `stop`)는 단계마다 상한을 두지 않고,
+ * 실행 진입점이 종료 시한(`main.ts`의 `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`, 기본 30초)으로 전체를 끊는다. 시험은 진입점을 거치지 않으므로
+ * 같은 값으로 기다린다: 제품이 정한 시한 안의 느린 끄기를 실패로 바꾸지 않고, 넘기면 끝을 확인하지 못한 것으로 실패한다. 그때 그 서버가
+ * 쓰는 DB와 폴더는 남는다(fail closed). 상한을 넘겨도 끄기는 멈추지 않는다. 시험 hook 시한(120초, `vitest.config.ts`)보다 짧아
+ * 무엇을 기다렸는지 알린다.
+ */
+export const serverStopMs = 30_000;
 
 /** 구독이 받은 것: Event frame과 전역 설정 변경 신호(`settings_changed`) 수. */
 export type Received = { events: Event[]; settingsSignals: number };
@@ -211,7 +221,15 @@ export async function startTestServer({
         },
       ])
     );
-    closing.own(() => server?.close());
+    closing.own(
+      () =>
+        server &&
+        within(
+          server.close(),
+          serverStopMs,
+          "stopping the test server did not finish"
+        )
+    );
     const failures = await attemptEach([closing.cleanUp]);
     if (failures.length > 0)
       throw combinedFailure(
@@ -241,7 +259,11 @@ export async function startTestServer({
     stopProgress: () => server.progress(),
     stopServer() {
       for (const terminate of sockets) terminate();
-      return (stopped ??= server.close());
+      return (stopped ??= within(
+        server.close(),
+        serverStopMs,
+        "stopping the test server did not finish"
+      ));
     },
     async subscribe(scope, { origin } = {}) {
       const query =
@@ -266,7 +288,11 @@ export async function startTestServer({
       );
       closing.own(() => {
         for (const terminate of sockets) terminate();
-        return (stopped ??= server.close());
+        return (stopped ??= within(
+          server.close(),
+          serverStopMs,
+          "stopping the test server did not finish"
+        ));
       });
       await closing.cleanUp();
     },
@@ -435,4 +461,51 @@ export async function pollUntil<T>(
     });
   if ("error" in seen!) throw seen.error;
   return seen!.value;
+}
+
+/**
+ * server 시험이 띄우는 listener(net·http 서버)의 소유. 만든 서버를 받아 곧바로 그 닫기를 `own`(onTestFinished, withCleanup의 defer,
+ * folderCleanup의 own 가운데 그 listener를 소유하는 정리)에 맡기고, 그다음 `at`에서 듣기를 상한 안에서 기다린다.
+ * 닫기는 받은 연결을 먼저 끊고(서버 닫기는 연결이 모두 끝나야 끝난다) 닫힘을 상한 안에서 확인한다. 듣기 전에 실패했거나 이미 닫은 서버는
+ * 닫을 것이 없다(`ERR_SERVER_NOT_RUNNING`). 그 밖의 닫기 오류와 상한은 실패다. 듣지 못하면 그 오류로 거절된다.
+ * 돌려주는 `close`는 맡긴 것과 같은 닫기다. 시험 중간에 닫아야 하면(포트를 비우기 등) 그것을 부르고, 정리는 닫을 것이 없음으로 끝난다.
+ */
+export async function ownedListener<S extends net.Server>(
+  server: S,
+  at: net.ListenOptions,
+  own: (close: () => Promise<void>) => void,
+  what: string
+): Promise<{ server: S; close: () => Promise<void> }> {
+  const connections = new Set<net.Socket>();
+  server.on("connection", (socket: net.Socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+  });
+  const close = () => {
+    for (const socket of connections) socket.destroy();
+    return within(
+      new Promise<void>((resolve, reject) =>
+        server.close((error) =>
+          error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+            ? reject(error)
+            : resolve()
+        )
+      ),
+      eventuallyMs,
+      `${what} did not close`
+    );
+  };
+  own(close);
+  await within(
+    new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(at, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    }),
+    eventuallyMs,
+    `${what} did not start listening`
+  );
+  return { server, close };
 }

@@ -1,41 +1,18 @@
 import http from "node:http";
 import type net from "node:net";
 import express from "express";
-import { hasErrorCode } from "@babojubot/contracts";
 import { awaitedLater } from "@babojubot/process/test-cleanup";
-import { within } from "@babojubot/process/test-support";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { ownedListener } from "../test/support.ts";
 import { InFlight, trackHandlers } from "./in-flight.ts";
 
-let server: http.Server | undefined;
-afterEach(async () => {
-  server?.closeAllConnections();
-  await within(
-    new Promise<void>((resolve, reject) =>
-      server
-        ? // 듣기 전에 실패한 서버는 닫을 것이 없다.
-          server.close((error) =>
-            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-              ? reject(error)
-              : resolve()
-          )
-        : resolve()
-    ),
-    10_000,
-    "the test HTTP server did not close"
-  );
-  server = undefined;
-});
-
+/** 처리기를 붙인 시험 HTTP 서버. 시험 정리가 소유한다. */
 async function serve(app: express.Express) {
-  server = http.createServer(app);
-  await within(
-    new Promise<void>((resolve, reject) => {
-      server!.once("error", reject);
-      server!.listen(0, "127.0.0.1", resolve);
-    }),
-    10_000,
-    "the test HTTP server did not start listening"
+  const { server } = await ownedListener(
+    http.createServer(app),
+    { port: 0, host: "127.0.0.1" },
+    onTestFinished,
+    "the test HTTP server"
   );
   return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
 }
@@ -72,7 +49,7 @@ describe("trackHandlers", () => {
       held.handle
     );
     const url = await serve(app);
-    // 아래 단언이 먼저 실패하면 afterEach가 연결을 끊어 이 요청이 거절된다. 그때는 시험의 실패가 보고되고, 이 거절은 처리되지 않은
+    // 아래 단언이 먼저 실패하면 서버 정리가 연결을 끊어 이 요청이 거절된다. 그때는 시험의 실패가 보고되고, 이 거절은 처리되지 않은
     // 거절로 새지 않는다. 시험이 끝까지 가면 아래에서 기다린다.
     const answered = awaitedLater(fetch(url + path).then((res) => res.text()));
     await held.entered;

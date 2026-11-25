@@ -12,7 +12,6 @@ import {
   type ProviderConnection,
   type RunRequest,
   failureCode,
-  hasErrorCode,
 } from "@babojubot/contracts";
 import {
   containerToolsOrigin,
@@ -28,6 +27,8 @@ import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import {
   eventually,
   eventuallyMs,
+  ownedListener,
+  serverStopMs,
   startTestServer,
   within,
   type TestServer,
@@ -79,31 +80,36 @@ describe("isolation switch", () => {
   });
 
   it("keeps the saved value across a server restart", async () => {
+    // 다시 띄운 서버의 폴더는 그 서버가 끝난 뒤에만 지운다. 시험 서버(DB)도 다시 띄운 서버가 끝난 뒤에만 닫는다: 다시 띄운 서버가
+    // 그 DB를 쓰기 때문이다. 둘을 이 폴더의 정리 한 단계에 차례로 둔다(앞이 실패하면 뒤를 하지 않고 폴더도 남긴다).
+    const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-isolation-"));
+    const folder = folderCleanup(() => removeFolder(dataDir));
+    onTestFinished(folder.cleanUp);
     t = await startTestServer({ providers: createFakeProviders(1) });
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await t.stopServer();
-    const db = t.db;
+    // 여기부터 시험 서버는 afterEach가 아니라 위 정리가 소유한다.
+    const first = t;
+    t = undefined;
     const { startServer } = await import("../src/index.ts");
-    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
-    await withCleanup(async (defer) => {
-      const dataDir = await mkdtemp(
-        path.join(tmpdir(), "babojubot-isolation-")
-      );
-      // 폴더는 그 폴더를 쓰는 서버가 닫힌 뒤에 지운다. 닫기가 실패하면 폴더를 남긴다.
-      const folder = folderCleanup(() => removeFolder(dataDir));
-      defer(folder.cleanUp);
-      const again = await startServer({
-        db,
-        port: 0,
-        dataDir,
-        providers: createFakeProviders(1),
-      });
-      folder.own(() => again.close());
-      const res = await fetch(again.url + "/api/providers");
-      expect(providerSettingsSchema.parse(await res.json()).isolated).toBe(
-        true
-      );
+    const restarted: { again?: Awaited<ReturnType<typeof startServer>> } = {};
+    folder.own(async () => {
+      if (restarted.again)
+        await within(
+          restarted.again.close(),
+          serverStopMs,
+          "stopping the restarted server did not finish"
+        );
+      await first.close();
     });
+    const again = (restarted.again = await startServer({
+      db: first.db,
+      port: 0,
+      dataDir,
+      providers: createFakeProviders(1),
+    }));
+    const res = await fetch(again.url + "/api/providers");
+    expect(providerSettingsSchema.parse(await res.json()).isolated).toBe(true);
   });
 });
 
@@ -121,11 +127,13 @@ async function overSocket(
   } = {}
 ) {
   const method = init.method ?? "GET";
+  // 연결을 다시 쓰지 않는다(`agent: false`). 답을 받으면 연결도 닫혀 중계 소켓에 남지 않는다.
   const request = http.request({
     socketPath,
     path: route,
     method,
     headers: init.headers ?? {},
+    agent: false,
   });
   try {
     return await within(
@@ -327,41 +335,23 @@ function realConnection(
               required: [],
             });
             defer(() => own.close());
-            // 닫을 때 남은 연결을 끊는다. 서버 닫기는 연결이 모두 끝나야 끝난다.
-            const clients = new Set<net.Socket>();
-            const bridge = net.createServer((client) => {
-              clients.add(client);
-              client.once("close", () => clients.delete(client));
-              const upstream = net.connect(
-                path.join(own.directory, "tools.sock")
-              );
-              client.on("error", () => upstream.destroy());
-              upstream.on("error", () => client.destroy());
-              client.pipe(upstream).pipe(client);
-            });
-            defer(() => {
-              for (const client of clients) client.destroy();
-              return within(
-                new Promise<void>((resolve, reject) =>
-                  // 듣기 전에 실패한 다리는 닫을 것이 없다.
-                  bridge.close((error) =>
-                    error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-                      ? reject(error)
-                      : resolve()
-                  )
-                ),
-                eventuallyMs,
-                "the tools bridge did not close"
-              );
-            });
             await own.ready;
-            await within(
-              new Promise<void>((resolve, reject) => {
-                bridge.once("error", reject);
-                bridge.listen(0, "127.0.0.1", resolve);
+            // 컨테이너 안 시작 프로그램처럼 loopback 포트를 tools.sock에 잇는다. 이 실행 시도의 정리가 소유한다.
+            const { server: bridge } = await ownedListener(
+              net.createServer((client) => {
+                const upstream = net.connect(
+                  path.join(own.directory, "tools.sock")
+                );
+                // 한쪽이 끝나면 다른 쪽도 끊는다. 다리를 닫을 때 받은 연결(`client`)을 끊으면 그 상류도 함께 끝난다.
+                client.once("close", () => upstream.destroy());
+                upstream.once("close", () => client.destroy());
+                client.on("error", () => upstream.destroy());
+                upstream.on("error", () => client.destroy());
+                client.pipe(upstream).pipe(client);
               }),
-              eventuallyMs,
-              "the tools bridge did not start listening"
+              { port: 0, host: "127.0.0.1" },
+              defer,
+              "the tools bridge"
             );
             const port = (bridge.address() as net.AddressInfo).port;
             return await fake!.adapter.execute(
@@ -410,28 +400,12 @@ describe("a CONNECT over the relay socket", () => {
     const folder = folderCleanup(() => removeFolder(directory));
     onTestFinished(folder.cleanUp);
     const server = http.createServer();
-    folder.own(() =>
-      within(
-        new Promise<void>((resolve, reject) =>
-          // 듣기 전에 실패한 서버는 닫을 것이 없다.
-          server.close((error) =>
-            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-              ? reject(error)
-              : resolve()
-          )
-        ),
-        eventuallyMs,
-        "the stand-in relay socket did not close"
-      )
-    );
     server.on("connect", (_req, socket: net.Socket) => socket.end(answer));
-    await within(
-      new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(path.join(directory, "egress.sock"), resolve);
-      }),
-      eventuallyMs,
-      "the stand-in relay socket did not start listening"
+    await ownedListener(
+      server,
+      { path: path.join(directory, "egress.sock") },
+      folder.own,
+      "the stand-in relay socket"
     );
     return directory;
   }
@@ -787,35 +761,17 @@ describe("isolated runs", () => {
 describe("organization network allow list", () => {
   const { get, create, researching } = serverHelpers(() => t!);
 
-  /** 연결 수를 세는 loopback echo listener. 만든 직후 닫기를 시험 정리에 맡기고 그다음 듣기를 기다린다. */
+  /** 연결 수를 세는 loopback echo listener. 시험 정리가 소유한다. */
   async function echo() {
     const accepted: net.Socket[] = [];
-    const server = net.createServer((socket) => {
-      accepted.push(socket);
-      socket.pipe(socket);
-    });
-    onTestFinished(() => {
-      for (const socket of accepted) socket.destroy();
-      return within(
-        new Promise<void>((resolve, reject) =>
-          // 듣기 전에 실패한 listener는 닫을 것이 없다.
-          server.close((error) =>
-            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-              ? reject(error)
-              : resolve()
-          )
-        ),
-        eventuallyMs,
-        "the echo listener did not close"
-      );
-    });
-    await within(
-      new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", resolve);
+    const { server } = await ownedListener(
+      net.createServer((socket) => {
+        accepted.push(socket);
+        socket.pipe(socket);
       }),
-      eventuallyMs,
-      "the echo listener did not start listening"
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the echo listener"
     );
     return { port: (server.address() as net.AddressInfo).port, accepted };
   }
@@ -940,6 +896,10 @@ describe("organization network allow list", () => {
     const relay = relayFor(org.id, org.lead.id);
     await relay.ready;
     const open = await connectOver(relay.directory, `localhost:${target.port}`);
+    // 열린 터널은 이 시험이 소유한다. 중계가 끊기를 기다리다 시험이 끝나도 남지 않는다.
+    onTestFinished(() => {
+      open.socket.destroy();
+    });
     expect(open.status).toBe(200);
     // 다른 조직의 목록은 이 조직의 중계에 쓰이지 않는다.
     const other = relayFor(planning.id, planning.agents[0]!.id);
@@ -989,6 +949,9 @@ describe("organization network allow list", () => {
       relay.directory,
       `localhost:${target.port}`
     );
+    onTestFinished(() => {
+      again.socket.destroy();
+    });
     expect(again.status).toBe(200);
     const stopped = new Promise<void>((resolve) =>
       again.socket.once("close", () => resolve())

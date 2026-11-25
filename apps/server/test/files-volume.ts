@@ -11,10 +11,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { failureCode } from "@babojubot/contracts";
+import { attemptAll, failureCode } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { pinnedReaderFile } from "../src/workspace.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
 
 /**
  * 파일 경계 시험이 임시 폴더를 만드는 곳. 환경별 전체 검증(CI `files-*` job)은 시험용 디스크·공유의 폴더를
@@ -22,18 +22,27 @@ import { withCleanup } from "@babojubot/process/test-cleanup";
  */
 export const filesBase = () => process.env.BABOJUBOT_FILES_TMPDIR || tmpdir();
 
-const made: string[] = [];
-/** 시험마다 새 임시 폴더. `cleanup`이 지운다. */
+/** 만든 폴더마다의 정리. `cleanup`이 모두 시도한다. */
+const made: (() => Promise<void>)[] = [];
+/**
+ * 시험마다 새 임시 폴더(`folder`)와 그 소유(`own`). 폴더 안에 둔 것(socket 파일 서버, 막은 권한 등)의 끝은 그것을 만든 직후 `own`에
+ * 맡긴다. `cleanup`은 맡긴 것을 모두 끝낸 뒤에만 폴더를 지우고, 끝내지 못하면 폴더를 남기고 그 실패를 알린다(`folderCleanup`).
+ */
 export async function scratch(prefix: string) {
-  const created = await mkdtemp(path.join(filesBase(), prefix));
-  made.push(created);
-  return created;
+  const folder = await mkdtemp(path.join(filesBase(), prefix));
+  const owned = folderCleanup(() => remove(folder));
+  made.push(owned.cleanUp);
+  return { folder, own: owned.own };
 }
 /** 지운다. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 기본보다 길게 다시 시도한다. */
 export const remove = (folder: string) =>
   removeFolder(folder, { retries: 10, retryDelayMs: 200 });
+/** 만든 폴더를 모두 정리한다. 한 폴더의 정리가 실패해도 나머지를 정리하고 실패를 모아 알린다. */
 export async function cleanup() {
-  await Promise.all(made.splice(0).map(remove));
+  await attemptAll(
+    made.splice(0),
+    "the scratch folders could not be cleaned up"
+  );
 }
 
 /** 이 파일 시스템에 없는 기능과 그 오류 코드. 빈 문자열이면 있다(FAT은 링크가 없다). */
@@ -78,18 +87,17 @@ export function junctionSeen(
 let gaps: Promise<FeatureGaps> | undefined;
 export const featureGaps = () =>
   (gaps ??= (async () => {
-    const probe = await realpath(
-      await mkdtemp(path.join(filesBase(), "bjc-probe-"))
-    );
+    const made = await mkdtemp(path.join(filesBase(), "bjc-probe-"));
     return withCleanup(async (defer) => {
-      // 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다.
+      // 만든 직후 정리에 맡긴다. 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다.
       defer(() =>
-        remove(probe).catch(async (error: NodeJS.ErrnoException) =>
+        remove(made).catch(async (error: NodeJS.ErrnoException) =>
           console.warn(
-            `could not remove ${probe} (${error.code}); left: ${JSON.stringify(await listEntries(probe))}`
+            `could not remove ${made} (${error.code}); left: ${JSON.stringify(await listEntries(made))}`
           )
         )
       );
+      const probe = await realpath(made);
       const attempt = async (work: () => Promise<unknown>) => {
         try {
           await work();
@@ -225,5 +233,8 @@ export const runPinned = (
   });
 
 /** 실제 경로로 푼 임시 폴더. 읽는 프로세스의 `cwd`처럼 링크 없는 경로가 필요할 때 쓴다. */
-export const realScratch = async (prefix: string) =>
-  realpath(await scratch(prefix));
+/** `scratch`의 실제 경로(링크를 푼 경로)와 그 소유. */
+export const realScratch = async (prefix: string) => {
+  const { folder, own } = await scratch(prefix);
+  return { folder: await realpath(folder), own };
+};

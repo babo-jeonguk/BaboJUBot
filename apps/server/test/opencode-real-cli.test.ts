@@ -25,7 +25,12 @@ import {
   wakeText,
   type ModelRequest,
 } from "./local-model.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import {
+  eventuallyMs,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -108,8 +113,20 @@ describe.skipIf(!program)(
       });
       folder.own(() => t.close());
     });
-    // 서버·폴더 정리와 모델 서버 닫기는 서로 무관하다. 한쪽이 실패해도 다른 쪽을 한다.
-    afterAll(() => attemptAll([() => folder?.cleanUp(), () => model?.close()]));
+    // 모델 서버는 그것을 부르는 OpenCode(서버가 띄움)가 끝난 뒤에만 닫는다. 서버·폴더 정리가 실패하면 닫지 않고 그 실패를 알린다.
+    afterAll(() =>
+      attemptAll([
+        async () => {
+          await folder?.cleanUp();
+          if (model)
+            await within(
+              model.close(),
+              eventuallyMs,
+              "closing the local model server did not finish"
+            );
+        },
+      ])
+    );
 
     const useOpenCode = async (orgId: string, agentId: string) => {
       const res = await t.request(

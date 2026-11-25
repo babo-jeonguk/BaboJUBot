@@ -13,7 +13,7 @@ import {
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { hasErrorCode, type ArtifactFileRead } from "@babojubot/contracts";
+import type { ArtifactFileRead } from "@babojubot/contracts";
 import { afterEach, beforeAll, expect, it, type TestContext } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
@@ -27,8 +27,7 @@ import {
   runPinned,
   windows,
 } from "./files-volume.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
-import { within } from "@babojubot/process/test-support";
+import { ownedListener } from "./support.ts";
 
 // #153: 파일 경로 격리의 사례 표(C01–C37, F1–F6)를 지금 이 파일 시스템에서 확인한다. 같은 파일이 일반 PR의 세 OS와
 // 환경별 전체 검증의 각 디스크(NTFS·FAT·SMB, APFS·HFS+)에서 돈다. 사례마다 결과를 test meta(`cases`)에 남기고
@@ -73,7 +72,7 @@ const refusal = (refusal: string) => ({ ok: false, refusal });
 afterEach(cleanup);
 
 async function world() {
-  const root = await realScratch("bjc-");
+  const { folder: root, own } = await realScratch("bjc-");
   const organizations = path.join(root, "organizations");
   const shared = path.join(organizations, A, "shared");
   const other = path.join(organizations, B, "shared");
@@ -113,7 +112,7 @@ async function world() {
       ? Buffer.from(result.snapshot.bytes, "base64").toString("utf8")
       : { refused: result.refusal };
   };
-  return { root, organizations, shared, other, read, got };
+  return { root, own, organizations, shared, other, read, got };
 }
 /** 테스트 프로세스가 운영체제로 직접 열어 본 결과. 우리 읽기가 같은 파일을 고르는지의 기준이다. */
 const osOpen = (absolute: string) =>
@@ -204,7 +203,7 @@ const can = {
   normalizationInsensitive: false,
 };
 beforeAll(async () => {
-  const probe = await realScratch("bjc-probe-");
+  const { folder: probe } = await realScratch("bjc-probe-");
   await writeFile(path.join(probe, "file"), "x");
   can.caseSensitive = !(await stat(path.join(probe, "FILE")).then(
     () => true,
@@ -679,43 +678,25 @@ it("C17 refuses a Unix socket", async (context) => {
       "n/a",
       "Windows의 Node는 경로 socket 대신 named pipe를 쓴다"
     );
-  const { read, shared } = await world();
-  // socket 파일은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 닫는다.
-  await withCleanup(async (defer) => {
-    const server = createServer();
-    // 만든 직후 닫기를 맡긴다. 열지 못한 서버는 닫을 것이 없다(ERR_SERVER_NOT_RUNNING).
-    defer(() =>
-      within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) =>
-            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-              ? reject(error)
-              : resolve()
-          )
-        ),
-        10_000,
-        "the socket file server did not close"
-      )
-    );
-    const listening = await within(
-      new Promise<string>((resolve) => {
-        server.once("error", (error: NodeJS.ErrnoException) =>
-          resolve(error.code ?? String(error))
-        );
-        server.listen(path.join(shared, "s"), () => resolve(""));
-      }),
-      10_000,
-      "the socket file server did not start listening"
-    );
-    if (listening)
-      without(
-        context,
-        "C17",
-        "unverified",
-        `socket을 만들지 못함: ${listening}`
-      );
-    expect(await read("s")).toEqual(refusal("not_regular_file"));
-  });
+  const { read, shared, own } = await world();
+  // socket 파일 서버는 그 폴더의 정리가 소유한다. 서버를 닫은 뒤에만 폴더를 지운다.
+  const listening = await ownedListener(
+    createServer(),
+    { path: path.join(shared, "s") },
+    own,
+    "the socket file server"
+  ).then(
+    () => "",
+    (error: unknown) => {
+      // 운영체제가 socket 파일을 만들지 못한 것(오류 코드)만 이 환경의 한계다. 그 밖(상한 등)은 실패다.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (typeof code !== "string") throw error;
+      return code;
+    }
+  );
+  if (listening)
+    without(context, "C17", "unverified", `socket을 만들지 못함: ${listening}`);
+  expect(await read("s")).toEqual(refusal("not_regular_file"));
   note(context, "C17", "pass");
 });
 
@@ -943,49 +924,47 @@ const allow = async (target: string, folder: boolean) => {
   else await run("icacls", [target, "/remove:d", "*S-1-1-0"]);
 };
 it("C26 refuses a file it may not read and a folder it may not search", async (context) => {
-  const { got, shared } = await world();
+  const { got, shared, own } = await world();
   const file = path.join(shared, "locked.md");
   const folder = path.join(shared, "locked");
   await writeFile(file, "A:locked");
   await mkdir(folder);
   await writeFile(path.join(folder, "a.md"), "A:locked/a.md");
-  // 막은 권한은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 되돌린다.
-  await withCleanup(async (defer) => {
-    const fileDenied = await deny(file, false);
-    defer(() => allow(file, false));
-    const folderDenied = await deny(folder, true);
-    defer(() => allow(folder, true));
-    const failed = fileDenied ?? folderDenied;
-    if (failed) without(context, "C26", failed.outcome, failed.reason);
-    // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
-    const osFile = await osOpen(file);
-    const osFolder = await osOpen(path.join(folder, "a.md"));
-    if (typeof osFile === "string")
-      without(
-        context,
-        "C26",
-        "unverified",
-        "이 계정은 막은 파일도 연다(관리자 우회)"
-      );
-    expect(await got("locked.md")).toEqual({ refused: "file_unreadable" });
-    const ours = await got(path.join("locked", "a.md"));
-    if (typeof osFolder === "string") {
-      // Windows는 폴더 통과 검사를 건너뛰는 권한(SeChangeNotifyPrivilege)이 모든 사용자에게 있다. 열리면 안쪽 파일이다.
-      expect([
-        "A:locked/a.md",
-        JSON.stringify({ refused: "file_unreadable" }),
-      ]).toContain(typeof ours === "string" ? ours : JSON.stringify(ours));
-      note(
-        context,
-        "C26",
-        "limitation",
-        `폴더 통과 거부는 운영체제도 무시함, 우리: ${JSON.stringify(ours)}`
-      );
-    } else {
-      expect(ours).toEqual({ refused: "file_unreadable" });
-      note(context, "C26", "pass");
-    }
-  });
+  // 막은 권한은 그 폴더의 정리가 소유한다. 권한을 되돌린 뒤에만 폴더를 지운다(되돌리지 못하면 남기고 실패).
+  const fileDenied = await deny(file, false);
+  own(() => allow(file, false));
+  const folderDenied = await deny(folder, true);
+  own(() => allow(folder, true));
+  const failed = fileDenied ?? folderDenied;
+  if (failed) without(context, "C26", failed.outcome, failed.reason);
+  // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
+  const osFile = await osOpen(file);
+  const osFolder = await osOpen(path.join(folder, "a.md"));
+  if (typeof osFile === "string")
+    without(
+      context,
+      "C26",
+      "unverified",
+      "이 계정은 막은 파일도 연다(관리자 우회)"
+    );
+  expect(await got("locked.md")).toEqual({ refused: "file_unreadable" });
+  const ours = await got(path.join("locked", "a.md"));
+  if (typeof osFolder === "string") {
+    // Windows는 폴더 통과 검사를 건너뛰는 권한(SeChangeNotifyPrivilege)이 모든 사용자에게 있다. 열리면 안쪽 파일이다.
+    expect([
+      "A:locked/a.md",
+      JSON.stringify({ refused: "file_unreadable" }),
+    ]).toContain(typeof ours === "string" ? ours : JSON.stringify(ours));
+    note(
+      context,
+      "C26",
+      "limitation",
+      `폴더 통과 거부는 운영체제도 무시함, 우리: ${JSON.stringify(ours)}`
+    );
+  } else {
+    expect(ours).toEqual({ refused: "file_unreadable" });
+    note(context, "C26", "pass");
+  }
 });
 
 it("C27 refuses Windows drive-relative names as outside and keeps them as plain names elsewhere", async (context) => {
@@ -1302,7 +1281,7 @@ it("C36 matches the working folder part with its exact case and names inside the
   }
   // F4 그대로: 대소문자를 가리는 부모 폴더에 `organizations`와 `Organizations`가 따로 있으면 대소문자만 다른 표기는
   // 다른 폴더다. 그 폴더의 파일은 운영체제가 열어도 작업 폴더 밖으로 거부한다.
-  const parent = await realScratch("bjc-cs-");
+  const { folder: parent } = await realScratch("bjc-cs-");
   const sensitive = windows
     ? await run("fsutil.exe", [
         "file",

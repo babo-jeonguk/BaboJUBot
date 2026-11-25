@@ -25,7 +25,7 @@ import {
 import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
-import { pollUntil } from "./support.ts";
+import { ownedListener, pollUntil } from "./support.ts";
 import { psField } from "@babojubot/process";
 import { reportedPid, within } from "@babojubot/process/test-support";
 import {
@@ -175,6 +175,9 @@ it.each(stopRequests)(
   "stops the embedded Postgres it was starting when $name arrives during startup",
   async ({ ipc, send }) => {
     const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
+    // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
+    const folder = folderCleanup(() => removeFolder(home));
+    onTestFinished(folder.cleanUp);
     const pidFile = path.join(home, "postgres", "postmaster.pid");
     const child = startMain(
       { BABOJUBOT_HOME: home, EMBEDDED_POSTGRES_PORT: "0" },
@@ -182,8 +185,6 @@ it.each(stopRequests)(
     );
     // 정리는 Postgres를 찾기 전에 등록한다. 찾은 뒤에는 그 Postgres를 맡는다.
     const leftover: { postgres?: ObservedPostgres } = {};
-    const folder = folderCleanup(() => removeFolder(home));
-    onTestFinished(folder.cleanUp);
     folder.own(() => stopLeftover(leftover.postgres));
     folder.own(child.stop);
     const postgres = (leftover.postgres = await waitForPostmaster(
@@ -210,12 +211,13 @@ it.each(stopRequests)(
   "ends with a failure when the start fails after $name arrived during startup",
   async ({ ipc, send }) => {
     const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
+    // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
+    const folder = folderCleanup(() => removeFolder(home));
+    onTestFinished(folder.cleanUp);
     const child = startMain(
       { BABOJUBOT_HOME: home, EMBEDDED_POSTGRES_PORT: "65536" },
       { ipc }
     );
-    const folder = folderCleanup(() => removeFolder(home));
-    onTestFinished(folder.cleanUp);
     folder.own(child.stop);
     await waitForPath(child, path.join(home, "postgres"));
     send(child);
@@ -231,28 +233,11 @@ it.each(stopRequests)(
 
 // HTTP 서버가 시작하지 못하면 그 오류로 실패한다. 뒤이어 DB를 닫다 난 오류는 원래 오류를 덮지 않고 따로 남는다.
 it("ends with the HTTP start error and records the database close failure when both fail", async () => {
-  const taken = createServer();
-  onTestFinished(() =>
-    within(
-      new Promise<void>((resolve, reject) =>
-        // 듣기 전에 실패한 서버는 닫을 것이 없다.
-        taken.close((error) =>
-          error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-            ? reject(error)
-            : resolve()
-        )
-      ),
-      10_000,
-      "the port-taking server did not close"
-    )
-  );
-  await within(
-    new Promise<void>((resolve, reject) => {
-      taken.once("error", reject);
-      taken.listen(0, "127.0.0.1", resolve);
-    }),
-    10_000,
-    "the port-taking server did not start listening"
+  const { server: taken } = await ownedListener(
+    createServer(),
+    { port: 0, host: "127.0.0.1" },
+    onTestFinished,
+    "the port-taking server"
   );
   const { port } = taken.address() as { port: number };
   const child = startMain(
@@ -280,6 +265,9 @@ posix.each(posixStopRequests)(
   "ends with a failure at its configured shutdown deadline after $name and leaves no Postgres behind",
   async ({ ipc, send }) => {
     const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
+    // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
+    const folder = folderCleanup(() => removeFolder(home));
+    onTestFinished(folder.cleanUp);
     const child = startMain(
       {
         BABOJUBOT_HOME: home,
@@ -290,8 +278,6 @@ posix.each(posixStopRequests)(
     );
     // 정리는 Postgres를 찾기 전에 등록한다. 찾은 뒤에는 그 Postgres를 맡는다.
     const leftover: { postgres?: ObservedPostgres } = {};
-    const folder = folderCleanup(() => removeFolder(home));
-    onTestFinished(folder.cleanUp);
     folder.own(() => stopLeftover(leftover.postgres));
     folder.own(child.stop);
     await child.ready();
@@ -317,12 +303,13 @@ posix.each(posixStopRequests)(
 // 임시 내장 Postgres를 멈추고 그 dataDir를 지운다. 임시 폴더(TMP)를 이 시험의 폴더로 바꿔 서버가 만든 임시 DB만 본다.
 it("finishes its own shutdown on a stop request from the parent and leaves no temporary Postgres behind", async () => {
   const temp = temporaryFolder();
+  // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
+  const folder = folderCleanup(() => removeFolder(temp.dir));
+  onTestFinished(folder.cleanUp);
   const child = startMain(
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
   );
-  const folder = folderCleanup(() => removeFolder(temp.dir));
-  onTestFinished(folder.cleanUp);
   folder.own(child.stop);
   await child.ready();
   const postgres = temporaryPostgres(temp.dir);
@@ -340,12 +327,13 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
 // 정리할 기회가 없어 다음 시작이 남은 Postgres를 멈춘다(db/embedded.ts).
 it("finishes its own shutdown when the parent's channel closes", async () => {
   const temp = temporaryFolder();
+  // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
+  const folder = folderCleanup(() => removeFolder(temp.dir));
+  onTestFinished(folder.cleanUp);
   const child = startMain(
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
   );
-  const folder = folderCleanup(() => removeFolder(temp.dir));
-  onTestFinished(folder.cleanUp);
   folder.own(child.stop);
   await child.ready();
   const postgres = temporaryPostgres(temp.dir);

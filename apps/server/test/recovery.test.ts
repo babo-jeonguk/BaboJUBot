@@ -50,6 +50,7 @@ import {
   eventuallyMs,
   openEventStream,
   pollUntil,
+  serverStopMs,
   startTestServer,
   within,
   type TestServer,
@@ -79,7 +80,17 @@ afterEach(() => {
   const closing = folderCleanup(() =>
     attemptAll([() => db?.close(), () => test?.close()])
   );
-  for (const end of [() => running?.close(), ...users]) closing.own(end);
+  for (const end of [
+    () =>
+      running &&
+      within(
+        running.close(),
+        serverStopMs,
+        "stopping the server did not finish"
+      ),
+    ...users,
+  ])
+    closing.own(end);
   return closing.cleanUp();
 });
 
@@ -159,6 +170,8 @@ describe("server restart recovery", () => {
     const [interrupted] = await http.runs(org.id);
 
     await server.close();
+    // 닫은 서버는 afterEach가 다시 닫지 않는다(끄기는 한 번만 한다). 닫지 못했으면 그대로 남아 afterEach가 DB를 닫지 않는다.
+    server = undefined;
     server = await startServer({ db: database.db, port: 0 });
     await server.drain();
 
@@ -337,6 +350,8 @@ describe("accepted steer across a restart (#159)", () => {
 
     // 정상 종료: 진행 중 실행 시도는 취소되어 돌아와 `server_restart`로 끝나고 받은 깨우기를 다시 대기시킨다.
     await server.close();
+    // 닫은 서버는 afterEach가 다시 닫지 않는다(끄기는 한 번만 한다). 닫지 못했으면 그대로 남아 afterEach가 DB를 닫지 않는다.
+    server = undefined;
     let received: string[][] = [];
     server = await startServer({
       db: database.db,
@@ -392,6 +407,8 @@ describe("accepted steer across a restart (#159)", () => {
     ).toHaveLength(2);
     // 다시 시작해도 더 받지 않는다.
     await server.close();
+    // 닫은 서버는 afterEach가 다시 닫지 않는다(끄기는 한 번만 한다). 닫지 못했으면 그대로 남아 afterEach가 DB를 닫지 않는다.
+    server = undefined;
     received = [];
     server = await startServer({ db: database.db, port: 0 });
     await server.drain();
@@ -695,13 +712,17 @@ describe("server start recovery barrier", () => {
     const started: { server?: Promise<RunningServer> } = {};
     databaseUsers.push(async () => {
       if (started.server)
-        await (
-          await within(
-            started.server,
-            eventuallyMs,
-            "the server start did not end"
-          )
-        ).close();
+        await within(
+          (
+            await within(
+              started.server,
+              eventuallyMs,
+              "the server start did not end"
+            )
+          ).close(),
+          serverStopMs,
+          "stopping the server did not finish"
+        );
     });
     const holding = holdRow(database.db, late!.runId, held);
     databaseUsers.push(async () => {
@@ -788,9 +809,22 @@ describe("server start recovery barrier", () => {
     const [early, late] = await leftRunning(database.db, 2);
     const runtime = countingRuntime();
     const restore = await failRunEnd(database.db, late!.runId);
-    await expect(
-      startServer({ db: database.db, port: 0, runtime: runtime.adapter })
-    ).rejects.toThrow();
+    const starting = startServer({
+      db: database.db,
+      port: 0,
+      runtime: runtime.adapter,
+    });
+    // 거절을 기대하지만 넘겨받으면 그 서버를 DB를 닫기 전에 닫는다. 거절은 아래 단언이 본다.
+    databaseUsers.push(async () => {
+      const [outcome] = await Promise.allSettled([starting]);
+      if (outcome.status === "fulfilled")
+        await within(
+          outcome.value.close(),
+          serverStopMs,
+          "stopping the server whose start should have failed did not finish"
+        );
+    });
+    await expect(starting).rejects.toThrow();
     expect(await runStatus(early!.runId)).toBe("server_restart");
     expect(await runStatus(late!.runId)).toBe("running");
     expect(runtime.executions()).toEqual([]);

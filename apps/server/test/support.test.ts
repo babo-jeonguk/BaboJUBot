@@ -1,4 +1,6 @@
 import { mkdtemp, readdir } from "node:fs/promises";
+import http from "node:http";
+import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/process/remove-folder";
@@ -10,6 +12,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   eventuallyMs,
   openEventStream,
+  ownedListener,
   startTestServer,
   within,
 } from "./support.ts";
@@ -34,36 +37,62 @@ async function ownTemporaryFolder() {
   return { temp, own: folder.own };
 }
 
+/**
+ * helper로 시험 서버를 띄우고 그 끝을 이 시험의 폴더 정리(`own`)가 소유하게 한다. 넘겨받았으면 정리가 닫는다. 넘기기 전에 실패했으면
+ * helper가 자기 정리를 마친 것을 확인한다: helper는 정리가 모두 끝났을 때만 원래 오류 하나로 거절하고, 정리가 실패하면 그 실패를 원래
+ * 오류와 함께 묶어(AggregateError) 거절한다. 묶인 실패면(원래 오류가 묶인 것이어서 가를 수 없을 때도) 바깥 폴더를 남기고 받은 실패를
+ * 원인으로 알린다. 돌려주는 값은 helper가 낸 결과 그대로다.
+ */
+function startOwnedBy(
+  own: (stop: () => unknown) => void,
+  options?: Parameters<typeof startTestServer>[0]
+) {
+  const started = startTestServer(options);
+  own(async () => {
+    const outcome = await started.then(
+      (t) => ({ t }),
+      (error: unknown) => ({ error })
+    );
+    if ("t" in outcome) return outcome.t.close();
+    if (outcome.error instanceof AggregateError)
+      throw new Error(
+        "the test server helper's own cleanup after its failure was not confirmed; the test folder is kept",
+        { cause: outcome.error }
+      );
+  });
+  return started;
+}
+
 it("removes the workspace folder it made and keeps the start error when the server cannot start", async () => {
-  const { temp } = await ownTemporaryFolder();
+  const { temp, own } = await ownTemporaryFolder();
   // 알림 채널이 하나가 아니면 서버는 아무것도 띄우기 전에 거절한다.
-  await expect(startTestServer({ notificationChannels: [] })).rejects.toThrow(
+  await expect(startOwnedBy(own, { notificationChannels: [] })).rejects.toThrow(
     "exactly one notification channel is supported, got 0"
   );
   expect(await readdir(temp)).toEqual([]);
 });
 
 it("closes the started server and removes its folder when the readiness check before handing it over fails", async () => {
-  const { temp } = await ownTemporaryFolder();
+  const { temp, own } = await ownTemporaryFolder();
   // 서버는 떴지만 준비 확인의 응답이 깨졌다.
   vi.spyOn(globalThis, "fetch").mockImplementation(
     async () => new Response("not json")
   );
-  await expect(startTestServer()).rejects.toThrow(SyntaxError);
+  await expect(startOwnedBy(own)).rejects.toThrow(SyntaxError);
   expect(await readdir(temp)).toEqual([]);
 });
 
 it("leaves a workspace folder it was given when the server cannot start", async () => {
-  const { temp } = await ownTemporaryFolder();
+  const { temp, own } = await ownTemporaryFolder();
   const given = await mkdtemp(path.join(temp, "given-"));
   await expect(
-    startTestServer({ notificationChannels: [], dataDir: given })
+    startOwnedBy(own, { notificationChannels: [], dataDir: given })
   ).rejects.toThrow("exactly one notification channel is supported, got 0");
   expect(await readdir(temp)).toEqual([path.basename(given)]);
 });
 
 it("fails naming what it waited for and cleans up when the startup readiness check does not finish within its limit", async () => {
-  const { temp } = await ownTemporaryFolder();
+  const { temp, own } = await ownTemporaryFolder();
   // 준비 확인을 시험이 붙잡아 끝나지 않게 한다. 상한 0이면 첫 확인에서 상한이 지나므로 실행기 속도와 상관없이 상한에 걸린다.
   const [fake] = createFakeProviders(1);
   const held: ProviderConnection = {
@@ -80,7 +109,7 @@ it("fails naming what it waited for and cleans up when the startup readiness che
         ),
     },
   };
-  const failure = await startTestServer({
+  const failure = await startOwnedBy(own, {
     providers: [held],
     readinessSettleMs: 0,
   }).catch((error: unknown) => error);
@@ -135,7 +164,8 @@ it("keeps the database and the workspace folder when stopping the server failed,
       t.stopProgress() !== "stopped"
     )
       throw new Error(
-        `the server's end was not confirmed (channel closed ${channelCloses} times, progress "${t.stopProgress()}"); its folder is kept`
+        `the server's end was not confirmed (channel closed ${channelCloses} times, progress "${t.stopProgress()}"); its folder is kept`,
+        { cause: stopFailure }
       );
   });
   await expect(t.stopServer()).rejects.toBe(refused);
@@ -161,37 +191,33 @@ describe("an Event stream subscription", () => {
    * 깨뜨리게 한다. 서버와 연결은 시험 정리에 맡긴다.
    */
   async function subscribed() {
-    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-    onTestFinished(() =>
-      within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        ),
-        eventuallyMs,
-        "the local Event stream server did not close"
-      )
+    // 로컬 HTTP 서버(시험 정리가 소유) 위의 WebSocket 서버. 닫을 때 받은 연결을 끊으므로 WebSocket 연결도 함께 끝난다.
+    const { server } = await ownedListener(
+      http.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the local Event stream server"
     );
     const peer = new Promise<WebSocket>((resolve) =>
-      server.once("connection", (socket) => {
+      new WebSocketServer({ server }).once("connection", (socket) => {
         socket.send(JSON.stringify({ type: "ready" }));
         socket.send(JSON.stringify({ type: "event", event }));
         socket.send(JSON.stringify({ type: "settings_changed" }));
         resolve(socket);
       })
     );
-    await within(
-      new Promise<void>((resolve, reject) => {
-        server.once("listening", resolve);
-        server.once("error", reject);
-      }),
-      eventuallyMs,
-      "the local Event stream server did not start listening"
-    );
-    const { port } = server.address() as { port: number };
+    const { port } = server.address() as net.AddressInfo;
     const { subscription } = await openEventStream(`ws://127.0.0.1:${port}`, {
       opened: (terminate) => onTestFinished(terminate),
     });
-    return { subscription, peer: await peer };
+    return {
+      subscription,
+      peer: await within(
+        peer,
+        eventuallyMs,
+        "the local Event stream server did not get the connection"
+      ),
+    };
   }
 
   it("hands out every frame the server sent before it was asked", async () => {

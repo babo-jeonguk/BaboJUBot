@@ -23,7 +23,14 @@ import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, idle, scriptedAgents } from "./scenarios.ts";
 import { outsideContract } from "./stand-ins.ts";
-import { eventually, startTestServer, type TestServer } from "./support.ts";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
+import {
+  eventually,
+  eventuallyMs,
+  startTestServer,
+  within,
+  type TestServer,
+} from "./support.ts";
 
 // 넓힌 프로바이더 계약(#96): 실행 중 끼워 넣기와 거절 뒤 줄 세우기, 준비 확인의 갱신 시점, 실행 시도 상세의 사용량.
 
@@ -354,8 +361,21 @@ describe("provider readiness", () => {
           : adapter,
     });
     started = checks;
-    const first = t!.request("POST", "/api/providers/fake-2/readiness");
-    await older.reached;
+    // 붙잡은 확인을 기다리는 요청이다. 시험이 먼저 실패해도 처리하지 않은 거절로 남지 않는다(서버 정리가 끝낸다).
+    const first = awaitedLater(
+      t!.request("POST", "/api/providers/fake-2/readiness")
+    );
+    // 확인이 붙잡히기 전에 요청이 끝나면 그 끝으로 기다림을 끝낸다.
+    await within(
+      Promise.race([
+        older.reached,
+        first.then(() => {
+          throw new Error("the first recheck ended before it was held");
+        }),
+      ]),
+      eventuallyMs,
+      "the first recheck was not held"
+    );
     const second = await t!.request("POST", "/api/providers/fake-2/readiness");
     expect(
       providerSettingsSchema.parse(second.body).providers[1]!.readiness
@@ -386,8 +406,19 @@ describe("provider readiness", () => {
           : adapter,
     });
     const org = await createOrganization("느린 확인 조직", "fake-2");
-    const rechecking = t!.request("POST", "/api/providers/fake-2/readiness");
-    await slow.reached;
+    const rechecking = awaitedLater(
+      t!.request("POST", "/api/providers/fake-2/readiness")
+    );
+    await within(
+      Promise.race([
+        slow.reached,
+        rechecking.then(() => {
+          throw new Error("the recheck ended before it was held");
+        }),
+      ]),
+      eventuallyMs,
+      "the recheck was not held"
+    );
     expect(await readinessOf("fake-2")).toMatchObject({
       status: "not_ready",
       checking: true,

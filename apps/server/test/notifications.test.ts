@@ -13,7 +13,6 @@ import {
   runSummaryListSchema,
   type Notification,
   type WakeReason,
-  hasErrorCode,
 } from "@babojubot/contracts";
 import { leadReplyScript } from "@babojubot/runtime";
 import { createTestDatabase } from "@babojubot/db/testing";
@@ -28,12 +27,13 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import {
-  eventuallyMs,
+  ownedListener,
+  serverStopMs,
   startTestServer,
   within,
   type TestServer,
 } from "./support.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { folderCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -289,23 +289,33 @@ describe("notification outbox and fake channel", () => {
     await t.deliverNotifications();
     await t.stopServer();
 
-    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
-    await withCleanup(async (defer) => {
-      const restarted = await startServer({
-        db: t!.db,
-        port: 0,
-        now: () => new Date(Date.now() + 60_000),
-      });
-      defer(() => restarted.close());
-      await restarted.deliverNotifications();
-      const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
-      const records = fakeChannelMessagesSchema
-        .parse(await res.json())
-        .filter((m) => m.organizationId === org.id);
-      expect(records.map((m) => [m.kind, m.sourceId])).toEqual([
-        ["approval_request", org.approvalId],
-      ]);
+    // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 그래서 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다. 여기부터 시험 서버는
+    // afterEach가 아니라 이 시험의 정리 한 단계가 차례로 소유한다(앞이 실패하면 DB를 닫지 않는다).
+    const first = t;
+    t = undefined;
+    const handed: { server?: Awaited<ReturnType<typeof startServer>> } = {};
+    onTestFinished(async () => {
+      if (handed.server)
+        await within(
+          handed.server.close(),
+          serverStopMs,
+          "stopping the restarted server did not finish"
+        );
+      await first.close();
     });
+    const restarted = (handed.server = await startServer({
+      db: first.db,
+      port: 0,
+      now: () => new Date(Date.now() + 60_000),
+    }));
+    await restarted.deliverNotifications();
+    const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
+    const records = fakeChannelMessagesSchema
+      .parse(await res.json())
+      .filter((m) => m.organizationId === org.id);
+    expect(records.map((m) => [m.kind, m.sourceId])).toEqual([
+      ["approval_request", org.approvalId],
+    ]);
   });
 
   it("an approval decision through the fake channel has the same effect as the dashboard's", async () => {
@@ -828,21 +838,32 @@ describe("channel replies", () => {
   });
 
   it("refuses to start with more than one channel", async () => {
+    // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
-    onTestFinished(() => database.close());
+    const users = folderCleanup(() => database.close());
+    onTestFinished(users.cleanUp);
     const quiet = (name: string): NotificationChannel => ({
       name,
       deliver: async () => {},
       listen: () => {},
       close: async () => {},
     });
-    await expect(
-      startServer({
-        db: database.db,
-        port: 0,
-        notificationChannels: [quiet("a"), quiet("b")],
-      })
-    ).rejects.toThrow("exactly one notification channel");
+    const starting = startServer({
+      db: database.db,
+      port: 0,
+      notificationChannels: [quiet("a"), quiet("b")],
+    });
+    // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
+    users.own(async () => {
+      const [outcome] = await Promise.allSettled([starting]);
+      if (outcome.status === "fulfilled")
+        await within(
+          outcome.value.close(),
+          serverStopMs,
+          "stopping the server whose start should have failed did not finish"
+        );
+    });
+    await expect(starting).rejects.toThrow("exactly one notification channel");
   });
 
   it("stops everything it started and closes the channel when the channel fails to start", async () => {
@@ -860,6 +881,24 @@ describe("channel replies", () => {
     });
     await awaitingApproval(agents, "시작 실패 조직");
     await t.stopServer();
+    // 아래에서 시험 서버의 DB로 서버를 하나 더 시작한다. 그 시작이 넘겨받혔다면 그 서버가 끝난 뒤에만 시험 서버(DB)를 닫는다.
+    // 여기부터 시험 서버는 afterEach가 아니라 이 시험의 정리 한 단계가 차례로 소유한다.
+    const first = t;
+    t = undefined;
+    let starting: ReturnType<typeof startServer> | undefined;
+    onTestFinished(async () => {
+      if (starting) {
+        // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
+        const [outcome] = await Promise.allSettled([starting]);
+        if (outcome.status === "fulfilled")
+          await within(
+            outcome.value.close(),
+            serverStopMs,
+            "stopping the server whose start should have failed did not finish"
+          );
+      }
+      await first.close();
+    });
 
     // 시계가 부를 때마다 10초씩 가서, 멈추지 않은 relay라면 주기 확인마다 재시도 예정이 지난 알림을 다시 보낸다.
     let tick = 0;
@@ -882,16 +921,15 @@ describe("channel replies", () => {
     // 주기 확인(setInterval)을 시험이 돌린다. 제품에서 setInterval은 주기 확인만 쓰고, 그 밖의 타이머는 실제 시간 그대로다.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      await expect(
-        startServer({
-          db: t.db,
-          port: 0,
-          now: () => new Date(base + tick++ * 10_000),
-          notificationChannels: [broken],
-          notificationPollMs: 10,
-          heartbeatPollMs: 10,
-        })
-      ).rejects.toThrow("토큰 거부");
+      starting = startServer({
+        db: first.db,
+        port: 0,
+        now: () => new Date(base + tick++ * 10_000),
+        notificationChannels: [broken],
+        notificationPollMs: 10,
+        heartbeatPollMs: 10,
+      });
+      await expect(starting).rejects.toThrow("토큰 거부");
       // 실패한 시작은 주기 확인을 하나도 남기지 않는다. 남았다면 시간을 옮길 때 재시도 예정이 지난 알림을 다시 보낸다.
       expect(vi.getTimerCount()).toBe(0);
       const seen = attempts;
@@ -904,61 +942,53 @@ describe("channel replies", () => {
   });
 
   it("still frees the port and reports the start error when closing the failed channel also throws", async () => {
+    // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
-    onTestFinished(() => database.close());
-    // 이미 닫았거나 듣기 전에 실패한 listener는 닫을 것이 없다.
-    const closing = (probe: net.Server) =>
-      within(
-        new Promise<void>((resolve, reject) =>
-          probe.close((error) =>
-            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-              ? reject(error)
-              : resolve()
-          )
-        ),
-        eventuallyMs,
-        "the port probe did not close"
+    const users = folderCleanup(() => database.close());
+    onTestFinished(users.cleanUp);
+    /** 그 port를 듣는 listener. 시험 정리가 소유하고, 돌려준 `close`로 시험 중간에 포트를 비운다. */
+    const listening = (port: number) =>
+      ownedListener(
+        net.createServer(),
+        { port, host: "127.0.0.1" },
+        onTestFinished,
+        `the port probe on ${port}`
       );
-    /** 그 port를 듣는 listener. 만든 직후 닫기를 시험 정리에 맡기고 그다음 듣기를 기다린다. */
-    const listening = async (port: number) => {
-      const probe = net.createServer();
-      onTestFinished(() => closing(probe));
-      await within(
-        new Promise<void>((resolve, reject) => {
-          probe.once("error", reject);
-          probe.listen(port, "127.0.0.1", resolve);
-        }),
-        eventuallyMs,
-        `the port probe did not start listening on ${port}`
-      );
-      return probe;
-    };
     const probe = await listening(0);
-    const { port } = probe.address() as net.AddressInfo;
-    await closing(probe);
+    const { port } = probe.server.address() as net.AddressInfo;
+    await probe.close();
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await expect(
-        startServer({
-          db: database.db,
-          port,
-          notificationChannels: [
-            {
-              name: "broken",
-              deliver: async () => {},
-              listen: () => {
-                throw new Error("토큰 거부");
-              },
-              close: () =>
-                Promise.reject(
-                  Object.assign(new Error("끊기 실패"), {
-                    code: "CHANNEL_CLOSE_FAILED",
-                  })
-                ),
+      const starting = startServer({
+        db: database.db,
+        port,
+        notificationChannels: [
+          {
+            name: "broken",
+            deliver: async () => {},
+            listen: () => {
+              throw new Error("토큰 거부");
             },
-          ],
-        })
-      ).rejects.toThrow("토큰 거부");
+            close: () =>
+              Promise.reject(
+                Object.assign(new Error("끊기 실패"), {
+                  code: "CHANNEL_CLOSE_FAILED",
+                })
+              ),
+          },
+        ],
+      });
+      // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
+      users.own(async () => {
+        const [outcome] = await Promise.allSettled([starting]);
+        if (outcome.status === "fulfilled")
+          await within(
+            outcome.value.close(),
+            serverStopMs,
+            "stopping the server whose start should have failed did not finish"
+          );
+      });
+      await expect(starting).rejects.toThrow("토큰 거부");
       // 끄다 난 오류는 원래 오류를 덮지 않고 원인 코드로 따로 남는다(CODING_STANDARDS.md#제품-코드).
       expect(logged.mock.calls).toEqual([
         [
@@ -968,7 +998,7 @@ describe("channel replies", () => {
     } finally {
       logged.mockRestore();
     }
-    await closing(await listening(port));
+    await (await listening(port)).close();
   });
 });
 

@@ -9,7 +9,9 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Workspaces, WorkspaceIdentityError } from "../src/workspace.ts";
 import { within } from "./support.ts";
+import { attemptAll } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { folderCleanup } from "@babojubot/process/test-cleanup";
 
 // 조직 폴더 표식은 확인한 파일과 내용을 읽은 파일이 같아야 한다(#242). 경로로 종류·크기를 본 뒤 같은 경로를 다시 열면,
 // 그 사이 바뀐 파일(다른 곳을 가리키는 링크, 상한보다 큰 파일)의 내용으로 조직을 판정한다.
@@ -51,7 +53,11 @@ afterEach(async () => {
   swap.path = undefined;
   swap.replacement = undefined;
   swap.failWrite = undefined;
-  await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  // 조직마다의 정리는 서로 무관하다. 하나가 실패해도 나머지를 하고 실패를 모아 알린다.
+  await attemptAll(
+    cleanups.splice(0),
+    "the organizations could not be cleaned up"
+  );
 });
 
 const markOf = (organizationId: string, padding = 0) =>
@@ -59,12 +65,23 @@ const markOf = (organizationId: string, padding = 0) =>
 
 /** 표식을 둘 조직 폴더가 있는, 아직 표식 기록이 없는 조직 하나. */
 async function organization() {
+  // DB와 폴더는 만든 직후 정리에 맡긴다. 둘 다 그것을 쓰는 폴더 준비(`ensure`)가 끝난 것을 확인한 뒤에만 닫거나 지운다. 시한이 지나도
+  // 준비는 멈추지 않으므로, 끝을 확인하지 못하면 둘 다 남기고 실패한다.
+  const preparations = new Set<Promise<unknown>>();
+  const prepared = () =>
+    within(
+      Promise.allSettled(preparations),
+      10_000,
+      "a folder preparation did not end"
+    );
   const database = await createTestDatabase();
+  const users = folderCleanup(() => database.close());
+  cleanups.push(users.cleanUp);
+  users.own(prepared);
   const root = await mkdtemp(path.join(tmpdir(), "identity-swap-"));
-  cleanups.push(
-    () => database.close(),
-    () => removeFolder(root)
-  );
+  const owned = folderCleanup(() => removeFolder(root));
+  cleanups.push(owned.cleanUp);
+  owned.own(prepared);
   const org = await insertLegacyOrganization(database.db, "표식 바꿔치기");
   const folder = path.join(root, "organizations", org.id);
   await mkdir(folder, { recursive: true });
@@ -73,12 +90,15 @@ async function organization() {
     root,
     folder,
     marker: path.join(folder, "workspace-identity.json"),
-    ensure: () =>
-      within(
-        new Workspaces(root, database.db).ensure(org.id),
+    ensure: () => {
+      const preparation = new Workspaces(root, database.db).ensure(org.id);
+      preparations.add(preparation);
+      return within(
+        preparation,
         10_000,
         "preparing the organization folder did not finish"
-      ),
+      );
+    },
   };
 }
 
