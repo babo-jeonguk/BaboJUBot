@@ -412,30 +412,47 @@ async function openCodeLoginResidue(
               return { state: "unverified", reason: "changed_while_checked" };
             }
             db = new DatabaseSync(copy);
+            // 없는 표는 로그인이 없다. 표가 있는지는 SQLite의 목록(sqlite_master)으로 묻는다(오류 문구로 짐작하지 않는다). 그 밖의
+            // 읽기 오류는 그대로 던져 확인 실패로 다룬다.
+            const hasTable = db.prepare(
+              "select 1 from sqlite_master where type = 'table' and name = ?"
+            );
             for (const table of ["credential", "account", "control_account"]) {
-              try {
-                const row = db
-                  .prepare(`select count(*) as n from "${table}"`)
-                  .get() as { n?: unknown } | undefined;
-                if (typeof row?.n === "number" && row.n > 0)
-                  return { state: "left" };
-              } catch (error) {
-                // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
-                if (!/no such table/i.test(String(error))) throw error;
-              }
+              if (hasTable.get(table) === undefined) continue;
+              const row = db
+                .prepare(`select count(*) as n from "${table}"`)
+                .get() as { n?: unknown } | undefined;
+              if (typeof row?.n === "number" && row.n > 0)
+                return { state: "left" };
             }
             return { state: "none" };
           } finally {
             const closedMain = main;
             const closedWal = wal;
-            await Promise.all([
-              continueAfterFailure(
-                () => db?.close(),
+            // 복사본 폴더는 그 안의 DB를 닫은 뒤에만 지운다. 닫지 못하면 폴더를 남기고 그 원인을 알린다(원본 저장소의 handle은
+            // 이 폴더와 무관해 따로 닫는다).
+            const removeCopy = async () => {
+              const closed = continueAfterFailure(
+                () => {
+                  db?.close();
+                  return true;
+                },
                 (error) =>
                   console.warn(
-                    `[provider] the copied OpenCode store could not be closed (${failureCode(error)})`
+                    `[provider] the copied OpenCode store could not be closed; its folder ${copyFolder} is kept (${failureCode(error)})`
                   )
-              ),
+              );
+              if (!closed) return;
+              await continueAfterFailure(
+                () => rm(copyFolder, { recursive: true, force: true }),
+                (error) =>
+                  console.warn(
+                    `[provider] the copied OpenCode store folder could not be removed (${failureCode(error)})`
+                  )
+              );
+            };
+            await Promise.all([
+              removeCopy(),
               closedMain === undefined
                 ? undefined
                 : continueAfterFailure(
@@ -454,13 +471,6 @@ async function openCodeLoginResidue(
                         `[provider] a login store handle could not be closed (${failureCode(error)})`
                       )
                   ),
-              continueAfterFailure(
-                () => rm(copyFolder, { recursive: true, force: true }),
-                (error) =>
-                  console.warn(
-                    `[provider] the copied OpenCode store folder could not be removed (${failureCode(error)})`
-                  )
-              ),
             ]);
           }
         }
