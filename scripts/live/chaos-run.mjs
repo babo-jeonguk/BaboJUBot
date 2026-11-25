@@ -419,7 +419,22 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
       }
     ),
   ]);
-  await rm(harnessDir, { recursive: true, force: true });
+  // 장면 서버와 시험용 명령은 harness 폴더를 쓴다. 그 끝을 모두 확인했을 때만 지우고, 아니면 남기고 알린다(지우면 아직 쓰는
+  // 프로세스가 남은 채로 정리된 것처럼 보인다). 지우기의 실패도 정리 실패로 센다.
+  const unconfirmed = serverAndList.length + commands.length;
+  const harness = unconfirmed
+    ? []
+    : await attemptEach([
+        step(
+          (error) =>
+            `could not remove the scene harness folder (${code(error)})`,
+          () => rm(harnessDir, { recursive: true, force: true })
+        ),
+      ]);
+  if (unconfirmed)
+    console.error(
+      `[chaos] the scene harness folder ${harnessDir} is kept: the scene server or its commands were not confirmed ended`
+    );
   return {
     serverStopped: !server.running,
     homeRemoved: !existsSync(home),
@@ -430,7 +445,9 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
     providerRecordsLeft: leftovers?.providerRecordsLeft ?? 0,
     // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
     commandPidsLeft: left?.length ?? null,
-    problems: serverAndList.length + commands.length,
+    harnessKept: existsSync(harnessDir),
+    // 남긴 harness 폴더는 그 원인(서버·명령의 정리 실패)으로 이미 센다.
+    problems: unconfirmed + harness.length,
   };
 }
 
