@@ -62,7 +62,11 @@ export type OpenRelay = {
   directory: string;
   /** 소켓을 모두 연 때. 실패하면(듣기 오류, 듣는 사이 닫기가 시작되면 `relay_closed`) 거부된다. */
   ready: Promise<void>;
-  /** 컨테이너 안 서버로 가는 이 컴퓨터 loopback 주소(origin). `inbound`로 연 중계만. 닫기가 시작됐으면 `relay_closed`로 거절한다. */
+  /**
+   * 컨테이너 안 서버로 가는 이 컴퓨터 loopback 주소(origin). `inbound`로 연 중계만. 첫 호출이 서버를 얻고 그 결과를 다시 돌려준다. 그
+   * 서버를 얻기 전(또는 듣는 사이)에 닫기가 시작됐으면 `relay_closed`로 거절한다. 이미 낸 주소는 닫기 뒤에도 그대로 돌려준다(그 서버는
+   * 닫기가 닫는다).
+   */
   inboundOrigin(): Promise<string>;
   /** 열린 연결을 끊고 소켓·폴더를 지운다. 여러 번 불러도 된다. */
   close(): Promise<void>;
