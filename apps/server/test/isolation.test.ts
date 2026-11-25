@@ -41,6 +41,7 @@ import {
   ownedListener,
   removeFolderWithin,
   withCleanup,
+  ownedConnect,
 } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
@@ -112,8 +113,8 @@ describe("isolation switch", () => {
 });
 
 /**
- * 중계 소켓으로 보낸 요청 하나의 답을 상한 안에서 기다린다. `answered`가 답을 받는 법을 정하고, 요청 오류·상한은 실패다. 요청(이나 그
- * 연결)은 만든 직후 정리에 맡겨져 있어(`ownedClosable`), 상한이 지나도 그 정리가 끊고 닫힘을 확인한다.
+ * 중계 소켓으로 보낸 요청 하나의 답을 상한 안에서 기다린다. `answered`가 답을 받는 법을 정하고, 요청 오류·상한은 실패다. 요청은
+ * 만든 직후 정리에 맡겨져 있어(`ownedClosable`), 상한이 지나도 그 정리가 끊고 닫힘을 확인한다.
  */
 async function untilAnswered<T>(
   request: http.ClientRequest,
@@ -183,47 +184,26 @@ function overSocket(
 
 /**
  * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 중계의 답을 판정하지 않고 그대로 돌려준다: node:http가 읽은 상태와 거부 이유
- * 머리(`x-babojubot-refusal`), 그 연결(`tunnel`). CONNECT의 답은 상태와 상관없이 `connect`로 온다(Node http 문서). 답 머리를 다 읽기
- * 전에 끊기거나 형식이 틀리면 그 실패다(`untilAnswered`). CONNECT를 태울 연결을 먼저 만들어 만든 같은 식에서 `own`에 맡기고
- * (`ownedClosable`), 요청은 그 위에 탄다(`createConnection`). 터널은 그 연결 그 자체라(Node는 `connect`에 같은 소켓을 넘긴다) 그 한
- * 정리가 끊고 닫힘을 확인한다. `tunnel.closed`는 연결을 만든 순간부터 들은 닫힘이다(거절하지 않음).
+ * 머리(`x-babojubot-refusal`), 그 연결(`tunnel`). 연결은 만든 직후 `own`에 맡기고 CONNECT는 그 위에 탄다(`ownedConnect`, 터널은 그
+ * 연결이다). `tunnel.closed`는 연결을 만든 순간부터 들은 닫힘이다(거절하지 않음). 답 머리를 다 읽기 전에 끊기거나 형식이 틀리면
+ * 그 실패다.
  */
-function connectOver(
+async function connectOver(
   own: (step: () => Promise<void>) => void,
   directory: string,
   target: string
 ) {
-  const socket = ownedClosable(
+  const { response, socket, closed } = await ownedConnect(
     own,
-    net.connect(path.join(directory, "egress.sock")),
-    `the CONNECT ${target} connection`
+    path.join(directory, "egress.sock"),
+    target,
+    { answerMs: eventuallyMs, what: `CONNECT ${target} over the relay socket` }
   );
-  const closed = new Promise<void>((resolve) =>
-    socket.once("close", () => resolve())
-  );
-  const request = http.request({
-    method: "CONNECT",
-    path: target,
-    createConnection: () => socket,
-  });
-  return untilAnswered<{
-    status: number;
-    refusal: string | string[] | undefined;
-    tunnel: { socket: net.Socket; closed: Promise<void> };
-  }>(
-    request,
-    (resolve) => {
-      request.once("connect", (response, tunnel: net.Socket) =>
-        resolve({
-          status: response.statusCode!,
-          refusal: response.headers["x-babojubot-refusal"],
-          tunnel: { socket: tunnel, closed },
-        })
-      );
-      request.end();
-    },
-    `CONNECT ${target}`
-  );
+  return {
+    status: response.statusCode!,
+    refusal: response.headers["x-babojubot-refusal"],
+    tunnel: { socket, closed },
+  };
 }
 
 /** 중계가 한 요청에 답한 것. 답 머리를 받았으면 상태(CONNECT는 거부 이유 머리도), 받기 전에 끝났으면 그 오류의 원인 코드다. */

@@ -50,7 +50,7 @@ test("a scene whose server cleanup failed keeps its harness folder and counts th
   await withCleanup(async (defer) => {
     const root = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-cleanup-"));
     defer(() => removeFolderWithin(root));
-    const { home, harnessDir } = await prepareScene(() => {}, root);
+    const { harnessDir } = await prepareScene(() => {}, root);
     const failure = Object.assign(new Error("server did not stop"), {
       code: "EBUSY",
     });
@@ -68,7 +68,6 @@ test("a scene whose server cleanup failed keeps its harness folder and counts th
     const reported = t.mock.method(console, "error");
     const cleanup = await cleanupScene({
       server,
-      home,
       harnessDir,
       marker: `chaos-cleanup-test-${randomUUID()}`,
     });
@@ -90,7 +89,7 @@ test("a scene whose server cleanup failed keeps its harness folder and counts th
 });
 
 // 정리 결과의 홈 칸은 지우기를 실제로 한 결과다. 뒤에 홈이 있는지 조회해 짐작하면, 조회가 "없음"을 낸 홈(조회 실패도 그렇게 나온다)을
-// 지운 것으로 적었다(#286 3b-3a 5회차 점검). 두 장면 모두 홈 경로는 만들지 않은 경로다.
+// 지운 것으로 적었다(#286 3b-3a 5회차 점검). 정리는 홈을 조회하지 않으므로 홈 경로를 받지 않는다. 서버 정리가 지웠다고 알릴 때만 지운 것이다.
 for (const scene of [
   {
     name: "a scene whose server cleanup failed",
@@ -124,7 +123,6 @@ for (const scene of [
       const reported = t.mock.method(console, "error");
       const cleanup = await cleanupScene({
         server,
-        home: path.join(root, "home-never-made"),
         harnessDir,
         marker: `chaos-cleanup-test-${randomUUID()}`,
       });

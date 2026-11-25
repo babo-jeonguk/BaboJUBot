@@ -1,6 +1,5 @@
 // 실모델 장애 검사의 실행기. 장면마다 새 임시 홈·서버를 만들고, 예산·시한 안에서 장면을 돌린 뒤 성공·실패·시간 초과·중단 모두에서 정리한다.
 // 결과는 메타데이터만 담은 JSON이다. 쓰기 전에 모델 원문·메시지 본문·토큰 같은 등록된 비밀값이 섞였는지 검사한다.
-import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -307,7 +306,7 @@ async function runScene({
     }
   }
   // 사용자 중단·시간 초과에서도 진행 중인 실행을 취소하고 서버·DB·프로세스·홈을 정리한다.
-  const cleanup = await cleanupScene({ server, home, harnessDir, marker });
+  const cleanup = await cleanupScene({ server, harnessDir, marker });
   // 정리가 끝나지 않았으면(서버·홈·시험용 명령이 남음) 장면 결과와 상관없이 실패다.
   if (!sceneCleanedUp(cleanup)) {
     checks = [
@@ -340,7 +339,6 @@ function sceneCleanedUp(cleanup) {
   return (
     cleanup.serverStopped &&
     cleanup.homeRemoved &&
-    !cleanup.homeKept &&
     cleanup.providerRecordsLeft === 0 &&
     cleanup.problems === 0 &&
     cleanup.commandPidsLeft === 0
@@ -378,7 +376,7 @@ export async function prepareScene(ready, root = tmpdir()) {
   }
 }
 
-export async function cleanupScene({ server, home, harnessDir, marker }) {
+export async function cleanupScene({ server, harnessDir, marker }) {
   /** 정리 단계 하나. 실패하면 터미널에만 짧게 알리고(증거에는 남기지 않는다) 실패로 돌려준다. 실패 수는 `attemptEach`의 목록이다. */
   const step = (describe, work) => async () => {
     try {
@@ -455,17 +453,20 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
     console.error(
       `[chaos] the scene harness folder ${harnessDir} is kept: the scene server or its commands were not confirmed ended`
     );
+  // 폴더 칸은 지우기를 실제로 한 결과다(뒤에 조회해 짐작하지 않는다: 조회 실패도 "없음"으로 나온다). 홈은 서버 정리(`dispose`)가
+  // 지우기를 마쳤을 때만 지운 것이다. 정리가 실패했거나 기록을 지키려 남겼으면 남긴 것이다. harness는 위 지우기 단계를 했고 성공했을 때만.
+  const homeRemoved = leftovers?.homeRemoved === true;
+  const harnessRemoved = unconfirmed === 0 && harness.length === 0;
   return {
     serverStopped: !server.running,
-    homeRemoved: !existsSync(home),
-    // 서버 정리가 실패했으면 홈에는 아직 프로세스 기록이 남아 있을 수 있다. 지우지 않고 남긴다.
-    homeKept: leftovers ? leftovers.homeKept : existsSync(home),
+    homeRemoved,
+    homeKept: !homeRemoved,
     postgresLeft: leftovers?.postgres ?? false,
     providerRecordsFound: leftovers?.providerRecordsFound ?? 0,
     providerRecordsLeft: leftovers?.providerRecordsLeft ?? 0,
     // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
     commandPidsLeft: left?.length ?? null,
-    harnessKept: existsSync(harnessDir),
+    harnessKept: !harnessRemoved,
     // 남긴 harness 폴더는 그 원인(서버·명령의 정리 실패)으로 이미 센다.
     problems: unconfirmed + harness.length,
   };

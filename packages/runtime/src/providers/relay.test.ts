@@ -7,11 +7,10 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   destinationSchema,
   egressRefusalMessages,
-  isDisconnect,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
-import { ownedClosable } from "@babojubot/process/test-cleanup";
+import { ownedClosable, ownedConnect } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 import {
   refusing,
@@ -101,49 +100,15 @@ const identity = {
 };
 
 /**
- * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내 터널을 연다. 응답 머리는 node:http 클라이언트의 파서가 다 읽은 것(`connect` 이벤트)이고,
- * `head`는 머리 뒤에 함께 온 바이트다. CONNECT를 태울 연결을 먼저 만들어 만든 같은 식에서 정리에 맡긴다(`ownedClosable`). 요청은 그
- * 연결 위에 타고(`createConnection`), 터널은 그 연결 그 자체다(Node는 `connect`에 같은 소켓을 넘긴다). 그래서 답을 받기 전에 상한으로
- * 실패해도, 터널을 얻은 뒤에도 그 한 정리가 연결을 끊고 닫힘을 확인한다. 닫힘은 연결을 만든 순간부터 듣는다(`closed`, 거절하지 않음).
- * 답 전의 연결 오류는 요청이 받아 답 기다림이 그 오류로 거절한다. 터널을 연 뒤의 오류는 상대가 끊어 난 끊김이면 닫힘의 일부이고,
- * 그 밖이면 러너의 잡히지 않은 오류로 드러난다. 터널이 아닌 답(거부)의 전체는 `answerVia`가 본다.
+ * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내 터널을 연다(`ownedConnect`: 연결을 만든 직후 이 시험의 정리에 맡기고 그 위에 CONNECT를
+ * 태운다. 터널은 그 연결이다). 응답 머리는 node:http 클라이언트의 파서가 다 읽은 것이고, `head`는 머리 뒤에 함께 온 바이트, `closed`는
+ * 연결을 만든 순간부터 들은 닫힘이다. 터널이 아닌 답(거부)의 전체는 `answerVia`가 본다.
  */
-function openTunnel(directory: string, target: string) {
-  const socket = ownedClosable(
-    onTestFinished,
-    net.connect(path.join(directory, "egress.sock")),
-    "the tunnel"
-  );
-  const closed = new Promise<void>((resolve) =>
-    socket.once("close", () => resolve())
-  );
-  const request = http.request({
-    method: "CONNECT",
-    path: target,
+const openTunnel = (directory: string, target: string) =>
+  ownedConnect(onTestFinished, path.join(directory, "egress.sock"), target, {
     headers: { host: target },
-    createConnection: () => socket,
+    what: `CONNECT ${target} to the relay`,
   });
-  return within(
-    new Promise<{
-      response: http.IncomingMessage;
-      socket: net.Socket;
-      head: Buffer;
-      closed: Promise<void>;
-    }>((resolve, reject) => {
-      request.once("error", reject);
-      request.once("connect", (response, tunnel: net.Socket, head: Buffer) => {
-        // CONNECT 답 뒤 Node는 요청이 붙인 소켓 처리기를 뗀다. 같은 동기 단계에서 터널의 오류를 받는다.
-        tunnel.on("error", (error) => {
-          if (!isDisconnect(error)) throw error;
-        });
-        resolve({ response, socket: tunnel, head, closed });
-      });
-      request.end();
-    }),
-    5_000,
-    `the relay did not answer CONNECT ${target}`
-  );
-}
 
 /** 중계가 터널을 연 답: 200 Connection Established, 머리 줄 없음, 머리 뒤에 먼저 온 바이트 없음. */
 function expectEstablished(tunnel: Awaited<ReturnType<typeof openTunnel>>) {
