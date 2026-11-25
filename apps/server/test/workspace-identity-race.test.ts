@@ -10,7 +10,7 @@ import { expect, it, onTestFinished, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
 import { within } from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup } from "@babojubot/process/test-cleanup";
+import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
 
 // 조직을 만든 직후의 폴더 준비와 실행 시도 준비가 겹칠 수 있다. 겹쳤다고 표식이 없는 것으로 보면 멀쩡한 실행이 실패한다.
 // 첫 준비가 기록을 확인하는 동안 다른 준비가 표식을 쓰고 기록까지 남기는 순간을 만든다.
@@ -69,7 +69,8 @@ it("does not mistake a mark just written by another preparation for a missing on
     hold.arrived = resolve;
   });
   const prepare = (what: string) => {
-    const preparation = workspaces.ensure(org.id);
+    // 시작할 때부터 결과를 이 시험이 갖는다. gate에 닿기 전에 거절돼도 처리되지 않은 거절로 새지 않고, 아래 대기가 그 실패로 끝난다.
+    const preparation = awaitedLater(workspaces.ensure(org.id));
     // 막아 둔 첫 준비는 gate를 풀어야 끝난다. 이미 풀었으면 다시 풀어도 그대로다.
     const ended = () => {
       hold.release();
@@ -80,8 +81,16 @@ it("does not mistake a mark just written by another preparation for a missing on
     return preparation;
   };
   const held = prepare("the held first preparation");
+  // gate 도착을 기다리는 동안 첫 준비가 실패하면 그 실패로, gate에 닿지 않고 끝나면 그 사실로 끝난다(시한 실패로 바뀌지 않는다).
   await within(
-    arrived,
+    Promise.race([
+      arrived,
+      held.then(() => {
+        throw new Error(
+          "the first preparation ended without reaching the record check"
+        );
+      }),
+    ]),
     preparationMs,
     "the first preparation reaching the record check did not finish"
   );
