@@ -6,6 +6,7 @@
 // 위해 메시지에도 모든 실패를 이어 적는다.
 
 import { readFile } from "node:fs/promises";
+// node:net·node:http는 형으로만 불러온다(runtime `connect-failure-support.ts` 머리의 대역 경로 제약).
 import type net from "node:net";
 import {
   attemptAll,

@@ -1,3 +1,4 @@
+// node:net·node:http는 값으로 불러오지 않는다(runtime `connect-failure-support.ts` 머리의 대역 경로 제약).
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { symlinkSync, unlinkSync } from "node:fs";

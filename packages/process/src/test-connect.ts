@@ -1,6 +1,5 @@
-// 시험이 중계·프록시의 파일 소켓에 CONNECT를 보내는 vitest 시험 도움(`@babojubot/process/testing`). node:net·node:http를 쓰므로
-// `test-cleanup.ts`와 따로 둔다: `vi.mock("node:net")` 대역의 factory가 불러오는 모듈(runtime `connect-failure-support.ts`)은
-// `test-cleanup.ts`만 불러오고, 그 파일은 이 두 builtin을 값으로 불러오지 않는다.
+// 시험이 중계·프록시의 파일 소켓에 CONNECT를 보내는 vitest 시험 도움(`@babojubot/process/testing`). node:net·node:http를 값으로 쓰므로
+// `vi.mock` 대역의 factory가 불러오는 경로(runtime `connect-failure-support.ts` 머리에 적은 파일들) 밖에 둔다.
 import http from "node:http";
 import net from "node:net";
 import { isDisconnect } from "@babojubot/contracts";

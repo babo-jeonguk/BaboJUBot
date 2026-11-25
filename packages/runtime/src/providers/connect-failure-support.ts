@@ -1,3 +1,7 @@
+// 이 파일은 `vi.mock("node:net")`·`vi.mock("node:http")` 대역의 factory가 불러온다. 그래서 이 파일과 이 파일이 불러오는 모듈 전체
+// (@babojubot/process의 `test-cleanup.ts`·`test-support.ts`·`remove-folder.ts`, @babojubot/contracts)는 node:net·node:http를 형으로만
+// 불러온다. 값으로 불러오면 대역이 만들어지기 전에 자기 자신을 기다려 시험이 불러오는 단계에서 멈춘다. 두 builtin을 값으로 쓰는 시험
+// 도움은 이 경로 밖(`@babojubot/process/testing`의 `test-connect.ts` 등)에 둔다.
 import type * as httpModule from "node:http";
 import type * as netModule from "node:net";
 import path from "node:path";
