@@ -521,9 +521,12 @@ export function createRelayHub(): RelayHub {
                         !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
                       )
                         reject(
-                          new Error(
-                            `a relay server did not close (${failureCode(error)})`,
-                            { cause: error }
+                          Object.assign(
+                            new Error(
+                              `a relay server did not close (${failureCode(error)})`,
+                              { cause: error }
+                            ),
+                            { code: failureCode(error) }
                           )
                         );
                       else resolve();
@@ -531,8 +534,12 @@ export function createRelayHub(): RelayHub {
                   })
               )
             );
-            // 실패가 하나여도 남긴 폴더의 위치가 거절에 남도록 늘 감싼다. 원인은 cause에 그대로 있다.
-            if (failures.length > 0)
+            // 실패가 하나여도 남긴 폴더의 위치가 거절에 남도록 늘 감싼다. 원인은 cause에 그대로 있다. 거절을 받는 쪽은 코드만
+            // 기록하므로(process.ts), 남긴 위치는 여기서 경고로도 남긴다(남은 폴더를 거두는 곳은 없다).
+            if (failures.length > 0) {
+              console.warn(
+                `[provider] the isolated run relay's servers did not all close; its folder is kept at ${directory} (${failures.map(failureCode).join(", ")})`
+              );
               throw new Error(
                 `the relay could not be closed; its folder ${directory} is kept`,
                 {
@@ -542,6 +549,7 @@ export function createRelayHub(): RelayHub {
                   ),
                 }
               );
+            }
             rmSync(directory, { recursive: true, force: true });
           })()),
       };

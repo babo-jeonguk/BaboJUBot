@@ -1109,6 +1109,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       cause: { code },
     },
   });
+  /** 남긴 폴더의 위치를 알리는 중계의 경고. 거절을 받는 쪽은 코드만 기록한다. */
+  const keptWarning = (relay: { directory: string }, codes: string) =>
+    `[provider] the isolated run relay's servers did not all close; its folder is kept at ${relay.directory} (${codes})`;
   /** 대역이 실패시킨 닫기(EBUSY, 서버는 실제로 닫힘) 하나로 난 거절인가. */
   const failedByDouble = (failure: unknown) =>
     failure instanceof Error &&
@@ -1136,6 +1139,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 지우지 않고 남긴다(#297 자원 표, 닫힘 확인 뒤에만 지우기). 실패 원인은 닫기의 거절에 남는다.
   it("fails its close with the cause when a relay server does not close, and keeps its folder", async () => {
     const { relays } = hub();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
     const relay = relays.open({ identity, required: [] });
     removeAfter(relay);
     await relay.ready;
@@ -1147,6 +1152,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       [socketOf(relay, relaySockets.egress)],
     ]);
     expect(existsSync(relay.directory)).toBe(true);
+    expect(warned.mock.calls).toEqual([[keptWarning(relay, "EBUSY")]]);
   });
 
   // 닫기가 거절할 수 있게 된 뒤 그 호출자를 함께 점검했다(#264 외부 리뷰 5회차 STD-4). 열지 못해 스스로 닫는 중계는 닫기 실패를
@@ -1175,6 +1181,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     ]);
     expect(warned.mock.calls).toEqual([
       ["[provider] the isolated run relay could not open; closing it (EACCES)"],
+      [keptWarning(relay, "EBUSY")],
     ]);
     expect(unhandled).not.toHaveBeenCalled();
     expect(existsSync(relay.directory)).toBe(true);
@@ -1182,6 +1189,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
 
   it("closes every relay when the hub closes and fails with each relay's failure, not only the first", async () => {
     const { relays } = hub();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
     const first = relays.open({ identity, required: [] });
     removeAfter(first);
     const second = relays.open({ identity, required: [] });
@@ -1191,9 +1200,19 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       socketOf(first, relaySockets.egress),
       socketOf(second, relaySockets.egress)
     );
-    await expect(relays.close()).rejects.toThrow(
-      /^the relays could not be closed: /
+    const failure = await relays.close().then(
+      () => undefined,
+      (error: unknown) => error
     );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      errors: [keptFolder(first, "EBUSY"), keptFolder(second, "EBUSY")],
+    });
+    expect((failure as AggregateError).errors).toHaveLength(2);
+    expect(warned.mock.calls).toEqual([
+      [keptWarning(first, "EBUSY")],
+      [keptWarning(second, "EBUSY")],
+    ]);
     expect(serverFaults.failedClose.mock.calls).toEqual([
       [socketOf(first, relaySockets.egress)],
       [socketOf(second, relaySockets.egress)],
