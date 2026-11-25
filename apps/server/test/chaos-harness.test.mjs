@@ -880,7 +880,11 @@ describe("chaos harness on a fake connection", () => {
         connection: "fake-live",
         database: "persistent",
       });
-      folder.own(() => server.dispose());
+      // 장면 서버의 정리는 트리 정지(유예 30초)와 남은 DB 정리를 한다. 이 시험의 시한(60초)보다 짧게 기다려, 넘기면 무엇을 기다렸는지
+      // 알리고 폴더를 남긴다.
+      folder.own(() =>
+        within(server.dispose(), 45_000, "disposing the scene server")
+      );
       // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
       // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
       const scene = new AbortController();

@@ -862,7 +862,11 @@ describe("channel replies", () => {
     });
     // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
     users.own(async () => {
-      const [outcome] = await Promise.allSettled([starting]);
+      const [outcome] = await within(
+        Promise.allSettled([starting]),
+        serverStopMs,
+        "the start that should have failed did not end"
+      );
       if (outcome.status === "fulfilled")
         await within(
           outcome.value.close(),
@@ -900,7 +904,11 @@ describe("channel replies", () => {
     users.own(async () => {
       if (!starting) return;
       // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
-      const [outcome] = await Promise.allSettled([starting]);
+      const [outcome] = await within(
+        Promise.allSettled([starting]),
+        serverStopMs,
+        "the start that should have failed did not end"
+      );
       if (outcome.status === "fulfilled")
         await within(
           outcome.value.close(),
@@ -991,7 +999,11 @@ describe("channel replies", () => {
       });
       // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
       users.own(async () => {
-        const [outcome] = await Promise.allSettled([starting]);
+        const [outcome] = await within(
+          Promise.allSettled([starting]),
+          serverStopMs,
+          "the start that should have failed did not end"
+        );
         if (outcome.status === "fulfilled")
           await within(
             outcome.value.close(),

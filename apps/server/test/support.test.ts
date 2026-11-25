@@ -13,6 +13,7 @@ import {
   eventuallyMs,
   openEventStream,
   ownedListener,
+  readinessSettleMs,
   startTestServer,
   within,
 } from "./support.ts";
@@ -49,9 +50,14 @@ function startOwnedBy(
 ) {
   const started = startTestServer(options);
   own(async () => {
-    const outcome = await started.then(
-      (t) => ({ t }),
-      (error: unknown) => ({ error })
+    // helper가 넘기기까지 기다리는 상한(준비 확인)을 넘기면 끝을 확인하지 못한 것으로 실패하고 폴더를 남긴다.
+    const outcome = await within(
+      started.then(
+        (t) => ({ t }),
+        (error: unknown) => ({ error })
+      ),
+      readinessSettleMs,
+      "the test server helper did not end"
     );
     if ("t" in outcome) return outcome.t.close();
     if (outcome.error instanceof AggregateError)

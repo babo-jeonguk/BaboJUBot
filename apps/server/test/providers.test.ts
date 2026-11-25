@@ -138,12 +138,16 @@ describe("concurrent global settings writes", () => {
           await locked.wait(new AbortController().signal);
         });
         defer(() =>
-          attemptAll([
-            () => locked.open(),
-            () => blocker,
-            () => changing,
-            () => restoring,
-          ])
+          within(
+            attemptAll([
+              () => locked.open(),
+              () => blocker,
+              () => changing,
+              () => restoring,
+            ]),
+            eventuallyMs,
+            "the held row and the competing writes did not end"
+          )
         );
         // 행을 잡기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
         await within(
@@ -207,7 +211,11 @@ describe("concurrent global settings writes", () => {
         await inserted.wait(new AbortController().signal);
       });
       defer(() =>
-        attemptAll([() => inserted.open(), () => inserting, () => saving])
+        within(
+          attemptAll([() => inserted.open(), () => inserting, () => saving]),
+          eventuallyMs,
+          "the held insert and the competing write did not end"
+        )
       );
       // insert하기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
       await within(
