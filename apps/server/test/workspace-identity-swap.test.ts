@@ -158,7 +158,10 @@ describe("refusing what is not a mark", () => {
     "refuses a FIFO in the mark's place without waiting for a writer",
     async () => {
       const org = await organization();
-      execFileSync("mkfifo", [org.marker], { timeout: 10_000 });
+      execFileSync("mkfifo", [org.marker], {
+        timeout: 10_000,
+        killSignal: "SIGKILL",
+      });
       await expect(org.ensure()).rejects.toThrow(/표식이 이 조직과 다릅니다/);
     }
   );

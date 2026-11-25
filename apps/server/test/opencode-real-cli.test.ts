@@ -37,6 +37,7 @@ const version = (candidate: string) =>
   execFileSync(candidate, ["--version"], {
     encoding: "utf8",
     timeout: 20_000,
+    killSignal: "SIGKILL",
     stdio: "pipe",
   }).trim();
 const program = (() => {

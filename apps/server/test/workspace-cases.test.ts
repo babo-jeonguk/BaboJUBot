@@ -449,7 +449,7 @@ const inject = `{
     if (done) return;
     done = true;
     for (const [operation, ...args] of plan.actions) {
-      if (operation === "exec") process.getBuiltinModule("node:child_process").execFileSync(args[0], args.slice(1));
+      if (operation === "exec") process.getBuiltinModule("node:child_process").execFileSync(args[0], args.slice(1), { timeout: 10000, killSignal: "SIGKILL" });
       else fs[operation](...args);
     }
   };
