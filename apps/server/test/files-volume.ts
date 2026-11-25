@@ -4,7 +4,6 @@ import {
   lstat,
   mkdir,
   mkdtemp,
-  readdir,
   realpath,
   symlink,
   writeFile,
@@ -139,28 +138,6 @@ export const featureGaps = () =>
       };
     });
   })());
-
-/**
- * 폴더 안의 항목과 종류. 지우지 못한 이유를 보일 때 쓴다. 폴더나 항목을 읽지 못했으면 종류 대신 그 원인 코드를 보인다(`<EACCES>`).
- * 읽지 못한 것을 `?` 하나로 접으면 그사이 사라진 항목(`ENOENT`)과 권한·디스크 오류를 가르지 못했다(#286).
- */
-export async function listEntries(folder: string) {
-  const entries = await readdir(folder).then(
-    (names) => ({ names }),
-    (error: unknown) => ({ unreadable: `<${failureCode(error)}>` })
-  );
-  if ("unreadable" in entries) return [entries.unreadable];
-  return Promise.all(
-    entries.names.map(async (name) => {
-      const kind = await lstat(path.join(folder, name)).then(
-        (info) =>
-          info.isSymbolicLink() ? "link" : info.isDirectory() ? "dir" : "file",
-        (error: unknown) => `<${failureCode(error)}>`
-      );
-      return `${name}:${kind}`;
-    })
-  );
-}
 
 export const windows = process.platform === "win32";
 

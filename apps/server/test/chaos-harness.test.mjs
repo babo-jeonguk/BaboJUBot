@@ -39,7 +39,7 @@ import {
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { runCommand } from "@babojubot/process";
 import { openLifelines } from "@babojubot/process/lifelines";
-import { testFolders } from "@babojubot/process/testing";
+import { removeFolderWithin, testFolders } from "@babojubot/process/testing";
 import { within } from "@babojubot/process/test-support";
 import {
   awaitedLater,
@@ -818,7 +818,7 @@ describe("chaos harness on a fake connection", () => {
     let home;
     // 남은 구성원은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 그 끝과 따로 홈을 지운다.
     onTestFinished(async () => {
-      if (home) await removeFolder(home);
+      if (home) await removeFolderWithin(home);
     });
     const planted = {
       id: "a",

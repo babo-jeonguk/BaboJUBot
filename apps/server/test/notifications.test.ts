@@ -973,8 +973,8 @@ describe("channel replies", () => {
       "the server whose start should fail",
       diagnostics.endedWith(expected)
     ).started;
+    // 진단(끄다 난 오류 하나)은 위 `endedWith`가 정확히 본다. 맞지 않으면 그 정리가 목록을 원인으로 실패한다.
     await expect(starting).rejects.toThrow("토큰 거부");
-    expect(diagnostics.received()).toEqual(expected);
     await (await listening(port)).close();
   });
 });

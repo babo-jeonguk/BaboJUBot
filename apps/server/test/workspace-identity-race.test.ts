@@ -8,7 +8,7 @@ import {
 import { settled } from "@babojubot/contracts";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
-import { within, heldOrEnded } from "./support.ts";
+import { within, heldOrEnded, releaseHeld } from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -72,10 +72,8 @@ it("does not mistake a mark just written by another preparation for a missing on
     // 시작할 때부터 결과를 이 시험이 갖는다. gate에 닿기 전에 거절돼도 처리되지 않은 거절로 새지 않고, 아래 대기가 그 실패로 끝난다.
     const preparation = awaitedLater(workspaces.ensure(org.id));
     // 막아 둔 첫 준비는 gate를 풀어야 끝난다. 이미 풀었으면 다시 풀어도 그대로다.
-    const ended = () => {
-      hold.release();
-      return within(settled(preparation), preparationMs, `${what} did not end`);
-    };
+    const ended = () =>
+      releaseHeld(() => hold.release(), [() => settled(preparation)], what);
     users.own(ended);
     folder.own(ended);
     return preparation;

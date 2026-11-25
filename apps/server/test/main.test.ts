@@ -236,6 +236,12 @@ it.each(stopRequests)(
     send(child);
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(1);
+    // 끝난 뒤에도 출력이 남아 있을 수 있어, 출력이 닫힌 뒤에 진단 전체를 읽는다.
+    await within(
+      child.closed,
+      killWaitMs,
+      `server ${child.pid} did not close its output`
+    );
     // 진단은 오류 문구(Postgres 로그가 섞임) 대신 원인 코드만 남긴다. 진단 전체가 이것뿐이면 시작 실패 뒤 Postgres 정리(`embedded.ts`가
     // 시작에 실패하면 멈추기를 시도하고 실패하면 진단으로 남김)가 실패하지 않은 것이다(CODING_STANDARDS.md 「제품 코드」의 정리 규칙).
     expect(stderrLines(child)).toEqual([
