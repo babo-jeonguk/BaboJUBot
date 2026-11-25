@@ -33,10 +33,24 @@ export type Gate = {
   readonly [gateBrand]: true;
 };
 
-/** gate 하나를 만든다. */
+/** 아직 열리지 않은 gate를 여는 함수들. `resetRefusing()`이 모두 `"reset"`으로 연다. */
+const openAtReset = new Set<(outcome: "opened" | "reset") => void>();
+
+/**
+ * gate 하나를 만든다. 만드는 순간 그 해제를 대역의 reset에 맡긴다: 본문이 열지 못한 채 시험이 끝나도(본문 실패) afterEach의
+ * `resetRefusing()`이 `"reset"`으로 연다. vitest는 afterEach를 그 시험의 모든 onTestFinished보다 먼저 부르므로(5.0.5 러너:
+ * `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인) gate에 걸린 hub·중계 닫기(onTestFinished)보다 먼저
+ * 풀린다(등록 순서에 기대지 않는다). 본문의 `open()`과 reset 가운데 먼저 부른 것 하나만 효과가 있다. 붙잡힌 일의 해제일 뿐 그 일의
+ * 끝(닫힘) 확인은 그 일의 정리가 따로 한다.
+ */
 export function gate(): Gate {
   const { promise, resolve } = Promise.withResolvers<"opened" | "reset">();
-  return { until: promise, open: () => resolve("opened"), [gateBrand]: true };
+  const settle = (outcome: "opened" | "reset") => {
+    openAtReset.delete(settle);
+    resolve(outcome);
+  };
+  openAtReset.add(settle);
+  return { until: promise, open: () => settle("opened"), [gateBrand]: true };
 }
 
 /** 대역이 붙잡고 있는 연결(`refusing.holdConnect`). `resetRefusing()`이 포기시킨다. */
@@ -101,6 +115,8 @@ export const serverFaults = {
 };
 
 export function resetRefusing() {
+  for (const open of openAtReset) open("reset");
+  openAtReset.clear();
   for (const socket of heldSockets)
     socket.destroy(
       codeError(

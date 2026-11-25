@@ -1,5 +1,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { lookup } from "node:dns/promises";
+import { setMaxListeners } from "node:events";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -22,6 +23,7 @@ import { listenAttempt } from "@babojubot/process";
 import {
   allowsConnection,
   decideDestination,
+  type EgressDecision,
   type EgressRules,
 } from "./egress-policy.ts";
 import { passAnswer } from "./answer-flow.ts";
@@ -33,6 +35,9 @@ import { passAnswer } from "./answer-flow.ts";
  * - `tools.sock`: 조직 도구. 요청에 이 실행 시도의 신원을 덧붙여 서버의 도구 경로로 넘긴다.
  * - `inbound.sock`: 이 컴퓨터가 컨테이너 안 서버(OpenCode)를 부르는 길. 컨테이너가 미리 붙여 둔 연결을 하나씩 쓴다.
  * 소켓은 이 컴퓨터가 만들고 컨테이너는 만들지 않는다. 실행 시도가 끝나면 열린 연결과 소켓을 모두 닫으며 다른 실행 시도와 나누지 않는다.
+ * 중계 하나에는 수명 신호가 하나 있다. 서버·연결·목적지 연결 같은 획득은 모두 그 신호를 받아, 닫기가 시작된 뒤에는 시작하지 않고
+ * 진행 중이면 기다림을 끝내며, 만든 소켓·서버는 만드는 식에서 중계가 맡는다. 닫기는 진행 중 획득의 끝과 끊은 연결의 닫힘을 본 뒤
+ * 서버를 닫고 폴더를 지운다(#286 PR #299 외부 리뷰 1·2회차).
  */
 
 /** 중계의 주인. 정책은 이 조직·실행 시도의 것만 쓴다. 세션 정비(미리 압축)는 실행 시도가 없다. */
@@ -111,10 +116,26 @@ type Tunnel = {
 type Relay = {
   identity: RelayIdentity;
   required: readonly Destination[];
+  /** 정책 다시 보기와 답 취소를 위한 열린 연결의 기록. 소켓의 소유는 `hold`가 맡는다. */
   tunnels: Set<Tunnel>;
   /** 정책을 다시 볼 때마다 오른다. 판정 중에 바뀌었는지 연결이 확인한다. */
   revision: number;
   close(): Promise<void>;
+  /**
+   * 진행 중 획득 하나(서버 듣기 시도, 목적지 연결)를 한다. 닫기가 시작됐으면 시작하지 않고 거절한다. 시작하기 전(같은 동기 구간)에
+   * 그 끝을 닫기가 볼 목록에 넣는다. `start`가 이행했을 때 닫기가 시작됐으면 거절한다(얻은 것은 이미 중계가 맡아 닫기가 닫는다).
+   * `start`의 거절은 그 원인 그대로 넘긴다.
+   */
+  acquire<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  /**
+   * 자원을 만들지 않는 기다림(정책 조회, 이름 풀이)을 한다. 닫기가 시작됐으면 시작하지 않고 거절하고, 기다리는 사이 시작되면
+   * 기다림을 끝내 거절한다. 그 일은 멈출 수 없어(서버의 조회, `getaddrinfo`) 결과를 버리고, 그 뒤 실패하면 원인을 경고로 남긴다.
+   */
+  whileOpen<T>(start: () => Promise<T>): Promise<T>;
+  /** 소켓을 맡는다(만드는 식·받는 처리기에서). 닫기가 시작됐으면 바로 끊는다. 닫기가 끊고 그 닫힘을 본다. */
+  hold(socket: net.Socket): net.Socket;
+  /** 이 거절이 이 중계의 닫기 때문인가(`acquire`·`whileOpen`·`dial`이 닫기 뒤 내는 거절은 모두 같은 이유 객체). */
+  closedBy(error: unknown): boolean;
 };
 
 function hostAddresses() {
@@ -147,21 +168,37 @@ function splitAuthority(value: string): { host: string; port: number } | null {
   return { host: (match[1] ?? match[2])!, port: Number(match[3]) };
 }
 
-/** 확인한 주소에 차례로 붙는다. 이름을 다시 풀지 않는다. 붙은 주소를 함께 돌려준다. */
+/**
+ * 확인한 주소에 차례로 붙는다. 이름을 다시 풀지 않는다. 붙은 주소를 함께 돌려준다. 주소마다 붙기 전에(남은 주소를 보기 전에) 중계의
+ * 수명 신호를 보고, 닫기가 시작됐으면 붙지 않고 그 이유로 거절한다(재시도도 같다). 소켓은 `open`이 만드는 같은 식에서 중계가 맡는다.
+ * 시도의 끝은 `close`로 받는다(닫기가 오류 없이 끊은 연결 중 소켓도 끝난다). 그 시도의 오류는 다음 시도에 원인으로 넘긴다.
+ */
 function dial(
   addresses: string[],
-  port: number
+  port: number,
+  signal: AbortSignal,
+  open: (address: string) => net.Socket
 ): Promise<{ socket: net.Socket; address: string; release: () => void }> {
   return new Promise((resolve, reject) => {
     const next = (index: number, last?: Error) => {
+      if (signal.aborted) return reject(signal.reason as Error);
       if (index >= addresses.length)
         return reject(last ?? new Error("no address"));
       const address = addresses[index]!;
-      const socket = net.connect({ host: address, port });
+      const socket = open(address);
       socket.setTimeout(15_000, () => socket.destroy(new Error("timeout")));
+      let failure: Error | undefined;
+      const onError = (error: Error) => {
+        failure = error;
+      };
+      const onClose = () => next(index + 1, failure ?? last);
+      socket.once("error", onError);
+      socket.once("close", onClose);
       socket.once("connect", () => {
         socket.setTimeout(0);
-        socket.removeAllListeners("error");
+        // 이 시도의 두 처리기만 뗀다(중계가 맡은 `close` 처리기는 남긴다).
+        socket.off("error", onError);
+        socket.off("close", onClose);
         // 돌려주는 소켓에는 늘 오류 리스너가 있다. 부르는 쪽이 기다리는 사이 난 오류는 이 연결만 닫는다.
         // 부르는 쪽은 자기 처리를 따로 붙이고, 소켓의 오류를 모두 맡게 되면 `release`로 이 처리를 뗀다.
         const release = closeOnError(
@@ -170,7 +207,6 @@ function dial(
         );
         resolve({ socket, address, release });
       });
-      socket.once("error", (error) => next(index + 1, error));
     };
     next(0);
   });
@@ -224,17 +260,6 @@ export function createRelayHub(): RelayHub {
     );
   };
 
-  /** 확인한 주소에 붙는다. 붙지 못하면 원인을 남기고 `undefined`(부르는 쪽이 502로 답한다). */
-  const dialAllowed = (addresses: string[], port: number) =>
-    orIfProbeFailed(
-      () => dial(addresses, port),
-      undefined,
-      (error) =>
-        console.warn(
-          `[provider] the relay could not connect to an allowed destination; it answered 502 (${failureCode(error)})`
-        )
-    );
-
   const rulesFor = (
     relay: Relay,
     research: readonly Destination[]
@@ -265,18 +290,53 @@ export function createRelayHub(): RelayHub {
     refuse(relay, tunnel.host, tunnel.port, "policy_changed");
   };
 
-  const decide = async (relay: Relay, host: string, port: number) => {
-    const research = await continueAfterFailure(
-      () => hooks!.research(relay.identity),
-      (error) =>
-        console.warn(
-          `[provider] the research destinations could not be read; the connection is refused (${failureCode(error)})`
+  /**
+   * 목적지 연결 획득(CONNECT와 HTTP가 지나는 경계 하나). 중계의 획득(`acquire`)으로 정책 조회 → 판정(이름 풀이) → 주소마다 연결을
+   * 한다. 조회와 판정은 따로 `whileOpen`으로 기다려, 닫기 뒤에 끝난 조회는 이름 풀이를 시작하지 않는다. 연결은 붙기 전에 수명 신호를
+   * 본다(`dial`). 허용하지 않으면 알리고 그 이유를, 붙지 못하면 원인을 남기고 `dialed: undefined`(부르는 쪽이 502)를, 붙으면 그
+   * 연결을 돌려준다. 닫기 때문인 거절은 접지 않고 넘긴다.
+   */
+  const destination = (relay: Relay, host: string, port: number) =>
+    relay.acquire(async (signal) => {
+      const research = await relay.whileOpen(() =>
+        continueAfterFailure(
+          () => hooks!.research(relay.identity),
+          (error) =>
+            console.warn(
+              `[provider] the research destinations could not be read; the connection is refused (${failureCode(error)})`
+            )
         )
-    );
-    if (!research)
-      return { allowed: false as const, reason: "policy_unavailable" as const };
-    return decideDestination(rulesFor(relay, research), host, port, resolveAll);
-  };
+      );
+      const decision: EgressDecision = research
+        ? await relay.whileOpen(() =>
+            decideDestination(rulesFor(relay, research), host, port, resolveAll)
+          )
+        : { allowed: false, reason: "policy_unavailable" };
+      if (!decision.allowed) {
+        refuse(relay, host, port, decision.reason);
+        return { refused: decision.reason };
+      }
+      const dialed = await orIfProbeFailed(
+        () =>
+          dial(decision.addresses, port, signal, (address) =>
+            relay.hold(net.connect({ host: address, port }))
+          ),
+        undefined,
+        (error) => {
+          if (relay.closedBy(error)) throw error;
+          console.warn(
+            `[provider] the relay could not connect to an allowed destination; it answered 502 (${failureCode(error)})`
+          );
+        }
+      );
+      return { dialed };
+    });
+
+  /** 중계의 연결 처리 하나. 닫기가 끊은 연결의 처리(이 중계의 닫기 때문인 거절)는 거기서 끝난다. 그 밖의 거절은 그대로 넘긴다. */
+  const ifOpen = (relay: Relay, work: () => Promise<void>) =>
+    work().catch((error: unknown) => {
+      if (!relay.closedBy(error)) throw error;
+    });
 
   const egressServer = (relay: Relay) => {
     const server = http.createServer();
@@ -288,20 +348,19 @@ export function createRelayHub(): RelayHub {
         return;
       }
       const revision = relay.revision;
-      void decide(relay, target.host, target.port).then(async (decision) => {
-        if (!decision.allowed) {
-          refuse(relay, target.host, target.port, decision.reason);
-          client.end(refusalHead(decision.reason));
+      void ifOpen(relay, async () => {
+        const got = await destination(relay, target.host, target.port);
+        if (got.refused !== undefined) {
+          client.end(refusalHead(got.refused));
           return;
         }
-        const dialed = await dialAllowed(decision.addresses, target.port);
-        if (!dialed) {
+        if (!got.dialed) {
           client.end(
             "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
           );
           return;
         }
-        const { socket: upstream, address } = dialed;
+        const { socket: upstream, address } = got.dialed;
         if (client.destroyed) return void upstream.destroy();
         const tunnel: Tunnel = {
           host: target.host,
@@ -320,7 +379,7 @@ export function createRelayHub(): RelayHub {
         // 판정 뒤 정책이 바뀌었으면 이미 등록한 연결도 새 규칙으로 다시 본다.
         if (relay.revision !== revision) {
           const ok = allowsConnection(
-            await currentRules(relay),
+            await relay.whileOpen(() => currentRules(relay)),
             tunnel.host,
             tunnel.port,
             tunnel.address
@@ -353,15 +412,15 @@ export function createRelayHub(): RelayHub {
       const host = url.hostname.replace(/^\[|\]$/g, "");
       const port = Number(url.port || 80);
       const revision = relay.revision;
-      void decide(relay, host, port).then(async (decision) => {
-        if (!decision.allowed) {
-          refuse(relay, host, port, decision.reason);
+      void ifOpen(relay, async () => {
+        const got = await destination(relay, host, port);
+        if (got.refused !== undefined) {
           res.writeHead(403, {
-            "x-babojubot-refusal": decision.reason,
+            "x-babojubot-refusal": got.refused,
             "content-type": "text/plain; charset=utf-8",
             connection: "close",
           });
-          res.end(egressRefusalMessages[decision.reason]);
+          res.end(egressRefusalMessages[got.refused]);
           return;
         }
         const headers: http.OutgoingHttpHeaders = {};
@@ -371,8 +430,7 @@ export function createRelayHub(): RelayHub {
           if (!res.headersSent) res.writeHead(502, { connection: "close" });
           res.end();
         };
-        // CONNECT와 같이 확인한 주소에 차례로 붙는다(이름을 다시 풀지 않는다).
-        const dialed = await dialAllowed(decision.addresses, port);
+        const dialed = got.dialed;
         if (!dialed) return void badGateway();
         const socket = dialed.socket;
         const tunnel: Tunnel = {
@@ -383,10 +441,12 @@ export function createRelayHub(): RelayHub {
         };
         relay.tunnels.add(tunnel);
         const done = () => relay.tunnels.delete(tunnel);
+        // 목적지 소켓이 닫히면 기록에서도 뺀다(CONNECT의 `end`와 같이). 답 흐름의 끝도 같은 지우기를 부른다.
+        socket.once("close", done);
         // 판정 뒤 정책이 바뀌었으면 이미 등록한 연결도 새 규칙으로 다시 본다.
         if (relay.revision !== revision) {
           const ok = allowsConnection(
-            await currentRules(relay),
+            await relay.whileOpen(() => currentRules(relay)),
             tunnel.host,
             tunnel.port,
             tunnel.address
@@ -491,58 +551,124 @@ export function createRelayHub(): RelayHub {
     open({ identity, required, inbound }) {
       if (!hooks) throw new Error("isolated run relay is not ready");
       const directory = mkdtempSync(path.join(os.tmpdir(), "babojubot-relay-"));
-      /** 이 중계가 얻은 서버와 그 듣기 시도의 끝(들었는가). 서버는 `own` 하나만 얻고, 닫기가 시작된 뒤로는 늘지 않는다. */
-      const owned: { server: net.Server; listened: Promise<boolean> }[] = [];
+      /** 이 중계의 수명. 닫기의 첫 동기 구간에서 끝나고, 그 뒤 획득은 시작하지 않으며 진행 중인 기다림은 끝난다. */
+      const life = new AbortController();
+      // 연결마다 기다림 하나가 이 신호를 듣는다(조회·판정). 동시 연결 수가 EventTarget 경고 기본값(10)을 넘을 수
+      // 있어 그 경고를 끈다. 기다림은 끝날 때 늘 듣기를 뗀다.
+      setMaxListeners(0, life.signal);
+      /** 이 중계가 얻은 서버와 그 듣기가 시작되었는가. 서버는 `own` 하나로만 얻고, 닫기가 시작된 뒤로는 늘지 않는다. */
+      const owned: { server: net.Server; listened: boolean }[] = [];
+      /** 이 중계가 맡은 소켓(받은 연결, 연결 중·연결된 목적지 연결). 닫히면 빠진다. */
+      const held = new Set<net.Socket>();
+      /** 진행 중 획득의 끝 표시. 풀리기만 한다(거절하지 않음). */
+      const pending = new Set<Promise<void>>();
       const idle: net.Socket[] = [];
       const waiting: ((socket: net.Socket) => void)[] = [];
-      const loose = new Set<net.Socket>();
       let local: Promise<string> | undefined;
       let ended: Promise<void> | undefined;
-      /** 닫기가 시작되었는가. 닫기의 첫 동기 구간에서 세우고, 그 뒤 `own`은 새 서버를 만들지 않는다. */
-      let closing = false;
-      const closed = () =>
-        Object.assign(
-          new Error("the relay is closing; no new server is opened"),
-          { code: "relay_closed" }
-        );
+      const reason = () => life.signal.reason as Error;
       const relay: Relay = {
         identity: { ...identity },
         required: [...required],
         tunnels: new Set(),
         revision: 0,
+        hold(socket) {
+          if (life.signal.aborted) {
+            socket.destroy();
+            return socket;
+          }
+          held.add(socket);
+          socket.once("close", () => held.delete(socket));
+          return socket;
+        },
+        async acquire(start) {
+          if (life.signal.aborted) throw reason();
+          const end = Promise.withResolvers<void>();
+          pending.add(end.promise);
+          try {
+            const value = await start(life.signal);
+            if (life.signal.aborted) throw reason();
+            return value;
+          } finally {
+            end.resolve();
+            pending.delete(end.promise);
+          }
+        },
+        whileOpen(start) {
+          if (life.signal.aborted) return Promise.reject(reason());
+          const work = start();
+          return new Promise((resolve, reject) => {
+            const stop = () => reject(reason());
+            life.signal.addEventListener("abort", stop, { once: true });
+            work.then(
+              (value) => {
+                life.signal.removeEventListener("abort", stop);
+                resolve(value);
+              },
+              (error: unknown) => {
+                life.signal.removeEventListener("abort", stop);
+                // 닫기가 끝낸 기다림의 일이 그 뒤 실패하면 원인을 남긴다(거절은 이미 닫기의 것으로 났다).
+                if (life.signal.aborted)
+                  console.warn(
+                    `[provider] a relay lookup failed after its relay closed (${failureCode(error)})`
+                  );
+                reject(error);
+              }
+            );
+          });
+        },
+        closedBy: (error) =>
+          life.signal.aborted && error === life.signal.reason,
         close: () =>
           (ended ??= (async () => {
-            closing = true;
-            for (const tunnel of relay.tunnels) {
-              tunnel.cancel?.();
-              for (const socket of tunnel.sockets) socket.destroy();
-            }
+            // 첫 동기 구간: 수명을 끝내 뒤의 획득을 막고 진행 중인 조회·판정의 기다림을 끝낸다. 목적지 답 흐름을 소켓보다 먼저 취소로
+            // 끝내고, 이 중계가 맡은 소켓(받은 연결, 연결 중·연결된 목적지 연결)을 모두 끊는다.
+            life.abort(
+              Object.assign(
+                new Error("the relay is closing; nothing new is started"),
+                { code: "relay_closed" }
+              )
+            );
+            for (const tunnel of relay.tunnels) tunnel.cancel?.();
             relay.tunnels.clear();
-            for (const socket of [...idle, ...loose]) socket.destroy();
+            const sockets = [...held];
+            for (const socket of sockets) socket.destroy();
+            // 진행 중 획득(서버 듣기 시도, 목적지 연결)의 끝과 끊은 소켓의 닫힘을 본다. 목적지 연결은 끊긴 소켓의 `close`로 끝나 다음
+            // 주소에 붙지 않는다(`dial`). 듣기 시도는 듣기 시작이나 듣기 오류로 끝난다(`listenAttempt`: 그 전에 닫으면 듣기 시도가
+            // 끝나지 않는다). `held`에 있는 소켓은 아직 `close` 전이다(`close`에 빠진다).
+            await Promise.all([
+              ...pending,
+              ...sockets.map(
+                (socket) =>
+                  new Promise<void>((resolve) =>
+                    socket.once("close", () => resolve())
+                  )
+              ),
+            ]);
             // 폴더에는 서버들의 소켓 파일이 있다. 모든 서버가 닫혔음을 확인한 뒤에만 지우고, 하나라도 확인하지 못하면 폴더를 남기고
-            // 그 원인으로 실패한다(지우면 아직 듣는 서버가 남은 채로 닫힌 것처럼 보인다). 서버마다 듣기 시도가 끝난 것을 본 뒤에 닫는다
-            // (`listenAttempt`: 그 전에 닫으면 듣기 시도가 끝나지 않는다). 듣지 못한 서버는 닫을 것이 없다(듣기 오류는 그 서버를 얻은
-            // 쪽 — `ready`·`inboundOrigin` — 이 받았다). 들은 서버의 닫기 오류는 무엇이든 실패다.
+            // 그 원인으로 실패한다(지우면 아직 듣는 서버가 남은 채로 닫힌 것처럼 보인다). 듣지 못한 서버는 닫을 것이 없다(듣기 오류는
+            // 그 서버를 얻은 쪽 — `ready`·`inboundOrigin` — 이 받았다). 들은 서버의 닫기 오류는 무엇이든 실패다.
             const failures = await attemptEach(
-              owned.map(({ server, listened }) => async () => {
-                if (!(await listened)) return;
-                await new Promise<void>((resolve, reject) => {
-                  (server as http.Server).closeAllConnections?.();
-                  server.close((error) => {
-                    if (error)
-                      reject(
-                        Object.assign(
-                          new Error(
-                            `a relay server did not close (${failureCode(error)})`,
-                            { cause: error }
-                          ),
-                          { code: failureCode(error) }
-                        )
-                      );
-                    else resolve();
+              owned
+                .filter(({ listened }) => listened)
+                .map(({ server }) => async () => {
+                  await new Promise<void>((resolve, reject) => {
+                    (server as http.Server).closeAllConnections?.();
+                    server.close((error) => {
+                      if (error)
+                        reject(
+                          Object.assign(
+                            new Error(
+                              `a relay server did not close (${failureCode(error)})`,
+                              { cause: error }
+                            ),
+                            { code: failureCode(error) }
+                          )
+                        );
+                      else resolve();
+                    });
                   });
-                });
-              })
+                })
             );
             relays.delete(relay);
             // 실패가 하나여도 남긴 폴더의 위치가 거절에 남도록 늘 감싼다. 원인은 cause에 그대로 있다. 거절을 받는 쪽은 코드만
@@ -570,36 +696,28 @@ export function createRelayHub(): RelayHub {
       };
       relays.add(relay);
       /**
-       * 이 중계의 서버 하나를 얻는다(중계의 서버는 모두 이 길로). 닫기가 시작됐으면 만들지 않고 `relay_closed`로 거절한다. 만든 서버는
-       * 듣기 전에(같은 동기 구간) 소유 목록에 넣어 닫기가 그 듣기 시도의 끝을 보고 닫게 한다. 듣기가 시작되면 이행하되, 그때 닫기가
-       * 시작됐으면 `relay_closed`로 거절한다(그 서버는 닫기가 닫는다). 듣기 오류면 그 오류로 거절한다.
+       * 이 중계의 서버 하나를 얻는다(중계의 서버는 모두 이 길로, 획득은 `acquire`). 닫기가 시작됐으면 만들지 않고 `relay_closed`로
+       * 거절한다. 만든 서버는 듣기 전에(같은 동기 구간) 소유 목록에 넣어 닫기가 그 듣기 시도의 끝을 보고 닫게 한다. 듣기가 시작되면
+       * 이행하되, 그때 닫기가 시작됐으면 `relay_closed`로 거절한다(그 서버는 닫기가 닫는다). 듣기 오류면 그 오류로 거절한다.
        */
-      const own = async (
+      const own = (
         make: () => net.Server,
         listen: (server: net.Server) => void
-      ) => {
-        if (closing) throw closed();
-        const server = make();
-        // 받은 연결은 닫기가 끊는다. 닫기가 시작된 뒤 받은 연결은 바로 끊는다(서버는 차례로 닫히므로 앞 서버를 닫는 동안 뒤 서버가
-        // 연결을 받을 수 있고, net 서버의 닫기는 받은 연결이 모두 끝나야 끝난다).
-        server.on("connection", (socket: net.Socket) => {
-          if (closing) return void socket.destroy();
-          loose.add(socket);
-          socket.on("close", () => loose.delete(socket));
-        });
-        // 기록은 듣기를 부르기 전에 넣는다. 듣기를 부르는 동안 닫기가 시작되어도 닫기가 이 서버의 듣기 시도 끝을 기다린다.
-        const listened = Promise.withResolvers<boolean>();
-        owned.push({ server, listened: listened.promise });
-        try {
+      ) =>
+        relay.acquire(async () => {
+          const server = make();
+          // 받은 연결은 중계가 맡는다. 닫기가 시작된 뒤 받은 연결은 바로 끊는다(서버는 차례로 닫히므로 앞 서버를 닫는 동안 뒤 서버가
+          // 연결을 받을 수 있고, net 서버의 닫기는 받은 연결이 모두 끝나야 끝난다).
+          server.on(
+            "connection",
+            (socket: net.Socket) => void relay.hold(socket)
+          );
+          const entry = { server, listened: false };
+          owned.push(entry);
           await listenAttempt(server, () => listen(server));
-        } catch (error) {
-          listened.resolve(false);
-          throw error;
-        }
-        listened.resolve(true);
-        if (closing) throw closed();
-        return server;
-      };
+          entry.listened = true;
+          return server;
+        });
       const listen = (make: () => net.Server, name: string) =>
         own(make, (server) => server.listen(path.join(directory, name)));
       const ready = Promise.all([
@@ -629,6 +747,8 @@ export function createRelayHub(): RelayHub {
       void continueAfterFailure(
         () => ready,
         (error) => {
+          // 닫기가 시작되어 거절한 준비는 그 닫기가 맡는다.
+          if (relay.closedBy(error)) return;
           console.warn(
             `[provider] the isolated run relay could not open; closing it (${failureCode(error)})`
           );
@@ -694,22 +814,25 @@ export function createRelayHub(): RelayHub {
               organizationId === undefined ||
               relay.identity.organizationId === organizationId
           )
-          .map(async (relay) => {
-            // 정책을 다시 보기 시작했음을 먼저 알린다. 판정 중이던 연결도 이 값을 보고 새 규칙으로 다시 본다.
-            relay.revision++;
-            const rules = await currentRules(relay);
-            for (const tunnel of [...relay.tunnels]) {
-              if (
-                !allowsConnection(
-                  rules,
-                  tunnel.host,
-                  tunnel.port,
-                  tunnel.address
+          .map((relay) =>
+            // 닫는 중인 중계에는 정책 조회를 시작하지 않는다(그 연결은 닫기가 끊는다).
+            ifOpen(relay, async () => {
+              // 정책을 다시 보기 시작했음을 먼저 알린다. 판정 중이던 연결도 이 값을 보고 새 규칙으로 다시 본다.
+              relay.revision++;
+              const rules = await relay.whileOpen(() => currentRules(relay));
+              for (const tunnel of [...relay.tunnels]) {
+                if (
+                  !allowsConnection(
+                    rules,
+                    tunnel.host,
+                    tunnel.port,
+                    tunnel.address
+                  )
                 )
-              )
-                revoke(relay, tunnel);
-            }
-          })
+                  revoke(relay, tunnel);
+              }
+            })
+          )
       );
     },
     async close() {

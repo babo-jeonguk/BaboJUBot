@@ -1372,8 +1372,6 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const { relays } = hub();
     const relay = relays.open({ identity, required: [] });
     const held = gate();
-    // 고치기 전 대역에서도 이 시험의 정리가 멈추지 않게 스스로 연다(hub 뒤에 등록해 hub 닫기보다 먼저 돈다).
-    onTestFinished(() => held.open());
     const caught = Promise.withResolvers<void>();
     serverFaults.heldClose.mockImplementation(() => caught.resolve());
     serverFaults.holdClose = {
