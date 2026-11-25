@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import net from "node:net";
 import {
   folderCleanup,
   killUnlessGone,
   lifelineHolder,
+  ownedClosable,
   processAlive,
   withCleanup,
 } from "./test-cleanup.ts";
@@ -158,6 +160,16 @@ describe("folderCleanup", () => {
     });
     await expect(folder.cleanUp()).rejects.toBe(server);
     expect(ran).toEqual(["database"]);
+  });
+
+  // 지우기가 매달리면 정리가 이름 없이 hook 시한까지 멈췄다(#297 독립 점검). 지우기를 기다리는 데도 이름 있는 상한을 둔다.
+  it("fails with the reason when removing the folder does not end within its bound", async () => {
+    const folder = folderCleanup(() => new Promise<never>(() => {}), {
+      removeTimeoutMs: 50,
+    });
+    await expect(
+      within(folder.cleanUp(), 5_000, "the folder cleanup did not end")
+    ).rejects.toThrow("the test folder was not removed within 50 ms");
   });
 
   // 정지가 실패한 폴더는 그 안의 프로그램이 아직 쓸 수 있다. 같은 정리를 다시 불러도 지우지 않는다(#243).
@@ -343,5 +355,59 @@ describe("lifelineHolder", () => {
     await holder.end();
 
     expect(openAtSignal).toEqual([true]);
+  });
+});
+
+// 시험이 만든 소켓·요청은 만든 직후 정리에 맡긴다. 정리는 끊고, 실제 닫힘을 상한 안에서 확인한다(#286 3b-3).
+describe("ownedClosable", () => {
+  it("ends an open socket and returns once it closed", async () => {
+    const server = net.createServer();
+    onTestFinished(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        )
+    );
+    await within(
+      new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)),
+      5_000,
+      "the server did not listen"
+    );
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error(`the server is not on a TCP port (${address})`);
+    const steps: (() => unknown)[] = [];
+    const socket = ownedClosable(
+      (step) => steps.push(step),
+      net.connect(address.port, "127.0.0.1"),
+      "the test socket"
+    );
+    await within(once(socket, "connect"), 5_000, "the socket did not connect");
+    expect(steps).toHaveLength(1);
+    await within(
+      Promise.resolve(steps[0]?.()),
+      5_000,
+      "the cleanup did not end"
+    );
+    expect(socket.destroyed).toBe(true);
+    expect(socket.closed).toBe(true);
+  });
+
+  it("fails with the reason when the resource does not close within its bound", async () => {
+    const destroyed: unknown[][] = [];
+    const resource = Object.assign(new EventEmitter(), {
+      destroy: (...received: unknown[]) => destroyed.push(received),
+    });
+    const steps: (() => unknown)[] = [];
+    ownedClosable(
+      (step) => steps.push(step),
+      resource,
+      "the stuck request",
+      50
+    );
+    await expect(
+      within(Promise.resolve(steps[0]?.()), 5_000, "the cleanup did not end")
+    ).rejects.toThrow("the stuck request did not close within 50 ms");
+    expect(destroyed).toEqual([[]]);
   });
 });
