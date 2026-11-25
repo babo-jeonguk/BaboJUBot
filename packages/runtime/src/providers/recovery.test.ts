@@ -58,8 +58,11 @@ function testStart(): string {
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
-  /** 실제 실행기 정리가 성공한(남은 것 없음을 실행기가 확인한) 요청의 표식. */
-  cleaned: [] as unknown[],
+  /** 실제 실행기 정리가 성공한(남은 것 없음을 실행기가 확인한) 요청. */
+  cleaned: [] as {
+    lease?: string;
+    recorded?: { pid: number; start: string };
+  }[],
   /** 실행기에 청한 정리 요청 전부. */
   requests: [] as { recorded?: unknown }[],
 }));
@@ -74,7 +77,7 @@ vi.mock("@babojubot/process/recovery", async (original) => {
       if (request.lease !== undefined) lease.stopped.push(request.lease);
       if (lease.fails) throw new Error("the supervisor's cleanup failed");
       const result = await real.cleanThroughSupervisor(request);
-      if (request.lease !== undefined) lease.cleaned.push(request.lease);
+      lease.cleaned.push(request);
       return result;
     },
   };
@@ -309,9 +312,10 @@ it("stops a process it recorded itself", async () => {
     stdio: ["ignore", "ignore", "ignore"],
   });
   // 시험이 어디서 끝나든 트리를 끈다(launchTree의 stop()은 끝을 그룹·표식·묶음으로 확인한다). 다만 복구의 실제 실행기 정리가 이
-  // 트리의 표식으로 성공했으면(실행기가 기록한 실행기와 표식을 가진 프로그램이 남지 않았음을 확인) 부르지 않는다: 밖에서 끝난
-  // 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보). 대표의 끝(`exited`)은 실행기의 끝이 아니므로 그 증거로 쓰지
-  // 않는다. 복구가 실패했거나 확인되지 않았으면 stop()이 끝을 확인하고, 그것도 실패하면 폴더(기록 포함)를 남긴다.
+  // 트리를 대상으로 성공했으면(실행기가 기록한 실행기와 표식을 가진 프로그램이 남지 않았음을 확인) 부르지 않는다. 대상은 이 트리의
+  // 표식(Linux·macOS)이나, 표식 정리가 없는 Windows에서는 기록한 실행기의 신원(번호와 실행기가 알린 시작 시각, 묶음이 닫혀 트리가
+  // 끝난다)으로 본다. 밖에서 끝난 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보). 대표의 끝(`exited`)은
+  // 실행기의 끝이 아니므로 그 증거로 쓰지 않는다. 복구가 실패했거나 확인되지 않았으면 stop()이 끝을 확인하고, 그것도 실패하면 폴더(기록 포함)를 남긴다.
   let recoveredBySupervisor = false;
   folders.own(async () => {
     if (!recoveredBySupervisor) await tree.stop();
@@ -327,8 +331,14 @@ it("stops a process it recorded itself", async () => {
     async () => expect(await readFile(file, "utf8")).toMatch(/"start"/),
     { timeout: 20_000, interval: 50 }
   );
+  const supervisorStart = await tree.supervisorStart;
   await recoverProviderProcesses(root);
-  recoveredBySupervisor = lease.cleaned.includes(tree.lease);
+  recoveredBySupervisor = lease.cleaned.some(
+    (request) =>
+      request.lease === tree.lease ||
+      (request.recorded?.pid === tree.pid &&
+        request.recorded?.start === supervisorStart)
+  );
   expect(recoveredBySupervisor).toBe(true);
   // 실행기를 끈 복구 뒤에 대표도 끝났다.
   await within(tree.exited, 20_000, "the recorded tree's leader did not end");
