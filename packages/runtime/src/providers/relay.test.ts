@@ -10,7 +10,8 @@ import {
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
-import { ownedClosable, ownedConnect } from "@babojubot/process/test-cleanup";
+import { ownedClosable } from "@babojubot/process/test-cleanup";
+import { ownedConnect } from "@babojubot/process/testing";
 import { within } from "@babojubot/process/test-support";
 import {
   refusing,

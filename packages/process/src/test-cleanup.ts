@@ -6,17 +6,12 @@
 // 위해 메시지에도 모든 실패를 이어 적는다.
 
 import { readFile } from "node:fs/promises";
-// node:net·node:http는 형만 불러온다. 이 파일은 `vi.mock("node:net")` 같은 대역의 factory가 불러오는 모듈(runtime
-// `connect-failure-support.ts`)도 불러오므로, 읽을 때 그 builtin 값을 불러오면 대역이 자기 자신을 기다려 멈춘다. 값이 필요한 곳은
-// 부를 때 불러온다(`ownedConnect`).
-import type http from "node:http";
 import type net from "node:net";
 import {
   attemptAll,
   attemptEach,
   combinedFailure,
   hasErrorCode,
-  isDisconnect,
 } from "@babojubot/contracts";
 import type { Lifelines } from "./lifeline-support.ts";
 import { removeFolder } from "./remove-folder.ts";
@@ -210,16 +205,19 @@ export function ownedClosable<T extends Closable>(
   what: string,
   closeMs = closableCloseMs
 ): T {
-  owning(own, resource, what, closeMs);
+  ownClosable(own, resource, what, closeMs);
   return resource;
 }
 
-/** `ownedClosable`의 몸: 자원을 `own`에 맡기고, 맡는 순간부터 들은 닫힘(`closed`, 거절하지 않음)을 돌려준다. */
-function owning(
+/**
+ * `ownedClosable`과 같은 소유(만든 직후 `own`에 맡기고 정리가 끊은 뒤 닫힘을 상한 안에서 확인)를 하고, 맡는 순간부터 들은 닫힘(`closed`,
+ * 거절하지 않음)을 돌려준다. 그 닫힘을 시험이 기다려야 하는 도움이 쓴다(`ownedConnect`, `@babojubot/process/testing`).
+ */
+export function ownClosable(
   own: (step: () => Promise<void>) => void,
   resource: Closable,
   what: string,
-  closeMs: number
+  closeMs = closableCloseMs
 ): { closed: Promise<void> } {
   const closed = new Promise<void>((resolve) =>
     resource.once("close", () => resolve())
@@ -228,77 +226,10 @@ function owning(
   return { closed };
 }
 
-/** `ownedConnect`의 답: 답 머리, 터널(=CONNECT를 태운 연결), 머리 뒤에 함께 온 바이트, 연결을 만든 순간부터 들은 닫힘. */
-type ConnectAnswer = {
-  response: http.IncomingMessage;
-  socket: net.Socket;
-  head: Buffer;
-  closed: Promise<void>;
-};
-
-/** `ownedConnect`가 CONNECT의 답 머리를 기다리는 기본 상한. */
-const connectAnswerMs = 5_000;
-
-/**
- * 파일 소켓 `socketPath`로 CONNECT `target`을 보내고 답 머리를 받는다. CONNECT를 태울 연결을 먼저 만들어 만든 같은 식에서 `own`에
- * 맡기고(`ownedClosable`과 같은 소유), 요청은 그 위에 탄다(`createConnection`). 터널은 그 연결 그 자체라(Node는 `connect`에 같은
- * 소켓을 넘긴다) 답 전에 상한으로 실패해도, 터널을 얻은 뒤에도 그 한 정리가 끊고 닫힘을 확인한다. `closed`는 연결을 만든 순간부터
- * 들은 닫힘이다(거절하지 않음). 답 머리는 node:http 파서가 읽은 것이다(`connect`, 상태와 상관없이 온다). 답 전의 연결·요청 오류와
- * 상한(`answerMs`)은 거절이다. 터널을 연 뒤의 오류는 상대가 끊어 난 끊김이면 닫힘의 일부이고, 그 밖이면 러너의 잡히지 않은 오류로
- * 드러난다. `what`은 문구의 주어다(예: "CONNECT host:port to the relay").
- */
-export async function ownedConnect(
-  own: (step: () => Promise<void>) => void,
-  socketPath: string,
-  target: string,
-  {
-    headers = {},
-    answerMs = connectAnswerMs,
-    what = `CONNECT ${target}`,
-  }: {
-    headers?: Record<string, string>;
-    answerMs?: number;
-    what?: string;
-  } = {}
-): Promise<ConnectAnswer> {
-  const [{ connect }, { request: httpRequest }] = await Promise.all([
-    import("node:net"),
-    import("node:http"),
-  ]);
-  const socket = connect(socketPath);
-  const { closed } = owning(
-    own,
-    socket,
-    `${what}'s connection`,
-    closableCloseMs
-  );
-  const request = httpRequest({
-    method: "CONNECT",
-    path: target,
-    headers,
-    createConnection: () => socket,
-  });
-  return within(
-    new Promise<ConnectAnswer>((resolve, reject) => {
-      request.once("error", reject);
-      request.once("connect", (response, tunnel: net.Socket, head: Buffer) => {
-        // CONNECT 답 뒤 Node는 요청이 붙인 소켓 처리기를 뗀다. 같은 동기 단계에서 터널의 오류를 받는다.
-        tunnel.on("error", (error) => {
-          if (!isDisconnect(error)) throw error;
-        });
-        resolve({ response, socket: tunnel, head, closed });
-      });
-      request.end();
-    }),
-    answerMs,
-    `${what} was not answered`
-  );
-}
-
 /**
  * 자원을 끊고(`destroy`) 그 닫힘(`closed`, 자원을 얻은 순간부터 들은 것)을 상한 안에서 확인한다. 닫히지 않으면 `what`과 상한으로
  * 실패한다. `ownedClosable`의 정리다. CONNECT 터널처럼 나중에 생기는 소켓도 따로 맡지 않는다: 그 요청을 태울 연결을 먼저 만들어
- * 맡기고 요청은 그 위에 태운다(`ownedConnect`). 터널은 그 연결 그 자체다.
+ * 맡기고 요청은 그 위에 태운다(`ownedConnect`, `@babojubot/process/testing`). 터널은 그 연결 그 자체다.
  */
 async function endClosable(
   resource: { destroy(): unknown },

@@ -5,6 +5,7 @@
     "src/**/*.spec.*",
     "src/testing.*",
     "src/test-cleanup.*",
+    "src/test-connect.*",
     "src/test-folders.*",
     "src/*-support.*",
     "vitest.config.*",

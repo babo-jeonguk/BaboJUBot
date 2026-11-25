@@ -41,8 +41,8 @@ import {
   ownedListener,
   removeFolderWithin,
   withCleanup,
-  ownedConnect,
 } from "@babojubot/process/test-cleanup";
+import { ownedConnect } from "@babojubot/process/testing";
 
 let t: TestServer | undefined;
 afterEach(async () => {

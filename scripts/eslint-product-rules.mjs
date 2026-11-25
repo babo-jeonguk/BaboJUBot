@@ -673,6 +673,7 @@ export const processNonLaunchers = [
   "lifelineHolder",
   "ownedClosable",
   "ownedConnect",
+  "ownClosable",
   "ownedListener",
   "awaitedLater",
   "openLifelines",
