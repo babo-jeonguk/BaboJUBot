@@ -1,5 +1,44 @@
-import type { RuntimeAdapter } from "@babojubot/contracts";
+import { failureCode, type RuntimeAdapter } from "@babojubot/contracts";
+import type { LaunchedTree } from "@babojubot/process";
 import { testFolders as processFolders } from "@babojubot/process/testing";
+
+/** 공용 실행 경계 대역이 띄운 트리를 넘기는 곳. 대역을 건 시험 파일에서 만든 `testFolders`가 맡는다. */
+/** 경계 대역이 보는 트리의 면: 실제 끄기만 쓴다. */
+type StoppableTree = Pick<LaunchedTree, "stop">;
+let treeOwner: (<T extends StoppableTree>(tree: T) => T) | undefined;
+/** 이 시험 파일에 공용 실행 경계 대역(`owningLaunchTree`)이 걸렸는가. */
+let boundary = false;
+
+/**
+ * 공용 실행(`launchTree`)의 경계 대역. 시험 파일에서
+ * `vi.mock("@babojubot/process", async (original) => (await import("./test-folders.ts")).owningLaunchTree(await original()))`로
+ * 건다(연결 실패 대역 `connect-failure-support.ts`와 같은 쓰임). 띄운 트리마다 그 파일의 `testFolders`가 실제 끄기를 띄운 직후
+ * 폴더 정리에 맡긴다(`treeScene`). 맡을 `testFolders`가 없으면 띄우지 않고 던진다.
+ */
+export function owningLaunchTree<
+  P extends { launchTree: (...args: never[]) => StoppableTree },
+>(real: P): P {
+  boundary = true;
+  const launchTree = ((...args: Parameters<P["launchTree"]>) => {
+    if (!treeOwner)
+      throw new Error(
+        "no test folder owns the trees launched in this file; create testFolders() before launching"
+      );
+    return treeOwner(real.launchTree(...args));
+  }) as P["launchTree"];
+  return { ...real, launchTree };
+}
+
+/**
+ * 이 시험에서 띄우는 트리의 장면. 정리는 각 트리의 실제 끄기 결과를 오류 코드(`TreeStopFailure.code`)로 판정한다: 성공은 통과,
+ * `expectStop`을 준 장면은 그 코드 하나만 더 받는다. 그 밖의 실패(`SUPERVISOR_NOT_ENDED` 등)는 정리 실패다. 실제 끄기는 실행기가 끝난
+ * 것을 확인하거나 강제로 끝낸 뒤에만 답을 판정하므로(`TREE_LEFT`는 실행기가 끝난 뒤의 답이다), 받은 코드도 실행기의 끝을 뜻한다.
+ * `productStop`을 주면 제품에는 실제 끄기로 만든 그 끄기를 돌려준다(실제 트리는 바꾸지 않는다).
+ */
+type TreeScene = {
+  expectStop?: string;
+  productStop?: (real: LaunchedTree["stop"]) => LaunchedTree["stop"];
+};
 
 /** 시험이 만든 프로바이더 연결. 멈춤 신호를 받는 호출(실행·준비 확인·압축·모델 목록)을 정리가 맡는다. */
 type Provider = {
@@ -14,6 +53,21 @@ type Provider = {
  */
 export function testFolders(...args: Parameters<typeof processFolders>) {
   const folders = processFolders(...args);
+  let scene: TreeScene = {};
+  /** 공용 실행 경계 대역이 띄운 트리. 실제 끄기를 띄운 직후 폴더 정리에 맡기고, 장면의 기대 코드로 판정한다. */
+  const ownTree = <T extends StoppableTree>(tree: T): T => {
+    const { expectStop, productStop } = scene;
+    folders.own(async () => {
+      try {
+        await tree.stop();
+      } catch (error) {
+        if (expectStop === undefined || failureCode(error) !== expectStop)
+          throw error;
+      }
+    }, "a launched tree, by its real stop");
+    return productStop ? { ...tree, stop: productStop(tree.stop) } : tree;
+  };
+  treeOwner = ownTree;
   /**
    * 정리가 멈춤 신호를 보내고 돌아오기를 기다리는 호출. 시험이 넘긴 신호도 그대로 듣는다. 호출이 돌아온 것은 그 프로그램이 끝났다는
    * 증거가 아니다: 제품 프로바이더는 프로그램의 끝을 확인하지 못해도(실행 시도의 `broken`) 정상으로 돌아오고, 그 사실을 돌려주는
@@ -71,8 +125,8 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
    * 그 타이머까지 시계를 옮긴 뒤, 실행 시도의 끝(`done`)을 정리 상한 안에서 기다린다. 띄운 직후 맡겨, 시험이 어디서 실패하든 실행
    * 시도가 끝난 뒤에만 폴더를 지운다.
    * `done`의 이행은 실행 시도가 돌아왔다는 것일 뿐 프로그램이 끝났다는 증거가 아니다: 제품은 트리의 끝을 확인하지 못하거나 정리
-   * 단계가 실패해도 `broken: true`로 이행한다. 그래서 `broken`이면 정리 실패로 드러내 폴더를 남긴다(`testFolders`의 원칙). 끄기가
-   * 일부러 실패하거나 시작하지 못하는 실행 시도는 여기 맡기지 않는다. 그 시험이 띄운 프로그램을 따로 맡기고 그 정리가 끝을 확인한다.
+   * 단계가 실패해도 `broken: true`로 이행한다. 그래서 `broken`이면 정리 실패로 드러내 폴더를 남긴다(`testFolders`의 원칙). 일부러
+   * `broken`으로 끝나는 실행 시도는 여기 맡기지 않고 `ownBrokenRun`에 맡긴다.
    */
   const ownRun = <
     T extends { end: () => void; done: Promise<{ broken: boolean }> },
@@ -96,9 +150,37 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
     }, "run attempt");
     return run;
   };
+  /**
+   * 일부러 `broken`으로 끝나는 실행 시도(시작 실패·입력 실패·주입한 끄기 실패·트리 밖 프로그램). `done`은 끝의 증거가 아니므로
+   * 판정하지 않는다. 정리는 실행 시도를 끝내고 제품의 일(기록·출력 닫기)이 끝나기를 기다릴 뿐이고, 프로그램과 감독 실행기의 끝은
+   * 공용 실행 경계 대역이 띄운 직후 맡은 실제 끄기가 장면의 기대 코드로 확인한다(`treeScene`). 그 대역이 없는 파일에서는 던진다.
+   */
+  const ownBrokenRun = <
+    T extends { end: () => void; done: Promise<{ broken: boolean }> },
+  >(
+    run: T
+  ): T => {
+    if (!boundary)
+      throw new Error(
+        "a deliberately broken run attempt needs the launchTree boundary double (owningLaunchTree) to confirm its trees ended"
+      );
+    folders.own(async () => {
+      run.end();
+      await run.done;
+    }, "deliberately broken run attempt");
+    return run;
+  };
   return {
     ...folders,
     ownRun,
+    ownBrokenRun,
+    /** 이 시험에서 띄우는 트리의 장면(위 `TreeScene`). 띄우기 전에 정한다. 시험이 끝나면 정리가 되돌린다. */
+    treeScene(next: TreeScene) {
+      scene = next;
+      folders.own(async () => {
+        scene = {};
+      }, "tree scene");
+    },
     /** 시험이 만든 프로바이더 연결을 정리에 맡긴다(위 `ownProvider`). */
     ownProvider,
     /**

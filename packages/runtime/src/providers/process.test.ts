@@ -14,10 +14,11 @@ import { testFolders } from "./test-folders.ts";
 const tree = vi.hoisted(() => ({
   run: undefined as undefined | (() => unknown),
 }));
+// 띄운 트리는 모두 공용 실행 경계 대역(`owningLaunchTree`)이 띄운 직후 그 실제 끄기를 폴더 정리에 맡긴다.
 vi.mock("@babojubot/process", async (importOriginal) => {
   const real = await importOriginal<typeof import("@babojubot/process")>();
   return {
-    ...real,
+    ...(await import("./test-folders.ts")).owningLaunchTree(real),
     runTree: (...args: Parameters<typeof real.runTree>) =>
       tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
   };
@@ -201,21 +202,17 @@ describe("runProbe", () => {
   it("leaves why a run's program could not be started", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => logged.mockRestore());
-    // 띄우지 못하는 실행 시도라 그 끝은 `broken`이다. 그래서 `ownRun`(끝을 확인하지 못한 실행 시도를 정리 실패로 드러낸다)에
-    // 맡기지 않는다. Linux·macOS에서는 감독 실행기가 실제로 떠서 시작 실패를 알리므로(못 찾은 프로그램을 띄우지 않는 것은
-    // Windows뿐), 정리가 실행 시도를 끝내고 그 일이 끝나기를 기다린다. 실행기의 끝을 기다리는 것은 제품의 끄기이고, 그 끝을 확인하지
-    // 못해도 일부러 `broken`인 끝에 접혀 이 정리는 그것을 가려내지 못한다(한계).
-    const child = startProcess({
-      command: ["/missing/program"],
-      args: [],
-      cwd: process.cwd(),
-      env: { PATH: process.env.PATH },
-      onFrame: async () => {},
-    });
-    folders.own(async () => {
-      child.end();
-      await child.done;
-    }, "run attempt that cannot start");
+    // 띄우지 못하는 실행 시도라 그 끝은 `broken`이다. 그래서 `ownBrokenRun`에 맡긴다. Linux·macOS에서는 감독 실행기가 실제로 떠서
+    // 시작 실패를 알린다(못 찾은 프로그램을 띄우지 않는 것은 Windows뿐). 실행기의 끝은 경계 대역이 맡은 실제 끄기가 확인한다(성공만 받음).
+    const child = folders.ownBrokenRun(
+      startProcess({
+        command: ["/missing/program"],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        onFrame: async () => {},
+      })
+    );
     expect(
       (await within(child.done, 20_000, "the run did not finish")).broken
     ).toBe(true);

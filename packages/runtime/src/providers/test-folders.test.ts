@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { within } from "@babojubot/process/test-support";
 import { expect, it, onTestFinished } from "vitest";
-import { testFolders } from "./test-folders.ts";
+import { owningLaunchTree, testFolders } from "./test-folders.ts";
 import type { RunResult, RuntimeAdapter } from "@babojubot/contracts";
 import { fakeDeclarations } from "../testing.ts";
 import { request } from "./test-support.ts";
@@ -168,5 +168,39 @@ it.each([
     else await cleaned;
     expect(ended).toEqual(["end"]);
     expect(existsSync(root)).toBe(left);
+  }
+);
+
+// 공용 실행 경계 대역이 띄운 트리는 띄운 직후 그 실제 끄기가 폴더 정리에 맡겨진다. 정리는 끄기의 결과를 오류 코드로 판정한다:
+// 성공은 통과, 장면이 선언한 코드 하나는 받고, 그 밖의 코드(실행기의 끝을 확인하지 못함 등)는 정리 실패로 폴더를 남긴다.
+it.each([
+  { failure: undefined, expectStop: undefined, kept: false },
+  { failure: "TREE_LEFT", expectStop: "TREE_LEFT", kept: false },
+  { failure: "SUPERVISOR_NOT_ENDED", expectStop: "TREE_LEFT", kept: true },
+  { failure: "TREE_LEFT", expectStop: undefined, kept: true },
+])(
+  "judges a launched tree's real stop that fails with $failure when the scene expects $expectStop",
+  async ({ failure, expectStop, kept }) => {
+    const test = folders();
+    const root = await test.make("test-folders-");
+    onTestFinished(() => removeFolder(root));
+    const stops: string[] = [];
+    const tree = {
+      stop: async () => {
+        stops.push("real stop");
+        if (failure)
+          throw Object.assign(new Error(`stop failed (${failure})`), {
+            code: failure,
+          });
+      },
+    };
+    test.treeScene({ expectStop });
+    const launched = owningLaunchTree({ launchTree: () => tree }).launchTree();
+    expect(launched).toBe(tree);
+    const cleaned = test.cleanup();
+    if (kept) await expect(cleaned).rejects.toThrow(`stop failed (${failure})`);
+    else await cleaned;
+    expect(stops).toEqual(["real stop"]);
+    expect(existsSync(root)).toBe(kept);
   }
 );

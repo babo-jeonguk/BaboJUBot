@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   openCodexConnection,
   ProtocolClosed,
@@ -13,14 +13,21 @@ import { lifelineHolder } from "@babojubot/process/test-cleanup";
 
 // 합성 peer(replay.mjs)로 응답·종료를 정한다. 모델·네트워크는 쓰지 않는다.
 // 시험이 연 연결은 정리가 닫고 프로그램 정리(done)까지 기다린 뒤에 폴더를 지운다. 단언이 실패하거나 시한을 넘긴 시험도 같다.
+// 띄운 트리는 모두 공용 실행 경계 대역(`owningLaunchTree`)이 띄운 직후 그 실제 끄기를 폴더 정리에 맡긴다.
+vi.mock("@babojubot/process", async (original) =>
+  (await import("./test-folders.ts")).owningLaunchTree(await original())
+);
 const folders = testFolders();
-/** 정리가 닫고 끝을 기다리는 연결. */
-function openOwned(options: Parameters<typeof openCodexConnection>[0]) {
+/**
+ * 정리가 닫고 끝을 기다리는 연결. 연결의 끝은 `ownRun`이 판정한다(`broken`이면 정리 실패). 일부러 `broken`으로 끝나는 장면은
+ * `folders.ownBrokenRun`을 넘기고, 그때 프로그램과 감독 실행기의 끝은 경계 대역이 맡은 실제 끄기가 확인한다.
+ */
+function openOwned(
+  options: Parameters<typeof openCodexConnection>[0],
+  own: typeof folders.ownRun = folders.ownRun
+) {
   const connection = openCodexConnection(options);
-  folders.own(async () => {
-    connection.close();
-    await connection.done;
-  }, "Codex connection");
+  own({ end: () => connection.close(), done: connection.done });
   return connection;
 }
 // 프로그램이 남긴 자식은 연결을 쥐고 돈다. 끝은 번호가 아니라 연결의 닫힘으로 보고, 시험이 끄지 못한 것은 정리가 연결이 열려 있음을
@@ -205,9 +212,8 @@ describe("a Codex app-server connection", () => {
         ready = resolve;
       });
       // 프로그램은 연결을 쥔 뒤 준비를 알린다. 살아 있음은 그 연결로 본다. 입력이 깨져 연결의 끝은 `broken`이라(제품이 끝을
-      // 확인했다는 증거가 없다) 연결 닫기만으로는 프로그램의 끝을 알 수 없다. 프로그램의 끝은 그 연결의 정리가 확인한다: 연결
-      // 닫기·끝 기다리기(`openOwned`, 늦게 등록해 먼저 돎) 뒤에 연결의 닫힘을 보고, 남았으면 열려 있음을 본 직후에만 그 번호로 끈다.
-      // 감독 실행기의 끝은 이 정리가 가려내지 못한다(`broken`에 접힌다, 한계).
+      // 확인했다는 증거가 없다) `ownBrokenRun`에 맡긴다. 트리와 감독 실행기의 끝은 경계 대역이 맡은 실제 끄기가 확인하고, 프로그램의
+      // 끝은 그 연결의 정리가 연결의 닫힘으로 본다(남았으면 열려 있음을 본 직후에만 그 번호로 끈다).
       const name = `write-fails-${++leftCount}`;
       const held = lifelineHolder(
         lifelines,
@@ -216,16 +222,19 @@ describe("a Codex app-server connection", () => {
         'console.log(JSON.stringify({ method: "ready", params: {} }));'
       );
       folders.own(held.end, name);
-      const connection = openOwned({
-        command: [process.execPath],
-        args: [
-          "-e",
-          `require("fs").closeSync(0); ${held.code} setInterval(() => {}, 1000)`,
-        ],
-        cwd: root,
-        env: { PATH: process.env.PATH },
-        onNotification: () => ready(),
-      });
+      const connection = openOwned(
+        {
+          command: [process.execPath],
+          args: [
+            "-e",
+            `require("fs").closeSync(0); ${held.code} setInterval(() => {}, 1000)`,
+          ],
+          cwd: root,
+          env: { PATH: process.env.PATH },
+          onNotification: () => ready(),
+        },
+        folders.ownBrokenRun
+      );
       await closedInput;
       await expect(
         connection.request("lost", {}, { timeoutMs: 60_000 })

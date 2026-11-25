@@ -38,6 +38,10 @@ const ended = ({ pid, start }: Reported) => {
   if (start === undefined) return true;
   return psField(pid, "lstart", 10_000) !== start || exited(pid);
 };
+// 띄운 트리는 모두 공용 실행 경계 대역(`owningLaunchTree`)이 띄운 직후 그 실제 끄기를 폴더 정리에 맡긴다.
+vi.mock("@babojubot/process", async (original) =>
+  (await import("./test-folders.ts")).owningLaunchTree(await original())
+);
 const folders = testFolders();
 let lifelines: Lifelines;
 beforeAll(async () => {
@@ -130,41 +134,40 @@ setInterval(() => {}, 1000);
       folders.own(leader.end, "the run's leader");
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       let hidden: ChildProcess | undefined;
-      // 이 실행 시도는 트리 밖의 프로그램을 확인하지 못해 그 끝이 `broken`이다. 그래서 `ownRun`(끝을 확인하지 못한 실행 시도를
-      // 정리 실패로 드러낸다)에 맡기지 않는다. 정리는 실행 시도를 끝내고 그 일이 끝나기를 기다릴 뿐이다. 감독 실행기의 끝을 기다리는
-      // 것은 제품의 끄기이고, 그 끝을 확인하지 못해도 일부러 `broken`인 끝에 접혀 이 정리는 그것을 가려내지 못한다(한계). 프로그램의 끝은 따로 맡긴
-      // 것의 정리가 확인한다: 대표는 그 연결(`leader`), 시험이 띄운 프로그램은 그 자식(`ownChild`).
-      const run = startProcess({
-        command: [
-          process.execPath,
-          "-e",
-          `
+      // 이 실행 시도는 트리 밖의 프로그램을 확인하지 못해 그 끝이 `broken`이다. 그래서 `ownBrokenRun`에 맡긴다. 실제 끄기는 남은
+      // 프로그램이 있다고 답한다(`TREE_LEFT`, 실행기가 끝난 뒤의 답). 이 장면은 그 코드 하나만 받고, 그 밖의 실패(실행기의 끝을 확인하지
+      // 못함 등)는 정리 실패다. 프로그램의 끝은 따로 맡긴 것의 정리가 확인한다: 대표는 그 연결(`leader`), 시험이 띄운 프로그램은 그
+      // 자식(`ownChild`).
+      folders.treeScene({ expectStop: "TREE_LEFT" });
+      const run = folders.ownBrokenRun(
+        startProcess({
+          command: [
+            process.execPath,
+            "-e",
+            `
 ${leader.code}
 process.stdin.once("data", () => process.exit(0));
 setInterval(() => {}, 1000);
 `,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        stateDir,
-        onFrame: async () => {
-          // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 입력의 진행 신호로 대표를 끝낸다.
-          // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
-          hidden = folders.ownChild(
-            spawn("python3", ["-c", hide], {
-              detached: true,
-              stdio: ["ignore", "pipe", "ignore"],
-            })
-          );
-          await readyLine(hidden, "ready");
-          run.write({ go: true });
-        },
-      });
-      folders.own(async () => {
-        run.end();
-        await run.done;
-      }, "run attempt that cannot confirm its end");
+          ],
+          args: [],
+          cwd: process.cwd(),
+          env: { PATH: process.env.PATH },
+          stateDir,
+          onFrame: async () => {
+            // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 입력의 진행 신호로 대표를 끝낸다.
+            // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
+            hidden = folders.ownChild(
+              spawn("python3", ["-c", hide], {
+                detached: true,
+                stdio: ["ignore", "pipe", "ignore"],
+              })
+            );
+            await readyLine(hidden, "ready");
+            run.write({ go: true });
+          },
+        })
+      );
       const exit = await within(run.done, 30_000, "the run did not finish");
       if (hidden?.pid === undefined)
         throw new Error("the hidden program did not start");
