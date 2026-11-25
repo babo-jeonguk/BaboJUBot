@@ -49,19 +49,20 @@ const sideDatabaseStepMs = 10_000;
 /**
  * 시험이 따로 만든 DB(곁 DB)를 정리한다. 그 DB로 연 연결(풀·handle)을 상한 안에서 닫은 뒤에만 DB를 지운다. 닫지 못하면 지우지
  * 않고 DB를 남긴 채 그 원인으로 실패한다. 지우기도 상한 안에서 기다린다. 상한은 기다림만 끝내므로, 넘긴 단계는 그 원인과 함께
- * 실패로 남는다(그 연결·지우기를 대신 끝내지는 않는다).
+ * 실패로 남는다(그 연결·지우기를 대신 끝내지는 않는다). `stepMs`는 단계마다의 상한이고, 그 차례를 직접 보는 시험만 줄인다.
  */
-async function closeThenDrop(
+export async function closeThenDrop(
   name: string,
   close: () => Promise<unknown>,
-  drop: () => Promise<unknown>
+  drop: () => Promise<unknown>,
+  stepMs = sideDatabaseStepMs
 ) {
   await within(
     close(),
-    sideDatabaseStepMs,
+    stepMs,
     `the connections to database ${name} did not close`
   );
-  await within(drop(), sideDatabaseStepMs, `database ${name} was not dropped`);
+  await within(drop(), stepMs, `database ${name} was not dropped`);
 }
 
 declare module "vitest" {
