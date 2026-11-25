@@ -104,7 +104,13 @@ function faultyServer(Base: typeof netModule.Server) {
       const hold = serverFaults.holdClose;
       const held = this.listenedAt;
       if (hold && held !== undefined && hold.at(held)) {
-        void hold.until.then(() => this.closeNow(callback));
+        hold.until.then(
+          () => this.closeNow(callback),
+          (error: unknown) =>
+            callback?.(
+              new Error("the held close was not released", { cause: error })
+            )
+        );
         return this;
       }
       return this.closeNow(callback);

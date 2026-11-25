@@ -285,10 +285,9 @@ export async function ownedListener<S extends net.Server>(
     socket.once("close", () => connections.delete(socket));
   });
   // 듣기 시도의 끝(`listenAttempt`: 듣기 시작이면 이행, 듣기 오류면 그 오류로 거절). 듣기는 닫기를 맡긴 뒤에 시작하고(`own`은 닫기를
-  // 맡기기만 하고 부르지 않는다), 시도는 그 같은 동기 구간에서 만든다. 듣기 기다림이 시도가 끝나기 전에 상한으로 끝났는지는 `listenTimedOut`.
+  // 맡기기만 하고 부르지 않는다), 시도는 그 같은 동기 구간에서 만든다(닫기는 그 뒤에야 불려 `attempt`를 읽는다). 듣기 기다림이 시도가 끝나기 전에 상한으로 끝났는지는 `listenTimedOut`.
   let attemptEnded = false;
   let listenTimedOut = false;
-  let attempt: Promise<void>;
   // 닫기 사슬(한 번만 만듦), 그 끝남(사슬의 finally에서 동기로), 상한 뒤 늦은 실패를 드러내는 처리를 붙였는가(사슬마다 한 번).
   let closing: Promise<void> | undefined;
   let closingEnded = false;
@@ -331,7 +330,7 @@ export async function ownedListener<S extends net.Server>(
     );
   };
   own(close);
-  attempt = awaitedLater(
+  const attempt = awaitedLater(
     listenAttempt(server, () => server.listen(at)).finally(() => {
       attemptEnded = true;
     })

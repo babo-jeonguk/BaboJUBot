@@ -60,9 +60,9 @@ export type RelayHooks = {
 export type OpenRelay = {
   /** 컨테이너에 읽기로 넣을 폴더(이 컴퓨터 경로). */
   directory: string;
-  /** 소켓을 모두 연 때. 실패하면 거부된다. */
+  /** 소켓을 모두 연 때. 실패하면(듣기 오류, 듣는 사이 닫기가 시작되면 `relay_closed`) 거부된다. */
   ready: Promise<void>;
-  /** 컨테이너 안 서버로 가는 이 컴퓨터 loopback 주소(origin). `inbound`로 연 중계만. */
+  /** 컨테이너 안 서버로 가는 이 컴퓨터 loopback 주소(origin). `inbound`로 연 중계만. 닫기가 시작됐으면 `relay_closed`로 거절한다. */
   inboundOrigin(): Promise<string>;
   /** 열린 연결을 끊고 소켓·폴더를 지운다. 여러 번 불러도 된다. */
   close(): Promise<void>;
@@ -576,19 +576,23 @@ export function createRelayHub(): RelayHub {
       ) => {
         if (closing) throw closed();
         const server = make();
+        // 받은 연결은 닫기가 끊는다. 닫기가 시작된 뒤 받은 연결은 바로 끊는다(서버는 차례로 닫히므로 앞 서버를 닫는 동안 뒤 서버가
+        // 연결을 받을 수 있고, net 서버의 닫기는 받은 연결이 모두 끝나야 끝난다).
         server.on("connection", (socket: net.Socket) => {
+          if (closing) return void socket.destroy();
           loose.add(socket);
           socket.on("close", () => loose.delete(socket));
         });
         // 기록은 듣기를 부르기 전에 넣는다. 듣기를 부르는 동안 닫기가 시작되어도 닫기가 이 서버의 듣기 시도 끝을 기다린다.
         const listened = Promise.withResolvers<boolean>();
         owned.push({ server, listened: listened.promise });
-        const attempt = listenAttempt(server, () => listen(server));
-        attempt.then(
-          () => listened.resolve(true),
-          () => listened.resolve(false)
-        );
-        await attempt;
+        try {
+          await listenAttempt(server, () => listen(server));
+        } catch (error) {
+          listened.resolve(false);
+          throw error;
+        }
+        listened.resolve(true);
         if (closing) throw closed();
         return server;
       };

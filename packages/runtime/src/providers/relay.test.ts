@@ -5,6 +5,7 @@ import path from "node:path";
 import { text } from "node:stream/consumers";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
+  attemptAll,
   destinationSchema,
   egressRefusalMessages,
   type Destination,

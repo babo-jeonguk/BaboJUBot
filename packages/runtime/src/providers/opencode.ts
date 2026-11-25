@@ -124,7 +124,8 @@ const pluginsActivating = (body: unknown) => {
 };
 /**
  * 서버 주소를 받은 때부터의 plugin 활성화 시한. 그 안에서는 "준비 중" 답만 다시 묻는다(공식 Desktop 클라이언트도 이 답에만 다시
- * 묻는다: client/src/service-probe.ts). 기다림(쉼·다시 묻기의 답·503 본문 판독)이 이 시한에 끊기면 `plugins_not_activated`로 실패한다.
+ * 묻는다: client/src/service-probe.ts). "준비 중" 답을 받은 뒤의 기다림(쉼·다시 묻기의 답·그 503 본문 판독)이 이 시한에 끊기면
+ * `plugins_not_activated`, 첫 답의 503 본문 판독이 끊기면 활성화 중인지 모르는 503(`HTTP_503`)으로 실패한다.
  */
 export const pluginActivationMs = 60_000;
 /** "준비 중" 답 뒤 다시 묻기 전의 쉼. 서버가 답하기 전에 이미 5초 기다리므로, 곧바로 답한 경우에도 연달아 묻지 않게만 한다. */
