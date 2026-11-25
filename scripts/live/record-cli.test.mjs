@@ -62,47 +62,55 @@ function folders(defer) {
   return { dir, recordings, program };
 }
 
-/** 녹화 하나(줄마다 한 기록). 중계 한 번은 녹화 파일 하나를 남긴다. */
-function recording(recordings) {
+/**
+ * 녹화 폴더의 녹화 파일에 지금까지 쓰인 기록(줄마다 한 기록). 중계 한 번은 녹화 파일 하나를 남긴다. 아직 파일이 없으면 기록도 없다.
+ * 줄바꿈으로 끝난 줄만 기록이고, 그 뒤에 남은 글(쓰는 중인 줄)은 `partial`로 따로 돌려준다.
+ */
+function writtenRows(recordings) {
   const files = readdirSync(recordings);
-  assert.equal(files.length, 1, files.join(", "));
+  assert.ok(files.length <= 1, files.join(", "));
   const [file] = files;
-  assert.ok(file);
-  return readFileSync(path.join(recordings, file), "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
+  if (file === undefined) return { rows: [], partial: "" };
+  const text = readFileSync(path.join(recordings, file), "utf8");
+  const end = text.lastIndexOf("\n") + 1;
+  return {
+    rows: text
+      .slice(0, end)
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)),
+    partial: text.slice(end),
+  };
+}
+
+/** 끝난 중계의 녹화 하나. 녹화 파일이 하나 있고, 마지막 줄까지 줄바꿈으로 끝나야 한다. */
+function recording(recordings) {
+  assert.equal(readdirSync(recordings).length, 1);
+  const { rows, partial } = writtenRows(recordings);
+  assert.equal(partial, "");
+  return rows;
 }
 
 /**
  * 중계가 아직 쓰고 있는 녹화에 `kind` 기록이 닿으면 이행한다. 중계가 밖으로 알리지 않는 일(떠난 요청자)의 기록을 기다릴 때 쓴다.
- * 쓰는 중이므로 줄바꿈으로 끝난 줄만 읽고, 닿지 않았으면 깨어나 다시 확인한다. 상한(`eventMs`) 안에 닿지 않거나 녹화를 읽지
+ * 알릴 수단이 없는 상태라 바로 한 번 확인하고, 닿지 않았으면 깨어나 다시 확인한다. 상한(`eventMs`) 안에 닿지 않거나 녹화를 읽지
  * 못하면 그 까닭으로 거절한다.
  */
 function recordedRow(recordings, kind) {
   const deadline = Date.now() + eventMs;
   return new Promise((resolve, reject) => {
-    const poll = () => {
+    const check = () => {
       try {
-        const [file] = readdirSync(recordings);
-        const text =
-          file === undefined
-            ? ""
-            : readFileSync(path.join(recordings, file), "utf8");
-        const rows = text
-          .slice(0, text.lastIndexOf("\n") + 1)
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => JSON.parse(line));
-        if (rows.some((row) => row.kind === kind)) resolve(undefined);
+        if (writtenRows(recordings).rows.some((row) => row.kind === kind))
+          resolve(undefined);
         else if (Date.now() > deadline)
           reject(new Error(`record-cli did not record ${kind}`));
-        else setTimeout(poll, 20);
+        else setTimeout(check, 20);
       } catch (error) {
         reject(error);
       }
     };
-    poll();
+    check();
   });
 }
 
