@@ -25,6 +25,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import {
+  attemptAll,
   hasErrorCode,
   orIfMissing,
   type EgressRefusal,
@@ -56,14 +57,20 @@ import {
   runDocker,
 } from "./container.ts";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { lifelineHolder } from "@babojubot/process/test-cleanup";
 import {
   manualClock,
   probeEnvironment,
   within,
 } from "@babojubot/process/test-support";
+import { relaySockets } from "./relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
-import { refusing, resetRefusing } from "./connect-failure-support.ts";
+import {
+  refusing,
+  resetRefusing,
+  serverFaults,
+} from "./connect-failure-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
@@ -174,6 +181,13 @@ const policy = vi.hoisted(() => ({
 vi.mock("node:net", async (importOriginal) =>
   (await import("./connect-failure-support.ts")).failingNet(
     await importOriginal()
+  )
+);
+// 같은 대역이 중계의 HTTP 서버를 만들어, 시험이 정한 닫기만 실패시킨다(`serverFaults`).
+vi.mock("node:http", async (importOriginal) =>
+  (await import("./connect-failure-support.ts")).failingHttp(
+    await importOriginal(),
+    await import("node:net")
   )
 );
 vi.mock("./egress-policy.ts", async (importOriginal) => {
@@ -3249,26 +3263,29 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
   // (#264 외부 리뷰 5회차 STD-4). 확인이 실패하면 관문은 격리 환경 없음으로 본다.
   it("still removes its container when the relay does not close, and fails the check", async () => {
     const { environment, removals } = await cleanProbe();
-    const close = net.Server.prototype.close;
-    const failing = vi
-      .spyOn(net.Server.prototype, "close")
-      .mockImplementation(function (
-        this: net.Server,
-        callback?: (error?: Error) => void
-      ) {
-        return close.call(this, (error?: Error) =>
-          callback?.(
-            error ?? Object.assign(new Error("close failed"), { code: "EBUSY" })
-          )
-        );
-      });
-    onTestFinished(() => failing.mockRestore());
+    // 확인이 연 중계의 egress 서버 닫기가 실패를 알린다(서버는 실제로 닫힌다). 닫힘을 확인하지 못한 중계는 폴더를 남기므로, 그
+    // 폴더는 시험이 지운다. 대역의 기록은 시험마다 `afterEach`가 비우므로(이 정리보다 먼저 돈다) 실패시킨 주소를 여기 따로 모은다.
+    const failedAt: string[] = [];
+    serverFaults.close = {
+      code: "EBUSY",
+      at: (address) => {
+        const egress = path.basename(address) === relaySockets.egress;
+        if (egress) failedAt.push(address);
+        return egress;
+      },
+    };
+    onTestFinished(() =>
+      attemptAll(
+        failedAt.map((address) => () => removeFolder(path.dirname(address)))
+      )
+    );
     await expect(
       environment.probe(
         { blocked: [], forbidden: [] },
         AbortSignal.timeout(10_000)
       )
     ).rejects.toThrow("a relay server did not close (EBUSY)");
+    expect(serverFaults.failedClose.mock.calls).toEqual([failedAt]);
     expect(await removals()).toEqual([
       {
         args: ["rm", "-f", expect.stringMatching(/^babojubot-probe-/)],

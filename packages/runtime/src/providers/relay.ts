@@ -505,32 +505,32 @@ export function createRelayHub(): RelayHub {
             }
             relay.tunnels.clear();
             for (const socket of [...idle, ...loose]) socket.destroy();
+            // 폴더에는 서버들의 소켓 파일이 있다. 모든 서버가 닫혔음을 확인한 뒤에만 지우고, 하나라도 확인하지 못하면 폴더를 남기고
+            // 그 원인으로 실패한다(지우면 아직 듣는 서버가 남은 채로 닫힌 것처럼 보인다).
             await attemptAll(
-              [
-                ...servers.map(
-                  (server) => () =>
-                    new Promise<void>((resolve, reject) => {
-                      (server as http.Server).closeAllConnections?.();
-                      // 듣기 전에 실패한 서버는 닫을 것이 없다(답이다). 그 밖의 닫기 실패는 거절로 드러낸다.
-                      server.close((error) => {
-                        if (
-                          error &&
-                          !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-                        )
-                          reject(
-                            new Error(
-                              `a relay server did not close (${failureCode(error)})`,
-                              { cause: error }
-                            )
-                          );
-                        else resolve();
-                      });
-                    })
-                ),
-                () => rmSync(directory, { recursive: true, force: true }),
-              ],
-              "the relay could not be closed"
+              servers.map(
+                (server) => () =>
+                  new Promise<void>((resolve, reject) => {
+                    (server as http.Server).closeAllConnections?.();
+                    // 듣기 전에 실패한 서버는 닫을 것이 없다(답이다). 그 밖의 닫기 실패는 거절로 드러낸다.
+                    server.close((error) => {
+                      if (
+                        error &&
+                        !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+                      )
+                        reject(
+                          new Error(
+                            `a relay server did not close (${failureCode(error)})`,
+                            { cause: error }
+                          )
+                        );
+                      else resolve();
+                    });
+                  })
+              ),
+              `the relay could not be closed; its folder ${directory} is kept`
             );
+            rmSync(directory, { recursive: true, force: true });
           })()),
       };
       relays.add(relay);
