@@ -28,7 +28,11 @@ vi.mock("@babojubot/process", async (original) => {
   const launchTree = ((...args: Parameters<typeof real.launchTree>) => {
     const tree = real.launchTree(...args);
     const stop = tree.stop.bind(tree);
-    // 대역이 켜져 있으면 아무것도 끄지 않고 실패한다. 대표는 남고, 시험 정리가 그 번호로 끈다.
+    // 실패를 넣기 전에 원래 끄기를 띄운 직후 폴더 정리에 맡긴다. 제품의 부름에는 의도한 실패를 돌려주지만, 정리는 원래 끄기로
+    // 감독 실행기와 트리 전체의 끝을 확인한다. 대표만 끝내서는 감독 실행기가 남는다(실행기는 대표가 끝나도 제어 통로에서 끄기를
+    // 기다린다). 원래 끄기는 여러 번 불러도 한 번만 끈다.
+    folders.own(() => stop(), "the tree, by its real stop");
+    // 대역이 켜져 있으면 아무것도 끄지 않고 실패한다. 트리는 정리의 원래 끄기가 끈다.
     tree.stop = async (options) => {
       if (fault.stop)
         throw new Error(
@@ -58,7 +62,7 @@ const keep = "setInterval(() => {}, 1000);";
 
 /**
  * 자기 번호를 파일에 남긴 뒤 연결을 쥐는 프로그램(#286: 번호를 먼저 남겨, 연결이 보이면 정리가 그 번호를 읽을 수 있다. 연결 뒤에
- * 남기면 그 사이 시험이 끝날 때 정리가 아직 없는 파일을 읽었다). 대역 때문에 시험이 끄지 못한 프로그램은 정리가 그 번호로 끈다. 연결이 열려 있으면
+ * 남기면 그 사이 시험이 끝날 때 정리가 아직 없는 파일을 읽었다). 트리의 원래 끄기 뒤에도 남은 대표는 정리가 그 번호로 끈다. 연결이 열려 있으면
  * 그 번호의 프로세스는 아직 그 프로그램이다.
  */
 async function holder(label: string, body = keep) {
@@ -89,8 +93,8 @@ describe("stopping a tree", () => {
       onFrame: async () => {},
     });
     // 끄기가 일부러 실패하는 실행 시도라 그 끝은 `broken`이다. `ownRun`(끝을 확인하지 못한 실행 시도를 정리 실패로 드러낸다)에
-    // 맡기지 않는다. 정리는 실행 시도를 끝내고 그 일이 끝나기를 기다릴 뿐이다. 대표의 끝은 따로 맡긴 연결(`holder`)의 정리가
-    // 확인한다(이것이 먼저 돌고, 그 뒤에 대표를 끄고 연결 닫힘을 본다).
+    // 맡기지 않는다. 정리는 실행 시도를 끝내고 그 일이 끝나기를 기다릴 뿐이다. 그 뒤 대역이 띄운 직후 맡긴 원래 끄기가 감독
+    // 실행기와 트리 전체의 끝을 확인하고, 마지막으로 대표의 연결(`holder`) 정리가 대표의 끝을 확인한다(등록의 역순).
     folders.own(async () => {
       attempt.end();
       await attempt.done;
