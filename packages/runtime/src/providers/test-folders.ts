@@ -2,9 +2,13 @@ import { failureCode, type RuntimeAdapter } from "@babojubot/contracts";
 import type { LaunchedTree } from "@babojubot/process";
 import { testFolders as processFolders } from "@babojubot/process/testing";
 
-/** 공용 실행 경계 대역이 띄운 트리를 넘기는 곳. 대역을 건 시험 파일에서 만든 `testFolders`가 맡는다. */
 /** 경계 대역이 보는 트리의 면: 실제 끄기만 쓴다. */
 type StoppableTree = Pick<LaunchedTree, "stop">;
+/**
+ * 공용 실행 경계 대역이 띄운 트리를 넘기는 곳. 대역을 건 시험 파일에서 만든 `testFolders` 하나가 맡는다. 그런 파일에서 둘째
+ * `testFolders`를 만들면 던진다(어느 폴더 정리가 트리를 맡는지 모르게 되므로, 아는 모양 하나만 받는다). 모듈 상태는 시험 파일마다
+ * 따로다(vitest가 파일마다 모듈을 새로 읽는다).
+ */
 let treeOwner: (<T extends StoppableTree>(tree: T) => T) | undefined;
 /** 이 시험 파일에 공용 실행 경계 대역(`owningLaunchTree`)이 걸렸는가. */
 let boundary = false;
@@ -53,10 +57,13 @@ type Provider = {
  */
 export function testFolders(...args: Parameters<typeof processFolders>) {
   const folders = processFolders(...args);
+  /** 이 시험의 트리 장면. 정한 시험의 정리가 끝나면 비운다(다음 시험에 남지 않는다). */
   let scene: TreeScene = {};
-  /** 공용 실행 경계 대역이 띄운 트리. 실제 끄기를 띄운 직후 폴더 정리에 맡기고, 장면의 기대 코드로 판정한다. */
-  const ownTree = <T extends StoppableTree>(tree: T): T => {
-    const { expectStop, productStop } = scene;
+  /** 공용 실행 경계 대역이 띄운 트리. 실제 끄기를 띄운 직후 폴더 정리에 맡기고, 장면(`scene`)의 기대 코드로 판정한다. */
+  const ownLaunchedTree = <T extends StoppableTree>(
+    tree: T,
+    { expectStop, productStop }: TreeScene
+  ): T => {
     folders.own(async () => {
       try {
         await tree.stop();
@@ -67,7 +74,23 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
     }, "a launched tree, by its real stop");
     return productStop ? { ...tree, stop: productStop(tree.stop) } : tree;
   };
-  treeOwner = ownTree;
+  const ownTree = <T extends StoppableTree>(tree: T): T =>
+    ownLaunchedTree(tree, scene);
+  // 경계 대역을 건 파일(대역은 시험 파일이 공용 실행을 처음 가져올 때 걸린다)에서만 트리를 맡는다. 그런 파일의 둘째 `testFolders`는 던진다.
+  if (boundary) {
+    if (treeOwner)
+      throw new Error(
+        "a test file with the launchTree boundary double creates one testFolders(); a second one would leave it unclear which cleanup owns the trees"
+      );
+    treeOwner = ownTree;
+  }
+  /** 이 폴더 정리가 공용 실행 경계 대역의 트리를 맡는가. 아니면 트리 장면과 `ownBrokenRun`은 던진다. */
+  const ownsTrees = () => {
+    if (treeOwner !== ownTree)
+      throw new Error(
+        "this testFolders() does not own launched trees: the file needs the launchTree boundary double (owningLaunchTree) and one testFolders()"
+      );
+  };
   /**
    * 정리가 멈춤 신호를 보내고 돌아오기를 기다리는 호출. 시험이 넘긴 신호도 그대로 듣는다. 호출이 돌아온 것은 그 프로그램이 끝났다는
    * 증거가 아니다: 제품 프로바이더는 프로그램의 끝을 확인하지 못해도(실행 시도의 `broken`) 정상으로 돌아오고, 그 사실을 돌려주는
@@ -160,10 +183,7 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
   >(
     run: T
   ): T => {
-    if (!boundary)
-      throw new Error(
-        "a deliberately broken run attempt needs the launchTree boundary double (owningLaunchTree) to confirm its trees ended"
-      );
+    ownsTrees();
     folders.own(async () => {
       run.end();
       await run.done;
@@ -174,8 +194,11 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
     ...folders,
     ownRun,
     ownBrokenRun,
+    /** 공용 실행 경계 대역이 띄운 트리를 장면과 함께 맡는 정리(대역은 이 시험의 장면으로 부른다). 판정 시험이 전역 상태 없이 부르도록 내보낸다. */
+    ownLaunchedTree,
     /** 이 시험에서 띄우는 트리의 장면(위 `TreeScene`). 띄우기 전에 정한다. 시험이 끝나면 정리가 되돌린다. */
     treeScene(next: TreeScene) {
+      ownsTrees();
       scene = next;
       folders.own(async () => {
         scene = {};

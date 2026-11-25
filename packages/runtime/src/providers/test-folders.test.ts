@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { within } from "@babojubot/process/test-support";
 import { expect, it, onTestFinished } from "vitest";
-import { owningLaunchTree, testFolders } from "./test-folders.ts";
+import { testFolders } from "./test-folders.ts";
 import type { RunResult, RuntimeAdapter } from "@babojubot/contracts";
 import { fakeDeclarations } from "../testing.ts";
 import { request } from "./test-support.ts";
@@ -194,8 +194,8 @@ it.each([
           });
       },
     };
-    test.treeScene({ expectStop });
-    const launched = owningLaunchTree({ launchTree: () => tree }).launchTree();
+    // 이 파일에는 경계 대역이 없어 전역 소유자를 두지 않는다. 대역이 부르는 정리를 직접 부른다.
+    const launched = test.ownLaunchedTree(tree, { expectStop });
     expect(launched).toBe(tree);
     const cleaned = test.cleanup();
     if (kept) await expect(cleaned).rejects.toThrow(`stop failed (${failure})`);
