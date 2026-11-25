@@ -16,6 +16,7 @@ import {
 } from "@babojubot/contracts";
 import type { Lifelines } from "./lifeline-support.ts";
 import { removeFolder } from "./remove-folder.ts";
+import { listenAttempt } from "./listen-attempt.ts";
 import { reportedPid, within } from "./test-support.ts";
 
 /** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. 모두 시도하기는 `attemptAll`(`@babojubot/contracts`)이 한다. */
@@ -283,26 +284,11 @@ export async function ownedListener<S extends net.Server>(
     connections.add(socket);
     socket.once("close", () => connections.delete(socket));
   });
-  // 듣기 시도의 끝(듣기 시작이면 이행, 듣기 오류면 그 오류로 거절). 처리기는 듣기 전에 붙이고 끝남을 동기로 세운다. 듣기 자체는
-  // 닫기를 맡긴 뒤에 시작한다. 듣기 기다림이 시도가 끝나기 전에 상한으로 끝났는지는 `listenTimedOut`.
+  // 듣기 시도의 끝(`listenAttempt`: 듣기 시작이면 이행, 듣기 오류면 그 오류로 거절). 듣기는 닫기를 맡긴 뒤에 시작하고(`own`은 닫기를
+  // 맡기기만 하고 부르지 않는다), 시도는 그 같은 동기 구간에서 만든다. 듣기 기다림이 시도가 끝나기 전에 상한으로 끝났는지는 `listenTimedOut`.
   let attemptEnded = false;
   let listenTimedOut = false;
-  const attempt = awaitedLater(
-    new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => {
-        attemptEnded = true;
-        server.off("listening", onListening);
-        reject(error);
-      };
-      const onListening = () => {
-        attemptEnded = true;
-        server.off("error", onError);
-        resolve();
-      };
-      server.once("error", onError);
-      server.once("listening", onListening);
-    })
-  );
+  let attempt: Promise<void>;
   // 닫기 사슬(한 번만 만듦), 그 끝남(사슬의 finally에서 동기로), 상한 뒤 늦은 실패를 드러내는 처리를 붙였는가(사슬마다 한 번).
   let closing: Promise<void> | undefined;
   let closingEnded = false;
@@ -345,7 +331,11 @@ export async function ownedListener<S extends net.Server>(
     );
   };
   own(close);
-  server.listen(at);
+  attempt = awaitedLater(
+    listenAttempt(server, () => server.listen(at)).finally(() => {
+      attemptEnded = true;
+    })
+  );
   try {
     await within(attempt, listenMs, `${what} did not start listening`);
   } catch (error) {

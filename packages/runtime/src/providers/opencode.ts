@@ -99,7 +99,7 @@ function failedExecution(error: unknown): RunResult {
 class HttpFailure extends Error {
   readonly status: number;
   readonly code: string;
-  /** `activating`: plugin 활성화 중이라는 답을 상한(`pluginActivationMs`)까지 받았다. 그 밖의 실패 답과 다른 code로 남는다. */
+  /** `activating`: plugin 활성화 중이라는 답을 받고 기다리다 활성화 시한(`pluginActivationMs`)에 끊겼다. 그 밖의 실패 답과 다른 code로 남는다. */
   constructor(status: number, activating = false) {
     super(
       activating
@@ -123,8 +123,8 @@ const pluginsActivating = (body: unknown) => {
   );
 };
 /**
- * 서버 주소를 받은 뒤 plugin 활성화를 기다리는 상한. 그 안에서는 "준비 중" 답만 다시 묻는다(공식 Desktop 클라이언트도 이 답에만 다시
- * 묻는다: client/src/service-probe.ts). 넘기면 그 답(HTTP 503)으로 실패한다.
+ * 서버 주소를 받은 때부터의 plugin 활성화 시한. 그 안에서는 "준비 중" 답만 다시 묻는다(공식 Desktop 클라이언트도 이 답에만 다시
+ * 묻는다: client/src/service-probe.ts). 기다림(쉼·다시 묻기의 답·503 본문 판독)이 이 시한에 끊기면 `plugins_not_activated`로 실패한다.
  */
 export const pluginActivationMs = 60_000;
 /** "준비 중" 답 뒤 다시 묻기 전의 쉼. 서버가 답하기 전에 이미 5초 기다리므로, 곧바로 답한 경우에도 연달아 묻지 않게만 한다. */
@@ -738,43 +738,83 @@ export function createOpenCodeProvider(options: {
           "Basic " + Buffer.from("opencode:" + password).toString("base64"),
         "content-type": "application/json",
       };
-      const activationUntil = clock.now() + pluginActivationMs;
+      // plugin 활성화 시한: 서버 주소를 받은 때부터 `pluginActivationMs`. 한 서버의 활성화 기다림(다시 물을지 정하는 503 본문 판독, 쉼,
+      // 다시 묻기의 답)은 모두 이 시한 하나에 묶인다. 서버가 끝나면(lifetime) 타이머를 푼다.
+      const activation = new AbortController();
+      const deadline = clock.setTimeout(
+        () => activation.abort(),
+        pluginActivationMs
+      );
+      const clearDeadline = () => clock.clearTimeout(deadline);
+      if (lifetime.signal.aborted) clearDeadline();
+      else
+        lifetime.signal.addEventListener("abort", clearDeadline, {
+          once: true,
+        });
+      /** 시도 하나(`step`)를 활성화 시한에 잇는다. 시한이 지났거나 지나면 `reason()`으로 그 시도를 끊는다. 돌려준 함수로 푼다. */
+      const untilActivationEnds = (
+        step: AbortController,
+        reason: () => Error
+      ) => {
+        const cut = () => step.abort(reason());
+        if (activation.signal.aborted) {
+          cut();
+          return () => {};
+        }
+        activation.signal.addEventListener("abort", cut, { once: true });
+        return () => activation.signal.removeEventListener("abort", cut);
+      };
       const request = async (
         route: string,
         method = "GET",
         body?: unknown,
         timeout = requestTimeoutMs
       ): Promise<Response> => {
+        // 이 호출이 plugin 활성화 중이라는 답을 받아 기다리는 중인가. 그 뒤의 시도는 쉼부터 답까지 시한에 묶이고, 시한에 끊기면
+        // `plugins_not_activated`로 실패한다.
+        let waiting = false;
         for (;;) {
-          const signal =
-            timeout === 0
-              ? lifetime.signal
-              : AbortSignal.any([
-                  lifetime.signal,
-                  AbortSignal.timeout(timeout),
-                ]);
-          const response = await fetch(base + route, {
-            method,
-            headers,
-            body: body === undefined ? undefined : JSON.stringify(body),
-            signal,
-          });
-          if (response.ok) return response;
-          if (response.status !== 503) {
-            await response.body?.cancel();
-            throw new HttpFailure(response.status);
-          }
-          // plugin 활성화 중이라는 답만 상한 안에서 다시 묻는다(`pluginsActivating`). 상한을 넘긴 그 답은 다른 503과 다른 code로
-          // 실패한다. 본문을 읽지 못한 실패는 그대로 드러낸다. JSON이 아닌 본문은 "준비 중"이 아니다.
-          const text = await response.text();
-          if (
-            !pluginsActivating(
-              orIfUnreadable(() => JSON.parse(text) as unknown, undefined)
+          // 시도 하나(쉼, 요청, 503이면 그 본문 판독)를 끊는 signal. 성공한 답을 돌려주기 전에 시한과의 이음을 풀어, 그 본문
+          // (`/api/event` 스트림 등)은 시한에 묶이지 않는다.
+          const step = new AbortController();
+          let release = waiting
+            ? untilActivationEnds(step, () => new HttpFailure(503, true))
+            : () => {};
+          const signal = AbortSignal.any([lifetime.signal, step.signal]);
+          try {
+            if (waiting) await pauseOn(clock, activationPauseMs, signal);
+            const response = await fetch(base + route, {
+              method,
+              headers,
+              body: body === undefined ? undefined : JSON.stringify(body),
+              signal:
+                timeout === 0
+                  ? signal
+                  : AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
+            });
+            if (response.ok) return response;
+            // 503 본문은 활성화를 더 기다릴지 정하려고만 읽는다(`pluginsActivating`). 시한이 지나 정할 것이 없으면 읽지 않고, 읽는
+            // 동안은 시한에 묶인다. 첫 시도의 판독이 시한에 끊기면 활성화 중인지 모르는 503이다. JSON이 아닌 본문은 "준비 중"이 아니다.
+            if (
+              response.status !== 503 ||
+              (!waiting && activation.signal.aborted)
+            ) {
+              await response.body?.cancel();
+              throw new HttpFailure(response.status);
+            }
+            if (!waiting)
+              release = untilActivationEnds(step, () => new HttpFailure(503));
+            const text = await response.text();
+            if (
+              !pluginsActivating(
+                orIfUnreadable(() => JSON.parse(text) as unknown, undefined)
+              )
             )
-          )
-            throw new HttpFailure(503);
-          if (clock.now() >= activationUntil) throw new HttpFailure(503, true);
-          await pauseOn(clock, activationPauseMs, lifetime.signal);
+              throw new HttpFailure(503);
+            waiting = true;
+          } finally {
+            release();
+          }
         }
       };
       return {

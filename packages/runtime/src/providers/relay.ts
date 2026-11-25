@@ -11,7 +11,6 @@ import {
   continueAfterFailure,
   egressRefusalMessages,
   failureCode,
-  hasErrorCode,
   isDisconnect,
   orIfProbeFailed,
   orIfUnreadable,
@@ -19,6 +18,7 @@ import {
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
+import { listenAttempt } from "@babojubot/process";
 import {
   allowsConnection,
   decideDestination,
@@ -487,12 +487,20 @@ export function createRelayHub(): RelayHub {
     open({ identity, required, inbound }) {
       if (!hooks) throw new Error("isolated run relay is not ready");
       const directory = mkdtempSync(path.join(os.tmpdir(), "babojubot-relay-"));
-      const servers: net.Server[] = [];
+      /** 이 중계가 얻은 서버와 그 듣기 시도의 끝(들었는가). 서버는 `own` 하나만 얻고, 닫기가 시작된 뒤로는 늘지 않는다. */
+      const owned: { server: net.Server; listened: Promise<boolean> }[] = [];
       const idle: net.Socket[] = [];
       const waiting: ((socket: net.Socket) => void)[] = [];
       const loose = new Set<net.Socket>();
       let local: Promise<string> | undefined;
       let ended: Promise<void> | undefined;
+      /** 닫기가 시작되었는가. 닫기의 첫 동기 구간에서 세우고, 그 뒤 `own`은 새 서버를 만들지 않는다. */
+      let closing = false;
+      const closed = () =>
+        Object.assign(
+          new Error("the relay is closing; no new server is opened"),
+          { code: "relay_closed" }
+        );
       const relay: Relay = {
         identity: { ...identity },
         required: [...required],
@@ -500,7 +508,7 @@ export function createRelayHub(): RelayHub {
         revision: 0,
         close: () =>
           (ended ??= (async () => {
-            relays.delete(relay);
+            closing = true;
             for (const tunnel of relay.tunnels) {
               tunnel.cancel?.();
               for (const socket of tunnel.sockets) socket.destroy();
@@ -508,32 +516,31 @@ export function createRelayHub(): RelayHub {
             relay.tunnels.clear();
             for (const socket of [...idle, ...loose]) socket.destroy();
             // 폴더에는 서버들의 소켓 파일이 있다. 모든 서버가 닫혔음을 확인한 뒤에만 지우고, 하나라도 확인하지 못하면 폴더를 남기고
-            // 그 원인으로 실패한다(지우면 아직 듣는 서버가 남은 채로 닫힌 것처럼 보인다).
+            // 그 원인으로 실패한다(지우면 아직 듣는 서버가 남은 채로 닫힌 것처럼 보인다). 서버마다 듣기 시도가 끝난 것을 본 뒤에 닫는다
+            // (`listenAttempt`: 그 전에 닫으면 듣기 시도가 끝나지 않는다). 듣지 못한 서버는 닫을 것이 없다(듣기 오류는 그 서버를 얻은
+            // 쪽 — `ready`·`inboundOrigin` — 이 받았다). 들은 서버의 닫기 오류는 무엇이든 실패다.
             const failures = await attemptEach(
-              servers.map(
-                (server) => () =>
-                  new Promise<void>((resolve, reject) => {
-                    (server as http.Server).closeAllConnections?.();
-                    // 듣기 전에 실패한 서버는 닫을 것이 없다(답이다). 그 밖의 닫기 실패는 거절로 드러낸다.
-                    server.close((error) => {
-                      if (
-                        error &&
-                        !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-                      )
-                        reject(
-                          Object.assign(
-                            new Error(
-                              `a relay server did not close (${failureCode(error)})`,
-                              { cause: error }
-                            ),
-                            { code: failureCode(error) }
-                          )
-                        );
-                      else resolve();
-                    });
-                  })
-              )
+              owned.map(({ server, listened }) => async () => {
+                if (!(await listened)) return;
+                await new Promise<void>((resolve, reject) => {
+                  (server as http.Server).closeAllConnections?.();
+                  server.close((error) => {
+                    if (error)
+                      reject(
+                        Object.assign(
+                          new Error(
+                            `a relay server did not close (${failureCode(error)})`,
+                            { cause: error }
+                          ),
+                          { code: failureCode(error) }
+                        )
+                      );
+                    else resolve();
+                  });
+                });
+              })
             );
+            relays.delete(relay);
             // 실패가 하나여도 남긴 폴더의 위치가 거절에 남도록 늘 감싼다. 원인은 cause에 그대로 있다. 거절을 받는 쪽은 코드만
             // 기록하므로(process.ts), 남긴 위치는 여기서 경고로도 남긴다(남은 폴더를 거두는 곳은 없다).
             if (failures.length > 0) {
@@ -558,36 +565,52 @@ export function createRelayHub(): RelayHub {
           })()),
       };
       relays.add(relay);
-      const listen = (server: net.Server, name: string) => {
-        servers.push(server);
+      /**
+       * 이 중계의 서버 하나를 얻는다(중계의 서버는 모두 이 길로). 닫기가 시작됐으면 만들지 않고 `relay_closed`로 거절한다. 만든 서버는
+       * 듣기 전에(같은 동기 구간) 소유 목록에 넣어 닫기가 그 듣기 시도의 끝을 보고 닫게 한다. 듣기가 시작되면 이행하되, 그때 닫기가
+       * 시작됐으면 `relay_closed`로 거절한다(그 서버는 닫기가 닫는다). 듣기 오류면 그 오류로 거절한다.
+       */
+      const own = async (
+        make: () => net.Server,
+        listen: (server: net.Server) => void
+      ) => {
+        if (closing) throw closed();
+        const server = make();
         server.on("connection", (socket: net.Socket) => {
           loose.add(socket);
           socket.on("close", () => loose.delete(socket));
         });
-        return new Promise<void>((resolve, reject) => {
-          server.once("error", reject);
-          server.listen(path.join(directory, name), () => {
-            server.off("error", reject);
-            resolve();
-          });
-        });
+        // 기록은 듣기를 부르기 전에 넣는다. 듣기를 부르는 동안 닫기가 시작되어도 닫기가 이 서버의 듣기 시도 끝을 기다린다.
+        const listened = Promise.withResolvers<boolean>();
+        owned.push({ server, listened: listened.promise });
+        const attempt = listenAttempt(server, () => listen(server));
+        attempt.then(
+          () => listened.resolve(true),
+          () => listened.resolve(false)
+        );
+        await attempt;
+        if (closing) throw closed();
+        return server;
       };
+      const listen = (make: () => net.Server, name: string) =>
+        own(make, (server) => server.listen(path.join(directory, name)));
       const ready = Promise.all([
-        listen(egressServer(relay), relaySockets.egress),
-        listen(toolsServer(relay), relaySockets.tools),
+        listen(() => egressServer(relay), relaySockets.egress),
+        listen(() => toolsServer(relay), relaySockets.tools),
         ...(inbound
           ? [
               listen(
-                net.createServer((socket) => {
-                  closeOnError(socket, "an inbound relay connection");
-                  const give = waiting.shift();
-                  if (give) return give(socket);
-                  idle.push(socket);
-                  socket.once("close", () => {
-                    const at = idle.indexOf(socket);
-                    if (at >= 0) idle.splice(at, 1);
-                  });
-                }),
+                () =>
+                  net.createServer((socket) => {
+                    closeOnError(socket, "an inbound relay connection");
+                    const give = waiting.shift();
+                    if (give) return give(socket);
+                    idle.push(socket);
+                    socket.once("close", () => {
+                      const at = idle.indexOf(socket);
+                      if (at >= 0) idle.splice(at, 1);
+                    });
+                  }),
                 relaySockets.inbound
               ),
             ]
@@ -626,34 +649,29 @@ export function createRelayHub(): RelayHub {
           if (!inbound) return Promise.reject(new Error("no inbound relay"));
           return (local ??= (async () => {
             await ready;
-            const server = net.createServer((client) => {
-              closeOnError(client, "a local connection into the container");
-              client.pause();
-              take().then(
-                (reverse) => {
-                  if (client.destroyed) return void reverse.destroy();
-                  reverse.on("close", () => client.destroy());
-                  client.on("close", () => reverse.destroy());
-                  client.pipe(reverse).pipe(client);
-                  client.resume();
-                },
-                (error: unknown) => {
-                  console.warn(
-                    `[provider] no reverse relay connection was free; closing the inbound connection (${failureCode(error)})`
+            const server = await own(
+              () =>
+                net.createServer((client) => {
+                  closeOnError(client, "a local connection into the container");
+                  client.pause();
+                  take().then(
+                    (reverse) => {
+                      if (client.destroyed) return void reverse.destroy();
+                      reverse.on("close", () => client.destroy());
+                      client.on("close", () => reverse.destroy());
+                      client.pipe(reverse).pipe(client);
+                      client.resume();
+                    },
+                    (error: unknown) => {
+                      console.warn(
+                        `[provider] no reverse relay connection was free; closing the inbound connection (${failureCode(error)})`
+                      );
+                      client.destroy();
+                    }
                   );
-                  client.destroy();
-                }
-              );
-            });
-            servers.push(server);
-            server.on("connection", (socket) => {
-              loose.add(socket);
-              socket.on("close", () => loose.delete(socket));
-            });
-            await new Promise<void>((resolve, reject) => {
-              server.once("error", reject);
-              server.listen(0, "127.0.0.1", () => resolve());
-            });
+                }),
+              (server) => server.listen(0, "127.0.0.1")
+            );
             return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
           })());
         },

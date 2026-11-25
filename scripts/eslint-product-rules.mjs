@@ -658,6 +658,7 @@ export const processNonLaunchers = [
   "TreeLaunchRefused",
   "boundChild",
   "psField",
+  "listenAttempt",
   "groupAlive",
   "identity",
   "members",
@@ -2125,6 +2126,41 @@ const gitPathListNul = {
   },
 };
 
+/**
+ * 서버를 닫을 때 `ERR_SERVER_NOT_RUNNING`을 "닫을 것 없음"으로 받지 않는다. 주소 조회를 거치는 듣기(`listen(0, "127.0.0.1")`)에 듣기 시도가
+ * 끝나기 전에 `close`를 부르면 Node는 그 듣기를 취소하고 닫기는 이 오류로 끝나, 확인하지 않은 닫힘이 "없음"으로 접힌다(중계 닫기와
+ * `inboundOrigin`의 경쟁, #286 PR #299 외부 리뷰 1회차 SPEC-2). 듣기 시도의 끝을 본 뒤에 닫으면(`listenAttempt`, `@babojubot/process`)
+ * 들은 서버의 닫기 오류는 무엇이든 실패이므로 제품 코드에 이 이름이 쓰일 곳이 없다. 문자열·template의 그 이름을 짚는다.
+ */
+const noServerNotRunning = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "do not fold ERR_SERVER_NOT_RUNNING into a closed server; close after the listen attempt ended",
+    },
+    schema: [],
+    messages: {
+      folded:
+        'ERR_SERVER_NOT_RUNNING을 "닫을 것 없음"으로 받지 않습니다. 듣기 시도의 끝(`listenAttempt`, @babojubot/process)을 본 뒤 들은 서버만 닫고, 그 닫기 오류는 무엇이든 실패로 드러내세요. CODING_STANDARDS.md#제품-코드',
+    },
+  },
+  create(context) {
+    const name = "ERR_SERVER_NOT_RUNNING";
+    return {
+      Literal(node) {
+        if (typeof node.value === "string" && node.value.includes(name))
+          context.report({ node, messageId: "folded" });
+      },
+      TemplateElement(node) {
+        if (node.value.raw.includes(name))
+          context.report({ node, messageId: "folded" });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -2147,5 +2183,6 @@ export default {
     "no-own-untrusted-open": noOwnUntrustedOpen,
     "nul-free-file-shape": nulFreeFileShape,
     "git-path-list-nul": gitPathListNul,
+    "no-server-not-running": noServerNotRunning,
   },
 };
