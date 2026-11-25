@@ -16,6 +16,8 @@ import {
   ownStart,
   startTestServer,
   within,
+  helperStartEnded,
+  startDiagnostics,
 } from "./support.ts";
 
 // 시험 서버 helper가 서버를 넘기기 전에 실패하면, 자기가 만든 것(서버·DB·작업 폴더)을 치우고 원래 오류로 실패한다.
@@ -42,14 +44,20 @@ async function ownTemporaryFolder() {
 const startOwnedBy = (
   own: (stop: () => Promise<void>) => void,
   options?: Parameters<typeof startTestServer>[0]
-) => ownStart(own, startTestServer(options), "the test server").started;
+) =>
+  ownStart(own, startTestServer(options), "the test server", helperStartEnded)
+    .started;
 
 it("removes the workspace folder it made and keeps the start error when the server cannot start", async () => {
   const { temp, own } = await ownTemporaryFolder();
-  // 알림 채널이 하나가 아니면 서버는 아무것도 띄우기 전에 거절한다.
-  await expect(startOwnedBy(own, { notificationChannels: [] })).rejects.toThrow(
-    "exactly one notification channel is supported, got 0"
-  );
+  // 알림 채널이 하나가 아니면 서버는 아무것도 띄우기 전에 거절한다. 그 시작은 진단을 하나도 남기지 않는다(정리할 것이 없음).
+  const diagnostics = startDiagnostics();
+  await expect(
+    startOwnedBy(own, {
+      notificationChannels: [],
+      startEnded: diagnostics.endedWith({ error: [], warn: [] }),
+    })
+  ).rejects.toThrow("exactly one notification channel is supported, got 0");
   expect(await readdir(temp)).toEqual([]);
 });
 
@@ -66,8 +74,13 @@ it("closes the started server and removes its folder when the readiness check be
 it("leaves a workspace folder it was given when the server cannot start", async () => {
   const { temp, own } = await ownTemporaryFolder();
   const given = await mkdtemp(path.join(temp, "given-"));
+  const diagnostics = startDiagnostics();
   await expect(
-    startOwnedBy(own, { notificationChannels: [], dataDir: given })
+    startOwnedBy(own, {
+      notificationChannels: [],
+      dataDir: given,
+      startEnded: diagnostics.endedWith({ error: [], warn: [] }),
+    })
   ).rejects.toThrow("exactly one notification channel is supported, got 0");
   expect(await readdir(temp)).toEqual([path.basename(given)]);
 });

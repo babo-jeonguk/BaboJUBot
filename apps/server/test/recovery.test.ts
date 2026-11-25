@@ -56,6 +56,7 @@ import {
   closeDatabase,
   ownStart,
   heldOrEnded,
+  startDiagnostics,
 } from "./support.ts";
 import { ownHome } from "./product-home.ts";
 import {
@@ -808,11 +809,19 @@ describe("server start recovery barrier", () => {
     const [early, late] = await leftRunning(database.db, 2);
     const runtime = countingRuntime();
     const restore = await failRunEnd(database.db, late!.runId);
-    const starting = startOwned({
-      db: database.db,
-      port: 0,
-      runtime: runtime.adapter,
-    });
+    // 거절을 기대한다(뒤쪽 복구 저장이 실패한다). 시작 실패 뒤 정리가 모두 됐으면 그 시작 동안의 진단은 아래 목록뿐이다. 진단 전체가
+    // 그와 같을 때만 정리를 확인한 것으로 본다.
+    const diagnostics = startDiagnostics();
+    const starting = ownStart(
+      (stop) => databaseUsers.push(stop),
+      startServer({
+        db: database.db,
+        port: 0,
+        runtime: runtime.adapter,
+      }),
+      "the server whose start should fail",
+      diagnostics.endedWith({ error: [], warn: [] })
+    ).started;
     await expect(starting).rejects.toThrow();
     expect(await runStatus(early!.runId)).toBe("server_restart");
     expect(await runStatus(late!.runId)).toBe("running");

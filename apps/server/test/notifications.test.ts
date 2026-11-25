@@ -28,14 +28,12 @@ import {
 } from "./scenarios.ts";
 import {
   ownedListener,
-  serverStopMs,
   startTestServer,
-  within,
   type TestServer,
   handOver,
   ownStart,
   closeDatabase,
-  stopWithin,
+  startDiagnostics,
 } from "./support.ts";
 import { ownHome } from "./product-home.ts";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
@@ -849,6 +847,8 @@ describe("channel replies", () => {
       listen: () => {},
       close: async () => {},
     });
+    // 거절을 기대한다. 그 시작은 아무것도 얻기 전에 거절하므로 진단이 없다. 진단 전체가 그와 같을 때만 정리를 확인한 것으로 본다.
+    const diagnostics = startDiagnostics();
     const starting = ownStart(
       users.own,
       startServer({
@@ -856,7 +856,8 @@ describe("channel replies", () => {
         port: 0,
         notificationChannels: [quiet("a"), quiet("b")],
       }),
-      "the server whose start should fail"
+      "the server whose start should fail",
+      diagnostics.endedWith({ error: [], warn: [] })
     ).started;
     await expect(starting).rejects.toThrow("exactly one notification channel");
   });
@@ -900,6 +901,8 @@ describe("channel replies", () => {
       },
     };
     // 주기 확인(setInterval)을 시험이 돌린다. 제품에서 setInterval은 주기 확인만 쓰고, 그 밖의 타이머는 실제 시간 그대로다.
+    // 거절을 기대한다. 시작 실패 뒤 정리가 모두 됐으면 진단이 없다. 진단 전체가 그와 같을 때만 정리를 확인한 것으로 본다.
+    const diagnostics = startDiagnostics();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
       const starting = ownStart(
@@ -912,7 +915,8 @@ describe("channel replies", () => {
           notificationPollMs: 10,
           heartbeatPollMs: 10,
         }),
-        "the server whose start should fail"
+        "the server whose start should fail",
+        diagnostics.endedWith({ error: [], warn: [] })
       ).started;
       await expect(starting).rejects.toThrow("토큰 거부");
       // 실패한 시작은 주기 확인을 하나도 남기지 않는다. 남았다면 시간을 옮길 때 재시도 예정이 지난 알림을 다시 보낸다.
@@ -944,9 +948,20 @@ describe("channel replies", () => {
     const probe = await listening(0);
     const { port } = probe.server.address() as net.AddressInfo;
     await probe.close();
-    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const starting = startServer({
+    // 끄다 난 오류는 원래 오류를 덮지 않고 원인 코드로 따로 남는다(CODING_STANDARDS.md#제품-코드). 그 진단 하나만 있고 다른 진단이 없을
+    // 때만 나머지 정리(포트를 닫는 단계 포함)가 됐다고 본다.
+    const expected = {
+      error: [
+        [
+          "[server] stopping after a failed start failed (CHANNEL_CLOSE_FAILED)",
+        ],
+      ],
+      warn: [],
+    };
+    const diagnostics = startDiagnostics();
+    const starting = ownStart(
+      users.own,
+      startServer({
         db: database.db,
         port,
         notificationChannels: [
@@ -964,30 +979,12 @@ describe("channel replies", () => {
               ),
           },
         ],
-      });
-      // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
-      users.own(async () => {
-        const [outcome] = await within(
-          Promise.allSettled([starting]),
-          serverStopMs,
-          "the start that should have failed did not end"
-        );
-        if (outcome.status === "fulfilled")
-          await stopWithin(
-            outcome.value,
-            "the server whose start should have failed"
-          );
-      });
-      await expect(starting).rejects.toThrow("토큰 거부");
-      // 끄다 난 오류는 원래 오류를 덮지 않고 원인 코드로 따로 남는다(CODING_STANDARDS.md#제품-코드).
-      expect(logged.mock.calls).toEqual([
-        [
-          "[server] stopping after a failed start failed (CHANNEL_CLOSE_FAILED)",
-        ],
-      ]);
-    } finally {
-      logged.mockRestore();
-    }
+      }),
+      "the server whose start should fail",
+      diagnostics.endedWith(expected)
+    ).started;
+    await expect(starting).rejects.toThrow("토큰 거부");
+    expect(diagnostics.received()).toEqual(expected);
     await (await listening(port)).close();
   });
 });

@@ -226,8 +226,8 @@ it.each(stopRequests)(
     // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
     const folder = folderCleanup(() => removeFolder(home));
     onTestFinished(folder.cleanUp);
-    // 이 시험은 Postgres를 관찰하지 않는다. 그 끝의 증거는 서버의 진단(준비 전에 끝남)이다. 시험이 그 진단을 확인하기 전에 끝나면
-    // 끝을 확인할 수 없어 폴더를 남긴다(fail closed).
+    // 이 시험은 Postgres를 관찰하지 않는다. 그 끝의 증거는 서버 진단 전체다: 시작 실패 진단 하나뿐이면 제품이 시작 실패 뒤 Postgres를
+    // 멈췄다(멈추지 못하면 그 진단이 따로 남는다). 시험이 그 진단을 확인하기 전에 끝나면 끝을 확인할 수 없어 폴더를 남긴다(fail closed).
     const postgresEnded = { seen: false };
     folder.own(() => {
       if (!postgresEnded.seen)
@@ -244,10 +244,12 @@ it.each(stopRequests)(
     send(child);
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(1);
-    // 진단은 오류 문구(Postgres 로그가 섞임) 대신 원인 코드만 남긴다(CODING_STANDARDS.md#제품-코드).
-    expect(stderrLines(child)).toContain(
-      "[server] start failed (EMBEDDED_EXITED_BEFORE_READY)"
-    );
+    // 진단은 오류 문구(Postgres 로그가 섞임) 대신 원인 코드만 남긴다. 진단 전체가 이것뿐이면 시작 실패 뒤 Postgres 정리(`embedded.ts`가
+    // 시작에 실패하면 멈추기를 시도하고 실패하면 진단으로 남김)가 실패하지 않은 것이다(CODING_STANDARDS.md 「제품 코드」의 정리 규칙).
+    expect(stderrLines(child)).toEqual([
+      "[server] start failed (EMBEDDED_EXITED_BEFORE_READY)",
+      "",
+    ]);
     postgresEnded.seen = true;
   },
   60_000

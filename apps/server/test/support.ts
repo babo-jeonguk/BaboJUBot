@@ -1,4 +1,5 @@
 import { mkdtemp } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -55,40 +56,102 @@ export const stopWithin = (server: { close(): Promise<void> }, what: string) =>
   within(server.close(), serverStopMs, `stopping ${what} did not finish`);
 
 /**
- * 시작에 실패한 서버가 자기 정리를 마쳤는지. 제품은 시작에 실패하면 연 것을 정리하고, 정리가 모두 끝났을 때만 원래 오류 하나로
- * 거절하며, 정리가 실패하면 그 실패를 원래 오류 뒤에 묶어(`combinedFailure`, AggregateError) 거절한다(`app.ts` `startServer`). 묶인
- * 거절이면 끝을 확인하지 못한 것이다(원래 오류가 처음부터 묶인 것이어서 가를 수 없을 때도 그렇게 본다, fail closed).
+ * 시작이 거절됐을 때 그 시작이 연 것을 모두 정리했는지 판정한다. 확인했으면 돌아오고, 확인하지 못하면 원인과 함께 던진다.
+ * 판정은 시작이 거절되는 순간 한 번 한다(`ownStart`).
  */
-export const failedStartEnded = (error: unknown) =>
-  !(error instanceof AggregateError);
+export type StartEnded = (error: unknown) => void;
+
+/** 판정 근거가 없는 시작. 시작이 거절되면 끝을 확인할 수 없으므로 실패한다(fail closed). */
+const unconfirmedStart: StartEnded = (error) => {
+  throw new Error(
+    "a failed start was not expected, so its cleanup cannot be confirmed",
+    {
+      cause: error,
+    }
+  );
+};
+
+/**
+ * 시험 서버 helper(`startTestServer`)의 계약: helper는 자기 정리가 모두 끝났을 때만 원래 오류 하나로 거절하고, 정리가 실패하면 그 실패를
+ * 원래 오류 뒤에 묶어(`combinedFailure`, AggregateError) 거절한다. 묶인 거절이면 확인하지 못한 것이다(원래 오류가 처음부터 묶인 것이어서
+ * 가를 수 없을 때도, fail closed).
+ */
+export const helperStartEnded: StartEnded = (error) => {
+  if (error instanceof AggregateError)
+    throw new Error("the test server helper did not confirm its cleanup", {
+      cause: error,
+    });
+};
+
+/** 시험이 받은 서버 진단: `console.error`·`console.warn` 호출의 인수 목록. */
+export type Diagnostics = { error: unknown[][]; warn: unknown[][] };
+
+/**
+ * 지금부터 이 시험이 받는 서버 진단(`console.error`·`console.warn`)을 기록한다(출력은 그대로 둔다). 시험 정리가 기록을 되돌린다.
+ * 제품은 시작 실패 뒤 정리가 실패하면 그 실패를 진단으로 따로 남기고 원래 오류를 던진다(`CODING_STANDARDS.md` 「제품 코드」의 정리 규칙,
+ * `app.ts` `startServer`). 그래서 실패해야 하는 시작의 정리는 그 시작 동안의 진단 전체가 기대한 목록과 정확히 같은지로 확인한다
+ * (`endedWith`). 다르면(정리 실패 진단이 있거나 다른 진단이 섞이면) 그 목록을 원인으로 확인하지 못한 것이다.
+ */
+export function startDiagnostics() {
+  const error = vi.spyOn(console, "error");
+  const warn = vi.spyOn(console, "warn");
+  onTestFinished(() => {
+    error.mockRestore();
+    warn.mockRestore();
+  });
+  const received = (): Diagnostics => ({
+    error: [...error.mock.calls],
+    warn: [...warn.mock.calls],
+  });
+  return {
+    received,
+    endedWith:
+      (expected: Diagnostics): StartEnded =>
+      (failure) => {
+        const diagnostics = received();
+        if (!isDeepStrictEqual(diagnostics, expected))
+          throw new Error(
+            "the diagnostics of the failed start were not the expected ones, so its cleanup cannot be confirmed",
+            { cause: { failure, diagnostics, expected } }
+          );
+      },
+  };
+}
 
 /**
  * 시작 중인 서버(`starting`)를 곧바로 `own`(그 서버를 소유하는 정리)에 맡긴다. 맡긴 끝(`stop`)은 한 번만 돌고 같은 결과를 돌려준다:
- * 시작이 끝나기를 `serverStopMs` 안에서 기다려(시작 자체에는 제품 상한이 없다), 넘겨받았으면 끄고(`stopWithin`), 거절됐으면 시작이 자기
- * 정리를 마쳤는지 본다(`ended`, 기본 `failedStartEnded`). 확인하지 못하면 그 거절을 원인으로 실패한다(fail closed). 시험 본문이 중간에
- * 끄려면 같은 `stop`을 부른다.
+ * 시작이 끝나기를 `serverStopMs` 안에서 기다려(시작 자체에는 제품 상한이 없다) 넘겨받았으면 끄고(`stopWithin`), 거절됐으면 그 순간
+ * `ended`가 내린 판정을 따른다(확인하지 못했으면 그 원인으로 실패, fail closed). `ended`가 없으면 거절된 시작은 확인할 수 없다.
+ * 시험 본문이 중간에 끄려면 같은 `stop`을 부른다.
  */
 export function ownStart<S extends { close(): Promise<void> }>(
   own: (stop: () => Promise<void>) => void,
   starting: Promise<S>,
   what: string,
-  ended: (error: unknown) => boolean = failedStartEnded
+  ended: StartEnded = unconfirmedStart
 ) {
+  // 거절되는 순간 판정한다. 그 뒤의 진단이 판정에 섞이지 않는다.
+  const outcome = starting.then(
+    (server) => ({ server }),
+    (error: unknown) => {
+      try {
+        ended(error);
+        return {};
+      } catch (unconfirmed) {
+        return { unconfirmed };
+      }
+    }
+  );
   let stopped: Promise<void> | undefined;
   const stop = () =>
     (stopped ??= (async () => {
-      const [outcome] = await within(
-        Promise.allSettled([starting]),
+      const settled = await within(
+        outcome,
         serverStopMs,
         `the start of ${what} did not end`
       );
-      if (outcome.status === "fulfilled")
-        return stopWithin(outcome.value, what);
-      if (!ended(outcome.reason))
-        throw new Error(
-          `cleaning up after the failed start of ${what} was not confirmed`,
-          { cause: outcome.reason }
-        );
+      if ("server" in settled) return stopWithin(settled.server, what);
+      if ("unconfirmed" in settled) throw settled.unconfirmed;
     })());
   own(stop);
   return { started: starting, stop };
@@ -219,17 +282,25 @@ export type TestServerOptions = {
   webDistDir?: string;
   /** 서버 시작의 준비 확인을 기다리는 상한. 기본은 `readinessSettleMs`이며 서버에는 넘기지 않는다. */
   readinessSettleMs?: number;
+  /**
+   * 서버 시작(`startServer`)이 거절될 때 그 정리를 확인하는 판정(`StartEnded`). 서버를 띄우지 못하게 하는 시험만 준다(`startDiagnostics`의
+   * `endedWith`). 없으면 거절된 시작의 정리를 확인할 수 없어 DB와 작업 폴더를 남기고 실패한다.
+   */
+  startEnded?: StartEnded;
 };
 
 /** 같은 프로세스에서 embedded Postgres와 서버를 띄우고 HTTP·Event stream으로만 검증한다. */
 export async function startTestServer({
   readinessSettleMs: settleMs = readinessSettleMs,
+  startEnded = unconfirmedStart,
   ...options
 }: TestServerOptions = {}): Promise<TestServer> {
   const database = await createTestDatabase();
   // 넘겨받은 폴더는 넘긴 쪽이 치운다. 이 helper가 만든 폴더만 지운다.
   let ownDataDir: string | undefined;
   let server: RunningServer | undefined;
+  /** 서버 시작. 불렀는지로 시작 전 실패와 시작 실패를 가른다. */
+  let starting: Promise<RunningServer> | undefined;
   /** 연 Event stream의 즉시 끊기. 서버를 끄기 전에 모두 끊는다(시험이 청한 닫힘이다). */
   const sockets = new Set<() => void>();
   /** 서버의 끝. 한 번만 하고, 끄기를 부른 쪽과 정리가 같은 결과를 기다린다. */
@@ -277,12 +348,12 @@ export async function startTestServer({
       (ownDataDir = await mkdtemp(
         path.join(tmpdir(), "babojubot-workspaces-")
       ));
-    server = await startServer({
+    server = await (starting = startServer({
       db: database.db,
       port: 0,
       ...options,
       dataDir,
-    });
+    }));
     // 서버 시작의 준비 확인이 끝난 뒤에 검사를 시작한다. 그래야 그 확인의 설정 변경 신호가 검사가 센 신호에 섞이지 않는다.
     // 조회가 실패하면(응답이 깨짐 등) 다시 묻지 않고 그 오류로 실패한다.
     let unsettled: string[] | undefined;
@@ -314,14 +385,10 @@ export async function startTestServer({
     // 원래 실패를 그대로 알린다. 서버가 닫힌 것을 확인한 뒤에만 그 서버가 쓰는 DB와 폴더를 닫고 지운다. 확인하지 못하면 둘 다
     // 남긴다(`folderCleanup`). 치우기가 실패하면 그 실패를 원래 실패와 함께 알린다.
     const closing = folderCleanup(release);
-    // 넘겨받은 서버는 끈다. 서버가 시작에 실패했으면(`server` 없음) 시작이 자기 정리를 마쳤는지 본다.
+    // 넘겨받은 서버는 끈다. 서버 시작이 거절됐으면 그 시작이 연 것을 정리했는지 판정한다(`startEnded`). 시작 전에 실패했으면 확인할 것이 없다.
     closing.own(() => {
       if (server) return stopOnce(server);
-      if (!failedStartEnded(error))
-        throw new Error(
-          "cleaning up after the failed start of the test server was not confirmed",
-          { cause: error }
-        );
+      if (starting) startEnded(error);
     });
     const failures = await attemptEach([closing.cleanUp]);
     if (failures.length > 0)
