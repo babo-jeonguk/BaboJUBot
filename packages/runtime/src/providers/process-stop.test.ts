@@ -76,20 +76,25 @@ describe("stopping a tree", () => {
     fault.stop = true;
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => error.mockRestore());
-    const attempt = folders.ownRun(
-      startProcess({
-        // 입력이 닫혀도 끝나지 않는다.
-        command: [
-          process.execPath,
-          "-e",
-          `process.stdin.resume(); ${leader.script}`,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        onFrame: async () => {},
-      })
-    );
+    const attempt = startProcess({
+      // 입력이 닫혀도 끝나지 않는다.
+      command: [
+        process.execPath,
+        "-e",
+        `process.stdin.resume(); ${leader.script}`,
+      ],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      onFrame: async () => {},
+    });
+    // 끄기가 일부러 실패하는 실행 시도라 그 끝은 `broken`이다. `ownRun`(끝을 확인하지 못한 실행 시도를 정리 실패로 드러낸다)에
+    // 맡기지 않는다. 정리는 실행 시도를 끝내고 그 일이 끝나기를 기다릴 뿐이다. 대표의 끝은 따로 맡긴 연결(`holder`)의 정리가
+    // 확인한다(이것이 먼저 돌고, 그 뒤에 대표를 끄고 연결 닫힘을 본다).
+    folders.own(async () => {
+      attempt.end();
+      await attempt.done;
+    }, "run attempt whose stop fails");
     await lifelines.connected(leader.name);
     attempt.end();
     const exit = await within(attempt.done, 30_000, "the run did not finish");

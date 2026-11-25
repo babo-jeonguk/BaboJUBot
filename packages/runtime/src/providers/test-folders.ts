@@ -64,10 +64,15 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
   };
   /**
    * 시험이 띄운 실행 시도(`startProcess`)를 정리에 맡긴다. 정리는 입력을 닫아 끝내고(`end`), 끄기 유예가 시험의 가짜 시계(`clock`) 위면
-   * 그 타이머까지 시계를 옮긴 뒤, 정리의 끝(`done`)을 정리 상한 안에서 기다린다. 이미 끝난 실행 시도에는 할 일이 없다. 실행의 결과는
-   * 시험이 본다. 띄운 직후 맡겨, 시험이 어디서 실패하든 실행 시도가 끝난 뒤에만 폴더를 지운다.
+   * 그 타이머까지 시계를 옮긴 뒤, 실행 시도의 끝(`done`)을 정리 상한 안에서 기다린다. 띄운 직후 맡겨, 시험이 어디서 실패하든 실행
+   * 시도가 끝난 뒤에만 폴더를 지운다.
+   * `done`의 이행은 실행 시도가 돌아왔다는 것일 뿐 프로그램이 끝났다는 증거가 아니다: 제품은 트리의 끝을 확인하지 못하거나 정리
+   * 단계가 실패해도 `broken: true`로 이행한다. 그래서 `broken`이면 정리 실패로 드러내 폴더를 남긴다(`testFolders`의 원칙). 끄기가
+   * 일부러 실패하거나 시작하지 못하는 실행 시도는 여기 맡기지 않는다. 그 시험이 띄운 프로그램을 따로 맡기고 그 정리가 끝을 확인한다.
    */
-  const ownRun = <T extends { end: () => void; done: Promise<unknown> }>(
+  const ownRun = <
+    T extends { end: () => void; done: Promise<{ broken: boolean }> },
+  >(
     run: T,
     clock?: {
       untilNext: () => number | undefined;
@@ -80,7 +85,10 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
         const stop = clock.untilNext();
         if (stop !== undefined) clock.advance(stop);
       }
-      await Promise.allSettled([run.done]);
+      if ((await run.done).broken)
+        throw new Error(
+          "the run attempt ended without confirming that its programs and their cleanup ended (broken); its folder is kept"
+        );
     }, "run attempt");
     return run;
   };

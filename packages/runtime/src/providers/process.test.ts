@@ -201,15 +201,15 @@ describe("runProbe", () => {
   it("leaves why a run's program could not be started", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => logged.mockRestore());
-    const child = folders.ownRun(
-      startProcess({
-        command: ["/missing/program"],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        onFrame: async () => {},
-      })
-    );
+    // 띄우지 못하는 실행 시도라 끝낼 프로그램이 없고, 그 끝은 `broken`이다. 그래서 `ownRun`(끝을 확인하지 못한 실행 시도를 정리
+    // 실패로 드러낸다)에 맡기지 않는다. 시험은 그 끝을 상한 안에서 기다린다.
+    const child = startProcess({
+      command: ["/missing/program"],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      onFrame: async () => {},
+    });
     expect(
       (await within(child.done, 20_000, "the run did not finish")).broken
     ).toBe(true);

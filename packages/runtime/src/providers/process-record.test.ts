@@ -8,6 +8,8 @@ import { testFolders } from "./test-folders.ts";
 // 자리는 반납해도, 끝났음을 확인하지 못한 프로세스의 복구 기록은 다음 시작 때 다시 보도록 남긴다.
 const stop = vi.hoisted(() => ({
   fails: false,
+  /** 대역이 부른 실제 끄기. 끄기의 실패로 답해도 트리는 실제로 껐으므로, 정리는 이것으로 트리의 끝을 확인한다. */
+  real: [] as Promise<void>[],
 }));
 // 끄기의 실패는 공용 실행(@babojubot/process의 launchTree)이 돌려준 트리의 끄기에서 대역으로 만든다. 실제로 끈 뒤에 그 실패로
 // 답한다. 트리(그룹·고아·표식을 가진 프로그램)를 끄는 일은 감독 실행기가 하고 그 답 하나가 끄기의 결과다(#268 PR 2). 실행기의 답이
@@ -18,7 +20,9 @@ vi.mock("@babojubot/process", async (original) => {
     const tree = real.launchTree(...args);
     const stopTree = tree.stop.bind(tree);
     tree.stop = async (options) => {
-      await stopTree(options);
+      const real = stopTree(options);
+      stop.real.push(real);
+      await real;
       if (stop.fails)
         throw new Error(
           "programs of this tree did not end (left: 1 (the tree did not end))"
@@ -36,20 +40,22 @@ afterEach(async () => {
 });
 async function run() {
   const stateDir = await folders.make("babojubot-record-");
-  const exit = await within(
-    folders.ownRun(
-      startProcess({
-        stateDir,
-        command: [process.execPath, "-e", ""],
-        args: [],
-        cwd: process.cwd(),
-        env: { PATH: process.env.PATH },
-        onFrame: async () => {},
-      })
-    ).done,
-    30_000,
-    "the run did not finish"
-  );
+  const attempt = startProcess({
+    stateDir,
+    command: [process.execPath, "-e", ""],
+    args: [],
+    cwd: process.cwd(),
+    env: { PATH: process.env.PATH },
+    onFrame: async () => {},
+  });
+  // 끄기가 실패로 답하는 실행 시도는 그 끝이 `broken`이라 `ownRun`(끝을 확인하지 못한 실행 시도를 정리 실패로 드러낸다)에 맡기지
+  // 않는다. 정리는 실행 시도를 끝내고 그 일(기록 쓰기)이 끝나기를 기다린 뒤, 트리의 끝은 대역이 부른 실제 끄기의 결과로 확인한다.
+  folders.own(async () => {
+    attempt.end();
+    await attempt.done;
+    await Promise.all(stop.real.splice(0));
+  }, "run attempt");
+  const exit = await within(attempt.done, 30_000, "the run did not finish");
   return { exit, records: await readdir(path.join(stateDir, "processes")) };
 }
 
