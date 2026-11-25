@@ -1,6 +1,7 @@
 import http from "node:http";
 import type net from "node:net";
 import express from "express";
+import { hasErrorCode } from "@babojubot/contracts";
 import { awaitedLater } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -12,7 +13,12 @@ afterEach(async () => {
   await within(
     new Promise<void>((resolve, reject) =>
       server
-        ? server.close((error) => (error ? reject(error) : resolve()))
+        ? // 듣기 전에 실패한 서버는 닫을 것이 없다.
+          server.close((error) =>
+            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+              ? reject(error)
+              : resolve()
+          )
         : resolve()
     ),
     10_000,

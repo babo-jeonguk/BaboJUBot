@@ -12,6 +12,7 @@ import {
   type ProviderConnection,
   type RunRequest,
   failureCode,
+  hasErrorCode,
 } from "@babojubot/contracts";
 import {
   containerToolsOrigin,
@@ -106,8 +107,11 @@ describe("isolation switch", () => {
   });
 });
 
-/** 중계 폴더의 파일 소켓으로 HTTP 요청을 보낸다(컨테이너 안 시작 프로그램이 잇는 길과 같다). */
-function overSocket(
+/**
+ * 중계 폴더의 파일 소켓으로 HTTP 요청을 보낸다(컨테이너 안 시작 프로그램이 잇는 길과 같다). 답을 끝까지 받기를 상한 안에서 기다리고,
+ * 상한이 지나거나 실패하면 요청을 끊어 실제로 끝낸다. 응답 도중 끊기면 `end` 대신 오류가 오므로 받은 데까지의 본문을 답으로 내주지 않는다.
+ */
+async function overSocket(
   socketPath: string,
   route: string,
   init: {
@@ -116,59 +120,77 @@ function overSocket(
     body?: string;
   } = {}
 ) {
-  return new Promise<{ status: number; type: string; body: string }>(
-    (resolve, reject) => {
-      const req = http.request({
-        socketPath,
-        path: route,
-        method: init.method ?? "GET",
-        headers: init.headers ?? {},
-      });
-      req.on("response", (res) => {
-        let body = "";
-        // 응답 도중 끊기면 `end` 대신 이 오류가 온다. 받은 데까지의 본문을 답으로 내주지 않는다.
-        res.on("error", reject);
-        res.on("data", (chunk) => (body += chunk));
-        res.on("end", () =>
-          resolve({
-            status: res.statusCode ?? 0,
-            type: String(res.headers["content-type"] ?? ""),
-            body,
-          })
-        );
-      });
-      req.on("error", reject);
-      req.end(init.body);
-    }
-  );
+  const method = init.method ?? "GET";
+  const request = http.request({
+    socketPath,
+    path: route,
+    method,
+    headers: init.headers ?? {},
+  });
+  try {
+    return await within(
+      new Promise<{ status: number; type: string; body: string }>(
+        (resolve, reject) => {
+          request.on("response", (res) => {
+            let body = "";
+            res.on("error", reject);
+            res.on("data", (chunk) => (body += chunk));
+            res.on("end", () =>
+              resolve({
+                status: res.statusCode!,
+                type: String(res.headers["content-type"] ?? ""),
+                body,
+              })
+            );
+          });
+          request.on("error", reject);
+          request.end(init.body);
+        }
+      ),
+      eventuallyMs,
+      `${method} ${route} over the relay socket did not answer`
+    );
+  } catch (error) {
+    request.destroy();
+    throw error;
+  }
 }
 
 /**
  * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 중계의 답을 판정하지 않고 그대로 돌려준다: node:http가 읽은 상태와 거부 이유
- * 머리(`x-babojubot-refusal`), 그 연결의 소켓. CONNECT의 답은 상태와 상관없이 `connect`로 온다(Node http 문서). 머리를 다 읽기 전의
- * 끊김·형식 오류는 그 오류로 거절된다.
+ * 머리(`x-babojubot-refusal`), 그 연결의 소켓. CONNECT의 답은 상태와 상관없이 `connect`로 온다(Node http 문서). 답 머리를 상한 안에서
+ * 기다리고, 상한이 지나거나 머리를 다 읽기 전에 끊기거나 형식이 틀리면 요청(과 그 소켓)을 끊고 그 실패로 거절된다.
  */
-function connectOver(directory: string, target: string) {
-  return new Promise<{
-    status: number;
-    refusal: string | string[] | undefined;
-    socket: net.Socket;
-  }>((resolve, reject) => {
-    const request = http.request({
-      socketPath: path.join(directory, "egress.sock"),
-      method: "CONNECT",
-      path: target,
-    });
-    request.once("error", reject);
-    request.once("connect", (response, socket) =>
-      resolve({
-        status: response.statusCode!,
-        refusal: response.headers["x-babojubot-refusal"],
-        socket,
-      })
-    );
-    request.end();
+async function connectOver(directory: string, target: string) {
+  const request = http.request({
+    socketPath: path.join(directory, "egress.sock"),
+    method: "CONNECT",
+    path: target,
   });
+  try {
+    return await within(
+      new Promise<{
+        status: number;
+        refusal: string | string[] | undefined;
+        socket: net.Socket;
+      }>((resolve, reject) => {
+        request.once("error", reject);
+        request.once("connect", (response, socket) =>
+          resolve({
+            status: response.statusCode!,
+            refusal: response.headers["x-babojubot-refusal"],
+            socket,
+          })
+        );
+        request.end();
+      }),
+      eventuallyMs,
+      `CONNECT ${target} over the relay socket did not answer`
+    );
+  } catch (error) {
+    request.destroy();
+    throw error;
+  }
 }
 
 /** 중계가 한 요청에 답한 것. 답 머리를 받았으면 상태(CONNECT는 거부 이유 머리도), 받기 전에 끝났으면 그 오류의 원인 코드다. */
@@ -321,7 +343,12 @@ function realConnection(
               for (const client of clients) client.destroy();
               return within(
                 new Promise<void>((resolve, reject) =>
-                  bridge.close((error) => (error ? reject(error) : resolve()))
+                  // 듣기 전에 실패한 다리는 닫을 것이 없다.
+                  bridge.close((error) =>
+                    error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+                      ? reject(error)
+                      : resolve()
+                  )
                 ),
                 eventuallyMs,
                 "the tools bridge did not close"
@@ -374,11 +401,29 @@ const readinessOf = async (id: string) =>
 // SPEC-4). 실제 로컬 서버가 중계 소켓 자리에서 제품 중계와 같은 답을 보낸다. 200만 열림으로 읽으면 502(정책은 열었지만 목적지 연결 실패)와
 // 주소 확인이 아닌 이유의 403이 "막힘"으로 접혔다.
 describe("a CONNECT over the relay socket", () => {
-  /** `egress.sock` 자리에서 CONNECT마다 `answer`를 보내는 로컬 서버의 폴더. 서버와 폴더는 시험 정리에 맡긴다. */
+  /**
+   * `egress.sock` 자리에서 CONNECT마다 `answer`를 보내는 로컬 서버의 폴더. 폴더는 만든 직후, 서버 닫기는 서버를 만든 직후 시험 정리에
+   * 맡긴다. 폴더는 그 안의 소켓 서버가 닫힌 것을 확인한 뒤에만 지운다(`folderCleanup`). 닫지 못하면 폴더를 남기고 그 실패를 알린다.
+   */
   async function answering(answer: string) {
     const directory = await mkdtemp(path.join(tmpdir(), "babojubot-egress-"));
-    onTestFinished(() => removeFolder(directory));
+    const folder = folderCleanup(() => removeFolder(directory));
+    onTestFinished(folder.cleanUp);
     const server = http.createServer();
+    folder.own(() =>
+      within(
+        new Promise<void>((resolve, reject) =>
+          // 듣기 전에 실패한 서버는 닫을 것이 없다.
+          server.close((error) =>
+            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+              ? reject(error)
+              : resolve()
+          )
+        ),
+        eventuallyMs,
+        "the stand-in relay socket did not close"
+      )
+    );
     server.on("connect", (_req, socket: net.Socket) => socket.end(answer));
     await within(
       new Promise<void>((resolve, reject) => {
@@ -387,15 +432,6 @@ describe("a CONNECT over the relay socket", () => {
       }),
       eventuallyMs,
       "the stand-in relay socket did not start listening"
-    );
-    onTestFinished(() =>
-      within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        ),
-        eventuallyMs,
-        "the stand-in relay socket did not close"
-      )
     );
     return directory;
   }
@@ -751,12 +787,27 @@ describe("isolated runs", () => {
 describe("organization network allow list", () => {
   const { get, create, researching } = serverHelpers(() => t!);
 
-  /** 연결 수를 세는 loopback echo listener. 듣기 시작한 직후 닫기를 시험 정리에 맡긴다. */
+  /** 연결 수를 세는 loopback echo listener. 만든 직후 닫기를 시험 정리에 맡기고 그다음 듣기를 기다린다. */
   async function echo() {
     const accepted: net.Socket[] = [];
     const server = net.createServer((socket) => {
       accepted.push(socket);
       socket.pipe(socket);
+    });
+    onTestFinished(() => {
+      for (const socket of accepted) socket.destroy();
+      return within(
+        new Promise<void>((resolve, reject) =>
+          // 듣기 전에 실패한 listener는 닫을 것이 없다.
+          server.close((error) =>
+            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+              ? reject(error)
+              : resolve()
+          )
+        ),
+        eventuallyMs,
+        "the echo listener did not close"
+      );
     });
     await within(
       new Promise<void>((resolve, reject) => {
@@ -766,16 +817,6 @@ describe("organization network allow list", () => {
       eventuallyMs,
       "the echo listener did not start listening"
     );
-    onTestFinished(() => {
-      for (const socket of accepted) socket.destroy();
-      return within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        ),
-        eventuallyMs,
-        "the echo listener did not close"
-      );
-    });
     return { port: (server.address() as net.AddressInfo).port, accepted };
   }
 

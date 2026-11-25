@@ -232,6 +232,20 @@ it.each(stopRequests)(
 // HTTP 서버가 시작하지 못하면 그 오류로 실패한다. 뒤이어 DB를 닫다 난 오류는 원래 오류를 덮지 않고 따로 남는다.
 it("ends with the HTTP start error and records the database close failure when both fail", async () => {
   const taken = createServer();
+  onTestFinished(() =>
+    within(
+      new Promise<void>((resolve, reject) =>
+        // 듣기 전에 실패한 서버는 닫을 것이 없다.
+        taken.close((error) =>
+          error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+            ? reject(error)
+            : resolve()
+        )
+      ),
+      10_000,
+      "the port-taking server did not close"
+    )
+  );
   await within(
     new Promise<void>((resolve, reject) => {
       taken.once("error", reject);
@@ -239,15 +253,6 @@ it("ends with the HTTP start error and records the database close failure when b
     }),
     10_000,
     "the port-taking server did not start listening"
-  );
-  onTestFinished(() =>
-    within(
-      new Promise<void>((resolve, reject) =>
-        taken.close((error) => (error ? reject(error) : resolve()))
-      ),
-      10_000,
-      "the port-taking server did not close"
-    )
   );
   const { port } = taken.address() as { port: number };
   const child = startMain(

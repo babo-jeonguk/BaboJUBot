@@ -1,6 +1,7 @@
 import http from "node:http";
 import { eventStreamPath } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
 import WebSocket from "ws";
 import { goal, quietCreation } from "./scenarios.ts";
 import {
@@ -95,11 +96,12 @@ vi.mock("@babojubot/db", async (original) => {
   };
 });
 
-/** Event stream 연결. 서버를 끄는 HTTP 단계가 시작하면 서버가 이 연결을 끊는다. */
+/** Event stream 연결. 서버를 끄는 HTTP 단계가 시작하면 서버가 이 연결을 끊는다. 시험이 그 전에 끝나도 끊기게 만든 직후 정리에 맡긴다. */
 async function openEventStream(baseUrl: string) {
   const socket = new WebSocket(
     baseUrl.replace(/^http/, "ws") + eventStreamPath
   );
+  onTestFinished(() => socket.terminate());
   const closed = new Promise<void>((resolve) =>
     socket.once("close", () => resolve())
   );
@@ -121,6 +123,8 @@ async function abandon(
   hold: ReturnType<typeof held.arm>
 ) {
   const client = new AbortController();
+  // 처리기를 기다리다 시험이 끝나도 요청이 남지 않게 만든 직후 정리에 맡긴다(이미 떠났으면 아무 일도 없다).
+  onTestFinished(() => client.abort());
   const request = fetch(baseUrl + path, { signal: client.signal }).then(
     () => "answered",
     () => "aborted"
@@ -171,7 +175,10 @@ async function stopWhileHeld(
   expect(errors.mock.calls).toEqual([]);
 }
 
-/** 연결 하나를 다시 쓰는 GET. 응답 header와 재사용 여부를 돌려준다. */
+/**
+ * 연결 하나를 다시 쓰는 GET. 응답 header와 재사용 여부를 돌려준다. 상한은 기다리는 쪽이 정하고(처리기를 붙잡은 동안 기다리는 요청이 있다),
+ * 끝나지 않은 요청은 `agent`를 만든 직후 정리에 맡긴 `destroy`가 끊는다.
+ */
 function getOver(agent: http.Agent, url: string) {
   return new Promise<{ connection?: string; reused: boolean }>(
     (resolve, reject) => {
@@ -236,39 +243,38 @@ describe("stopping the server", () => {
   it("closes a kept-alive connection after answering a request that arrived while stopping", async () => {
     t = await startTestServer();
     const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    // 끝나지 않은 요청까지 이 agent의 연결을 모두 끊는다.
+    onTestFinished(() => agent.destroy());
+    const inbox = held.arm("inbox");
+    // 처리기를 붙잡은 동안 기다리는 요청이다. 시험이 먼저 실패해 agent가 끊어도 처리하지 않은 거절로 남지 않는다.
+    const first = awaitedLater(getOver(agent, t.baseUrl + "/api/inbox"));
+    await within(
+      inbox.entered.promise,
+      10_000,
+      "the Inbox handler did not finish"
+    );
+    // 다른 처리기 하나를 더 멈춰 두어 끄기가 처리기를 기다리는 동안 이 연결로 다음 요청을 보낸다.
+    const list = held.arm("organizations");
+    await abandon(t.baseUrl, "/api/organizations", list);
+    const stream = await openEventStream(t.baseUrl);
+    const stopping = t.stopServer();
     try {
-      const inbox = held.arm("inbox");
-      const first = getOver(agent, t.baseUrl + "/api/inbox");
       await within(
-        inbox.entered.promise,
+        stream.closed,
         10_000,
-        "the Inbox handler did not finish"
+        "the HTTP step of stopping did not finish"
       );
-      // 다른 처리기 하나를 더 멈춰 두어 끄기가 처리기를 기다리는 동안 이 연결로 다음 요청을 보낸다.
-      const list = held.arm("organizations");
-      await abandon(t.baseUrl, "/api/organizations", list);
-      const stream = await openEventStream(t.baseUrl);
-      const stopping = t.stopServer();
-      try {
-        await within(
-          stream.closed,
-          10_000,
-          "the HTTP step of stopping did not finish"
-        );
-        inbox.release.resolve();
-        await within(first, 10_000, "the Inbox answer did not finish");
-        const second = await within(
-          getOver(agent, t.baseUrl + "/api/health"),
-          10_000,
-          "the answer while stopping did not finish"
-        );
-        expect(second).toEqual({ connection: "close", reused: true });
-      } finally {
-        held.releaseAll();
-      }
-      await within(stopping, 10_000, "stopping the server did not finish");
+      inbox.release.resolve();
+      await within(first, 10_000, "the Inbox answer did not finish");
+      const second = await within(
+        getOver(agent, t.baseUrl + "/api/health"),
+        10_000,
+        "the answer while stopping did not finish"
+      );
+      expect(second).toEqual({ connection: "close", reused: true });
     } finally {
-      agent.destroy();
+      held.releaseAll();
     }
+    await within(stopping, 10_000, "stopping the server did not finish");
   });
 });

@@ -13,6 +13,7 @@ import {
   runSummaryListSchema,
   type Notification,
   type WakeReason,
+  hasErrorCode,
 } from "@babojubot/contracts";
 import { leadReplyScript } from "@babojubot/runtime";
 import { createTestDatabase } from "@babojubot/db/testing";
@@ -904,25 +905,34 @@ describe("channel replies", () => {
 
   it("still frees the port and reports the start error when closing the failed channel also throws", async () => {
     const database = await createTestDatabase();
-    const listening = (port: number) =>
-      within(
-        new Promise<net.Server>((resolve, reject) => {
-          const probe = net.createServer();
-          probe.once("error", reject);
-          probe.listen(port, "127.0.0.1", () => resolve(probe));
-        }),
-        eventuallyMs,
-        `the port probe did not start listening on ${port}`
-      );
+    onTestFinished(() => database.close());
+    // 이미 닫았거나 듣기 전에 실패한 listener는 닫을 것이 없다.
     const closing = (probe: net.Server) =>
       within(
         new Promise<void>((resolve, reject) =>
-          probe.close((error) => (error ? reject(error) : resolve()))
+          probe.close((error) =>
+            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+              ? reject(error)
+              : resolve()
+          )
         ),
         eventuallyMs,
         "the port probe did not close"
       );
-    onTestFinished(() => database.close());
+    /** 그 port를 듣는 listener. 만든 직후 닫기를 시험 정리에 맡기고 그다음 듣기를 기다린다. */
+    const listening = async (port: number) => {
+      const probe = net.createServer();
+      onTestFinished(() => closing(probe));
+      await within(
+        new Promise<void>((resolve, reject) => {
+          probe.once("error", reject);
+          probe.listen(port, "127.0.0.1", resolve);
+        }),
+        eventuallyMs,
+        `the port probe did not start listening on ${port}`
+      );
+      return probe;
+    };
     const probe = await listening(0);
     const { port } = probe.address() as net.AddressInfo;
     await closing(probe);

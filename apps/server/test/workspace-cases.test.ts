@@ -13,7 +13,7 @@ import {
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type { ArtifactFileRead } from "@babojubot/contracts";
+import { hasErrorCode, type ArtifactFileRead } from "@babojubot/contracts";
 import { afterEach, beforeAll, expect, it, type TestContext } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
@@ -683,6 +683,20 @@ it("C17 refuses a Unix socket", async (context) => {
   // socket 파일은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 닫는다.
   await withCleanup(async (defer) => {
     const server = createServer();
+    // 만든 직후 닫기를 맡긴다. 열지 못한 서버는 닫을 것이 없다(ERR_SERVER_NOT_RUNNING).
+    defer(() =>
+      within(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) =>
+            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+              ? reject(error)
+              : resolve()
+          )
+        ),
+        10_000,
+        "the socket file server did not close"
+      )
+    );
     const listening = await within(
       new Promise<string>((resolve) => {
         server.once("error", (error: NodeJS.ErrnoException) =>
@@ -700,16 +714,6 @@ it("C17 refuses a Unix socket", async (context) => {
         "unverified",
         `socket을 만들지 못함: ${listening}`
       );
-    // 연 서버만 닫는다. 열지 못한 서버를 닫으면 ERR_SERVER_NOT_RUNNING으로 실패한다.
-    defer(() =>
-      within(
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        ),
-        10_000,
-        "the socket file server did not close"
-      )
-    );
     expect(await read("s")).toEqual(refusal("not_regular_file"));
   });
   note(context, "C17", "pass");
