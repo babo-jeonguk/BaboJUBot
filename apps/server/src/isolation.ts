@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import {
   failureCode,
+  normalizeHost,
   settled,
   type ProviderConnection,
   type ProviderReadinessCheck,
@@ -202,7 +203,20 @@ export class IsolationGate {
         .flatMap((interfaces) => interfaces ?? [])
         .map((address) => address.address)
         .filter((address) => !address.startsWith("fe80:"));
-      const hosts = [...new Set(["127.0.0.1", ...addresses])];
+      // 중계는 요청한 이름을 정규 형태(`normalizeHost`)로 바꿔 목록과 비교하므로 목록도 그 형태로 적는다. 장치 주소는 줄인 형태("::1")로 오므로
+      // 그대로 적으면 목록에 없는 목적지(destination_not_allowed)로 거부되어, 주소 확인이 막는지 확인하지 못한 것으로 끝났다.
+      const hosts = [
+        ...new Set(
+          ["127.0.0.1", ...addresses].map((address) => {
+            const host = normalizeHost(address);
+            if (host === null)
+              throw new Error(
+                "a network interface address is not a destination host"
+              );
+            return host;
+          })
+        ),
+      ];
       const targets = hosts.flatMap((host) =>
         [...new Set(this.#protectedPorts())].map((port) => ({ host, port }))
       );
