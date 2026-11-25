@@ -6,7 +6,7 @@ import {
 import { leadReplyScript } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { startServer } from "../src/index.ts";
+
 import {
   chatMessages,
   goal,
@@ -15,8 +15,11 @@ import {
   reasons,
   scriptedAgents,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  startTestServer,
+  type TestServer,
+  startOnDatabaseOf,
+} from "./support.ts";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -189,25 +192,28 @@ describe("heartbeat", () => {
     await t.stopServer();
 
     time.advance(minutes(55));
-    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
-    await withCleanup(async (defer) => {
-      const restarted = await startServer({
-        db: t!.db,
-        port: 0,
+    // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 시험 서버(DB)는 다시 띄운 서버가 끝난 것을 확인한 뒤에만 닫는다(`handOver`).
+    const first = t;
+    const restartedStart = startOnDatabaseOf(
+      first,
+      {
         runtime: agents.runtime,
         now: time.now,
-      });
-      defer(() => restarted.close());
-      await restarted.tickHeartbeats();
-      await restarted.tickHeartbeats();
-      await restarted.drain();
-    });
+      },
+      "the restarted server"
+    );
+    // 새 서버를 띄운 같은 동기 단계에서 모듈의 시험 서버를 비운다. 그 뒤로는 시험 서버의 끝을 이 시험의 정리가 맡는다.
+    t = undefined;
+    const restarted = await restartedStart.started;
+    await restarted.tickHeartbeats();
+    await restarted.tickHeartbeats();
+    await restarted.drain();
     expect(reasons(agents.of(org.lead.id)).map((r) => r.kind)).toEqual([
       "heartbeat",
     ]);
     const { findAgentDetail } = await import("@babojubot/db");
     expect(
-      (await findAgentDetail(t.db, org.id, org.lead.id))?.heartbeat.nextAt
+      (await findAgentDetail(first.db, org.id, org.lead.id))?.heartbeat.nextAt
     ).toBe(time.iso(minutes(10)));
   });
 

@@ -1,6 +1,6 @@
 // 실모델 장애 검사(scripts/chaos-live.mjs)의 자동 검사. 실제 모델은 부르지 않는다.
 // 실행 허용 차단, 예산 제한, 결과 판정, 증거 검사, 그리고 가짜 연결·임시 홈·임시 DB로 강제 종료·시간 초과·중단 뒤 정리를 본다.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -36,11 +36,15 @@ import {
   chaosServer,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
-import { hasErrorCode } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { runCommand } from "@babojubot/process";
+import { openLifelines } from "@babojubot/process/lifelines";
+import { removeFolderWithin, testFolders } from "@babojubot/process/testing";
+import { within } from "@babojubot/process/test-support";
 import {
   awaitedLater,
   folderCleanup,
+  lifelineHolder,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
 
@@ -48,14 +52,21 @@ const ids = scenes.map((s) => s.id);
 const launchAll = { scenes: ids, maxLiveRuns: 24 };
 const sceneById = (id) => scenes.find((s) => s.id === id);
 
-/** 이 홈의 내장 Postgres 프로세스가 남았는지. */
-const postgresAlive = (home) => {
-  try {
-    execFileSync("pgrep", ["-f", `${home}/postgres`]);
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * 이 홈의 내장 Postgres 프로세스가 남았는지. pgrep은 찾았으면 0, 찾은 것이 없으면 1로 끝난다. 그 밖의 끝남(다른 종료 코드, 시한에
+ * 끊김)과 띄우지 못함은 남았는지 모르는 것이므로 그 이유로 실패한다. 모든 실패를 "없음"으로 세면 확인하지 못한 홈을 깨끗하다고
+ * 보았다(#286). 명령은 공용 실행(`runCommand`)으로 돌려 시한에 끝을 보장한다.
+ */
+const postgresAlive = async (home) => {
+  const result = await runCommand("pgrep", ["-f", `${home}/postgres`], {
+    limitMs: 10_000,
+    maxOutputBytes: 64 * 1024,
+  });
+  if (!result.killed && result.code === 0) return true;
+  if (!result.killed && result.code === 1) return false;
+  throw new Error(
+    `pgrep could not tell whether Postgres of ${home} is left (code ${result.code}, signal ${result.signal}, killed ${result.killed}): ${result.stderr.trim()}`
+  );
 };
 
 describe("chaos harness launch", () => {
@@ -662,7 +673,7 @@ describe("chaos harness on a fake connection", () => {
       postgresLeft: true,
       problems: 0,
     });
-    expect(postgresAlive(home)).toBe(false);
+    expect(await postgresAlive(home)).toBe(false);
     expect(existsSync(home)).toBe(false);
   }, 120_000);
 
@@ -774,26 +785,40 @@ describe("chaos harness on a fake connection", () => {
   }, 120_000);
 
   it("keeps the home and fails the scene when a provider process record cannot be recovered", async () => {
-    // 대표는 끝나고 그룹의 프로세스만 남았다. 제품 복구는 우리 것인지 확인할 수 없어 기록을 남긴다.
-    const leader = spawn("sh", ["-c", "sleep 60 & exit 0"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    await once(leader, "exit");
+    // 대표는 끝나고 그룹의 구성원 하나만 남았다. 제품 복구는 우리 것인지 확인할 수 없어 기록을 남긴다.
+    // 구성원은 연결을 쥐고 돈다. 정리는 그 연결이 열려 있음을 본 직후에만 그 번호로 끄고, 끝은 연결의 닫힘으로 본다(`lifelineHolder`).
+    // 대표가 거두어진 뒤의 그룹 번호로는 신호하지 않는다. 구성원이 끝난 뒤에는 그 번호가 다른 그룹에 쓰였을 수 있다(#286).
+    // 대표와 구성원은 띄우자마자 정리에 맡긴다: 대표는 아직 돌면 끄고 닫힘을 기다리며(`ownChild`), 구성원은 `lifelineHolder`로 끈다.
+    // 둘이 끝난 뒤에만 구성원의 번호 파일 폴더를 지우고, 연결 서버는 그 뒤에 닫는다(정리는 등록 역순).
+    const lifelines = await openLifelines();
+    onTestFinished(() => lifelines.close());
+    const folders = testFolders((cleanup) => onTestFinished(cleanup));
+    const memberFolder = await folders.make("chaos-member-");
+    const member = lifelineHolder(
+      lifelines,
+      "member",
+      path.join(memberFolder, "pid")
+    );
+    folders.own(member.end, "the group member");
+    const leader = folders.ownChild(
+      spawn(
+        process.execPath,
+        [
+          "-e",
+          `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${member.code} setInterval(() => {}, 1000);`)}], { stdio: "ignore" }); process.exit(0);`,
+        ],
+        { detached: true, stdio: "ignore" }
+      )
+    );
+    await within(once(leader, "exit"), 10_000, "the group leader did not end");
     const group = leader.pid;
     if (group === undefined) throw new Error("the leader did not start");
+    await lifelines.connected("member");
     /** @type {string | undefined} */
     let home;
-    // 남은 그룹을 끄고 홈을 지운다. 그룹이 이미 끝났으면 넘어간다.
-    // 남은 sleep은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 끝나기를 기다리지 않고 지운다.
-    // (부모 sh가 먼저 끝나 sleep은 다른 프로세스가 거둔다. 거두지 않는 환경에서는 종료 확인이 시한까지 기다리게 된다.)
+    // 남은 구성원은 시험의 작업 폴더에서 돌고 출력도 받지 않아 홈의 파일을 쥐지 않는다. 그래서 그 끝과 따로 홈을 지운다.
     onTestFinished(async () => {
-      try {
-        process.kill(-group, "SIGKILL");
-      } catch (error) {
-        if (!hasErrorCode("ESRCH")(error)) throw error;
-      }
-      if (home) await removeFolder(home);
+      if (home) await removeFolderWithin(home);
     });
     const planted = {
       id: "a",
@@ -841,33 +866,60 @@ describe("chaos harness on a fake connection", () => {
     ).toBe(true);
   }, 120_000);
 
-  it("stops waiting for a server start when the scene is aborted", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
-    const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
-    const server = chaosServer({
-      home,
-      harnessDir,
-      connection: "fake-live",
-      database: "persistent",
-    });
-    // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 서버를 끈 뒤에 그 폴더를 지운다.
-    await withCleanup(async (defer) => {
-      const folder = folderCleanup(() => removeFolder(harnessDir));
-      defer(folder.cleanUp);
-      folder.own(() => server.dispose());
-      // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
-      // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
-      const scene = new AbortController();
-      const starting = awaitedLater(server.start(scene.signal));
-      await vi.waitUntil(() => server.starts === 1, {
-        timeout: 30_000,
-        interval: 10,
+  /**
+   * 장면 서버 정리(`dispose`)를 기다리는 시한. 이 시험에서는 중단된 시작이 대표를 이미 끝냈으므로 서버 정지는 바로 돌아오고, 정리는 남은
+   * DB를 제품 경로로 다시 열고 닫은 뒤 서버 트리를 끈다(`scripts/live/chaos-server.mjs` `dispose`). 시한은 그 길의 큰 단계 상한을 더한 값이다
+   * (`packages/db/src/embedded.ts`, `packages/process/src/supervised.ts`): 남은 Postgres 멈추기 10초 + 시작 60초 + 닫기 30초에 `pg_ctl`마다
+   * 여유 15초씩(`leftoverStopSeconds`·`startSeconds`·`stopSeconds`·`pgCtlMarginMs`), 그리고 트리 정지(유예 2초 + 감독 실행기 정지 20초
+   * `supervisorStopLimitMs` + 끝 확인 10초 `endLimitMs`). 모든 단계의 보장은 아니다: 여러 번 도는 상태 확인(`pg_ctl status` 15초씩),
+   * 남은 프로바이더 기록 정리, 상한이 없는 단계(마이그레이션, 홈 지우기)는 더하지 않았다. 넘기면 끝을 확인하지 못한 것으로 실패하고
+   * 폴더를 남긴다(fail closed).
+   */
+  const disposeMs =
+    10_000 +
+    15_000 +
+    (60_000 + 15_000) +
+    (30_000 + 15_000) +
+    2_000 +
+    20_000 +
+    10_000;
+  it(
+    "stops waiting for a server start when the scene is aborted",
+    async () => {
+      // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 폴더는 만든 직후 정리에 맡기고, 서버를 끈 뒤에 지운다. 홈은 서버 정리(`dispose`)가
+      // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
+      const home = await withCleanup(async (defer) => {
+        const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
+        const folder = folderCleanup(() => removeFolder(harnessDir));
+        defer(folder.cleanUp);
+        const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
+        const server = chaosServer({
+          home,
+          harnessDir,
+          connection: "fake-live",
+          database: "persistent",
+        });
+        folder.own(() =>
+          within(server.dispose(), disposeMs, "disposing the scene server")
+        );
+        // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
+        // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
+        const scene = new AbortController();
+        const starting = awaitedLater(server.start(scene.signal));
+        await vi.waitUntil(() => server.starts === 1, {
+          timeout: 30_000,
+          interval: 10,
+        });
+        const reason = new Error("scene aborted");
+        scene.abort(reason);
+        await expect(starting).rejects.toBe(reason);
+        expect(server.running).toBe(false);
+        return home;
       });
-      const reason = new Error("scene aborted");
-      scene.abort(reason);
-      await expect(starting).rejects.toBe(reason);
-      expect(server.running).toBe(false);
-    });
-    expect(postgresAlive(home)).toBe(false);
-  }, 60_000);
+      expect(await postgresAlive(home)).toBe(false);
+      // 시험 시한은 본문과 정리의 상한을 더한 값이다: 시작 대기 확인 30초(위 `waitUntil`) + 중단된 시작의 끝 확인 30초(`chaos-server.mjs`
+      // `kill`) + 정리 `disposeMs` + Postgres 확인 10초(`postgresAlive`의 `limitMs`).
+    },
+    30_000 + 30_000 + disposeMs + 10_000
+  );
 });

@@ -664,6 +664,7 @@ export const processNonLaunchers = [
   "processStartTicks",
   "cleanThroughSupervisor",
   "removeFolder",
+  "removeFolderWithin",
   "folderCleanup",
   "withCleanup",
   "processAlive",

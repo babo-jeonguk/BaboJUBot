@@ -71,7 +71,10 @@ describe("refusals of a run", () => {
   });
 
   it("writes a refusal again after saving it failed, and reports the failure", async () => {
-    const failure = new Error("injected: saving the activity failed");
+    const failure = Object.assign(
+      new Error("injected: saving the activity failed"),
+      { code: "INJECTED_SAVE_FAILED" }
+    );
     let attempts = 0;
     const { log: refusals, writes } = log({
       write: async () => {
@@ -79,15 +82,17 @@ describe("refusals of a run", () => {
         return true;
       },
     });
-    const logged = [
-      vi.spyOn(console, "warn").mockImplementation(() => {}),
-      vi.spyOn(console, "error").mockImplementation(() => {}),
-    ];
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errored = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await refusals.record("run", "example.invalid:443 not_allowed", "거부");
     await refusals.record("run", "example.invalid:443 not_allowed", "거부");
 
     expect(writes).toHaveBeenCalledTimes(2);
-    expect(logged.flatMap((spy) => spy.mock.calls.flat())).toContain(failure);
+    // 진단에는 오류 문구 대신 원인 코드를 남긴다(CODING_STANDARDS.md#제품-코드).
+    expect(warned.mock.calls).toEqual([
+      ["[isolation] could not record a relay refusal (INJECTED_SAVE_FAILED)"],
+    ]);
+    expect(errored.mock.calls).toEqual([]);
   });
 });

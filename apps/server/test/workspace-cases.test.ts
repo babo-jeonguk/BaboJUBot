@@ -18,16 +18,18 @@ import { afterEach, beforeAll, expect, it, type TestContext } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
 import {
-  cleanup,
   featureGaps,
   filesBase,
   gapOutcome,
   junctionSeen,
   realScratch,
+  removeRetries,
   runPinned,
   windows,
+  childEnded,
 } from "./files-volume.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { ownedListener } from "./support.ts";
+import { testFolders } from "@babojubot/process/testing";
 
 // #153: 파일 경로 격리의 사례 표(C01–C37, F1–F6)를 지금 이 파일 시스템에서 확인한다. 같은 파일이 일반 PR의 세 OS와
 // 환경별 전체 검증의 각 디스크(NTFS·FAT·SMB, APFS·HFS+)에서 돈다. 사례마다 결과를 test meta(`cases`)에 남기고
@@ -69,10 +71,11 @@ const foreign = "B-SECRET";
 const outsideBytes = "OUTSIDE-SECRET";
 const refusal = (refusal: string) => ({ ok: false, refusal });
 
-afterEach(cleanup);
+/** 시험마다의 폴더 정리. 폴더와 그 안에서 도는 것(읽는 프로세스·명령, socket 파일 서버, 막은 권한)의 끝을 함께 맡는다. */
+const folders = testFolders(afterEach, removeRetries);
 
 async function world() {
-  const root = await realScratch("bjc-");
+  const root = await realScratch(folders, "bjc-");
   const organizations = path.join(root, "organizations");
   const shared = path.join(organizations, A, "shared");
   const other = path.join(organizations, B, "shared");
@@ -122,15 +125,30 @@ const osOpen = (absolute: string) =>
   );
 
 const run = (file: string, args: string[], env: Record<string, string> = {}) =>
-  new Promise<{ ok: boolean; output: string }>((resolve) =>
-    execFile(
-      file,
-      args,
-      { env: { ...process.env, ...env }, timeout: 60_000, windowsHide: true },
-      (error, stdout, stderr) =>
-        resolve({ ok: !error, output: `${stdout}${stderr}`.trim() })
-    )
-  );
+  new Promise<{ ok: boolean; output: string }>((resolve) => {
+    // 띄운 직후 폴더 정리에 맡긴다. 이 명령이 다루는 world 폴더는 그 끝(`close`)을 확인한 뒤에만 지운다.
+    folders.ownChild(
+      execFile(
+        file,
+        args,
+        {
+          env: { ...process.env, ...env },
+          timeout: 60_000,
+          killSignal: "SIGKILL",
+          windowsHide: true,
+        },
+        // 실패하면 어떻게 끝났는지를 출력의 첫 줄 앞에 붙인다. 호출자는 실패 이유로 출력의 첫 줄을 보인다.
+        (error, stdout, stderr) => {
+          const output = `${stdout}${stderr}`.trim();
+          resolve(
+            error
+              ? { ok: false, output: `${childEnded(error)}: ${output}` }
+              : { ok: true, output }
+          );
+        }
+      )
+    );
+  });
 /** Windows 8.3 짧은 이름. 이 볼륨이 짧은 이름을 만들지 않으면 긴 이름 그대로다. */
 const shortName = async (target: string) => {
   const result = await run(
@@ -203,7 +221,7 @@ const can = {
   normalizationInsensitive: false,
 };
 beforeAll(async () => {
-  const probe = await realScratch("bjc-probe-");
+  const probe = await realScratch(folders, "bjc-probe-");
   await writeFile(path.join(probe, "file"), "x");
   can.caseSensitive = !(await stat(path.join(probe, "FILE")).then(
     () => true,
@@ -449,7 +467,7 @@ const inject = `{
     if (done) return;
     done = true;
     for (const [operation, ...args] of plan.actions) {
-      if (operation === "exec") process.getBuiltinModule("node:child_process").execFileSync(args[0], args.slice(1));
+      if (operation === "exec") process.getBuiltinModule("node:child_process").execFileSync(args[0], args.slice(1), { timeout: 10000, killSignal: "SIGKILL" });
       else fs[operation](...args);
     }
   };
@@ -492,7 +510,7 @@ const injected = (
     nth?: number;
     actions: Action[];
   }
-) => runPinned(organizations, inject, { requested, plan });
+) => runPinned(folders, organizations, inject, { requested, plan });
 const text = (bytes: Buffer | null) => bytes?.toString("utf8") ?? null;
 
 it("C11 refuses when a folder in the path or the file itself is swapped right after it was checked", async (context) => {
@@ -648,7 +666,7 @@ it("C15 names the final file as changed when it disappears or is replaced right 
 
 const mkfifo = async (target: string) => {
   const result = await run("mkfifo", [target]);
-  return result.ok ? "" : result.output || "mkfifo failed";
+  return result.ok ? "" : result.output;
 };
 it("C16 refuses a FIFO without opening it, also when the file turns into one right after it was checked", async (context) => {
   if (windows) without(context, "C16", "n/a", "Windows에는 FIFO 파일이 없다");
@@ -670,6 +688,14 @@ it("C16 refuses a FIFO without opening it, also when the file turns into one rig
   note(context, "C16", "pass");
 });
 
+/** socket 파일을 만들 수 없는 파일 시스템·권한에서 `listen`이 받는 운영체제 오류(socket(2)·bind(2)). */
+const socketRefusals = [
+  "EACCES",
+  "EPERM",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "ENAMETOOLONG",
+];
 it("C17 refuses a Unix socket", async (context) => {
   if (windows)
     without(
@@ -679,31 +705,25 @@ it("C17 refuses a Unix socket", async (context) => {
       "Windows의 Node는 경로 socket 대신 named pipe를 쓴다"
     );
   const { read, shared } = await world();
-  // socket 파일은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 닫는다.
-  await withCleanup(async (defer) => {
-    const server = createServer();
-    const listening = await new Promise<string>((resolve) => {
-      server.once("error", (error: NodeJS.ErrnoException) =>
-        resolve(error.code ?? String(error))
-      );
-      server.listen(path.join(shared, "s"), () => resolve(""));
-    });
-    if (listening)
-      without(
-        context,
-        "C17",
-        "unverified",
-        `socket을 만들지 못함: ${listening}`
-      );
-    // 연 서버만 닫는다. 열지 못한 서버를 닫으면 ERR_SERVER_NOT_RUNNING으로 실패한다.
-    defer(
-      () =>
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        )
-    );
-    expect(await read("s")).toEqual(refusal("not_regular_file"));
-  });
+  // socket 파일 서버는 그 폴더의 정리가 소유한다. 서버를 닫은 뒤에만 폴더를 지운다.
+  const listening = await ownedListener(
+    createServer(),
+    { path: path.join(shared, "s") },
+    folders.own,
+    "the socket file server"
+  ).then(
+    () => "",
+    (error: unknown) => {
+      // 이 파일 시스템이 socket 파일을 만들지 못한다는 운영체제의 답만 이 환경의 한계다. 그 밖(상한, Node의 인수 오류 등)은 실패다.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (typeof code === "string" && socketRefusals.includes(code))
+        return code;
+      throw error;
+    }
+  );
+  if (listening)
+    without(context, "C17", "unverified", `socket을 만들지 못함: ${listening}`);
+  expect(await read("s")).toEqual(refusal("not_regular_file"));
   note(context, "C17", "pass");
 });
 
@@ -926,9 +946,29 @@ const deny = async (target: string, folder: boolean) => {
   ]);
   return denial(set, set.ok ? await run("icacls", [target]) : undefined);
 };
+/**
+ * 막은 권한을 되돌린다. 폴더 정리 단계에서 부르므로 `run`(띄운 자식을 폴더 정리에 맡김)을 쓰지 않고 이 단계 안에서 끝을 기다린다:
+ * execFile의 콜백은 자식이 끝나고 출력이 닫힌 뒤 오고, 시한(8초, 폴더 정리의 단계 상한 10초 안)에 닿으면 SIGKILL로 끝낸다. 되돌리지
+ * 못하면 그 원인으로 거절해 폴더를 남긴다.
+ */
 const allow = async (target: string, folder: boolean) => {
-  if (!windows) await chmod(target, folder ? 0o755 : 0o644);
-  else await run("icacls", [target, "/remove:d", "*S-1-1-0"]);
+  if (!windows) return chmod(target, folder ? 0o755 : 0o644);
+  await new Promise<void>((resolve, reject) =>
+    execFile(
+      "icacls",
+      [target, "/remove:d", "*S-1-1-0"],
+      { timeout: 8_000, killSignal: "SIGKILL", windowsHide: true },
+      (error, stdout, stderr) =>
+        error
+          ? reject(
+              new Error(
+                `could not restore the permission of ${target}: ${`${stdout}${stderr}`.trim()}`,
+                { cause: error }
+              )
+            )
+          : resolve()
+    )
+  );
 };
 it("C26 refuses a file it may not read and a folder it may not search", async (context) => {
   const { got, shared } = await world();
@@ -937,43 +977,42 @@ it("C26 refuses a file it may not read and a folder it may not search", async (c
   await writeFile(file, "A:locked");
   await mkdir(folder);
   await writeFile(path.join(folder, "a.md"), "A:locked/a.md");
-  // 막은 권한은 시험 폴더를 지우는 afterEach보다 먼저 시험 안에서 되돌린다.
-  await withCleanup(async (defer) => {
-    const fileDenied = await deny(file, false);
-    defer(() => allow(file, false));
-    const folderDenied = await deny(folder, true);
-    defer(() => allow(folder, true));
-    const failed = fileDenied ?? folderDenied;
-    if (failed) without(context, "C26", failed.outcome, failed.reason);
-    // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
-    const osFile = await osOpen(file);
-    const osFolder = await osOpen(path.join(folder, "a.md"));
-    if (typeof osFile === "string")
-      without(
-        context,
-        "C26",
-        "unverified",
-        "이 계정은 막은 파일도 연다(관리자 우회)"
-      );
-    expect(await got("locked.md")).toEqual({ refused: "file_unreadable" });
-    const ours = await got(path.join("locked", "a.md"));
-    if (typeof osFolder === "string") {
-      // Windows는 폴더 통과 검사를 건너뛰는 권한(SeChangeNotifyPrivilege)이 모든 사용자에게 있다. 열리면 안쪽 파일이다.
-      expect([
-        "A:locked/a.md",
-        JSON.stringify({ refused: "file_unreadable" }),
-      ]).toContain(typeof ours === "string" ? ours : JSON.stringify(ours));
-      note(
-        context,
-        "C26",
-        "limitation",
-        `폴더 통과 거부는 운영체제도 무시함, 우리: ${JSON.stringify(ours)}`
-      );
-    } else {
-      expect(ours).toEqual({ refused: "file_unreadable" });
-      note(context, "C26", "pass");
-    }
-  });
+  // 막은 권한은 그 폴더의 정리가 소유한다. 권한을 되돌린 뒤에만 폴더를 지운다(되돌리지 못하면 남기고 실패). 되돌리기는 막기 전에
+  // 맡긴다: 막기(icacls)는 막은 뒤 결과를 다시 읽느라 한 번 더 기다리고, 막지 않은 대상을 되돌리는 것은 아무 일도 하지 않는다.
+  folders.own(() => allow(file, false), "restoring the file permission");
+  const fileDenied = await deny(file, false);
+  folders.own(() => allow(folder, true), "restoring the folder permission");
+  const folderDenied = await deny(folder, true);
+  const failed = fileDenied ?? folderDenied;
+  if (failed) without(context, "C26", failed.outcome, failed.reason);
+  // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
+  const osFile = await osOpen(file);
+  const osFolder = await osOpen(path.join(folder, "a.md"));
+  if (typeof osFile === "string")
+    without(
+      context,
+      "C26",
+      "unverified",
+      "이 계정은 막은 파일도 연다(관리자 우회)"
+    );
+  expect(await got("locked.md")).toEqual({ refused: "file_unreadable" });
+  const ours = await got(path.join("locked", "a.md"));
+  if (typeof osFolder === "string") {
+    // Windows는 폴더 통과 검사를 건너뛰는 권한(SeChangeNotifyPrivilege)이 모든 사용자에게 있다. 열리면 안쪽 파일이다.
+    expect([
+      "A:locked/a.md",
+      JSON.stringify({ refused: "file_unreadable" }),
+    ]).toContain(typeof ours === "string" ? ours : JSON.stringify(ours));
+    note(
+      context,
+      "C26",
+      "limitation",
+      `폴더 통과 거부는 운영체제도 무시함, 우리: ${JSON.stringify(ours)}`
+    );
+  } else {
+    expect(ours).toEqual({ refused: "file_unreadable" });
+    note(context, "C26", "pass");
+  }
 });
 
 it("C27 refuses Windows drive-relative names as outside and keeps them as plain names elsewhere", async (context) => {
@@ -1290,7 +1329,7 @@ it("C36 matches the working folder part with its exact case and names inside the
   }
   // F4 그대로: 대소문자를 가리는 부모 폴더에 `organizations`와 `Organizations`가 따로 있으면 대소문자만 다른 표기는
   // 다른 폴더다. 그 폴더의 파일은 운영체제가 열어도 작업 폴더 밖으로 거부한다.
-  const parent = await realScratch("bjc-cs-");
+  const parent = await realScratch(folders, "bjc-cs-");
   const sensitive = windows
     ? await run("fsutil.exe", [
         "file",

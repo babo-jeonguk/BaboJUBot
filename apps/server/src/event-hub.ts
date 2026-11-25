@@ -1,4 +1,5 @@
 import type { Event, StreamScope } from "@babojubot/contracts";
+import { failureCode } from "@babojubot/contracts";
 
 type Listener = (event: Event) => void;
 
@@ -22,7 +23,9 @@ export class EventHub {
       try {
         listener();
       } catch (error) {
-        console.error("[event-hub] settings subscriber failed", error);
+        console.error(
+          `[event-hub] settings subscriber failed (${failureCode(error)})`
+        );
       }
   }
 
@@ -47,7 +50,9 @@ export class EventHub {
         try {
           listener(event);
         } catch (error) {
-          console.error("[event-hub] subscriber failed", error);
+          console.error(
+            `[event-hub] subscriber failed (${failureCode(error)})`
+          );
         }
       }
   }

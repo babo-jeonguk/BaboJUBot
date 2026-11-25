@@ -25,7 +25,12 @@ import {
   wakeText,
   type ModelRequest,
 } from "./local-model.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import {
+  startTestServer,
+  type TestServer,
+  ownStart,
+  helperStartEnded,
+} from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -37,6 +42,7 @@ const version = (candidate: string) =>
   execFileSync(candidate, ["--version"], {
     encoding: "utf8",
     timeout: 20_000,
+    killSignal: "SIGKILL",
     stdio: "pipe",
   }).trim();
 const program = (() => {
@@ -82,33 +88,47 @@ describe.skipIf(!program)(
   () => {
     let t: TestServer;
     let model: Awaited<ReturnType<typeof startLocalModel>>;
+    /** 모델 서버의 닫기. 아래 afterAll의 한 단계가 서버·폴더 정리 뒤에 부른다. */
+    let closeModel: (() => Promise<void>) | undefined;
     let folder: ReturnType<typeof folderCleanup> | undefined;
     const agents = scriptedAgents();
     const { get, researching, create, say } = serverHelpers(() => t);
     beforeAll(async () => {
-      model = await startLocalModel();
+      model = await startLocalModel((close) => (closeModel = close));
       const dataDir = await mkdtemp(path.join(tmpdir(), "opencode-real-"));
       // OpenCode가 아직 쓰는 dataDir는 서버가 닫힌 뒤에만 지운다.
       folder = folderCleanup(() => removeFolder(dataDir));
       const [fake] = createFakeProviders(1, { adapter: () => agents.runtime });
-      t = await startTestServer({
-        providers: [
-          fake!,
-          createOpenCodeProvider({
-            dataDir,
-            command: [
-              process.execPath,
-              path.resolve("test/fixtures/opencode-local-model.mjs"),
-              program!,
-              model.url,
-            ],
-          }),
-        ],
-      });
-      folder.own(() => t.close());
+      // 시험 서버(OpenCode를 띄움)는 시작하는 즉시 폴더 정리가 소유한다. 넘기기 전에 실패하면 helper가 자기 정리를 마쳤을 때만 끝으로 본다.
+      t = await ownStart(
+        folder.own,
+        startTestServer({
+          providers: [
+            fake!,
+            createOpenCodeProvider({
+              dataDir,
+              command: [
+                process.execPath,
+                path.resolve("test/fixtures/opencode-local-model.mjs"),
+                program!,
+                model.url,
+              ],
+            }),
+          ],
+        }),
+        "the test server",
+        helperStartEnded
+      ).started;
     });
-    // 서버·폴더 정리와 모델 서버 닫기는 서로 무관하다. 한쪽이 실패해도 다른 쪽을 한다.
-    afterAll(() => attemptAll([() => folder?.cleanUp(), () => model?.close()]));
+    // 모델 서버는 그것을 부르는 OpenCode(서버가 띄움)가 끝난 뒤에만 닫는다. 서버·폴더 정리가 실패하면 닫지 않고 그 실패를 알린다.
+    afterAll(() =>
+      attemptAll([
+        async () => {
+          await folder?.cleanUp();
+          await closeModel?.();
+        },
+      ])
+    );
 
     const useOpenCode = async (orgId: string, agentId: string) => {
       const res = await t.request(

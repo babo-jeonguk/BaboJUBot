@@ -26,8 +26,15 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  ownedListener,
+  startTestServer,
+  type TestServer,
+  ownStart,
+  startDiagnostics,
+  startOnDatabaseOf,
+  closedAfterUsers,
+} from "./support.ts";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -283,23 +290,26 @@ describe("notification outbox and fake channel", () => {
     await t.deliverNotifications();
     await t.stopServer();
 
-    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
-    await withCleanup(async (defer) => {
-      const restarted = await startServer({
-        db: t!.db,
-        port: 0,
+    // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 그래서 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다(`handOver`).
+    const first = t;
+    const restartedStart = startOnDatabaseOf(
+      first,
+      {
         now: () => new Date(Date.now() + 60_000),
-      });
-      defer(() => restarted.close());
-      await restarted.deliverNotifications();
-      const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
-      const records = fakeChannelMessagesSchema
-        .parse(await res.json())
-        .filter((m) => m.organizationId === org.id);
-      expect(records.map((m) => [m.kind, m.sourceId])).toEqual([
-        ["approval_request", org.approvalId],
-      ]);
-    });
+      },
+      "the restarted server"
+    );
+    // 새 서버를 띄운 같은 동기 단계에서 모듈의 시험 서버를 비운다. 그 뒤로는 시험 서버의 끝을 이 시험의 정리가 맡는다.
+    t = undefined;
+    const restarted = await restartedStart.started;
+    await restarted.deliverNotifications();
+    const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
+    const records = fakeChannelMessagesSchema
+      .parse(await res.json())
+      .filter((m) => m.organizationId === org.id);
+    expect(records.map((m) => [m.kind, m.sourceId])).toEqual([
+      ["approval_request", org.approvalId],
+    ]);
   });
 
   it("an approval decision through the fake channel has the same effect as the dashboard's", async () => {
@@ -822,21 +832,29 @@ describe("channel replies", () => {
   });
 
   it("refuses to start with more than one channel", async () => {
+    // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
-    onTestFinished(() => database.close());
+    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`closedAfterUsers`).
+    const users = closedAfterUsers(() => database.close());
     const quiet = (name: string): NotificationChannel => ({
       name,
       deliver: async () => {},
       listen: () => {},
       close: async () => {},
     });
-    await expect(
+    // 거절을 기대한다. 그 시작은 아무것도 얻기 전에 거절하므로 진단이 없다. 진단 전체가 그와 같을 때만 정리를 확인한 것으로 본다.
+    const diagnostics = startDiagnostics();
+    const starting = ownStart(
+      users.own,
       startServer({
         db: database.db,
         port: 0,
         notificationChannels: [quiet("a"), quiet("b")],
-      })
-    ).rejects.toThrow("exactly one notification channel");
+      }),
+      "the server whose start should fail",
+      diagnostics.endedWith({ error: [], warn: [] })
+    ).started;
+    await expect(starting).rejects.toThrow("exactly one notification channel");
   });
 
   it("stops everything it started and closes the channel when the channel fails to start", async () => {
@@ -854,6 +872,8 @@ describe("channel replies", () => {
     });
     await awaitingApproval(agents, "시작 실패 조직");
     await t.stopServer();
+    // 아래에서 시험 서버의 DB로 서버를 하나 더 시작한다. 시험 서버(DB)는 그 시작이 끝난 것을 확인한 뒤에만 닫는다(`startOnDatabaseOf`).
+    const first = t;
 
     // 시계가 부를 때마다 10초씩 가서, 멈추지 않은 relay라면 주기 확인마다 재시도 예정이 지난 알림을 다시 보낸다.
     let tick = 0;
@@ -874,18 +894,23 @@ describe("channel replies", () => {
       },
     };
     // 주기 확인(setInterval)을 시험이 돌린다. 제품에서 setInterval은 주기 확인만 쓰고, 그 밖의 타이머는 실제 시간 그대로다.
+    // 거절을 기대한다. 시작 실패 뒤 정리가 모두 됐으면 진단이 없다. 진단 전체가 그와 같을 때만 정리를 확인한 것으로 본다.
+    const diagnostics = startDiagnostics();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      await expect(
-        startServer({
-          db: t.db,
-          port: 0,
+      const starting = startOnDatabaseOf(
+        first,
+        {
           now: () => new Date(base + tick++ * 10_000),
           notificationChannels: [broken],
           notificationPollMs: 10,
           heartbeatPollMs: 10,
-        })
-      ).rejects.toThrow("토큰 거부");
+        },
+        "the server whose start should fail",
+        diagnostics.endedWith({ error: [], warn: [] })
+      ).started;
+      t = undefined;
+      await expect(starting).rejects.toThrow("토큰 거부");
       // 실패한 시작은 주기 확인을 하나도 남기지 않는다. 남았다면 시간을 옮길 때 재시도 예정이 지난 알림을 다시 보낸다.
       expect(vi.getTimerCount()).toBe(0);
       const seen = attempts;
@@ -898,43 +923,59 @@ describe("channel replies", () => {
   });
 
   it("still frees the port and reports the start error when closing the failed channel also throws", async () => {
+    // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
+    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`closedAfterUsers`).
+    const users = closedAfterUsers(() => database.close());
+    /** 그 port를 듣는 listener. 시험 정리가 소유하고, 돌려준 `close`로 시험 중간에 포트를 비운다. */
     const listening = (port: number) =>
-      new Promise<net.Server>((resolve, reject) => {
-        const probe = net.createServer();
-        probe.once("error", reject);
-        probe.listen(port, "127.0.0.1", () => resolve(probe));
-      });
-    const closing = (probe: net.Server) =>
-      new Promise<void>((resolve, reject) =>
-        probe.close((error) => (error ? reject(error) : resolve()))
+      ownedListener(
+        net.createServer(),
+        { port, host: "127.0.0.1" },
+        onTestFinished,
+        `the port probe on ${port}`
       );
-    onTestFinished(() => database.close());
     const probe = await listening(0);
-    const { port } = probe.address() as net.AddressInfo;
-    await closing(probe);
-    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await expect(
-        startServer({
-          db: database.db,
-          port,
-          notificationChannels: [
-            {
-              name: "broken",
-              deliver: async () => {},
-              listen: () => {
-                throw new Error("토큰 거부");
-              },
-              close: () => Promise.reject(new Error("끊기 실패")),
+    const { port } = probe.server.address() as net.AddressInfo;
+    await probe.close();
+    // 끄다 난 오류는 원래 오류를 덮지 않고 원인 코드로 따로 남는다(CODING_STANDARDS.md#제품-코드). 그 진단 하나만 있고 다른 진단이 없을
+    // 때만 나머지 정리(포트를 닫는 단계 포함)가 됐다고 본다.
+    const expected = {
+      error: [
+        [
+          "[server] stopping after a failed start failed (CHANNEL_CLOSE_FAILED)",
+        ],
+      ],
+      warn: [],
+    };
+    const diagnostics = startDiagnostics();
+    const starting = ownStart(
+      users.own,
+      startServer({
+        db: database.db,
+        port,
+        notificationChannels: [
+          {
+            name: "broken",
+            deliver: async () => {},
+            listen: () => {
+              throw new Error("토큰 거부");
             },
-          ],
-        })
-      ).rejects.toThrow("토큰 거부");
-    } finally {
-      logged.mockRestore();
-    }
-    await closing(await listening(port));
+            close: () =>
+              Promise.reject(
+                Object.assign(new Error("끊기 실패"), {
+                  code: "CHANNEL_CLOSE_FAILED",
+                })
+              ),
+          },
+        ],
+      }),
+      "the server whose start should fail",
+      diagnostics.endedWith(expected)
+    ).started;
+    // 진단(끄다 난 오류 하나)은 위 `endedWith`가 정확히 본다. 맞지 않으면 그 정리가 목록을 원인으로 실패한다.
+    await expect(starting).rejects.toThrow("토큰 거부");
+    await (await listening(port)).close();
   });
 });
 

@@ -124,7 +124,8 @@ describe("Lead conversations", () => {
       "기본 대화는 ID 경로로도 같은 메시지"
     ).toEqual(defaultBefore);
     // 새 대화의 메시지 Event는 그 대화를 가리킨다.
-    expect(stream.events.filter((e) => e.type === "message.created")).toEqual([
+    const { events } = await stream.received();
+    expect(events.filter((e) => e.type === "message.created")).toEqual([
       expect.objectContaining({
         payload: expect.objectContaining({
           conversationId: started.conversation.id,

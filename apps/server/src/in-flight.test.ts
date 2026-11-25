@@ -1,26 +1,24 @@
 import http from "node:http";
 import type net from "node:net";
 import express from "express";
-import { afterEach, describe, expect, it } from "vitest";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { ownedListener, fakeClock } from "../test/support.ts";
 import { InFlight, trackHandlers } from "./in-flight.ts";
 
-let server: http.Server | undefined;
-afterEach(async () => {
-  server?.closeAllConnections();
-  await new Promise<void>((resolve) =>
-    server ? server.close(() => resolve()) : resolve()
-  );
-  server = undefined;
-});
-
+/** 처리기를 붙인 시험 HTTP 서버. 시험 정리가 소유한다. */
 async function serve(app: express.Express) {
-  server = http.createServer(app);
-  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+  const { server } = await ownedListener(
+    http.createServer(app),
+    { port: 0, host: "127.0.0.1" },
+    onTestFinished,
+    "the test HTTP server"
+  );
   return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
 }
 
-/** 멈춰 둔 처리기. 들어오면 `entered`가 풀리고, `release`로 풀면 `handled`를 남기고 답한다. */
-function heldHandler(order: string[]) {
+/** 멈춰 둔 처리기. 들어오면 `entered`가 풀리고, `release`로 풀면 답한다. */
+function heldHandler() {
   let entered!: () => void;
   let release!: () => void;
   const enteredAt = new Promise<void>((resolve) => (entered = resolve));
@@ -28,7 +26,6 @@ function heldHandler(order: string[]) {
   const handle = async (_req: express.Request, res: express.Response) => {
     entered();
     await released;
-    order.push("handled");
     res.end("ok");
   };
   return { handle, entered: enteredAt, release };
@@ -36,6 +33,7 @@ function heldHandler(order: string[]) {
 
 describe("trackHandlers", () => {
   // 세기 시작한 뒤 건 경로(빈 채로 단 router에 나중에 건 경로 포함)도 센다. 서버를 시작한 뒤 경로를 거는 채널이 이렇다.
+  // 이 시험은 경로가 세어지는지(처리기가 도는 동안 세고 끝나면 뺀다)만 본다. 센 일을 기다리는 `idle()`은 아래 「InFlight.idle」이 본다.
   it.each([
     ["a route added to the app later", "/later"],
     ["a route added later to a router mounted empty", "/mounted/later"],
@@ -45,22 +43,22 @@ describe("trackHandlers", () => {
     const mounted = express.Router();
     app.use("/mounted", mounted);
     trackHandlers(app, inFlight);
-    const order: string[] = [];
-    const held = heldHandler(order);
+    const held = heldHandler();
     (path.startsWith("/mounted") ? mounted : app).get(
       path.replace("/mounted", ""),
       held.handle
     );
     const url = await serve(app);
-    const answered = fetch(url + path).then((res) => res.text());
+    // 아래 단언이 먼저 실패하면 서버 정리가 연결을 끊어 이 요청이 거절된다. 그때는 시험의 실패가 보고되고, 이 거절은 처리되지 않은
+    // 거절로 새지 않는다. 시험이 끝까지 가면 아래에서 기다린다.
+    const answered = awaitedLater(fetch(url + path).then((res) => res.text()));
     await held.entered;
-    const idle = inFlight.idle().then(() => order.push("idle"));
-    // 세지 않았다면 이 사이에 `idle`이 먼저 풀린다.
-    await new Promise((resolve) => setImmediate(resolve));
+    // 들어온 처리기는 끝나기 전까지 센다. 세지 않았다면 여기서 비어 있다.
+    expect(inFlight.pending()).toEqual([`GET ${path}`]);
     held.release();
-    await idle;
+    // 답은 처리기가 끝난 뒤에 닿는다. 센 일은 처리기의 promise가 끝나는 대로 빠진다(아래 「counting tracked work」).
     expect(await answered).toBe("ok");
-    expect(order).toEqual(["handled", "idle"]);
+    expect(inFlight.pending()).toEqual([]);
   });
 
   it("keeps error handlers registered before and after tracking as error handlers", async () => {
@@ -84,6 +82,48 @@ describe("trackHandlers", () => {
         caught: path,
       });
     await inFlight.idle();
+  });
+});
+
+/** 풀 때까지 끝나지 않는 일 하나를 `flight`로 센다. 끝나면 `log`에 `<label> ended`를 남긴다. */
+function heldWork(flight: InFlight, label: string, log: string[]) {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const work = flight.track(
+    () => released.then(() => void log.push(`${label} ended`)),
+    label
+  );
+  return { release, work };
+}
+
+// `idle()`은 센 일이 모두 끝나야 풀린다. 기다리는 사이 새로 센 일도 기다린다. 가짜 시계의 타이머와 microtask를 다 돌린 뒤에 판정하므로,
+// microtask나 가짜 시계의 타이머로 먼저 풀리는 틀린 구현은 여기서 드러난다. 실제 시계나 입출력으로 미루는 틀린 구현은 이 판정이 잡지 못한다.
+describe("InFlight.idle", () => {
+  it("resolves at once when nothing is counted", async () => {
+    await new InFlight().idle();
+  });
+
+  it("waits for the counted work, including work counted while it waits", async () => {
+    fakeClock();
+    const flight = new InFlight();
+    const log: string[] = [];
+    const first = heldWork(flight, "first", log);
+    const idle = flight.idle().then(() => void log.push("idle"));
+    const second = heldWork(flight, "second", log);
+    await vi.runAllTimersAsync();
+    expect(log).toEqual([]);
+
+    first.release();
+    await first.work;
+    await vi.runAllTimersAsync();
+    expect(log).toEqual(["first ended"]);
+    expect(flight.pending()).toEqual(["second"]);
+
+    second.release();
+    await idle;
+    await second.work;
+    expect(log).toEqual(["first ended", "second ended", "idle"]);
+    expect(flight.pending()).toEqual([]);
   });
 });
 

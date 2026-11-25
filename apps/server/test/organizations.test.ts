@@ -175,7 +175,9 @@ describe("Event stream scopes", () => {
 
     expect((await all.next()).organizationId).toBe(c.id);
     await t.drain();
-    expect(all.events.every((e) => e.organizationId === c.id)).toBe(true);
+    expect(
+      (await all.received()).events.every((e) => e.organizationId === c.id)
+    ).toBe(true);
     await onlyA.expectNoEvents();
     await onlyB.expectNoEvents();
     for (const s of [all, onlyA, onlyB]) s.close();

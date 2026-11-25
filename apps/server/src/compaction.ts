@@ -31,7 +31,8 @@ export class CompactionScheduler {
   readonly controllers = new Map<string, AbortController>();
   private readonly loop = new RerunLoop(
     () => this.sweep(),
-    (error) => console.error("[compaction] maintenance failed", error)
+    (error) =>
+      console.error(`[compaction] maintenance failed (${failureCode(error)})`)
   );
   private jobs = new Set<Promise<void>>();
   private settlements = new Map<
@@ -149,8 +150,7 @@ export class CompactionScheduler {
         })
         .catch((error: unknown) => {
           console.error(
-            "[compaction] lease check failed; stopping the compaction",
-            error
+            `[compaction] lease check failed; stopping the compaction (${failureCode(error)})`
           );
           controller.abort();
         });
@@ -199,8 +199,7 @@ export class CompactionScheduler {
             await completeStored(this.options, stored);
         } catch (error) {
           console.error(
-            "[compaction] settlement failed; will retry without sending compact again",
-            error
+            `[compaction] settlement failed; will retry without sending compact again (${failureCode(error)})`
           );
         }
       }

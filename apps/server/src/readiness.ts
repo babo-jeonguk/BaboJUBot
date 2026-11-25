@@ -1,4 +1,5 @@
 import {
+  failureCode,
   providerReadinessCheckSchema,
   settled,
   type ProviderConnection,
@@ -104,7 +105,9 @@ export class ReadinessMonitor {
         this.#saving.set(provider, settled(saving));
         await saving;
       } catch (error) {
-        console.error(`[providers] ${provider} readiness not saved`, error);
+        console.error(
+          `[providers] ${provider} readiness not saved (${failureCode(error)})`
+        );
       } finally {
         // 저장한(또는 저장하지 못한) 마지막 확인만 확인 중을 끝낸다. 옛 확인이 끝난 것은 화면에 바뀔 것이 없다.
         if (this.#latest.get(provider) === seq) {
@@ -161,14 +164,12 @@ export class ReadinessMonitor {
       const parsed = providerReadinessCheckSchema.safeParse(raw);
       if (parsed.success) return parsed.data;
       console.error(
-        `[providers] ${connection.id} returned an invalid readiness`,
-        parsed.error
+        `[providers] ${connection.id} returned an invalid readiness (${failureCode(parsed.error)})`
       );
       return { status: "unknown", reason: "check_failed" };
     } catch (error) {
       console.error(
-        `[providers] ${connection.id} readiness check failed`,
-        error
+        `[providers] ${connection.id} readiness check failed (${failureCode(error)})`
       );
       return { status: "unknown", reason: "check_failed" };
     } finally {

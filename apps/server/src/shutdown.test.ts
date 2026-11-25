@@ -61,7 +61,7 @@ describe("closeStarted", () => {
     );
     expect(ok).toBe(false);
     expect(calls).toEqual(["server", "database"]);
-    expect(reports).toEqual([["[server] shutdown failed", error]]);
+    expect(reports).toEqual([["[server] closing the server failed", error]]);
   });
 
   it("reports a database that fails to close", async () => {
@@ -77,7 +77,7 @@ describe("closeStarted", () => {
     );
     expect(ok).toBe(false);
     expect(calls).toEqual(["server", "database"]);
-    expect(reports).toEqual([["[server] shutdown failed", error]]);
+    expect(reports).toEqual([["[server] closing the database failed", error]]);
   });
 
   it("reports both failures when the server and the database fail to close", async () => {
@@ -94,9 +94,10 @@ describe("closeStarted", () => {
     );
     expect(ok).toBe(false);
     expect(calls).toEqual(["server", "database"]);
+    // 진단은 원인 코드만 남기므로(main.ts) 어느 닫기가 실패했는지는 문구가 가른다. 같은 코드여도 둘을 구분한다.
     expect(reports).toEqual([
-      ["[server] shutdown failed", serverError],
-      ["[server] shutdown failed", databaseError],
+      ["[server] closing the server failed", serverError],
+      ["[server] closing the database failed", databaseError],
     ]);
   });
 
