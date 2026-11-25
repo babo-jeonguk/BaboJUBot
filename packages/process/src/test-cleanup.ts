@@ -8,10 +8,13 @@
 import { readFile } from "node:fs/promises";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 import type { Lifelines } from "./lifeline-support.ts";
-import { reportedPid } from "./test-support.ts";
+import { reportedPid, within } from "./test-support.ts";
 
 /** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. 모두 시도하기는 `attemptAll`(`@babojubot/contracts`)이 한다. */
 export type CleanupStep = () => unknown;
+
+/** `folderCleanup`이 폴더 지우기를 기다리는 기본 상한. 지우기는 Windows의 일시적인 잠김만 몇 번 다시 시도한다(`removeFolder`). */
+const folderRemoveMs = 10_000;
 
 /**
  * 폴더와 그 안에서 도는 프로그램의 정리. 폴더를 만든 직후 `cleanUp`을 러너나 `withCleanup`에 등록하고, 프로그램을 띄우면 그
@@ -19,8 +22,13 @@ export type CleanupStep = () => unknown;
  * 있으면 폴더를 남기고 그 실패를 알린다(살아 있는 프로그램의 폴더는 지우지 못하거나, 지워도 그 프로그램이 남는다).
  * 멈춤과 지우기는 한 번만 한다. 다시 부르거나 동시에 불러도 그 한 실행의 결과를 받으므로, 멈추지 못한 폴더는 다시 불러도 남는다.
  * 실패한 멈춤을 다시 시도하지 않는다. 정리는 러너가 한 번 부르고, 같은 프로그램을 다시 멈추는 일은 그 멈춤 함수가 맡는다.
+ * 지우기는 상한(`removeTimeoutMs`) 안에서 기다리고, 넘기면 그 이유로 실패한다. 상한은 기다림만 끝낸다: 진행 중인 지우기(`fs.rm`)는
+ * 멈출 수단이 없어 그 뒤에도 돌 수 있다. 그래도 정리는 이름 없이 hook 시한까지 매달리지 않고 무엇을 기다렸는지 알린다.
  */
-export function folderCleanup(remove: CleanupStep) {
+export function folderCleanup(
+  remove: CleanupStep,
+  { removeTimeoutMs = folderRemoveMs }: { removeTimeoutMs?: number } = {}
+) {
   const stops: CleanupStep[] = [];
   let cleaning: Promise<void> | undefined;
   return {
@@ -33,7 +41,11 @@ export function folderCleanup(remove: CleanupStep) {
     cleanUp: () =>
       (cleaning ??= (async () => {
         await attemptAll([...stops].reverse());
-        await remove();
+        await within(
+          Promise.resolve().then(remove),
+          removeTimeoutMs,
+          "the test folder was not removed"
+        );
       })()),
   };
 }
@@ -148,4 +160,34 @@ export function lifelineHolder(
       await lifelines.closed(name, holderCloseMs);
     },
   };
+}
+
+/** 끊기(`destroy`)와 닫힘(`close` 이벤트)이 있는 시험 자원: 소켓, HTTP 요청. */
+type Closable = {
+  destroy(): unknown;
+  once(event: "close", listener: () => void): unknown;
+};
+/** `ownedClosable`의 정리가 끊은 자원의 닫힘을 기다리는 기본 상한. 폴더 정리가 단계마다 두는 상한(10초)보다 짧다. */
+const closableCloseMs = 5_000;
+
+/**
+ * 시험이 만든 소켓·HTTP 요청을 만든 직후 정리(`own`: `onTestFinished`, `withCleanup`의 `defer`, 폴더 정리의 `own`)에 맡기고 그대로
+ * 돌려준다. 닫힘은 맡는 순간부터 듣고, 정리는 자원을 끊은 뒤(`destroy`) 실제 닫힘(`close`)을 상한(`closeMs`) 안에서 확인한다. 닫히지
+ * 않으면 `what`과 상한으로 실패한다. 시험이 답을 상한으로 기다리다 실패해도 요청·소켓은 이 정리가 끝낸다(상한이 기다림만 끝내고
+ * 자원을 남기지 않는다). 자원의 `error`는 듣지 않는다: 그 처리는 자원을 쓰는 시험이 맡고, 아무도 듣지 않으면 러너가 실패로 알린다.
+ */
+export function ownedClosable<T extends Closable>(
+  own: (step: () => Promise<void>) => void,
+  resource: T,
+  what: string,
+  closeMs = closableCloseMs
+): T {
+  const closed = new Promise<void>((resolve) =>
+    resource.once("close", () => resolve())
+  );
+  own(async () => {
+    resource.destroy();
+    await within(closed, closeMs, `${what} did not close`);
+  });
+  return resource;
 }
