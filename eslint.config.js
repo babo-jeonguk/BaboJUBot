@@ -435,6 +435,7 @@ export default defineConfig([
       "product/no-io-in-unreadable": "error",
       "product/no-silent-exit-status": "error",
       "product/no-check-then-reopen": "error",
+      "product/no-server-not-running": "error",
       "@typescript-eslint/no-unsafe-assignment": "error",
       "@typescript-eslint/no-unsafe-member-access": "error",
       "@typescript-eslint/no-unsafe-call": "error",

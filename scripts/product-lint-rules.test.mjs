@@ -977,6 +977,41 @@ test("product code does not reopen by name a path it has just checked by name", 
       place
     );
 });
+const notRunningRule = ["product/no-server-not-running"];
+
+// 서버 닫기의 ERR_SERVER_NOT_RUNNING을 "닫을 것 없음"으로 받으면, 듣기 시도가 끝나기 전에 부른 닫기가 취소한 듣기를 닫힘으로 접는다
+// (#286 PR #299 외부 리뷰 1회차 SPEC-2). 제품은 듣기 시도의 끝(`listenAttempt`)을 본 뒤 들은 서버만 닫으므로 그 이름이 쓰일 곳이 없다.
+test("product code does not take ERR_SERVER_NOT_RUNNING as a closed server", async () => {
+  const folded = {
+    "a code comparison": `export const nothing = (error: { code?: string }) => error.code === "ERR_SERVER_NOT_RUNNING";\n`,
+    "a template": "export const code = `ERR_SERVER_NOT_RUNNING`;\n",
+    "a code check helper": `import { hasErrorCode } from "@babojubot/contracts";\nexport const nothing = hasErrorCode("ERR_SERVER_NOT_RUNNING");\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(folded)) {
+      const [message, ...rest] = await lint(code, place, notRunningRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /listenAttempt/);
+    }
+  const kept = {
+    "another code": `export const busy = (error: { code?: string }) => error.code === "EADDRINUSE";\n`,
+    "the shared listen attempt": `import net from "node:net";\nimport { listenAttempt } from "@babojubot/process";\nexport const listen = (server: net.Server) => listenAttempt(server, () => server.listen(0, "127.0.0.1"));\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(kept))
+      assert.deepEqual(
+        await lint(code, place, notRunningRule),
+        [],
+        `${place}: ${shape}`
+      );
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(folded["a code comparison"], place, notRunningRule),
+      [],
+      place
+    );
+});
 const ownOpenRule = ["product/no-own-untrusted-open"];
 
 // 다른 쪽이 바꿀 수 있는 자리의 파일·폴더를 확인한 대상 그대로 여는 방식(링크를 따라가지 않고 FIFO에서 기다리지 않는 열기, 파일
