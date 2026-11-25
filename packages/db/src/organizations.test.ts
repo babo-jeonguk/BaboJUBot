@@ -26,13 +26,16 @@ import {
 import { migrateDatabase } from "./client.ts";
 import { updateAgentProfile } from "./agents.ts";
 import { findAgentInstructions } from "./harness.ts";
-import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import {
+  closeThenDrop,
+  createTestDatabase,
+  type TestDatabase,
+} from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
 import { listAgentsWithPendingWakes } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
-import { within } from "@babojubot/process/test-support";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -385,21 +388,15 @@ describe("agent names", () => {
     await t.db.execute(sql.raw(`create database ${name}`));
     const url = new URL(t.url);
     url.pathname = `/${name}`;
-    // 풀은 만들 때 연결하지 않는다. 정리는 풀을 닫은 뒤에만 DB를 지운다(한 정리 안의 차례). 풀을 닫지 못하면 DB를 남기고 실패한다.
-    // 각 기다림은 상한을 두지만 넘겨도 풀이나 지우기를 끝내지는 못한다(곁 DB 정리의 공용화와 함께 3b-3).
+    // 풀은 만들 때 연결하지 않는다. 정리는 풀을 닫은 뒤에만 DB를 지운다(`closeThenDrop`).
     const pool = new pg.Pool({ connectionString: url.toString() });
-    onTestFinished(async () => {
-      await within(
-        pool.end(),
-        10_000,
-        "the dedupe database pool did not close"
-      );
-      await within(
-        t.db.execute(sql.raw(`drop database ${name}`)),
-        10_000,
-        "the dedupe database was not dropped"
-      );
-    });
+    onTestFinished(() =>
+      closeThenDrop(
+        name,
+        () => pool.end(),
+        () => t.db.execute(sql.raw(`drop database ${name}`))
+      )
+    );
     const db = drizzle(pool);
     await migrate(db, { migrationsFolder: before });
     const orgA = randomUUID();

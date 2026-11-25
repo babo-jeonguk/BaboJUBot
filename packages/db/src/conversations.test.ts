@@ -29,7 +29,11 @@ import {
   loadRunContext,
 } from "./runs.ts";
 import { conversations, organizations, wakes } from "./schema.ts";
-import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import {
+  closeThenDrop,
+  createTestDatabase,
+  type TestDatabase,
+} from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
@@ -337,12 +341,17 @@ async function withDatabaseBefore(
 
     const name = `backfill_${randomUUID().replaceAll("-", "")}`;
     await t.db.execute(sql.raw(`create database ${name}`));
-    defer(() => t.db.execute(sql.raw(`drop database ${name}`)));
     const url = new URL(t.url);
     url.pathname = `/${name}`;
+    // 풀은 만들 때 연결하지 않는다. 정리는 풀을 닫은 뒤에만 DB를 지운다(`closeThenDrop`).
     const pool = new pg.Pool({ connectionString: url.toString() });
-    // 연결을 닫은 뒤에 그 DB를 지운다.
-    defer(() => pool.end());
+    defer(() =>
+      closeThenDrop(
+        name,
+        () => pool.end(),
+        () => t.db.execute(sql.raw(`drop database ${name}`))
+      )
+    );
     const db = drizzle(pool);
     await migrate(db, { migrationsFolder: before });
     await fn(pool, () => migrate(db, { migrationsFolder: migrations }));

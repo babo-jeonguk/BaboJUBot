@@ -30,9 +30,30 @@ import {
   runs,
   toolOperations,
 } from "./schema.ts";
-import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
+import { attemptEach, combinedFailure } from "@babojubot/contracts";
+import { within } from "@babojubot/process/test-support";
 
 export type TestDatabase = DatabaseHandle;
+
+/** 곁 DB 정리의 단계마다 기다리는 상한. */
+const sideDatabaseStepMs = 10_000;
+/**
+ * 시험이 따로 만든 DB(곁 DB)를 정리한다. 그 DB로 연 연결(풀·handle)을 상한 안에서 닫은 뒤에만 DB를 지운다. 닫지 못하면 지우지
+ * 않고 DB를 남긴 채 그 원인으로 실패한다. 지우기도 상한 안에서 기다린다. 상한은 기다림만 끝내므로, 넘긴 단계는 그 원인과 함께
+ * 실패로 남는다(그 연결·지우기를 대신 끝내지는 않는다).
+ */
+export async function closeThenDrop(
+  name: string,
+  close: () => Promise<unknown>,
+  drop: () => Promise<unknown>
+) {
+  await within(
+    close(),
+    sideDatabaseStepMs,
+    `the connections to database ${name} did not close`
+  );
+  await within(drop(), sideDatabaseStepMs, `database ${name} was not dropped`);
+}
 
 declare module "vitest" {
   export interface ProvidedContext {
@@ -108,8 +129,8 @@ export async function createTestDatabase(): Promise<DatabaseHandle> {
   }
   return {
     ...handle,
-    // 연결 닫기가 실패해도 DB를 지우고, 둘 다 실패하면 둘 다 알린다.
-    close: () => attemptAll([() => handle.close(), drop]),
+    // 연결을 닫은 뒤에만 DB를 지운다. 닫지 못하면 DB를 남기고 그 원인으로 실패한다(`closeThenDrop`).
+    close: () => closeThenDrop(name, () => handle.close(), drop),
   };
 }
 
