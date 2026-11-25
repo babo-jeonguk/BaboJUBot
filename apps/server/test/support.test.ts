@@ -18,6 +18,8 @@ import {
   within,
   helperStartEnded,
   startDiagnostics,
+  type StopEnded,
+  type TestServer,
 } from "./support.ts";
 
 // 시험 서버 helper가 서버를 넘기기 전에 실패하면, 자기가 만든 것(서버·DB·작업 폴더)을 치우고 원래 오류로 실패한다.
@@ -40,13 +42,22 @@ async function ownTemporaryFolder() {
   return { temp, own: folder.own };
 }
 
-/** helper로 시험 서버를 띄우고 그 끝을 이 시험의 폴더 정리(`own`)가 소유하게 한다(`ownStart`). 돌려주는 값은 helper가 낸 결과 그대로다. */
+/**
+ * helper로 시험 서버를 띄우고 그 끝을 이 시험의 폴더 정리(`own`)가 소유하게 한다(`ownStart`). 돌려주는 값은 helper가 낸 결과 그대로다.
+ * 넘겨받은 서버의 끄기가 거절되면 `stopEnded`로 판정한다(없으면 그 거절로 실패).
+ */
 const startOwnedBy = (
   own: (stop: () => Promise<void>) => void,
-  options?: Parameters<typeof startTestServer>[0]
+  options?: Parameters<typeof startTestServer>[0],
+  stopEnded?: StopEnded<TestServer>
 ) =>
-  ownStart(own, startTestServer(options), "the test server", helperStartEnded)
-    .started;
+  ownStart(
+    own,
+    startTestServer(options),
+    "the test server",
+    helperStartEnded,
+    stopEnded
+  ).started;
 
 it("removes the workspace folder it made and keeps the start error when the server cannot start", async () => {
   const { temp, own } = await ownTemporaryFolder();
@@ -123,45 +134,42 @@ it("keeps the database and the workspace folder when stopping the server failed,
   const { temp, own } = await ownTemporaryFolder();
   const refused = new Error("the notification channel did not close");
   let channelCloses = 0;
-  const t = await startTestServer({
-    notificationChannels: [
-      {
-        name: "refusing-close",
-        deliver: () => Promise.resolve(),
-        listen: () => {},
-        close: () => {
-          channelCloses++;
-          return Promise.reject(refused);
-        },
-      },
-    ],
-  });
-  // helper가 남긴 작업 폴더는 이 시험이 치운다. 서버의 끝은 시험이 넣은 실패 하나만 빼고 확인할 수 있다: 서버 끄기는 모든 단계를 시도하고
-  // 실패를 모아 던지며(`attemptAll`), 실패가 하나면 그 오류를 그대로 던진다. 그래서 끄기가 정확히 그 거절로 끝났고, 끄기 차례가 끝까지
-  // 돌았고("stopped"), 대역의 닫기가 한 번 불렸으면 나머지 단계(HTTP listener를 닫고 그 닫힘을 기다리는 `requests`)는 실패 없이 끝난
-  // 것이다. 이를 확인한 뒤에만 폴더를 지운다. 확인하지 못하면 폴더를 남기고 실패한다. 끄기는 한 번만 돌므로 시험이 먼저 불렀으면 그 결과를
-  // 다시 받는다.
+  // 서버는 시작을 부르는 즉시 이 시험의 폴더 정리가 소유한다(`startOwnedBy`). 시작이 거절되면 helper 계약으로 판정한다
+  // (`helperStartEnded`: helper가 정리를 확인하지 못해 작업 폴더를 남겼으면 바깥 폴더도 남긴다). 넘겨받으면 정리가 helper의 닫기를 부르고,
+  // 그 거절을 아래 판정에 넘긴다. 서버의 끝은 시험이 넣은 실패 하나만 빼고 확인할 수 있다: 서버 끄기는 모든 단계를 시도하고 실패를 모아
+  // 던지며(`attemptAll`), 실패가 하나면 그 오류를 그대로 던진다. 그래서 끄기가 정확히 그 거절로 끝났고, 끄기 차례가 끝까지 돌았고
+  // ("stopped"), 대역의 닫기가 한 번 불렸으면 나머지 단계(HTTP listener를 닫고 그 닫힘을 기다리는 `requests`)는 실패 없이 끝난 것이다. 이를
+  // 확인한 뒤에만 폴더를 지운다. 확인하지 못하면(상한을 넘긴 것 포함) 폴더를 남기고 실패한다. helper의 끄기와 닫기는 한 번만 돌므로 본문이
+  // 먼저 불렀으면 정리는 그 결과를 다시 받는다.
   // DB는 닫지 않고 남긴다: 시험 서버는 DB 닫기를 내주지 않고, DB는 시험 실행의 cluster에 있어 이 폴더와 상관없다. 연결은 pg pool이 유휴
   // 10초 뒤 닫고, DB는 cluster와 함께 지워진다.
-  own(async () => {
-    const stopFailure = await within(
-      t.stopServer().then(
-        () => undefined,
-        (error: unknown) => error
-      ),
-      eventuallyMs,
-      "stopping the server did not finish"
-    );
-    if (
-      stopFailure !== refused ||
-      channelCloses !== 1 ||
-      t.stopProgress() !== "stopped"
-    )
-      throw new Error(
-        `the server's end was not confirmed (channel closed ${channelCloses} times, progress "${t.stopProgress()}"); its folder is kept`,
-        { cause: stopFailure }
-      );
-  });
+  const t = await startOwnedBy(
+    own,
+    {
+      notificationChannels: [
+        {
+          name: "refusing-close",
+          deliver: () => Promise.resolve(),
+          listen: () => {},
+          close: () => {
+            channelCloses++;
+            return Promise.reject(refused);
+          },
+        },
+      ],
+    },
+    (stopFailure, server) => {
+      if (
+        stopFailure !== refused ||
+        channelCloses !== 1 ||
+        server.stopProgress() !== "stopped"
+      )
+        throw new Error(
+          `the server's end was not confirmed (channel closed ${channelCloses} times, progress "${server.stopProgress()}"); its folder is kept`,
+          { cause: stopFailure }
+        );
+    }
+  );
   await expect(t.stopServer()).rejects.toBe(refused);
   await expect(t.close()).rejects.toBe(refused);
   // helper의 정리는 DB와 작업 폴더를 남겼다.

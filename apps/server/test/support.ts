@@ -121,16 +121,29 @@ export function startDiagnostics() {
 }
 
 /**
+ * 넘겨받은 서버의 끄기가 거절됐을 때 그 서버의 끝을 확인했는지 판정한다(`StartEnded`의 짝). 확인했으면 돌아오고, 확인하지 못하면 원인과
+ * 함께 던진다. 기다리지 않는다: 끄기와 그 상한은 `ownStart`가 맡는다.
+ */
+export type StopEnded<S> = (failure: unknown, server: S) => void;
+
+/** 끄기가 거절되면 그 거절로 실패한다(fail closed). */
+const unconfirmedStop: StopEnded<unknown> = (failure) => {
+  throw failure;
+};
+
+/**
  * 시작 중인 서버(`starting`)를 곧바로 `own`(그 서버를 소유하는 정리)에 맡긴다. 맡긴 끝(`stop`)은 한 번만 돌고 같은 결과를 돌려준다:
  * 시작이 끝나기를 `serverStopMs` 안에서 기다려(시작 자체에는 제품 상한이 없다) 넘겨받았으면 끄고(`stopWithin`), 거절됐으면 그 순간
  * `ended`가 내린 판정을 따른다(확인하지 못했으면 그 원인으로 실패, fail closed). `ended`가 없으면 거절된 시작은 확인할 수 없다.
- * 시험 본문이 중간에 끄려면 같은 `stop`을 부른다.
+ * 끄기가 성공하면 끝난 것이다. 끄기가 거절되면(상한을 넘긴 것 포함) 그 거절을 `stopEnded`의 판정에 넘긴다. `stopEnded`가 없으면 그 거절로
+ * 실패한다. 시험 본문이 중간에 끄려면 같은 `stop`을 부른다.
  */
 export function ownStart<S extends { close(): Promise<void> }>(
   own: (stop: () => Promise<void>) => void,
   starting: Promise<S>,
   what: string,
-  ended: StartEnded = unconfirmedStart
+  ended: StartEnded = unconfirmedStart,
+  stopEnded: StopEnded<S> = unconfirmedStop
 ) {
   // 거절되는 순간 판정한다. 그 뒤의 진단이 판정에 섞이지 않는다.
   const outcome = starting.then(
@@ -152,7 +165,12 @@ export function ownStart<S extends { close(): Promise<void> }>(
         serverStopMs,
         `the start of ${what} did not end`
       );
-      if ("server" in settled) return stopWithin(settled.server, what);
+      if ("server" in settled) {
+        const { server } = settled;
+        return stopWithin(server, what).catch((failure: unknown) =>
+          stopEnded(failure, server)
+        );
+      }
       if ("unconfirmed" in settled) throw settled.unconfirmed;
     })());
   own(stop);
