@@ -11,6 +11,7 @@ import {
   runSummaryListSchema,
   type ProviderConnection,
   type RunRequest,
+  failureCode,
 } from "@babojubot/contracts";
 import {
   containerToolsOrigin,
@@ -142,38 +143,44 @@ function overSocket(
   );
 }
 
-/** 컨테이너 쪽처럼 egress.sock에 CONNECT를 보낸다. 열리면 소켓을 돌려준다. */
+/**
+ * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 중계의 답을 판정하지 않고 그대로 돌려준다: node:http가 읽은 상태와 거부 이유
+ * 머리(`x-babojubot-refusal`), 그 연결의 소켓. CONNECT의 답은 상태와 상관없이 `connect`로 온다(Node http 문서). 머리를 다 읽기 전의
+ * 끊김·형식 오류는 그 오류로 거절된다.
+ */
 function connectOver(directory: string, target: string) {
-  return new Promise<{ head: string; socket: net.Socket }>(
-    (resolve, reject) => {
-      const socket = net.connect(path.join(directory, "egress.sock"));
-      let text = "";
-      socket.once("error", reject);
-      // 중계가 답(header 끝)을 다 보내기 전에 닫으면 기다림을 그 닫힘으로 끝낸다. 답을 받은 뒤의 닫힘은 이미 정해진 결과를 바꾸지 않는다.
-      socket.once("close", () =>
-        reject(
-          new Error(
-            `the relay closed the connection before answering CONNECT ${target}: ${JSON.stringify(text)}`
-          )
-        )
-      );
-      socket.on("connect", () =>
-        socket.write(`CONNECT ${target} HTTP/1.1\r\n\r\n`)
-      );
-      const onData = (chunk: Buffer) => {
-        text += chunk.toString("latin1");
-        if (!text.includes("\r\n\r\n")) return;
-        socket.off("data", onData);
-        resolve({ head: text, socket });
-      };
-      socket.on("data", onData);
-    }
-  );
+  return new Promise<{
+    status: number;
+    refusal: string | string[] | undefined;
+    socket: net.Socket;
+  }>((resolve, reject) => {
+    const request = http.request({
+      socketPath: path.join(directory, "egress.sock"),
+      method: "CONNECT",
+      path: target,
+    });
+    request.once("error", reject);
+    request.once("connect", (response, socket) =>
+      resolve({
+        status: response.statusCode!,
+        refusal: response.headers["x-babojubot-refusal"],
+        socket,
+      })
+    );
+    request.end();
+  });
 }
 
+/** 중계가 한 요청에 답한 것. 답 머리를 받았으면 상태(CONNECT는 거부 이유 머리도), 받기 전에 끝났으면 그 오류의 원인 코드다. */
+type RelayAnswer =
+  { status: number; refusal?: string | string[] } | { failed: string };
+
 /**
- * 실제 Docker 없이 쓰는 격리 환경. 중계는 실제 것(서버가 정책·조직 도구를 붙임)이고, 시험 컨테이너 대신
- * 받은 목표를 남기며 중계 소켓으로 조직 도구와 금지 목적지를 실제로 불러 본다. 직접 닿았는지·네트워크 장치는 옵션으로 정한다.
+ * 실제 Docker 없이 쓰는 격리 환경. 중계는 실제 것(서버가 정책·조직 도구를 붙임)이다. 확인마다 받은 목표를 남기고, 시험 컨테이너 대신
+ * 그 중계 소켓으로 조직 도구와 금지 목적지를 실제로 불러 중계의 답을 판정하지 않고 그대로 `answers`에 남긴다.
+ * 서버에 돌려주는 확인 결과는 중계의 답에서 판정한 것이 아니라 시험이 정한 값이다: 금지 목적지는 열리지 않았고(`proxied` 빈 목록)
+ * 조직 도구에는 닿았으며(`toolsReached`), 직접 닿은 곳·네트워크 장치·확인 불가는 옵션으로 정한다(기본 없음). 중계 답의 판정은 제품의
+ * 확인 스크립트가 맡고(runtime 시험), 중계가 실제로 어떻게 답했는지는 시험이 `answers`를 기대값과 직접 비교한다.
  */
 function fakeDocker(
   options: {
@@ -184,6 +191,13 @@ function fakeDocker(
   } = {}
 ) {
   const probes: IsolationProbe[] = [];
+  const answers: {
+    tools: RelayAnswer;
+    forbidden: {
+      target: { host: string; port: number };
+      answer: RelayAnswer;
+    }[];
+  }[] = [];
   const relay = createRelayHub();
   const docker: DockerEnvironment = {
     settings: {
@@ -205,35 +219,41 @@ function fakeDocker(
         });
         defer(() => opened.close());
         await opened.ready;
+        // 답 전에 끝난 오류는 접지 않고 원인 코드로 남긴다.
+        const failed = (error: unknown): RelayAnswer => ({
+          failed: failureCode(error),
+        });
         const tools = await overSocket(
           path.join(opened.directory, "tools.sock"),
           "/api/tools/mcp",
           { method: "POST" }
-        ).then(
-          () => true,
-          () => false
-        );
-        const proxied: { host: string; port: number }[] = [];
-        for (const target of input.forbidden) {
-          const { head, socket } = await connectOver(
-            opened.directory,
-            `${target.host.includes(":") ? `[${target.host}]` : target.host}:${target.port}`
-          );
-          socket.destroy();
-          if (/^HTTP\/1\.1 200/.test(head)) proxied.push(target);
-        }
+        ).then(({ status }): RelayAnswer => ({ status }), failed);
+        const forbidden: (typeof answers)[number]["forbidden"] = [];
+        for (const target of input.forbidden)
+          forbidden.push({
+            target,
+            answer: await connectOver(
+              opened.directory,
+              `${target.host.includes(":") ? `[${target.host}]` : target.host}:${target.port}`
+            ).then(({ status, refusal, socket }): RelayAnswer => {
+              socket.destroy();
+              return { status, refusal };
+            }, failed),
+          });
+        answers.push({ tools, forbidden });
+        // 시험이 정한 값이다. 위의 답에서 판정하지 않는다.
         return {
           interfaces: options.interfaces ?? [],
           reached: options.reached ?? [],
-          proxied,
-          toolsReached: tools,
+          proxied: [],
+          toolsReached: true,
           unverified: options.unverified ?? [],
         };
       });
     },
     async removeOrphans() {},
   };
-  return { docker, probes, relay };
+  return { docker, probes, answers, relay };
 }
 
 /**
@@ -509,6 +529,18 @@ describe("isolated runs", () => {
 
     // 안전 확인은 사용자 API와 DB 포트를 직접·중계 양쪽에서 막혀야 할 곳으로 시험했다.
     expect(fake.probes.length).toBeGreaterThan(0);
+    // 그때 서버가 붙인 중계는 금지 목적지마다 주소 확인으로 거부했고(502·다른 이유의 거부가 아님), 조직 도구는 HTTP로 답했다.
+    // 가짜 Docker가 서버에 돌려준 확인 결과는 시험이 정한 값이라, 중계의 실제 답은 여기서 기대값과 직접 비교한다.
+    expect(fake.answers).toHaveLength(fake.probes.length);
+    for (const [index, { tools, forbidden }] of fake.answers.entries()) {
+      expect(tools).toEqual({ status: 401 });
+      expect(forbidden).toEqual(
+        fake.probes[index]!.forbidden.map((target) => ({
+          target,
+          answer: { status: 403, refusal: "address_not_allowed" },
+        }))
+      );
+    }
     const probe = fake.probes.at(-1)!;
     const apiPort = Number(new URL(t.baseUrl).port);
     for (const list of [probe.blocked, probe.forbidden])
@@ -851,9 +883,13 @@ describe("organization network allow list", () => {
     });
     const early = relayFor(planning.id, planning.agents[0]!.id);
     await early.ready;
-    expect(
-      (await connectOver(early.directory, `localhost:${target.port}`)).head
-    ).toMatch(/403[^]*destination_not_allowed/);
+    const { socket: beforeApprovalSocket, ...beforeApproval } =
+      await connectOver(early.directory, `localhost:${target.port}`);
+    beforeApprovalSocket.destroy();
+    expect(beforeApproval).toEqual({
+      status: 403,
+      refusal: "destination_not_allowed",
+    });
     await early.close();
 
     const org = await researching(agents, "연구 조직");
@@ -863,13 +899,19 @@ describe("organization network allow list", () => {
     const relay = relayFor(org.id, org.lead.id);
     await relay.ready;
     const open = await connectOver(relay.directory, `localhost:${target.port}`);
-    expect(open.head).toMatch(/^HTTP\/1\.1 200/);
+    expect(open.status).toBe(200);
     // 다른 조직의 목록은 이 조직의 중계에 쓰이지 않는다.
     const other = relayFor(planning.id, planning.agents[0]!.id);
     await other.ready;
-    expect(
-      (await connectOver(other.directory, `localhost:${target.port}`)).head
-    ).toMatch(/403/);
+    const { socket: otherListSocket, ...otherList } = await connectOver(
+      other.directory,
+      `localhost:${target.port}`
+    );
+    otherListSocket.destroy();
+    expect(otherList).toEqual({
+      status: 403,
+      refusal: "destination_not_allowed",
+    });
     await other.close();
 
     const closed = new Promise<void>((resolve) =>
@@ -887,9 +929,15 @@ describe("organization network allow list", () => {
       eventuallyMs,
       "the relay did not close the connection the owner removed"
     );
-    expect(
-      (await connectOver(relay.directory, `localhost:${target.port}`)).head
-    ).toMatch(/403/);
+    const { socket: removedSocket, ...removed } = await connectOver(
+      relay.directory,
+      `localhost:${target.port}`
+    );
+    removedSocket.destroy();
+    expect(removed).toEqual({
+      status: 403,
+      refusal: "destination_not_allowed",
+    });
     expect(target.accepted).toHaveLength(1);
 
     // 단계가 바뀌어 연구 목적지가 닫혀도(중단) 열린 연결을 끊는다.
@@ -900,7 +948,7 @@ describe("organization network allow list", () => {
       relay.directory,
       `localhost:${target.port}`
     );
-    expect(again.head).toMatch(/^HTTP\/1\.1 200/);
+    expect(again.status).toBe(200);
     const stopped = new Promise<void>((resolve) =>
       again.socket.once("close", () => resolve())
     );
@@ -912,15 +960,21 @@ describe("organization network allow list", () => {
       eventuallyMs,
       "the relay did not close the connection after the stop"
     );
-    expect(
-      (await connectOver(relay.directory, `localhost:${target.port}`)).head
-    ).toMatch(/403/);
+    const { socket: afterStopSocket, ...afterStop } = await connectOver(
+      relay.directory,
+      `localhost:${target.port}`
+    );
+    afterStopSocket.destroy();
+    expect(afterStop).toEqual({
+      status: 403,
+      refusal: "destination_not_allowed",
+    });
     await relay.close();
   });
 
   it("shows a refused destination in the run's activity with the reason and how to allow it", async () => {
     const fake = fakeDocker();
-    const heads: string[] = [];
+    const answers: { status: number; refusal?: string | string[] }[] = [];
     const progressOf = async (orgId: string) =>
       eventListSchema
         .parse(await get(`/api/organizations/${orgId}/events`))
@@ -944,12 +998,12 @@ describe("organization network allow list", () => {
           });
           defer(() => own.close());
           await own.ready;
-          const { head, socket } = await connectOver(
+          const { socket, ...answer } = await connectOver(
             own.directory,
             "example.invalid:443"
           );
           socket.destroy();
-          heads.push(head);
+          answers.push(answer);
           // 거부 기록은 끝나지 않은 실행 시도에만 남는다. 기록이 실행 활동에 저장된 뒤에 실행을 끝낸다.
           await expect
             .poll(() => progressOf(request.identity.organizationId), eventually)
@@ -968,7 +1022,9 @@ describe("organization network allow list", () => {
       .toMatchObject({ checking: false });
     const org = await createOrganization("real");
     await t.drain();
-    expect(heads).toEqual([expect.stringMatching(/^HTTP\/1\.1 403/)]);
+    expect(answers).toEqual([
+      { status: 403, refusal: "destination_not_allowed" },
+    ]);
     expect(await progressOf(org.id)).toContainEqual(refusal);
   });
 });
