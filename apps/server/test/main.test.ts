@@ -237,11 +237,7 @@ it.each(stopRequests)(
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(1);
     // 끝난 뒤에도 출력이 남아 있을 수 있어, 출력이 닫힌 뒤에 진단 전체를 읽는다.
-    await within(
-      child.closed,
-      killWaitMs,
-      `server ${child.pid} did not close its output`
-    );
+    await outputClosed(child);
     // 진단은 오류 문구(Postgres 로그가 섞임) 대신 원인 코드만 남긴다. 진단 전체가 이것뿐이면 시작 실패 뒤 Postgres 정리(`embedded.ts`가
     // 시작에 실패하면 멈추기를 시도하고 실패하면 진단으로 남김)가 실패하지 않은 것이다(CODING_STANDARDS.md 「제품 코드」의 정리 규칙).
     expect(stderrLines(child)).toEqual([
@@ -630,13 +626,17 @@ async function endServer(child: MainProcess, { group }: { group: boolean }) {
   // 끝을 확인한다. 종료 관찰이 `error`로 끝나면(띄우지 못함, 신호를 보내지 못함) 확인하지 못한 것으로 알린다.
   await within(child.exited, killWaitMs, `server ${child.pid} did not exit`);
   // 폴더를 지우기 전에 stdio 닫힘까지 확인한다.
-  await within(
+  await outputClosed(child);
+  if (group) await groupEnded(child);
+}
+
+/** 서버의 출력(stdout·stderr)이 닫혔다. 끝난 뒤에도 남은 출력이 있을 수 있어, 출력 전체를 읽거나 폴더를 지우기 전에 기다린다. */
+const outputClosed = (child: MainProcess) =>
+  within(
     child.closed,
     killWaitMs,
     `server ${child.pid} did not close its output`
   );
-  if (group) await groupEnded(child);
-}
 
 async function waitForPath(child: MainProcess, target: string) {
   await pollUntil(
@@ -782,10 +782,6 @@ async function expectGone(postgres: ObservedPostgres, timeout = 5_000) {
 }
 
 /**
- * 시험이 끝남을 확인하지 못한 Postgres만 끝내고, 끝난 것을 확인한다. 그 뒤에야 폴더를 지운다. 확인한 뒤에는 그 번호를 다시 보지
- * 않는다(다른 프로세스가 썼을 수 있다).
- */
-/**
  * 시험 폴더와 그 안에서 서버가 띄울 Postgres의 소유. 폴더는 만든 직후 정리에 맡기고, 그 안 Postgres의 끝은 서버를 띄우기 전에 맡긴다
  * (정리는 역순이라 서버의 끝 뒤에 돈다). 관찰한 Postgres는 `leftover.postgres`에 넣는다. 관찰하지 못하면 끝을 확인할 수 없어 폴더를
  * 남기고 실패한다(`stopLeftover`). 서버는 띄운 직후 `folder.own(child.stop)`으로 맡긴다.
@@ -798,6 +794,10 @@ function postgresFolder(dir: string) {
   return { folder, leftover };
 }
 
+/**
+ * 시험이 끝남을 확인하지 못한 Postgres만 끝내고, 끝난 것을 확인한다. 그 뒤에야 폴더를 지운다. 확인한 뒤에는 그 번호를 다시 보지
+ * 않는다(다른 프로세스가 썼을 수 있다).
+ */
 async function stopLeftover(postgres: ObservedPostgres | undefined) {
   // 관찰하지 못한 Postgres는 같은 프로세스인지 알 근거가 없어 끄지도, 끝났다고 보지도 않는다. 폴더를 남기고 실패한다(fail closed).
   if (!postgres)

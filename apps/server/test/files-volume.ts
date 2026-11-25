@@ -97,7 +97,7 @@ export const featureGaps = () =>
       defer(() =>
         remove(made).catch((error: unknown) =>
           console.warn(
-            `could not remove the feature probe folder ${made} (${failureCode(error)}); it is left for the volume cleanup`
+            `could not remove the feature probe folder ${made} (${failureCode(error)}: ${error instanceof Error ? error.message : String(error)}); it is left for the volume cleanup`
           )
         )
       );

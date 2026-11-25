@@ -14,6 +14,7 @@ import {
   combinedFailure,
   failureCode,
   isDisconnect,
+  attemptAll,
 } from "@babojubot/contracts";
 import {
   containerToolsOrigin,
@@ -369,17 +370,27 @@ function realConnection(
               }),
               { port: 0, host: "127.0.0.1" },
               (close) =>
-                defer(async () => {
-                  await close();
-                  const errors = unexpected.mock.calls.map(([error]) => error);
-                  if (errors.length)
-                    throw new Error("the tools bridge got connection errors", {
-                      cause: combinedFailure(
-                        errors,
-                        "the tools bridge got connection errors"
-                      ),
-                    });
-                }),
+                // 다리 닫기와 기록한 오류 알리기는 서로 무관하다. 닫기가 실패해도 기록한 오류를 함께 알린다.
+                defer(() =>
+                  attemptAll([
+                    close,
+                    () => {
+                      const errors = unexpected.mock.calls.map(
+                        ([error]) => error
+                      );
+                      if (errors.length)
+                        throw new Error(
+                          "the tools bridge got connection errors",
+                          {
+                            cause: combinedFailure(
+                              errors,
+                              "the tools bridge got connection errors"
+                            ),
+                          }
+                        );
+                    },
+                  ])
+                ),
               "the tools bridge"
             );
             const port = (bridge.address() as net.AddressInfo).port;
