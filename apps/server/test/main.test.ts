@@ -26,6 +26,7 @@ import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
 import { ownedListener, pollUntil } from "./support.ts";
+import { ownHome } from "./product-home.ts";
 import { psField } from "@babojubot/process";
 import { reportedPid, within } from "@babojubot/process/test-support";
 import {
@@ -159,8 +160,19 @@ posix.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
 posix.each(["SIGINT", "SIGHUP"] as const)(
   "closes the embedded Postgres only after its own shutdown when the terminal sends %s to the whole group",
   async (signal) => {
-    const child = startMain({ BABOJUBOT_EPHEMERAL_DB: "1" }, { group: true });
+    // 임시 Postgres는 이 시험의 임시 폴더에 띄운다. 폴더 정리가 서버와 관찰한 Postgres의 끝을 확인한 뒤에만 지운다.
+    const temp = temporaryFolder();
+    const folder = folderCleanup(() => removeFolder(temp.dir));
+    onTestFinished(folder.cleanUp);
+    const leftover: { postgres?: ObservedPostgres } = {};
+    folder.own(() => stopLeftover(leftover.postgres));
+    const child = startMain(
+      { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
+      { group: true }
+    );
+    folder.own(child.stop);
     await child.ready();
+    leftover.postgres = temporaryPostgres(temp.dir);
     signalGroup(child, signal);
     const { code } = await waitExit(child, shutdownWaitMs);
     expect(code, child.stderrText()).toBe(0);
@@ -214,6 +226,15 @@ it.each(stopRequests)(
     // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
     const folder = folderCleanup(() => removeFolder(home));
     onTestFinished(folder.cleanUp);
+    // 이 시험은 Postgres를 관찰하지 않는다. 그 끝의 증거는 서버의 진단(준비 전에 끝남)이다. 시험이 그 진단을 확인하기 전에 끝나면
+    // 끝을 확인할 수 없어 폴더를 남긴다(fail closed).
+    const postgresEnded = { seen: false };
+    folder.own(() => {
+      if (!postgresEnded.seen)
+        throw new Error(
+          "the embedded Postgres was not seen ending, so its end cannot be confirmed; its folder is kept"
+        );
+    });
     const child = startMain(
       { BABOJUBOT_HOME: home, EMBEDDED_POSTGRES_PORT: "65536" },
       { ipc }
@@ -227,6 +248,7 @@ it.each(stopRequests)(
     expect(stderrLines(child)).toContain(
       "[server] start failed (EMBEDDED_EXITED_BEFORE_READY)"
     );
+    postgresEnded.seen = true;
   },
   60_000
 );
@@ -306,14 +328,16 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
   // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
   const folder = folderCleanup(() => removeFolder(temp.dir));
   onTestFinished(folder.cleanUp);
+  // 정리는 Postgres를 찾기 전에 등록한다. 찾지 못하면 끝을 확인할 수 없어 폴더를 남긴다.
+  const leftover: { postgres?: ObservedPostgres } = {};
+  folder.own(() => stopLeftover(leftover.postgres));
   const child = startMain(
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
   );
   folder.own(child.stop);
   await child.ready();
-  const postgres = temporaryPostgres(temp.dir);
-  folder.own(() => stopLeftover(postgres));
+  const postgres = (leftover.postgres = temporaryPostgres(temp.dir));
   expect(running(postgres)).toBe(true);
   child.send(stopRequest);
   const { code } = await waitExit(child, shutdownWaitMs);
@@ -330,14 +354,16 @@ it("finishes its own shutdown when the parent's channel closes", async () => {
   // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
   const folder = folderCleanup(() => removeFolder(temp.dir));
   onTestFinished(folder.cleanUp);
+  // 정리는 Postgres를 찾기 전에 등록한다. 찾지 못하면 끝을 확인할 수 없어 폴더를 남긴다.
+  const leftover: { postgres?: ObservedPostgres } = {};
+  folder.own(() => stopLeftover(leftover.postgres));
   const child = startMain(
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
   );
   folder.own(child.stop);
   await child.ready();
-  const postgres = temporaryPostgres(temp.dir);
-  folder.own(() => stopLeftover(postgres));
+  const postgres = (leftover.postgres = temporaryPostgres(temp.dir));
   child.disconnect();
   const { code } = await waitExit(child, shutdownWaitMs);
   expect(code, child.stderrText()).toBe(0);
@@ -541,6 +567,8 @@ function startMain(
   child.stop = () => (ending ??= endServer(child, { group }));
   dockerFolder.own(child.stop);
   databaseUsers.own(child.stop);
+  // 시험이 제품 폴더를 주지 않은 서버는 파일의 제품 폴더(test/product-home.ts)를 쓴다. 그 폴더는 이 서버의 끝을 확인한 뒤에만 지운다.
+  if (env.BABOJUBOT_HOME === undefined) ownHome(child.stop);
   return child;
 }
 
@@ -758,7 +786,12 @@ async function expectGone(postgres: ObservedPostgres, timeout = 5_000) {
  * 않는다(다른 프로세스가 썼을 수 있다).
  */
 async function stopLeftover(postgres: ObservedPostgres | undefined) {
-  if (!postgres || postgres.ended || !running(postgres)) return;
+  // 관찰하지 못한 Postgres는 같은 프로세스인지 알 근거가 없어 끄지도, 끝났다고 보지도 않는다. 폴더를 남기고 실패한다(fail closed).
+  if (!postgres)
+    throw new Error(
+      "the embedded Postgres was not observed, so its end cannot be confirmed; its folder is kept"
+    );
+  if (postgres.ended || !running(postgres)) return;
   // 멈춰 둔 Postgres는 다시 움직여야 끝난다. 그사이 끝났으면 보내지 않는다.
   signalPostgres(postgres, "SIGCONT");
   signalPostgres(postgres, "SIGKILL");

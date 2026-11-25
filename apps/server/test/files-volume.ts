@@ -11,10 +11,11 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { attemptAll, failureCode } from "@babojubot/contracts";
+import { failureCode } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { pinnedReaderFile } from "../src/workspace.ts";
-import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
+import { withCleanup } from "@babojubot/process/test-cleanup";
+import type { testFolders } from "@babojubot/process/testing";
 
 /**
  * 파일 경계 시험이 임시 폴더를 만드는 곳. 환경별 전체 검증(CI `files-*` job)은 시험용 디스크·공유의 폴더를
@@ -22,28 +23,18 @@ import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
  */
 export const filesBase = () => process.env.BABOJUBOT_FILES_TMPDIR || tmpdir();
 
-/** 만든 폴더마다의 정리. `cleanup`이 모두 시도한다. */
-const made: (() => Promise<void>)[] = [];
+/** 시험 파일의 폴더 정리(`testFolders`, `@babojubot/process/testing`). 폴더와 그 안에서 도는 것의 끝을 함께 맡는다. */
+export type Folders = ReturnType<typeof testFolders>;
 /**
- * 시험마다 새 임시 폴더(`folder`)와 그 소유(`own`). 폴더 안에 둔 것(socket 파일 서버, 막은 권한 등)의 끝은 그것을 만든 직후 `own`에
- * 맡긴다. `cleanup`은 맡긴 것을 모두 끝낸 뒤에만 폴더를 지우고, 끝내지 못하면 폴더를 남기고 그 실패를 알린다(`folderCleanup`).
+ * 시험마다 새 임시 폴더. 만든 직후 시험 파일의 폴더 정리(`folders`)에 맡긴다. 그 안에서 도는 것(읽는 프로세스, socket 파일 서버,
+ * 막은 권한)은 `folders.own`·`folders.ownChild`로 맡기면, 정리가 그것을 모두 끝낸 뒤에만 폴더를 지운다(끝나지 않으면 남기고 실패).
  */
-export async function scratch(prefix: string) {
-  const folder = await mkdtemp(path.join(filesBase(), prefix));
-  const owned = folderCleanup(() => remove(folder));
-  made.push(owned.cleanUp);
-  return { folder, own: owned.own };
+export async function scratch(folders: Folders, prefix: string) {
+  return folders.adopt(await mkdtemp(path.join(filesBase(), prefix)));
 }
 /** 지운다. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 기본보다 길게 다시 시도한다. */
 export const remove = (folder: string) =>
   removeFolder(folder, { retries: 10, retryDelayMs: 200 });
-/** 만든 폴더를 모두 정리한다. 한 폴더의 정리가 실패해도 나머지를 정리하고 실패를 모아 알린다. */
-export async function cleanup() {
-  await attemptAll(
-    made.splice(0),
-    "the scratch folders could not be cleaned up"
-  );
-}
 
 /** 이 파일 시스템에 없는 기능과 그 오류 코드. 빈 문자열이면 있다(FAT은 링크가 없다). */
 export type FeatureGaps = {
@@ -183,6 +174,7 @@ export const preloadArgs = (code: string) =>
  * `cwd`는 서버처럼 `organizations` 폴더의 실제 경로다.
  */
 export const runPinned = (
+  folders: Folders,
   cwd: string,
   preload: string,
   options: {
@@ -195,46 +187,46 @@ export const runPinned = (
   new Promise<PinnedResult>((resolve) => {
     const organizationId = options.organizationId ?? "organization-one";
     const shared = path.join(cwd, organizationId, "shared");
-    execFile(
-      process.execPath,
-      [
-        ...preloadArgs(preload),
-        pinnedReaderFile,
-        JSON.stringify([
-          options.maxBytes ?? 1000,
-          organizationId,
-          options.requested,
-          shared,
-          shared,
-        ]),
-      ],
-      {
-        cwd,
-        encoding: "buffer",
-        timeout: 30_000,
-        env: {
-          ...(process.env.SystemRoot
-            ? { SystemRoot: process.env.SystemRoot }
-            : {}),
-          PLAN: JSON.stringify(options.plan ?? {}),
+    // 띄운 직후 폴더 정리에 맡긴다. 그 폴더(`cwd`)는 이 프로세스의 끝(`close`)을 확인한 뒤에만 지운다.
+    folders.ownChild(
+      execFile(
+        process.execPath,
+        [
+          ...preloadArgs(preload),
+          pinnedReaderFile,
+          JSON.stringify([
+            options.maxBytes ?? 1000,
+            organizationId,
+            options.requested,
+            shared,
+            shared,
+          ]),
+        ],
+        {
+          cwd,
+          encoding: "buffer",
+          timeout: 30_000,
+          env: {
+            ...(process.env.SystemRoot
+              ? { SystemRoot: process.env.SystemRoot }
+              : {}),
+            PLAN: JSON.stringify(options.plan ?? {}),
+          },
         },
-      },
-      (error, stdout) => {
-        if (error)
-          return resolve({ code: error.code, parts: null, bytes: null });
-        const at = stdout.indexOf(0x0a);
-        resolve({
-          code: 0,
-          parts: JSON.parse(stdout.subarray(0, at).toString("utf8")),
-          bytes: stdout.subarray(at + 1),
-        });
-      }
+        (error, stdout) => {
+          if (error)
+            return resolve({ code: error.code, parts: null, bytes: null });
+          const at = stdout.indexOf(0x0a);
+          resolve({
+            code: 0,
+            parts: JSON.parse(stdout.subarray(0, at).toString("utf8")),
+            bytes: stdout.subarray(at + 1),
+          });
+        }
+      )
     );
   });
 
 /** 실제 경로로 푼 임시 폴더. 읽는 프로세스의 `cwd`처럼 링크 없는 경로가 필요할 때 쓴다. */
-/** `scratch`의 실제 경로(링크를 푼 경로)와 그 소유. */
-export const realScratch = async (prefix: string) => {
-  const { folder, own } = await scratch(prefix);
-  return { folder: await realpath(folder), own };
-};
+export const realScratch = async (folders: Folders, prefix: string) =>
+  realpath(await scratch(folders, prefix));

@@ -25,12 +25,7 @@ import {
   wakeText,
   type ModelRequest,
 } from "./local-model.ts";
-import {
-  eventuallyMs,
-  startTestServer,
-  within,
-  type TestServer,
-} from "./support.ts";
+import { startTestServer, type TestServer } from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -88,11 +83,13 @@ describe.skipIf(!program)(
   () => {
     let t: TestServer;
     let model: Awaited<ReturnType<typeof startLocalModel>>;
+    /** 모델 서버의 닫기. 아래 afterAll의 한 단계가 서버·폴더 정리 뒤에 부른다. */
+    let closeModel: (() => Promise<void>) | undefined;
     let folder: ReturnType<typeof folderCleanup> | undefined;
     const agents = scriptedAgents();
     const { get, researching, create, say } = serverHelpers(() => t);
     beforeAll(async () => {
-      model = await startLocalModel();
+      model = await startLocalModel((close) => (closeModel = close));
       const dataDir = await mkdtemp(path.join(tmpdir(), "opencode-real-"));
       // OpenCode가 아직 쓰는 dataDir는 서버가 닫힌 뒤에만 지운다.
       folder = folderCleanup(() => removeFolder(dataDir));
@@ -118,12 +115,7 @@ describe.skipIf(!program)(
       attemptAll([
         async () => {
           await folder?.cleanUp();
-          if (model)
-            await within(
-              model.close(),
-              eventuallyMs,
-              "closing the local model server did not finish"
-            );
+          await closeModel?.();
         },
       ])
     );

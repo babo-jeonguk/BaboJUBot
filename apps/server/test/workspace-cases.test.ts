@@ -14,11 +14,10 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ArtifactFileRead } from "@babojubot/contracts";
-import { afterEach, beforeAll, expect, it, type TestContext } from "vitest";
+import { beforeAll, expect, it, type TestContext } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
 import {
-  cleanup,
   featureGaps,
   filesBase,
   gapOutcome,
@@ -28,6 +27,7 @@ import {
   windows,
 } from "./files-volume.ts";
 import { ownedListener } from "./support.ts";
+import { testFolders } from "@babojubot/process/testing";
 
 // #153: 파일 경로 격리의 사례 표(C01–C37, F1–F6)를 지금 이 파일 시스템에서 확인한다. 같은 파일이 일반 PR의 세 OS와
 // 환경별 전체 검증의 각 디스크(NTFS·FAT·SMB, APFS·HFS+)에서 돈다. 사례마다 결과를 test meta(`cases`)에 남기고
@@ -69,10 +69,11 @@ const foreign = "B-SECRET";
 const outsideBytes = "OUTSIDE-SECRET";
 const refusal = (refusal: string) => ({ ok: false, refusal });
 
-afterEach(cleanup);
+/** 시험마다의 폴더 정리. 폴더와 그 안에서 도는 것(읽는 프로세스·명령, socket 파일 서버, 막은 권한)의 끝을 함께 맡는다. */
+const folders = testFolders();
 
 async function world() {
-  const { folder: root, own } = await realScratch("bjc-");
+  const root = await realScratch(folders, "bjc-");
   const organizations = path.join(root, "organizations");
   const shared = path.join(organizations, A, "shared");
   const other = path.join(organizations, B, "shared");
@@ -112,7 +113,7 @@ async function world() {
       ? Buffer.from(result.snapshot.bytes, "base64").toString("utf8")
       : { refused: result.refusal };
   };
-  return { root, own, organizations, shared, other, read, got };
+  return { root, organizations, shared, other, read, got };
 }
 /** 테스트 프로세스가 운영체제로 직접 열어 본 결과. 우리 읽기가 같은 파일을 고르는지의 기준이다. */
 const osOpen = (absolute: string) =>
@@ -122,15 +123,18 @@ const osOpen = (absolute: string) =>
   );
 
 const run = (file: string, args: string[], env: Record<string, string> = {}) =>
-  new Promise<{ ok: boolean; output: string }>((resolve) =>
-    execFile(
-      file,
-      args,
-      { env: { ...process.env, ...env }, timeout: 60_000, windowsHide: true },
-      (error, stdout, stderr) =>
-        resolve({ ok: !error, output: `${stdout}${stderr}`.trim() })
-    )
-  );
+  new Promise<{ ok: boolean; output: string }>((resolve) => {
+    // 띄운 직후 폴더 정리에 맡긴다. 이 명령이 다루는 world 폴더는 그 끝(`close`)을 확인한 뒤에만 지운다.
+    folders.ownChild(
+      execFile(
+        file,
+        args,
+        { env: { ...process.env, ...env }, timeout: 60_000, windowsHide: true },
+        (error, stdout, stderr) =>
+          resolve({ ok: !error, output: `${stdout}${stderr}`.trim() })
+      )
+    );
+  });
 /** Windows 8.3 짧은 이름. 이 볼륨이 짧은 이름을 만들지 않으면 긴 이름 그대로다. */
 const shortName = async (target: string) => {
   const result = await run(
@@ -203,7 +207,7 @@ const can = {
   normalizationInsensitive: false,
 };
 beforeAll(async () => {
-  const { folder: probe } = await realScratch("bjc-probe-");
+  const probe = await realScratch(folders, "bjc-probe-");
   await writeFile(path.join(probe, "file"), "x");
   can.caseSensitive = !(await stat(path.join(probe, "FILE")).then(
     () => true,
@@ -492,7 +496,7 @@ const injected = (
     nth?: number;
     actions: Action[];
   }
-) => runPinned(organizations, inject, { requested, plan });
+) => runPinned(folders, organizations, inject, { requested, plan });
 const text = (bytes: Buffer | null) => bytes?.toString("utf8") ?? null;
 
 it("C11 refuses when a folder in the path or the file itself is swapped right after it was checked", async (context) => {
@@ -678,12 +682,12 @@ it("C17 refuses a Unix socket", async (context) => {
       "n/a",
       "Windows의 Node는 경로 socket 대신 named pipe를 쓴다"
     );
-  const { read, shared, own } = await world();
+  const { read, shared } = await world();
   // socket 파일 서버는 그 폴더의 정리가 소유한다. 서버를 닫은 뒤에만 폴더를 지운다.
   const listening = await ownedListener(
     createServer(),
     { path: path.join(shared, "s") },
-    own,
+    folders.own,
     "the socket file server"
   ).then(
     () => "",
@@ -924,7 +928,7 @@ const allow = async (target: string, folder: boolean) => {
   else await run("icacls", [target, "/remove:d", "*S-1-1-0"]);
 };
 it("C26 refuses a file it may not read and a folder it may not search", async (context) => {
-  const { got, shared, own } = await world();
+  const { got, shared } = await world();
   const file = path.join(shared, "locked.md");
   const folder = path.join(shared, "locked");
   await writeFile(file, "A:locked");
@@ -932,9 +936,9 @@ it("C26 refuses a file it may not read and a folder it may not search", async (c
   await writeFile(path.join(folder, "a.md"), "A:locked/a.md");
   // 막은 권한은 그 폴더의 정리가 소유한다. 권한을 되돌린 뒤에만 폴더를 지운다(되돌리지 못하면 남기고 실패).
   const fileDenied = await deny(file, false);
-  own(() => allow(file, false));
+  folders.own(() => allow(file, false), "restoring the file permission");
   const folderDenied = await deny(folder, true);
-  own(() => allow(folder, true));
+  folders.own(() => allow(folder, true), "restoring the folder permission");
   const failed = fileDenied ?? folderDenied;
   if (failed) without(context, "C26", failed.outcome, failed.reason);
   // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
@@ -1281,7 +1285,7 @@ it("C36 matches the working folder part with its exact case and names inside the
   }
   // F4 그대로: 대소문자를 가리는 부모 폴더에 `organizations`와 `Organizations`가 따로 있으면 대소문자만 다른 표기는
   // 다른 폴더다. 그 폴더의 파일은 운영체제가 열어도 작업 폴더 밖으로 거부한다.
-  const { folder: parent } = await realScratch("bjc-cs-");
+  const parent = await realScratch(folders, "bjc-cs-");
   const sensitive = windows
     ? await run("fsutil.exe", [
         "file",

@@ -33,6 +33,7 @@ import {
   within,
   type TestServer,
 } from "./support.ts";
+import { ownHome } from "./product-home.ts";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
@@ -293,16 +294,20 @@ describe("notification outbox and fake channel", () => {
     // afterEach가 아니라 이 시험의 정리 한 단계가 차례로 소유한다(앞이 실패하면 DB를 닫지 않는다).
     const first = t;
     t = undefined;
+    // 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다. 다시 띄운 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다.
+    const users = folderCleanup(() => first.close());
+    onTestFinished(users.cleanUp);
+    ownHome(users.cleanUp);
     const handed: { server?: Awaited<ReturnType<typeof startServer>> } = {};
-    onTestFinished(async () => {
-      if (handed.server)
-        await within(
+    users.own(
+      () =>
+        handed.server &&
+        within(
           handed.server.close(),
           serverStopMs,
           "stopping the restarted server did not finish"
-        );
-      await first.close();
-    });
+        )
+    );
     const restarted = (handed.server = await startServer({
       db: first.db,
       port: 0,
@@ -842,6 +847,8 @@ describe("channel replies", () => {
     const database = await createTestDatabase();
     const users = folderCleanup(() => database.close());
     onTestFinished(users.cleanUp);
+    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다.
+    ownHome(users.cleanUp);
     const quiet = (name: string): NotificationChannel => ({
       name,
       deliver: async () => {},
@@ -886,18 +893,20 @@ describe("channel replies", () => {
     const first = t;
     t = undefined;
     let starting: ReturnType<typeof startServer> | undefined;
-    onTestFinished(async () => {
-      if (starting) {
-        // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
-        const [outcome] = await Promise.allSettled([starting]);
-        if (outcome.status === "fulfilled")
-          await within(
-            outcome.value.close(),
-            serverStopMs,
-            "stopping the server whose start should have failed did not finish"
-          );
-      }
-      await first.close();
+    // 시험 서버(DB)는 아래 시작이 넘겨받혔다면 그 서버가 끝난 뒤에만 닫는다. 그 서버는 파일의 제품 폴더도 쓴다.
+    const users = folderCleanup(() => first.close());
+    onTestFinished(users.cleanUp);
+    ownHome(users.cleanUp);
+    users.own(async () => {
+      if (!starting) return;
+      // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
+      const [outcome] = await Promise.allSettled([starting]);
+      if (outcome.status === "fulfilled")
+        await within(
+          outcome.value.close(),
+          serverStopMs,
+          "stopping the server whose start should have failed did not finish"
+        );
     });
 
     // 시계가 부를 때마다 10초씩 가서, 멈추지 않은 relay라면 주기 확인마다 재시도 예정이 지난 알림을 다시 보낸다.
@@ -946,6 +955,8 @@ describe("channel replies", () => {
     const database = await createTestDatabase();
     const users = folderCleanup(() => database.close());
     onTestFinished(users.cleanUp);
+    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다.
+    ownHome(users.cleanUp);
     /** 그 port를 듣는 listener. 시험 정리가 소유하고, 돌려준 `close`로 시험 중간에 포트를 비운다. */
     const listening = (port: number) =>
       ownedListener(

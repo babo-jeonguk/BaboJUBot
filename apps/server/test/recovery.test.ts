@@ -55,6 +55,7 @@ import {
   within,
   type TestServer,
 } from "./support.ts";
+import { ownHome } from "./product-home.ts";
 import {
   awaitedLater,
   folderCleanup,
@@ -91,7 +92,10 @@ afterEach(() => {
     ...users,
   ])
     closing.own(end);
-  return closing.cleanUp();
+  // 이 서버들은 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다. 그 폴더는 이 정리가 끝을 확인한 뒤에만 지운다.
+  const cleaned = closing.cleanUp();
+  ownHome(() => cleaned);
+  return cleaned;
 });
 
 const api = (base: () => string) => {
@@ -169,7 +173,11 @@ describe("server restart recovery", () => {
     await gate.reached;
     const [interrupted] = await http.runs(org.id);
 
-    await server.close();
+    await within(
+      server.close(),
+      serverStopMs,
+      "stopping the server did not finish"
+    );
     // 닫은 서버는 afterEach가 다시 닫지 않는다(끄기는 한 번만 한다). 닫지 못했으면 그대로 남아 afterEach가 DB를 닫지 않는다.
     server = undefined;
     server = await startServer({ db: database.db, port: 0 });
@@ -349,7 +357,11 @@ describe("accepted steer across a restart (#159)", () => {
     });
 
     // 정상 종료: 진행 중 실행 시도는 취소되어 돌아와 `server_restart`로 끝나고 받은 깨우기를 다시 대기시킨다.
-    await server.close();
+    await within(
+      server.close(),
+      serverStopMs,
+      "stopping the server did not finish"
+    );
     // 닫은 서버는 afterEach가 다시 닫지 않는다(끄기는 한 번만 한다). 닫지 못했으면 그대로 남아 afterEach가 DB를 닫지 않는다.
     server = undefined;
     let received: string[][] = [];
@@ -406,7 +418,11 @@ describe("accepted steer across a restart (#159)", () => {
       finished?.type === "run.finished" && finished.payload.requeuedWakeIds
     ).toHaveLength(2);
     // 다시 시작해도 더 받지 않는다.
-    await server.close();
+    await within(
+      server.close(),
+      serverStopMs,
+      "stopping the server did not finish"
+    );
     // 닫은 서버는 afterEach가 다시 닫지 않는다(끄기는 한 번만 한다). 닫지 못했으면 그대로 남아 afterEach가 DB를 닫지 않는다.
     server = undefined;
     received = [];
