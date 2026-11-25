@@ -16,7 +16,7 @@ import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
@@ -275,8 +275,6 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
     container,
     relay: { upstream, verified: true },
   });
-  /** 발급한 실행 시도 권한. */
-  const grants: string[] = [];
   const execute = provider.adapter.execute.bind(provider.adapter);
   provider.adapter.execute = (...args) => {
     const run = execute(...args);
@@ -284,12 +282,10 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
     return run;
   };
   const relay = provider.credentialRelay as CredentialRelay;
-  const grant = relay.grant.bind(relay);
-  relay.grant = (scope) => {
-    const issued = grant(scope);
-    grants.push(issued.token);
-    return issued;
-  };
+  // 발급을 바꾸지 않고 기록만 하는 관찰 spy.
+  const granted = vi.spyOn(relay, "grant");
+  onTestFinished(() => granted.mockRestore());
+  const grants = () => granted.mock.results.map(({ value }) => value.token);
   /** 중계가 받은 요청을 넘겨받은 뒤 부르는 함수. */
   const handed: { then?: () => void } = {};
   const relayUrl = await listen((req, res) => {
@@ -468,15 +464,15 @@ describe.each(connections)("$name", (connection) => {
         control(cancel.signal)
       );
       const attemptFile = await held.reached;
-      expect(env.grants).toHaveLength(1);
+      expect(env.grants()).toHaveLength(1);
       // 살아 있는 권한은 경로 밖 요청에서 거절(403)될 뿐 권한 오류가 아니다.
-      expect(await env.relayStatus(env.grants[0]!)).toBe(403);
+      expect(await env.relayStatus(env.grants()[0]!)).toBe(403);
       cancel.abort();
       held.release();
       const result = await running;
       expect(result.stopReason).toBe("cancelled");
       expect(spawned).toEqual([]);
-      expect(await env.relayStatus(env.grants[0]!)).toBe(401);
+      expect(await env.relayStatus(env.grants()[0]!)).toBe(401);
       await expect(stat(path.dirname(attemptFile))).rejects.toThrow();
       // 조직 폴더에는 권한이 남지 않고, 원본은 그대로다.
       // 없으면 남은 것이 없다. 그 밖의 읽기 실패는 남았는지 모르는 것이라 드러낸다.
@@ -485,7 +481,7 @@ describe.each(connections)("$name", (connection) => {
         hasErrorCode("ENOENT"),
         ""
       );
-      expect(left).not.toContain(env.grants[0]!);
+      expect(left).not.toContain(env.grants()[0]!);
       expect(await readFile(env.original, "utf8")).toBe(
         '{"synthetic-login":1}'
       );

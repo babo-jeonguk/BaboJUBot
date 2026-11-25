@@ -1,6 +1,6 @@
 import { within } from "@babojubot/process/test-support";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readdir, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import {
   afterAll,
@@ -119,7 +119,6 @@ setInterval(() => {}, 1000);
     // 확인하지 못하므로 끄지 않고, 정리 성공으로 보지 않는다(경고, 기록 유지).
     it("keep the run's record and are left running when they are not of its tree", async () => {
       const stateDir = await folders.make("babojubot-hidden-");
-      const go = path.join(stateDir, "go");
       // 대표는 연결을 쥐고 돈다. 실행 시도의 끝(`broken`)은 대표의 끝을 말하지 않으므로, 대표의 끝은 이 연결의 정리가 확인한다.
       // 대표는 연결을 쥔 뒤에야 돌기 시작했다고 알린다. 그래서 시험이 진행시킨 대표가 연결 전에 끝나지 않는다.
       const leader = lifelineHolder(
@@ -140,7 +139,8 @@ setInterval(() => {}, 1000);
           "-e",
           `
 ${leader.code}
-setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(go)})) process.exit(0); }, 20);
+process.stdin.once("data", () => process.exit(0));
+setInterval(() => {}, 1000);
 `,
         ],
         args: [],
@@ -148,7 +148,7 @@ setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(go)})) pr
         env: { PATH: process.env.PATH },
         stateDir,
         onFrame: async () => {
-          // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 대표를 끝낸다.
+          // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 입력의 진행 신호로 대표를 끝낸다.
           // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
           hidden = folders.ownChild(
             spawn("python3", ["-c", hide], {
@@ -157,7 +157,7 @@ setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(go)})) pr
             })
           );
           await readyLine(hidden, "ready");
-          await writeFile(go, "");
+          run.write({ go: true });
         },
       });
       folders.own(async () => {

@@ -40,6 +40,7 @@ import {
   it,
   onTestFinished,
   vi,
+  type MockInstance,
 } from "vitest";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import {
@@ -2456,7 +2457,10 @@ describe.skipIf(process.platform === "win32")(
         });
         await connection.login(env.root);
         let provider!: ReturnType<typeof connection.create>;
-        const grants: string[] = [];
+        /** 발급한 실행 시도 권한. 발급을 바꾸지 않고 기록만 하는 관찰 spy가 본다. */
+        let granted!: MockInstance<CredentialRelay["grant"]>;
+        const grants = () =>
+          granted.mock.results.map(({ value }) => value.token);
         const network = await relayed(
           id,
           (upstream) => {
@@ -2467,12 +2471,9 @@ describe.skipIf(process.platform === "win32")(
               command: [process.execPath, fixture(connection.program)],
             });
             const relay = provider.credentialRelay as CredentialRelay;
-            const grant = relay.grant.bind(relay);
-            relay.grant = (scope) => {
-              const issued = grant(scope);
-              grants.push(issued.token);
-              return issued;
-            };
+            const spy = vi.spyOn(relay, "grant");
+            onTestFinished(() => spy.mockRestore());
+            granted = spy;
             return relay;
           },
           { hold: true }
@@ -2489,7 +2490,7 @@ describe.skipIf(process.platform === "win32")(
         // 중단이 효력을 갖는 순간부터 그 권한의 새 요청은 상류에 닿지 않는다.
         const after = await fetch(`${network.tools}/api/relay/${id}/any`, {
           method: "POST",
-          headers: { authorization: `Bearer ${grants[0]}` },
+          headers: { authorization: `Bearer ${grants()[0]}` },
         });
         expect(after.status).toBe(401);
         await expect.poll(() => network.closed.length, programStart).toBe(1);
@@ -2499,7 +2500,7 @@ describe.skipIf(process.platform === "win32")(
         // 실행 시도는 컨테이너를 지운 뒤에야 끝난다(그 전에 같은 자리를 다시 쓰지 않는다).
         const calls = await env.calls();
         expect(removed(calls, nameOf(runCall(calls)))).toBe(true);
-        expect(grants).toHaveLength(1);
+        expect(grants()).toHaveLength(1);
       },
       30_000
     );
