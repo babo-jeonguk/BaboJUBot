@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, onTestFinished, vi } from "vitest";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
 import { request, saying } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -390,4 +390,54 @@ describe("one organization folder (#147)", () => {
     expect((await running).stopReason).toBe("completed");
     expect((await after).stopReason).toBe("completed");
   }, 30000);
+});
+
+// OpenCode는 서버를 연 뒤에도 Location의 plugin 활성화를 기다리며, 5초 안에 끝나지 않으면 모델 목록 등에 503 "plugin 활성화 중"으로
+// 답한다(2.2.6 server/src/location.ts). 준비를 알리는 신호가 없어 adapter는 그 답만 상한 안에서 다시 묻는다(공식 Desktop 클라이언트와
+// 같은 선례). 그 밖의 실패 답은 바로 실패이고, 진단에는 HTTP 상태가 코드로 남는다(#298 조사: 그동안 `(Error)`로 접혔다).
+describe("plugins still activating (#286)", () => {
+  async function run(scene: { busy: number; body?: unknown }) {
+    const root = await folders.make("opencode-activating-");
+    const file = path.join(root, "activating.json");
+    await writeFile(file, JSON.stringify(scene));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warn.mockRestore());
+    const result = await createOpenCodeProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/opencode-simulator.mjs"),
+        "--plugins-activating",
+        file,
+      ],
+    }).adapter.execute(request(), {
+      signal: new AbortController().signal,
+      emit: async () => {},
+    });
+    const asked = (await readFile(file + ".asked", "utf8"))
+      .split("\n")
+      .filter(Boolean).length;
+    return { result, asked, warned: warn.mock.calls };
+  }
+
+  it("asks again while OpenCode's plugins are still activating, and runs once they are", async () => {
+    const { result, asked, warned } = await run({ busy: 2 });
+    expect(result.stopReason).toBe("completed");
+    expect(asked).toBe(3);
+    expect(warned).toEqual([]);
+  }, 30_000);
+
+  it("fails at once on any other unavailable answer, naming its HTTP status", async () => {
+    const { result, asked, warned } = await run({
+      busy: 1,
+      body: {
+        _tag: "ServiceUnavailableError",
+        message: "Storage is not ready",
+        service: "storage",
+      },
+    });
+    expect(result.stopReason).toBe("failed");
+    expect(asked).toBe(1);
+    expect(warned).toEqual([["[provider] the OpenCode run failed (HTTP_503)"]]);
+  }, 30_000);
 });

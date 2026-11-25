@@ -37,6 +37,14 @@ const usage =
 // --fail면 본 실행 요청에 그 파일의 `error`로 2.2.6 `session.execution.failed`(data.error: type·message·선택 status·response.body)를 낸다.
 // 합성 재생이며 실제 SSE 녹화가 아니다. `foreign`이면 먼저 다른 세션의 실패를 낸다. 본 실행 요청마다 `<파일>.prompts`에 한 줄 남긴다.
 const failFile = optionValue("--fail");
+// --plugins-activating이면 그 파일의 `busy`만큼 처음의 모델 목록 요청에 503으로 답한다. 본문은 파일의 `body`이고, 없으면 OpenCode
+// 2.2.6이 Location의 plugin 활성화를 5초 기다리고도 끝나지 않았을 때 내는 답(server/src/location.ts `awaitPlugins`)이다. 합성 재생이며
+// 녹화가 아니다. 모델 목록 요청마다 `<파일>.asked`에 한 줄 남긴다.
+const activatingFile = optionValue("--plugins-activating");
+const activating = activatingFile
+  ? JSON.parse(await readFile(activatingFile, "utf8"))
+  : null;
+let busyAnswers = activating?.busy ?? 0;
 const failing = failFile ? JSON.parse(await readFile(failFile, "utf8")) : null;
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
   subscribers = new Set();
@@ -136,6 +144,23 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) raw += chunk;
     const input = raw ? JSON.parse(raw) : {};
     if (pathname === "/api/model") {
+      if (activatingFile !== null) {
+        await writeFile(activatingFile + ".asked", "asked\n", { flag: "a" });
+        if (busyAnswers > 0) {
+          busyAnswers -= 1;
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify(
+              activating.body ?? {
+                _tag: "ServiceUnavailableError",
+                message: "Location plugins did not finish activating",
+                service: "plugin",
+              }
+            )
+          );
+          return;
+        }
+      }
       // --relay면 설정의 제공자(인증 중계 주소)대로 Go 구독 모델과 Zen 무료 모델을 보인다.
       if (relayMode) {
         json({
