@@ -312,7 +312,8 @@ describe("provider readiness", () => {
       providerSettingsSchema.parse(rechecked.body).providers[1]!.readiness
     ).toMatchObject({ status: "ready", reason: null, checking: false });
     // 확인을 시작할 때와 끝낼 때 다시 불러오라는 신호가 간다.
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(2);
+    // 이 요청은 확인을 끝낸 뒤 답하므로 두 신호 모두 응답 전에 나갔다.
+    expect((await watcher.received()).settingsSignals).toBe(2);
     expect(
       (await t!.request("POST", "/api/providers/nope/readiness")).status
     ).toBe(404);
@@ -324,7 +325,7 @@ describe("provider readiness", () => {
     await expect
       .poll(async () => (await readinessOf("fake-2")).reason, eventually)
       .toBe("credentials_unverified");
-    expect(watcher.events).toEqual([]);
+    expect((await watcher.received()).events).toEqual([]);
   });
 
   it("saves only the latest check and stops showing it as checking once that check ends, even if an older one is still going", async () => {

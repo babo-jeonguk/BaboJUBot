@@ -147,10 +147,11 @@ describe("concurrent global settings writes", () => {
       expect((await changing).status).toBe(200);
       expect((await restoring!).status).toBe(200);
       expect(await settings()).toMatchObject(final);
-      await expect
-        .poll(() => watcher.settingsSignals(), eventually)
-        .toBe(repeatChoice ? 1 : 2);
-      expect(watcher.events).toEqual([]);
+      // 신호는 응답 전에 나가므로 두 PUT이 끝난 뒤 받은 것이 전부다.
+      expect(await watcher.received()).toEqual({
+        events: [],
+        settingsSignals: repeatChoice ? 1 : 2,
+      });
     }
   );
 
@@ -169,7 +170,7 @@ describe("concurrent global settings writes", () => {
       });
       expect(saved.status).toBe(200);
     }
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
+    expect((await watcher.received()).settingsSignals).toBe(1);
   });
 
   it("signals a limit replacement even when the competing insert was initially invisible", async () => {
@@ -196,7 +197,7 @@ describe("concurrent global settings writes", () => {
     });
     expect((await saving).status).toBe(200);
     expect((await settings()).providers[0]!.maxConcurrentRuns).toBe(2);
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
+    expect((await watcher.received()).settingsSignals).toBe(1);
   });
 });
 
@@ -242,8 +243,10 @@ describe("provider connections and agent choices", () => {
       model: "fake-2-max",
     });
     // 전역 설정은 조직 Event가 아니라 다시 불러오라는 신호로 다른 화면에 간다.
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
-    expect(watcher.events).toEqual([]);
+    expect(await watcher.received()).toEqual({
+      events: [],
+      settingsSignals: 1,
+    });
 
     // 고르지 않은 Lead는 Lead 기본값, 승인으로 생긴 작업자는 작업자 기본값을 복사하고 각자의 연결로 실행된다.
     const org = await researching(agents, "기본값 조직");

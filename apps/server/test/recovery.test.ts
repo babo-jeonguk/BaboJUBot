@@ -734,10 +734,12 @@ describe("server start recovery barrier", () => {
     // 시간을 기다리지 않는다. 복구가 끝나기 전의 촉진은 응답 전에 그 자리에서 버려지고(`kick`), 메시지의 Event는 응답 전에
     // 나간다. 그래서 응답과 이 연결의 순서 표시 뒤에 보면 이 요청이 남긴 것은 모두 보인다. 붙잡아 둔 뒤쪽 복구는
     // `held`가 열기 전에는 끝나지 않으므로, 그 알림도 이때까지 나갈 수 없다.
-    await stream.caughtUp();
+    const beforeRecovery = await stream.received();
     expect(runtime.executions()).toEqual([]);
     expect(
-      stream.events.map((e) => e.type).filter((t) => t !== "message.created")
+      beforeRecovery.events
+        .map((e) => e.type)
+        .filter((t) => t !== "message.created")
     ).toEqual([]);
     expect(await runStatus(late!.runId)).toBe("running");
     held.open();
@@ -748,14 +750,14 @@ describe("server start recovery barrier", () => {
     );
     await running.drain();
     // 끝난 실행 시도가 보낸 Event를 모두 받은 뒤에 닫는다. 그사이 연결이 실패했으면 그 실패로 끝난다.
-    await stream.caughtUp();
+    const afterRecovery = await stream.received();
     stream.close();
 
     // 복구된 깨우기는 다시 처리되고, 복구 중에 보낸 메시지는 같은 조직의 다음 실행 시도가 받는다.
     expect(runtime.executions().sort()).toEqual(
       [early!.leadId, late!.leadId].sort()
     );
-    const types = stream.events
+    const types = afterRecovery.events
       .map((e) => e.type)
       .filter((t) => t !== "message.created");
     expect(types.slice(0, 2)).toEqual(["run.finished", "run.finished"]);

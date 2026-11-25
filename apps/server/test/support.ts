@@ -39,25 +39,25 @@ export const eventually = { timeout: eventuallyMs };
  */
 export const readinessSettleMs = 100_000;
 
+/** 구독이 받은 것: Event frame과 전역 설정 변경 신호(`settings_changed`) 수. */
+export type Received = { events: Event[]; settingsSignals: number };
+
+/**
+ * Event stream 구독. 받은 것은 연결이 실패하지 않았을 때만 내준다. 원본 배열·계수기를 내주면 연결이 끊긴 뒤에도 마지막 값이
+ * 정상 관측값처럼 읽혀, 그 뒤 서버가 보내면 안 되는 것을 시험이 보지 못한 채 통과했다(#298 외부 리뷰 2회차 SPEC-2-R1).
+ */
 export type Subscription = {
-  /** 받은 Event frame. */
-  events: Event[];
   /** 다음 Event를 기다린다. 이미 받은 것이 있으면 바로 돌려준다. 기본 상한은 `eventuallyMs`다. */
   next: (timeoutMs?: number) => Promise<Event>;
   /**
-   * 이 구독이 받은 Event가 `since`개(기본 0)에서 늘지 않았는지 확인한다. 시간을 재지 않고 순서 표시를 쓴다: 이 연결로
-   * ping을 보내 pong을 받으면, 서버가 그 전에 이 연결로 보낸 Event는 모두 받은 것이다(한 연결의 frame은 보낸 순서로 온다).
-   * 서버는 요청의 Event를 응답 전에 보내므로(commit 뒤 할 일), 끝난 요청이 남긴 Event는 빠짐없이 본다.
-   * 한계: 응답 뒤에 따로 도는 일(실행 시도 등)이 나중에 남길 Event는 보지 못한다. 그런 일은 그 끝(`drain` 등)을 먼저 기다린다.
+   * 서버가 지금까지 이 연결로 보낸 frame을 모두 받은 뒤 받은 것을 돌려준다. 시간을 재지 않고 순서 표시를 쓴다: 이 연결로
+   * ping을 보내 pong을 받으면, 서버가 그 전에 이 연결로 보낸 frame은 모두 받은 것이다(한 연결의 frame은 보낸 순서로 온다).
+   * 서버는 요청의 Event와 설정 신호를 응답 전에 보내므로(commit 뒤 할 일), 끝난 요청이 남긴 것은 빠짐없이 본다.
+   * 응답 뒤에 따로 도는 일(실행 시도 등)이 남길 것은 그 끝(`drain` 등)을 먼저 기다린 뒤 부른다. 연결이 실패했으면 그 실패로 끝난다.
    */
+  received: () => Promise<Received>;
+  /** 이 구독이 받은 Event가 `since`개(기본 0)에서 늘지 않았는지 `received`로 확인한다. */
   expectNoEvents: (since?: number) => Promise<void>;
-  /** 받은 전역 설정 변경 신호(`settings_changed`) 수. */
-  settingsSignals: () => number;
-  /**
-   * 서버가 지금까지 이 연결로 보낸 frame을 모두 받을 때까지 기다린다(ping을 보내 pong을 받는다. 한 연결의 frame은 보낸 순서로 온다).
-   * 연결이 실패했으면 그 실패로 끝난다.
-   */
-  caughtUp: () => Promise<void>;
   /** 시험이 청한 닫힘. 그 뒤의 닫힘은 실패가 아니다. */
   close: () => void;
 };
@@ -285,7 +285,7 @@ export async function startTestServer({
 
 /**
  * Event stream 연결 하나를 열고 준비(`ready` frame)를 기다린다. 연결의 실패는 하나로 모은다: 연결 오류, 거절된 연결(업그레이드 응답),
- * 시험이 청하지 않은 닫힘, 읽지 못한 frame 가운데 먼저 온 것이다. 준비·다음 Event·순서 표시(pong) 대기가 모두 그 실패로 끝난다.
+ * 시험이 청하지 않은 닫힘, 읽지 못한 frame 가운데 먼저 온 것이다. 준비·다음 Event·받은 것(`received`) 대기가 모두 그 실패로 끝난다.
  * 준비 뒤의 실패를 버리면 연결이 끊겨도 다음 대기가 시한까지 기다리거나 받은 Event가 모자란 채 단언했다(#298 리뷰 1회차 SPEC-2).
  * `close`와 `terminate`는 시험이 청한 닫힘이라 실패가 아니다. `opened`는 연결을 만든 직후 그 `terminate`를 받는다(정리 등록).
  */
@@ -357,8 +357,8 @@ export async function openEventStream(
       fail(error);
     }
   });
-  const caughtUp = () =>
-    within(
+  const received = async (): Promise<Received> => {
+    await within(
       unlessFailed(
         new Promise<void>((resolve) => {
           socket.once("pong", () => resolve());
@@ -368,9 +368,10 @@ export async function openEventStream(
       eventuallyMs,
       "the Event stream's pong did not finish"
     );
+    return { events: [...events], settingsSignals };
+  };
   let taken = 0;
   const subscription: Subscription = {
-    events,
     next: (timeoutMs = eventuallyMs) =>
       within(
         unlessFailed(
@@ -387,15 +388,14 @@ export async function openEventStream(
         timeoutMs,
         "no Event arrived"
       ),
+    received,
     async expectNoEvents(since = 0) {
-      await caughtUp();
+      const { events } = await received();
       if (events.length > since)
         throw new Error(
           `unexpected Event: ${JSON.stringify(events.slice(since))}`
         );
     },
-    settingsSignals: () => settingsSignals,
-    caughtUp,
     close: () => {
       closing = true;
       socket.close();

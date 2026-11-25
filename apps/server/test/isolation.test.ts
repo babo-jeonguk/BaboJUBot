@@ -51,9 +51,7 @@ describe("isolation switch", () => {
     expect(providerSettingsSchema.parse(on.body).isolated).toBe(true);
     expect((await settings()).isolated).toBe(true);
     // 다른 탭은 전역 설정 변경 신호로 다시 불러온다.
-    await expect
-      .poll(() => watcher.settingsSignals(), eventually)
-      .toBeGreaterThan(0);
+    expect((await watcher.received()).settingsSignals).toBeGreaterThan(0);
     watcher.close();
 
     const off = await t.request("PUT", "/api/providers/isolation", {

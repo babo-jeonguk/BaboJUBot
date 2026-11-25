@@ -481,11 +481,12 @@ describe("Lead conversation", () => {
     ]);
     expect(messages[1]!.body).toContain("연구 목표를 정하고 싶어요");
 
-    const types = stream.events.map((e) => e.type);
+    const { events } = await stream.received();
+    const types = events.map((e) => e.type);
     expect(types[0]).toBe("message.created");
     expect(types).toContain("run.started");
     expect(types.at(-1)).toBe("run.finished");
-    expect(stream.events).toContainEqual(
+    expect(events).toContainEqual(
       expect.objectContaining({
         type: "message.created",
         payload: {
