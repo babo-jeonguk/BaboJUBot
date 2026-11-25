@@ -11,7 +11,7 @@ import {
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
-import { ownedClosable } from "@babojubot/process/test-cleanup";
+import { endClosable, ownedClosable } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 import {
   refusing,
@@ -119,10 +119,9 @@ function openTunnel(directory: string, target: string) {
     "the CONNECT request"
   );
   let tunnel: { socket: net.Socket; closed: () => Promise<void> } | undefined;
+  // 터널은 CONNECT의 답과 함께 생기므로 정리는 지금 등록하고, 터널이 생겼으면 같은 공용 판정(`endClosable`)으로 끊고 닫힘을 본다.
   onTestFinished(async () => {
-    if (!tunnel) return;
-    tunnel.socket.destroy();
-    await within(tunnel.closed(), 5_000, "the tunnel did not close");
+    if (tunnel) await endClosable(tunnel.socket, tunnel.closed(), "the tunnel");
   });
   return within(
     new Promise<{
@@ -1173,12 +1172,14 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const first = relays.open({ identity, required: [] });
     const second = relays.open({ identity, required: [] });
     await Promise.all([first.ready, second.ready]);
+    // hub의 닫기는 남은 중계만 닫으므로, 정리에는 시험이 부른 그 닫기를 넘긴다(부르기 전에 실패했으면 정리가 처음 부른다).
+    let hubClosing: Promise<void> | undefined;
     failCloses(
-      () => relays.close(),
+      () => (hubClosing ??= relays.close()),
       socketOf(first, relaySockets.egress),
       socketOf(second, relaySockets.egress)
     );
-    const failure = await relays.close().then(
+    const failure = await (hubClosing = relays.close()).then(
       () => undefined,
       (error: unknown) => error
     );

@@ -447,8 +447,11 @@ export function startProcess(options: {
                     limit = clock.setTimeout(
                       () =>
                         reject(
-                          new Error(
-                            `the output did not close within ${outputCloseLimitMs} ms`
+                          Object.assign(
+                            new Error(
+                              `the output did not close within ${outputCloseLimitMs} ms`
+                            ),
+                            { code: "output_not_closed" }
                           )
                         ),
                       outputCloseLimitMs

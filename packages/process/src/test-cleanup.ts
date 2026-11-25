@@ -191,11 +191,23 @@ export function ownedClosable<T extends Closable>(
   const closed = new Promise<void>((resolve) =>
     resource.once("close", () => resolve())
   );
-  own(async () => {
-    resource.destroy();
-    await within(closed, closeMs, `${what} did not close`);
-  });
+  own(() => endClosable(resource, closed, what, closeMs));
   return resource;
+}
+
+/**
+ * 자원을 끊고(`destroy`) 그 닫힘(`closed`, 자원을 얻은 순간부터 들은 것)을 상한 안에서 확인한다. 닫히지 않으면 `what`과 상한으로
+ * 실패한다. `ownedClosable`의 정리가 이것이고, 자원을 나중에 얻는 정리(먼저 등록하고, 자원이 생겼으면 끊음: CONNECT 터널)도 이것을
+ * 쓴다. `closed`가 끊김 밖의 오류로 거절하면 그 오류로 실패한다.
+ */
+export async function endClosable(
+  resource: { destroy(): unknown },
+  closed: Promise<void>,
+  what: string,
+  closeMs = closableCloseMs
+): Promise<void> {
+  resource.destroy();
+  await within(closed, closeMs, `${what} did not close`);
 }
 
 /** `ownedListener`가 듣기를 기다리는 상한. */
@@ -235,16 +247,23 @@ export async function ownedListener<S extends net.Server>(
     );
   };
   own(close);
-  await within(
-    new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(at, () => {
-        server.off("error", reject);
-        resolve();
-      });
-    }),
-    listenerListenMs,
-    `${what} did not start listening`
-  );
+  try {
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(at, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      }),
+      listenerListenMs,
+      `${what} did not start listening`
+    );
+  } catch (error) {
+    // 상한이 기다림만 끝내면 진행 중인 듣기가 나중에 끝나 서버가 남는다(그때 맡긴 닫기는 이미 "닫을 것 없음"으로 끝났을 수 있다).
+    // 듣기가 끝나는 즉시 닫는다.
+    if (!server.listening) server.once("listening", () => server.close());
+    throw error;
+  }
   return { server, close };
 }

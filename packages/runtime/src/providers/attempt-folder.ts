@@ -38,6 +38,11 @@ export function attemptFolder(folder: string, about: About) {
           const removed = await inFolder(folder, [], (inside) =>
             rm(inside.at(name), { force: true })
           );
+          // 우리가 만든 폴더가 그 자리에 없으면(옮겨짐) 사본을 지웠다는 확인이 아니다. 확인할 수 없는 칸과 함께 실패로 센다.
+          if (removed.state === "absent")
+            throw Object.assign(new Error("the attempt folder is gone"), {
+              code: "folder_absent",
+            });
           if (removed.state === "unverifiable")
             throw Object.assign(
               new Error(`the attempt folder could not be checked`),

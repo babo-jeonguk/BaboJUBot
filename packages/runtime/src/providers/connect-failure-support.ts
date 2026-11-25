@@ -2,7 +2,7 @@ import type * as httpModule from "node:http";
 import type * as netModule from "node:net";
 import path from "node:path";
 import { vi } from "vitest";
-import { attemptAll } from "@babojubot/contracts";
+import { attemptAll, hasErrorCode } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { within } from "@babojubot/process/test-support";
 
@@ -174,11 +174,35 @@ export function failingHttp(real: typeof httpModule, net: typeof netModule) {
 }
 
 /**
+ * 대역이 실패시킨 닫기(`code`)만으로 난 중계 닫기의 거절인가: 중계의 "폴더를 남김"(`relay_folder_kept`) 거절이고 그 원인의 서버 실패가
+ * 모두 `code`다. 여러 중계를 함께 닫은 거절(AggregateError)은 그 하나하나가 그래야 한다. 그 밖의 모양은 대역과 무관한 실패다.
+ */
+function keptByDouble(failure: unknown, code: string): boolean {
+  if (failure instanceof AggregateError)
+    return (
+      failure.errors.length > 0 &&
+      failure.errors.every((each) => keptByDouble(each, code))
+    );
+  if (
+    !(failure instanceof Error) ||
+    !hasErrorCode("relay_folder_kept")(failure)
+  )
+    return false;
+  const servers =
+    failure.cause instanceof AggregateError
+      ? failure.cause.errors
+      : [failure.cause];
+  return servers.length > 0 && servers.every(hasErrorCode(code));
+}
+
+/**
  * `at`에 맞는 중계 서버의 닫기가 실패를 알리게 하고(`serverFaults.close`, 서버는 실제로 닫힌다), 그 실패로 중계가 남긴 폴더를
- * 정리(`own`)에 맡긴다. `closing`은 그 중계들의 닫기 전부가 끝나는 promise를 돌려준다(중계의 `close`는 한 번이라 시험이 이미 닫았으면
- * 그 결과, 실행 시도·확인이 닫으면 그 끝). 정리는 그것이 끝나기를 상한 안에서 기다린 뒤, 대역이 실패를 알린 주소의 폴더만 지운다.
- * 닫기가 거절했는데 대역이 실패시킨 닫기가 하나도 없으면(시험이 닫기 전에 실패해 대역이 풀린 뒤의 실제 닫기 실패 등) 그 거절을 던지고
- * 아무것도 지우지 않는다. 대역이 실패를 알린 주소(`failedAt`)를 돌려준다. 시험마다 비우는 `failedClose`와 달리 정리 때까지 남는다.
+ * 정리(`own`)에 맡긴다. `closing`은 그 중계들의 닫기 전부가 끝나는 promise를 돌려준다(시험이 이미 시작한 닫기면 그 promise를 그대로:
+ * 중계의 `close`는 한 번이라 다시 불러도 같은 결과지만, hub의 `close`는 남은 중계만 닫으므로 시험이 부른 것을 넘긴다).
+ * 정리는 그 닫기가 끝나기를 상한 안에서 기다린다. 상한을 넘기면 서버가 남았을 수 있으므로 지우지 않고 그 이유로 실패한다. 닫기가
+ * 대역이 실패시킨 닫기만으로 거절했을 때만(`keptByDouble`) 대역이 실패를 알린 주소의 폴더를 지운다. 대역과 무관한 거절은 던지고
+ * 지우지 않는다. 대역이 실패를 알렸는데 닫기가 이행했다면 맞지 않으므로 던진다. 대역이 실패를 알린 주소(`failedAt`)를 돌려준다.
+ * 시험마다 비우는 `failedClose`와 달리 정리 때까지 남는다.
  */
 export function failingRelayCloses(
   own: (step: () => Promise<void>) => void,
@@ -193,15 +217,23 @@ export function failingRelayCloses(
     failed: (address) => failedAt.push(address),
   };
   own(async () => {
-    const failure = await within(
-      closing(),
+    const ended = await within(
+      closing().then(
+        () => ({ failure: undefined }),
+        (failure: unknown) => ({ failure })
+      ),
       10_000,
       "the relays did not close"
-    ).then(
-      () => undefined,
-      (error: unknown) => error
     );
-    if (failure !== undefined && failedAt.length === 0) throw failure;
+    if (ended.failure === undefined) {
+      if (failedAt.length > 0)
+        throw new Error(
+          `the relay close succeeded although the double failed ${failedAt.join(", ")}`
+        );
+      return;
+    }
+    if (failedAt.length === 0 || !keptByDouble(ended.failure, code))
+      throw ended.failure;
     await attemptAll(
       failedAt.map((address) => () => removeFolder(path.dirname(address)))
     );
