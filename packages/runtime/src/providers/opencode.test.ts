@@ -1,8 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
 import { readFile, stat, writeFile } from "node:fs/promises";
+import http from "node:http";
 import path from "node:path";
 import { describe, it, expect, onTestFinished, vi } from "vitest";
-import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
+import type { Clock } from "@babojubot/process";
+import { ownedListener } from "@babojubot/process/test-cleanup";
+import { manualClock, within } from "@babojubot/process/test-support";
+import {
+  activationPauseMs,
+  createOpenCodeProvider as unownedOpenCodeProvider,
+  pluginActivationMs,
+} from "./opencode.ts";
 import { request, saying } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -396,14 +404,21 @@ describe("one organization folder (#147)", () => {
 // 답한다(2.2.6 server/src/location.ts). 준비를 알리는 신호가 없어 adapter는 그 답만 상한 안에서 다시 묻는다(공식 Desktop 클라이언트와
 // 같은 선례). 그 밖의 실패 답은 바로 실패이고, 진단에는 HTTP 상태가 코드로 남는다(#298 조사: 그동안 `(Error)`로 접혔다).
 describe("plugins still activating (#286)", () => {
-  async function run(scene: { busy: number; body?: unknown }) {
+  type Scene = {
+    busy: number;
+    body?: unknown;
+    then?: "hold" | "endless-503";
+    notify?: string;
+  };
+  /** 실행을 시작한다. `asked`는 시뮬레이터가 받은 모델 목록 요청 수, `warned`는 지금까지의 경고다. */
+  async function start(scene: Scene, clock?: Clock) {
     const root = await folders.make("opencode-activating-");
     const file = path.join(root, "activating.json");
     await writeFile(file, JSON.stringify(scene));
     // 경고는 그대로 내보내고 기록만 한다.
     const warn = vi.spyOn(console, "warn");
     onTestFinished(() => warn.mockRestore());
-    const result = await createOpenCodeProvider({
+    const running = createOpenCodeProvider({
       dataDir: root,
       command: [
         process.execPath,
@@ -411,14 +426,23 @@ describe("plugins still activating (#286)", () => {
         "--plugins-activating",
         file,
       ],
+      ...(clock ? { clock } : {}),
     }).adapter.execute(request(), {
       signal: new AbortController().signal,
       emit: async () => {},
     });
-    const asked = (await readFile(file + ".asked", "utf8"))
-      .split("\n")
-      .filter(Boolean).length;
-    return { result, asked, warned: warn.mock.calls };
+    return {
+      running,
+      asked: async () =>
+        (await readFile(file + ".asked", "utf8")).split("\n").filter(Boolean)
+          .length,
+      warned: () => warn.mock.calls,
+    };
+  }
+  async function run(scene: Scene) {
+    const started = await start(scene);
+    const result = await started.running;
+    return { result, asked: await started.asked(), warned: started.warned() };
   }
 
   it("asks again while OpenCode's plugins are still activating, and runs once they are", async () => {
@@ -441,4 +465,99 @@ describe("plugins still activating (#286)", () => {
     expect(asked).toBe(1);
     expect(warned).toEqual([["[provider] the OpenCode run failed (HTTP_503)"]]);
   }, 30_000);
+
+  // 활성화 기다림 전체(다시 물을지 정하기·쉼·다시 묻기의 답·503 본문 판독)는 서버 주소 뒤 시한 하나를 함께 쓴다(#286 PR #299 외부 리뷰
+  // 1회차 SPEC-1). 시험 시계로 그 시한을 옮기고, 쉼이 걸린 것(시계에 쉼 타이머가 걸림)과 다시 묻기가 시뮬레이터에 닿은 것(알림)을 본
+  // 뒤에만 옮긴다.
+  /** 시험 시계. 활성화 쉼(`activationPauseMs`) 타이머가 걸릴 때마다 차례로 알린다(`pause(n)`: n번째 쉼이 걸렸다). */
+  function pausingClock() {
+    const clock = manualClock();
+    const pauses: PromiseWithResolvers<void>[] = [];
+    const nth = (index: number) => (pauses[index] ??= Promise.withResolvers());
+    let count = 0;
+    return {
+      ...clock,
+      setTimeout(callback: () => void, ms: number) {
+        const handle = clock.setTimeout(callback, ms);
+        if (ms === activationPauseMs) nth(count++).resolve();
+        return handle;
+      },
+      pause: (n: number) =>
+        within(nth(n - 1).promise, 10_000, `pause ${n} was not set`),
+    };
+  }
+  /** 시뮬레이터가 시한 전에 받은 다시 묻기를 알리는 loopback listener. `arrived`는 첫 알림이다. */
+  async function notifying() {
+    const arrived = Promise.withResolvers<void>();
+    const { server } = await ownedListener(
+      http.createServer((_req, res) => {
+        res.end();
+        arrived.resolve();
+      }),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the activation notice listener"
+    );
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error("the notice listener has no TCP address");
+    return {
+      url: `http://127.0.0.1:${address.port}/`,
+      arrived: () =>
+        within(arrived.promise, 10_000, "the asking again did not arrive"),
+    };
+  }
+  const notActivated = [
+    ["[provider] the OpenCode run failed (plugins_not_activated)"],
+  ];
+
+  it.each([
+    ["still activating", 99],
+    ["ready only after it", 2],
+  ])(
+    "does not ask again once a pause passes the activation deadline (%s)",
+    async (_name, busy) => {
+      const clock = pausingClock();
+      const started = await start({ busy }, clock);
+      await clock.pause(1);
+      // 첫 쉼이 끝나 다시 묻고, 그 답(활성화 중)이 시한 반 쉼 전에 와 둘째 쉼이 시한을 넘긴다.
+      clock.advance(pluginActivationMs - activationPauseMs / 2);
+      await clock.pause(2);
+      clock.advance(activationPauseMs);
+      const result = await within(
+        started.running,
+        10_000,
+        "the run did not end"
+      );
+      expect(result.stopReason).toBe("failed");
+      expect(await started.asked()).toBe(2);
+      expect(started.warned()).toEqual(notActivated);
+    },
+    30_000
+  );
+
+  it.each([
+    ["is not answered", "hold"],
+    ["answers with a body that never ends", "endless-503"],
+  ] as const)(
+    "ends at the activation deadline when asking again %s",
+    async (_name, then) => {
+      const clock = pausingClock();
+      const notice = await notifying();
+      const started = await start({ busy: 1, then, notify: notice.url }, clock);
+      await clock.pause(1);
+      clock.advance(activationPauseMs);
+      await notice.arrived();
+      clock.advance(pluginActivationMs);
+      const result = await within(
+        started.running,
+        10_000,
+        "the run did not end"
+      );
+      expect(result.stopReason).toBe("failed");
+      expect(await started.asked()).toBe(2);
+      expect(started.warned()).toEqual(notActivated);
+    },
+    30_000
+  );
 });

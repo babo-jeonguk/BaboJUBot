@@ -1,7 +1,6 @@
 import { lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, lstat, open, rm, writeFile } from "node:fs/promises";
-import { setTimeout as pause } from "node:timers/promises";
 import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -33,7 +32,7 @@ import {
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
-import { TreeLaunchRefused } from "@babojubot/process";
+import { realClock, TreeLaunchRefused, type Clock } from "@babojubot/process";
 import {
   startProcess,
   probeTimeoutMs,
@@ -127,9 +126,24 @@ const pluginsActivating = (body: unknown) => {
  * 서버 주소를 받은 뒤 plugin 활성화를 기다리는 상한. 그 안에서는 "준비 중" 답만 다시 묻는다(공식 Desktop 클라이언트도 이 답에만 다시
  * 묻는다: client/src/service-probe.ts). 넘기면 그 답(HTTP 503)으로 실패한다.
  */
-const pluginActivationMs = 60_000;
+export const pluginActivationMs = 60_000;
 /** "준비 중" 답 뒤 다시 묻기 전의 쉼. 서버가 답하기 전에 이미 5초 기다리므로, 곧바로 답한 경우에도 연달아 묻지 않게만 한다. */
-const activationPauseMs = 1_000;
+export const activationPauseMs = 1_000;
+/** `clock`으로 `ms`를 쉰다. `signal`이 끝나면 타이머를 풀고 그 이유로 거절한다. */
+function pauseOn(clock: Clock, ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason as Error);
+    const stop = () => {
+      clock.clearTimeout(timer);
+      reject(signal.reason as Error);
+    };
+    const timer = clock.setTimeout(() => {
+      signal.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", stop, { once: true });
+  });
+}
 /** 서버 요청의 응답 제한. 모델 목록은 실제로 몇 초씩 걸린다. */
 const requestTimeoutMs = 60_000;
 /** 끼워 넣기 응답 제한. */
@@ -496,7 +510,10 @@ export function createOpenCodeProvider(options: {
   container?: ContainerSettings;
   /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
   relay?: { upstream?: string; verified?: boolean };
+  /** plugin 활성화 시한과 그 쉼을 재는 시계. 시험이 넣고, 제품은 실제 시계. 프로그램 시작·끄기 시한에는 쓰지 않는다. */
+  clock?: Clock;
 }): ProviderConnection {
+  const clock = options.clock ?? realClock;
   const connectionId = options.id ?? "opencode";
   const folders = connectionFolders(options.dataDir, connectionId);
   const home = folders.connection,
@@ -721,7 +738,7 @@ export function createOpenCodeProvider(options: {
           "Basic " + Buffer.from("opencode:" + password).toString("base64"),
         "content-type": "application/json",
       };
-      const activationUntil = Date.now() + pluginActivationMs;
+      const activationUntil = clock.now() + pluginActivationMs;
       const request = async (
         route: string,
         method = "GET",
@@ -756,10 +773,8 @@ export function createOpenCodeProvider(options: {
             )
           )
             throw new HttpFailure(503);
-          if (Date.now() >= activationUntil) throw new HttpFailure(503, true);
-          await pause(activationPauseMs, undefined, {
-            signal: lifetime.signal,
-          });
+          if (clock.now() >= activationUntil) throw new HttpFailure(503, true);
+          await pauseOn(clock, activationPauseMs, lifetime.signal);
         }
       };
       return {

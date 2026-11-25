@@ -1224,6 +1224,104 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect([first.url, second.url]).toEqual(["/one", "/two"]);
   });
 
+  // 닫기가 시작되면 중계는 새 서버를 만들지 않고, 이미 듣기를 시작한 서버는 듣기 시도가 끝난 뒤 닫는다(#286 PR #299 외부 리뷰
+  // 1회차 SPEC-2). 닫기 전에 요청했지만 `ready` 뒤에 이어진 획득, 닫기 시작 뒤의 획득, 듣기 시도 중의 닫기 모두 `relay_closed`로
+  // 거절되고 닫기는 듣는 서버를 남기지 않는다. 고치기 전 코드가 만든 loopback 서버는 이 시험의 정리가 닫는다.
+  /**
+   * 대역이 만든 서버 가운데 포트로 들은 것(중계의 loopback 서버)을 모아 돌려주고, 그 듣기가 시작될 때 `onListen`을 부른다. 시험이 끝날
+   * 때 아직 듣는 것이 있으면 받은 연결을 끊고 닫힘을 상한 안에서 확인한 뒤, 닫기 실패와 함께 "중계가 놓친 서버"로 실패한다.
+   */
+  const watchLoopback = (onListen: () => void = () => {}) => {
+    const servers: net.Server[] = [];
+    const loopbacks: { server: net.Server; sockets: Set<net.Socket> }[] = [];
+    serverFaults.listening = (address, server) => {
+      if (typeof address !== "number") return;
+      const sockets = new Set<net.Socket>();
+      server.on("connection", (socket: net.Socket) => {
+        sockets.add(socket);
+        socket.once("close", () => sockets.delete(socket));
+      });
+      servers.push(server);
+      loopbacks.push({ server, sockets });
+      onListen();
+    };
+    onTestFinished(() => {
+      const left = loopbacks.filter(({ server }) => server.listening);
+      return attemptAll(
+        [
+          ...left.map(({ server, sockets }) => () => {
+            for (const socket of sockets) socket.destroy();
+            return within(
+              new Promise<void>((resolve, reject) =>
+                server.close((error) => (error ? reject(error) : resolve()))
+              ),
+              5_000,
+              "a loopback server the relay left did not close"
+            );
+          }),
+          () => {
+            if (left.length > 0)
+              throw new Error(
+                `the relay left ${left.length} loopback server(s) listening`
+              );
+          },
+        ],
+        "the relay's loopback servers"
+      );
+    });
+    return servers;
+  };
+  const relayClosed = { code: "relay_closed" };
+
+  it.each([
+    ["asked before its close began and resumed after", "before"],
+    ["asked after its close began", "after"],
+  ] as const)(
+    "opens no inbound server once its close began (%s)",
+    async (_name, order) => {
+      const { relays } = hub();
+      const relay = relays.open({ identity, required: [], inbound: true });
+      await relay.ready;
+      const loopbacks = watchLoopback();
+      let origin: Promise<string>, closing: Promise<void>;
+      if (order === "before") {
+        origin = relay.inboundOrigin();
+        closing = relay.close();
+      } else {
+        closing = relay.close();
+        origin = relay.inboundOrigin();
+      }
+      await expect(origin).rejects.toMatchObject(relayClosed);
+      await closing;
+      expect(loopbacks).toEqual([]);
+      expect(existsSync(relay.directory)).toBe(false);
+    }
+  );
+
+  it("closes an inbound server only after its listening began, and gives no origin once its close began", async () => {
+    const { relays } = hub();
+    const relay = relays.open({ identity, required: [], inbound: true });
+    await relay.ready;
+    // 듣기가 불린 신호와 그때 시작한 닫기를 따로 기다린다(닫기 promise를 그대로 넘기면 신호가 닫기 끝을 따라간다).
+    const began = Promise.withResolvers<{ closing: Promise<void> }>();
+    // loopback 서버의 듣기는 주소 조회를 거쳐 다음 차례에 시작된다. 그 사이에 닫기를 시작한다.
+    const loopbacks = watchLoopback(() =>
+      began.resolve({ closing: relay.close() })
+    );
+    const origin = relay.inboundOrigin();
+    const { closing } = await within(
+      began.promise,
+      5_000,
+      "the inbound server did not listen"
+    );
+    await within(closing, 5_000, "the relay did not close");
+    await expect(
+      within(origin, 5_000, "the inbound origin did not end")
+    ).rejects.toMatchObject(relayClosed);
+    expect(loopbacks.map((server) => server.listening)).toEqual([false]);
+    expect(existsSync(relay.directory)).toBe(false);
+  });
+
   it("does not open a relay before the server attached its policy", () => {
     const relays = createRelayHub();
     expect(() => relays.open({ identity, required: [] })).toThrow();

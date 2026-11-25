@@ -50,6 +50,13 @@ export const serverFaults = {
     | undefined,
   /** 실패를 알린 닫기의 서버가 들은 주소. */
   failedClose: vi.fn<(address: string) => void>(),
+  /**
+   * 대역이 만든 서버가 실패시키지 않은 듣기를 시작한 직후(진짜 `listen`을 부른 같은 동기 구간) 그 첫 인수(주소·포트)와 서버로 부른다.
+   * 시험이 듣기 시도가 끝나기 전의 순간을 상태로 잡거나, 제품이 만든 서버를 시험의 정리에 맡길 때 쓴다. 제품의 `listen` 호출 안에서
+   * 불리므로 던지지 않는다(던지면 제품의 듣기 오류로 잡힌다).
+   */
+  listening: undefined as
+    ((address: unknown, server: netModule.Server) => void) | undefined,
 };
 
 export function resetRefusing() {
@@ -59,6 +66,7 @@ export function resetRefusing() {
   serverFaults.refusedListen.mockReset();
   serverFaults.close = undefined;
   serverFaults.failedClose.mockReset();
+  serverFaults.listening = undefined;
 }
 
 const codeError = (message: string, code: string) =>
@@ -81,7 +89,9 @@ function faultyServer(Base: typeof netModule.Server) {
         return this;
       }
       this.listenedAt = typeof address === "string" ? address : undefined;
-      return (super.listen as (...args: unknown[]) => this)(...args);
+      const listening = (super.listen as (...args: unknown[]) => this)(...args);
+      serverFaults.listening?.(address, this);
+      return listening;
     }
     override close(callback?: (error?: Error) => void) {
       const fault = serverFaults.close;
