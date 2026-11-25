@@ -350,6 +350,63 @@ const runsOf = async (orgId: string) =>
 const readinessOf = async (id: string) =>
   (await settings()).providers.find((p) => p.id === id)!.readiness;
 
+// 중계의 CONNECT 답은 손으로 읽거나 정규식으로 접지 않고 node:http가 읽은 그대로(상태·거부 이유 머리) 돌려준다(#298 외부 리뷰 3회차
+// SPEC-4). 실제 로컬 서버가 중계 소켓 자리에서 제품 중계와 같은 답을 보낸다. 200만 열림으로 읽으면 502(정책은 열었지만 목적지 연결 실패)와
+// 주소 확인이 아닌 이유의 403이 "막힘"으로 접혔다.
+describe("a CONNECT over the relay socket", () => {
+  /** `egress.sock` 자리에서 CONNECT마다 `answer`를 보내는 로컬 서버의 폴더. 서버와 폴더는 시험 정리에 맡긴다. */
+  async function answering(answer: string) {
+    const directory = await mkdtemp(path.join(tmpdir(), "babojubot-egress-"));
+    onTestFinished(() => removeFolder(directory));
+    const server = http.createServer();
+    server.on("connect", (_req, socket: net.Socket) => socket.end(answer));
+    await within(
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(path.join(directory, "egress.sock"), resolve);
+      }),
+      eventuallyMs,
+      "the stand-in relay socket did not start listening"
+    );
+    onTestFinished(() =>
+      within(
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        ),
+        eventuallyMs,
+        "the stand-in relay socket did not close"
+      )
+    );
+    return directory;
+  }
+
+  it.each([
+    {
+      answered: "502 after the policy opened the destination",
+      answer:
+        "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      expected: { status: 502, refusal: undefined },
+    },
+    {
+      answered: "403 for a reason other than the address check",
+      answer:
+        "HTTP/1.1 403 Forbidden\r\nX-BaboJUBot-Refusal: policy_unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+      expected: { status: 403, refusal: "policy_unavailable" },
+    },
+  ])(
+    "hands back the relay's answer as it was when it answered $answered",
+    async ({ answer, expected }) => {
+      const directory = await answering(answer);
+      const { socket, ...answered } = await connectOver(
+        directory,
+        "example.invalid:443"
+      );
+      socket.destroy();
+      expect(answered).toEqual(expected);
+    }
+  );
+});
+
 describe("isolated runs", () => {
   it("runs real connections in a container whose organization tools go only through that run's relay, not the user API", async () => {
     const fake = fakeDocker();
