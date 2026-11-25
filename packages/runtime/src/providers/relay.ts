@@ -324,24 +324,33 @@ export function createRelayHub(): RelayHub {
   });
 
   /**
-   * 다시 볼 때의 지금 규칙. 모름을 허용으로 바꾸지 않는다: 연구 목록을 읽지 못하면 필수 목적지만, 보호 포트를 읽지 못하면 이 컴퓨터의
-   * 모든 포트를 보호한다("all").
+   * 다시 볼 때의 지금 규칙과, 그 규칙으로 닫는 연결을 알릴 이유. 모름을 허용으로 바꾸지 않는다: 연구 목록을 읽지 못하면 필수 목적지만,
+   * 보호 포트를 읽지 못하면 이 컴퓨터의 모든 포트를 보호한다("all"). 한 칸이라도 읽지 못했으면 닫는 이유는 정책을 확인하지 못함
+   * (`policy_unavailable`), 다 읽었으면 정책이 바뀜(`policy_changed`)이다.
    */
-  const currentRules = async (relay: Relay): Promise<EgressRules> => {
+  const currentRules = async (
+    relay: Relay
+  ): Promise<{ rules: EgressRules; closing: EgressRefusal }> => {
     const policy = await policyOf(relay);
-    return rulesFor(
-      relay,
-      policy.research === "unreadable" ? [] : policy.research,
-      policy.protectedPorts === "unreadable" ? "all" : policy.protectedPorts
-    );
+    const unreadable =
+      policy.research === "unreadable" ||
+      policy.protectedPorts === "unreadable";
+    return {
+      rules: rulesFor(
+        relay,
+        policy.research === "unreadable" ? [] : policy.research,
+        policy.protectedPorts === "unreadable" ? "all" : policy.protectedPorts
+      ),
+      closing: unreadable ? "policy_unavailable" : "policy_changed",
+    };
   };
 
-  /** 열린 연결 하나를 지금 규칙에 맞지 않아 회수한다. 소켓을 닫고 이유를 알린다. */
-  const revoke = (relay: Relay, tunnel: Tunnel) => {
+  /** 열린 연결 하나를 지금 규칙에 맞지 않아 회수한다. 소켓을 닫고 이유(`currentRules`의 `closing`)를 알린다. */
+  const revoke = (relay: Relay, tunnel: Tunnel, reason: EgressRefusal) => {
     relay.tunnels.delete(tunnel);
     tunnel.cancel?.();
     for (const socket of tunnel.sockets) socket.destroy();
-    refuse(relay, tunnel.host, tunnel.port, "policy_changed");
+    refuse(relay, tunnel.host, tunnel.port, reason);
   };
 
   /**
@@ -376,11 +385,12 @@ export function createRelayHub(): RelayHub {
             relay.hold(net.connect({ host: address, port }))
           ),
         undefined,
+        // 닫기 때문인 실패는 경고하지 않는다(그 획득은 `acquire`가 닫기의 이유로 거절한다).
         (error) => {
-          if (relay.closedBy(error)) throw error;
-          console.warn(
-            `[provider] the relay could not connect to an allowed destination; it answered 502 (${failureCode(error)})`
-          );
+          if (!relay.closedBy(error))
+            console.warn(
+              `[provider] the relay could not connect to an allowed destination; it answered 502 (${failureCode(error)})`
+            );
         }
       );
       return { dialed };
@@ -432,8 +442,11 @@ export function createRelayHub(): RelayHub {
         client.on("close", end);
         // 판정 뒤 정책이 바뀌었으면 이미 등록한 연결도 새 규칙으로 다시 본다.
         if (relay.revision !== revision) {
+          const { rules, closing } = await relay.whileOpen(() =>
+            currentRules(relay)
+          );
           const ok = allowsConnection(
-            await relay.whileOpen(() => currentRules(relay)),
+            rules,
             tunnel.host,
             tunnel.port,
             tunnel.address
@@ -441,9 +454,9 @@ export function createRelayHub(): RelayHub {
           if (!relay.tunnels.has(tunnel)) return;
           if (!ok) {
             relay.tunnels.delete(tunnel);
-            refuse(relay, tunnel.host, tunnel.port, "policy_changed");
+            refuse(relay, tunnel.host, tunnel.port, closing);
             upstream.destroy();
-            client.end(refusalHead("policy_changed"));
+            client.end(refusalHead(closing));
             return;
           }
         }
@@ -489,8 +502,11 @@ export function createRelayHub(): RelayHub {
         socket.once("close", done);
         // 판정 뒤 정책이 바뀌었으면 이미 등록한 연결도 새 규칙으로 다시 본다.
         if (relay.revision !== revision) {
+          const { rules, closing } = await relay.whileOpen(() =>
+            currentRules(relay)
+          );
           const ok = allowsConnection(
-            await relay.whileOpen(() => currentRules(relay)),
+            rules,
             tunnel.host,
             tunnel.port,
             tunnel.address
@@ -501,10 +517,10 @@ export function createRelayHub(): RelayHub {
           }
           if (!ok) {
             relay.tunnels.delete(tunnel);
-            refuse(relay, host, port, "policy_changed");
+            refuse(relay, host, port, closing);
             socket.destroy();
             if (!res.headersSent) {
-              respondRefusal(res, "policy_changed");
+              respondRefusal(res, closing);
             }
             return;
           }
@@ -869,7 +885,9 @@ export function createRelayHub(): RelayHub {
             ifOpen(relay, async () => {
               // 정책을 다시 보기 시작했음을 먼저 알린다. 판정 중이던 연결도 이 값을 보고 새 규칙으로 다시 본다.
               relay.revision++;
-              const rules = await relay.whileOpen(() => currentRules(relay));
+              const { rules, closing } = await relay.whileOpen(() =>
+                currentRules(relay)
+              );
               for (const tunnel of [...relay.tunnels]) {
                 if (
                   !allowsConnection(
@@ -879,7 +897,7 @@ export function createRelayHub(): RelayHub {
                     tunnel.address
                   )
                 )
-                  revoke(relay, tunnel);
+                  revoke(relay, tunnel, closing);
               }
             })
           )
