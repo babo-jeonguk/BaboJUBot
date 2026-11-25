@@ -305,10 +305,11 @@ it("stops a process it recorded itself", async () => {
   });
   // 시험이 어디서 끝나든 트리를 끈다(launchTree의 stop()은 끝을 그룹·표식·묶음으로 확인한다). 다만 복구가 실행기를 이미 끝냈고
   // 그 끝을 시험이 본 뒤에는 부르지 않는다: 밖에서 끝난 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보).
+  // 트리의 기록은 시험 폴더에 있으므로, 폴더 정리가 트리의 끝을 확인한 뒤에만 그 폴더를 지운다.
   let supervisorEnded = false;
-  onTestFinished(async () => {
+  folders.own(async () => {
     if (!supervisorEnded) await tree.stop();
-  });
+  }, "the recorded tree");
   expect((await tree.started).kind).toBe("running");
   const file = path.join(home, "processes", `${tree.pid}.json`);
   recordProcess(home, {

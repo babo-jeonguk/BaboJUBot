@@ -382,14 +382,14 @@ describe("agent names", () => {
 
     const name = `dedupe_${randomUUID().replaceAll("-", "")}`;
     await t.db.execute(sql.raw(`create database ${name}`));
-    onTestFinished(async () => {
-      await t.db.execute(sql.raw(`drop database ${name}`));
-    });
     const url = new URL(t.url);
     url.pathname = `/${name}`;
+    // 풀은 만들 때 연결하지 않는다. 정리는 연결을 닫은 뒤에만 그 DB를 지운다(한 정리 안의 차례). 닫지 못하면 DB를 남기고 실패한다.
     const pool = new pg.Pool({ connectionString: url.toString() });
-    // 연결을 닫은 뒤에 그 DB를 지운다.
-    onTestFinished(() => pool.end());
+    onTestFinished(async () => {
+      await pool.end();
+      await t.db.execute(sql.raw(`drop database ${name}`));
+    });
     const db = drizzle(pool);
     await migrate(db, { migrationsFolder: before });
     const orgA = randomUUID();
