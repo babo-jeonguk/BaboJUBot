@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   destinationSchema,
   egressRefusalMessages,
+  hasErrorCode,
   isDisconnect,
   type Destination,
   type EgressRefusal,
@@ -1101,11 +1102,26 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     };
   };
   /**
-   * 닫기에 실패한 중계가 남긴 폴더. 중계는 서버가 닫혔음을 확인하지 못하면 폴더를 지우지 않으므로, 시험이 확인한 뒤 지운다(대역의
-   * 서버는 실제로 닫혔다). 중계를 연 직후 맡긴다.
+   * 닫기에 실패한 중계가 남긴 폴더. 중계를 연 직후 맡긴다. 정리는 먼저 그 중계의 닫기를 받는다(닫기는 한 번이라 시험이 이미 닫았으면
+   * 그 결과다). 시험이 닫기 전에 실패했으면 대역이 풀린 뒤라 실제 닫기가 폴더까지 지운다. 대역이 실패시킨 닫기(EBUSY)만 받아들이고 그
+   * 폴더를 지운다(대역의 서버는 실제로 닫혔다). 그 밖의 닫기 실패는 서버가 남았을 수 있으므로 지우지 않고 던진다.
    */
-  const removeAfter = (relay: { directory: string }) =>
-    onTestFinished(() => removeFolder(relay.directory));
+  const removeAfter = (relay: {
+    directory: string;
+    close: () => Promise<void>;
+  }) =>
+    onTestFinished(async () => {
+      const failure = await relay.close().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      if (
+        failure !== undefined &&
+        !(failure instanceof Error && hasErrorCode("EBUSY")(failure.cause))
+      )
+        throw failure;
+      await removeFolder(relay.directory);
+    });
 
   // 닫기 콜백의 실패는 거절로 드러낸다(CODING_STANDARDS.md#제품-코드). 서버가 닫혔음을 확인하지 못했으므로 그 소켓 파일이 있는 폴더도
   // 지우지 않고 남긴다(#297 자원 표, 닫힘 확인 뒤에만 지우기). 실패 원인은 닫기의 거절에 남는다.
