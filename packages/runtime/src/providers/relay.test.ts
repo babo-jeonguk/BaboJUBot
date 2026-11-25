@@ -12,7 +12,11 @@ import {
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
-import { ownedClosable, ownedListener } from "@babojubot/process/test-cleanup";
+import {
+  ownClosable,
+  ownedClosable,
+  ownedListener,
+} from "@babojubot/process/test-cleanup";
 import { ownedConnect } from "@babojubot/process/testing";
 import { within } from "@babojubot/process/test-support";
 import {
@@ -1401,15 +1405,16 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     refusing.holdConnect = { port };
     return port;
   };
-  /** egress.sock에 CONNECT나 절대 주소 GET의 머리를 쓰는 연결. 만든 직후 정리에 맡긴다. */
+  /** egress.sock에 CONNECT나 절대 주소 GET의 머리를 쓰는 연결. 만든 직후 정리에 맡기고, 만든 순간부터 들은 닫힘을 돌려준다. */
   const ask = (
     relay: { directory: string },
     kind: (typeof kinds)[number],
     authority: string
   ) => {
-    const socket = ownedClosable(
+    const socket = net.connect(socketOf(relay, relaySockets.egress));
+    const { closed } = ownClosable(
       onTestFinished,
-      net.connect(socketOf(relay, relaySockets.egress)),
+      socket,
       `the ${kind} request to the relay`
     );
     socket.on("error", (error) => {
@@ -1422,6 +1427,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
           : `GET http://${authority}/ HTTP/1.1\r\nHost: ${authority}\r\n\r\n`
       )
     );
+    return { closed };
   };
   /** 정책 조회를 gate로 붙잡는 hub. 대역의 reset으로 풀리면 조회 실패로 던진다(중계는 연결 없이 거부한다). */
   const heldLookupHub = (allowed: Destination[]) => {
@@ -1570,6 +1576,162 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     lookup.open();
     await within(closing, 5_000, "the relay did not close");
     expect(nameFaults.looked).not.toHaveBeenCalled();
+  });
+
+  // hub 닫기는 모든 중계의 닫기를 같은 동기 구간에서 먼저 시작한 뒤 정책을 뗀다(#286 PR #299 외부 리뷰 2회차 대응, 감독 결정).
+  // 고치기 전에는 정책을 먼저 떼고 중계를 하나씩 닫아, 앞 중계를 닫는 사이 뒤 중계가 받은 요청이 떼어진 정책을 만났다. 앞 중계의
+  // 닫기를 붙잡아 그 순간을 상태로 만든다.
+  /** 먼저 연 중계의 egress 서버 닫기를 붙잡는다. 붙잡힌 것을 알리는 `caught`와 놓는 gate를 돌려준다. */
+  const holdFirstClose = (first: { directory: string }) => {
+    const held = gate();
+    const caught = Promise.withResolvers<void>();
+    serverFaults.heldClose.mockImplementation(() => caught.resolve());
+    serverFaults.holdClose = {
+      at: (address) => address === socketOf(first, relaySockets.egress),
+      held,
+    };
+    return {
+      held,
+      caught: () =>
+        within(caught.promise, 5_000, "the first relay's close was not held"),
+    };
+  };
+
+  it("starts every relay's close before it detaches the policy, so a tools request meets no detached policy", async () => {
+    const { relays } = hub();
+    const first = relays.open({ identity, required: [] });
+    const second = relays.open({ identity, required: [] });
+    await Promise.all([first.ready, second.ready]);
+    const tools = net.connect(socketOf(second, relaySockets.tools));
+    const { closed } = ownClosable(
+      onTestFinished,
+      tools,
+      "the tools connection to the second relay"
+    );
+    tools.on("error", (error) => {
+      if (!isDisconnect(error)) throw error;
+    });
+    const received = vi.fn();
+    tools.on("data", received);
+    await within(
+      new Promise<void>((resolve) => tools.once("connect", () => resolve())),
+      5_000,
+      "the tools connection did not connect"
+    );
+    const { held, caught } = holdFirstClose(first);
+    const closing = relays.close();
+    await caught();
+    tools.write("GET /api/tools/mcp HTTP/1.1\r\nHost: tools\r\n\r\n");
+    await within(
+      closed,
+      5_000,
+      "the second relay did not drop its tools connection"
+    );
+    expect(received).not.toHaveBeenCalled();
+    held.open();
+    await within(closing, 5_000, "the hub did not close");
+  });
+
+  // 같은 창에서 정책 조회가 끝난 연결이 떼어진 정책의 보호 포트(빈 목록)로 판정되어 이 컴퓨터의 보호 포트에 붙었다. 고친 뒤에는 hub
+  // 닫기가 시작될 때 그 중계가 끊겨 연결이 닫힌다(연결 시작보다 먼저).
+  it("starts no connection to a protected port from a policy lookup that ends while the hub closes", async () => {
+    const port = await heldDestination();
+    const lookup = gate();
+    const asked = Promise.withResolvers<void>();
+    const { relays } = hub({
+      research: async () => {
+        asked.resolve();
+        if ((await lookup.until) === "reset")
+          throw new Error(
+            "the held policy lookup was given up at the double's reset"
+          );
+        return [
+          destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
+        ];
+      },
+      protectedPorts: () => [port],
+    });
+    const first = relays.open({ identity, required: [] });
+    const second = relays.open({ identity, required: [] });
+    await Promise.all([first.ready, second.ready]);
+    const dialed = Promise.withResolvers<void>();
+    refusing.heldConnect.mockImplementation(() => dialed.resolve());
+    const { closed } = ask(second, "CONNECT", `127.0.0.1:${port}`);
+    await within(asked.promise, 5_000, "the relay did not look up its policy");
+    const { held, caught } = holdFirstClose(first);
+    const closing = relays.close();
+    await caught();
+    lookup.open();
+    await within(
+      Promise.race([dialed.promise, closed]),
+      5_000,
+      "the CONNECT neither reached the destination nor closed"
+    );
+    expect(refusing.heldConnect).not.toHaveBeenCalled();
+    held.open();
+    await within(closing, 5_000, "the hub did not close");
+  });
+
+  // 보호 포트를 읽지 못하면 정책을 모르는 것이다. 새 연결은 열지 않는다(연구 목록을 못 읽을 때와 같이). 고치기 전에는 규칙 계산의
+  // 예외가 처리되지 않은 거절로 새어 답이 없었다.
+  it("refuses a connection while the protected ports cannot be read", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const port = await heldDestination();
+    const { relays, setResearch } = hub({
+      protectedPorts: () => {
+        throw new Error("protected ports down");
+      },
+    });
+    setResearch([
+      destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    expect(await answerVia(relay.directory, `127.0.0.1:${port}`)).toBe(
+      refusal("policy_unavailable")
+    );
+    expect(refusing.heldConnect).not.toHaveBeenCalled();
+    expect(warned.mock.calls).toEqual([
+      ["[provider] the protected ports could not be read (Error)"],
+    ]);
+  });
+
+  // 정책을 다시 볼 때 보호 포트를 읽지 못하면 이 컴퓨터의 모든 포트를 보호하는 것으로 본다(모름을 허용으로 바꾸지 않음). 고치기 전에는
+  // 다시 보기가 던져 이 컴퓨터로 간 연결이 그대로 남았다.
+  it("closes a connection to this computer when the protected ports cannot be read on a revalidation", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const target = await fixture("echo");
+    let ports = (): number[] => [];
+    const { relays, refused } = hub({ protectedPorts: () => ports() });
+    const relay = relays.open({
+      identity,
+      required: [
+        destination({
+          host: "localhost",
+          port: target.port,
+          addresses: ["127.0.0.1", "::1"],
+        }),
+      ],
+    });
+    await relay.ready;
+    const tunnel = await openTunnel(
+      relay.directory,
+      `localhost:${target.port}`
+    );
+    expectEstablished(tunnel);
+    ports = () => {
+      throw new Error("protected ports down");
+    };
+    await relays.revalidate(identity.organizationId);
+    await tunnelClosed(tunnel);
+    expect(refused).toEqual([
+      { host: "localhost", port: target.port, reason: "policy_changed" },
+    ]);
+    expect(warned.mock.calls).toEqual([
+      ["[provider] the protected ports could not be read (Error)"],
+    ]);
   });
 
   it("does not open a relay before the server attached its policy", () => {
