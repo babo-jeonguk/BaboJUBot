@@ -23,6 +23,7 @@ import {
   startTestServer,
   within,
   type TestServer,
+  heldOrEnded,
 } from "./support.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
@@ -150,16 +151,7 @@ describe("concurrent global settings writes", () => {
           )
         );
         // 행을 잡기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
-        await within(
-          Promise.race([
-            locked.reached,
-            blocker.then(() => {
-              throw new Error("the row hold ended before it held the row");
-            }),
-          ]),
-          eventuallyMs,
-          "the row hold did not hold the row"
-        );
+        await heldOrEnded(locked.reached, blocker, "the row hold");
         changing = t!.request("PUT", "/api/providers/defaults", replacement);
         // 첫 PUT이 lead를 잡고 worker를 기다리면, 두 번째 PUT은 lead를 기다린다.
         await waitForSettingsWriters(1);
@@ -218,16 +210,7 @@ describe("concurrent global settings writes", () => {
         )
       );
       // insert하기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
-      await within(
-        Promise.race([
-          inserted.reached,
-          inserting.then(() => {
-            throw new Error("the competing insert ended before it waited");
-          }),
-        ]),
-        eventuallyMs,
-        "the competing insert did not wait"
-      );
+      await heldOrEnded(inserted.reached, inserting, "the competing insert");
       saving = t!.request("PUT", "/api/providers/fake/limit", {
         maxConcurrentRuns: 2,
       });

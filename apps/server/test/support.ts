@@ -16,7 +16,7 @@ import {
   type StreamScope,
 } from "@babojubot/contracts";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
-import { vi } from "vitest";
+import { onTestFinished, vi } from "vitest";
 import { within } from "@babojubot/process/test-support";
 import WebSocket from "ws";
 import {
@@ -26,6 +26,7 @@ import {
 } from "../src/index.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
+import { ownHome } from "./product-home.ts";
 
 /**
  * 서버 작업·Event·준비 확인처럼 끝나는 신호가 오는 대기의 상한(#215). 신호가 오면 바로 끝나므로 넉넉해도 통과 시간은
@@ -48,6 +49,93 @@ export const readinessSettleMs = 100_000;
  * 무엇을 기다렸는지 알린다.
  */
 export const serverStopMs = 30_000;
+
+/** 시험이 띄운 서버(`startServer`의 결과)를 끄고 그 끝을 `serverStopMs` 안에서 기다린다. 넘기면 실패하고 끄기는 멈추지 않는다. */
+export const stopWithin = (server: { close(): Promise<void> }, what: string) =>
+  within(server.close(), serverStopMs, `stopping ${what} did not finish`);
+
+/**
+ * 시작에 실패한 서버가 자기 정리를 마쳤는지. 제품은 시작에 실패하면 연 것을 정리하고, 정리가 모두 끝났을 때만 원래 오류 하나로
+ * 거절하며, 정리가 실패하면 그 실패를 원래 오류 뒤에 묶어(`combinedFailure`, AggregateError) 거절한다(`app.ts` `startServer`). 묶인
+ * 거절이면 끝을 확인하지 못한 것이다(원래 오류가 처음부터 묶인 것이어서 가를 수 없을 때도 그렇게 본다, fail closed).
+ */
+export const failedStartEnded = (error: unknown) =>
+  !(error instanceof AggregateError);
+
+/**
+ * 시작 중인 서버(`starting`)를 곧바로 `own`(그 서버를 소유하는 정리)에 맡긴다. 맡긴 끝(`stop`)은 한 번만 돌고 같은 결과를 돌려준다:
+ * 시작이 끝나기를 `serverStopMs` 안에서 기다려(시작 자체에는 제품 상한이 없다), 넘겨받았으면 끄고(`stopWithin`), 거절됐으면 시작이 자기
+ * 정리를 마쳤는지 본다(`ended`, 기본 `failedStartEnded`). 확인하지 못하면 그 거절을 원인으로 실패한다(fail closed). 시험 본문이 중간에
+ * 끄려면 같은 `stop`을 부른다.
+ */
+export function ownStart<S extends { close(): Promise<void> }>(
+  own: (stop: () => Promise<void>) => void,
+  starting: Promise<S>,
+  what: string,
+  ended: (error: unknown) => boolean = failedStartEnded
+) {
+  let stopped: Promise<void> | undefined;
+  const stop = () =>
+    (stopped ??= (async () => {
+      const [outcome] = await within(
+        Promise.allSettled([starting]),
+        serverStopMs,
+        `the start of ${what} did not end`
+      );
+      if (outcome.status === "fulfilled")
+        return stopWithin(outcome.value, what);
+      if (!ended(outcome.reason))
+        throw new Error(
+          `cleaning up after the failed start of ${what} was not confirmed`,
+          { cause: outcome.reason }
+        );
+    })());
+  own(stop);
+  return { started: starting, stop };
+}
+
+/**
+ * 시험 DB를 닫고 그 끝을 상한 안에서 기다린다. 빌린 연결이 남아 있으면(그것을 쓰던 것의 끝을 확인하지 못한 경로) 닫기가 기다리므로
+ * 상한을 넘기면 실패한다(fail closed). 정상 경로에서는 DB를 쓰던 것이 모두 끝난 뒤에만 부르므로 기다릴 것이 없다.
+ */
+export const closeDatabase = (database: { close(): Promise<void> }) =>
+  within(
+    database.close(),
+    eventuallyMs,
+    "closing the test database did not finish"
+  );
+
+/**
+ * 시험이 붙잡아 둔 일(`work`)이 붙잡힌 자리(`held`)에 닿기를 상한 안에서 기다린다. 닿기 전에 `work`가 끝나면(성공이든 실패든) 붙잡힘을
+ * 확인하지 못한 것이므로 그 끝으로 실패한다(실패면 그 오류, 성공이면 끝났다는 오류).
+ */
+export const heldOrEnded = (
+  held: Promise<unknown>,
+  work: Promise<unknown>,
+  what: string
+) =>
+  within(
+    Promise.race([
+      held,
+      work.then(() => {
+        throw new Error(`${what} ended before it was held`);
+      }),
+    ]),
+    eventuallyMs,
+    `${what} was not held`
+  );
+
+/**
+ * 시험 서버의 정리를 모듈의 afterEach에서 이 시험의 정리로 넘긴다. 그 서버(DB와 작업 폴더)는 돌려준 정리(`folderCleanup`)에 맡긴 것
+ * (그 DB를 쓰는 다른 서버 등)이 모두 끝난 뒤에만 닫는다. 정리는 시험 정리와 파일의 제품 폴더 정리(`ownHome`) 둘 다에 같은 결과로 맡긴다:
+ * 그 DB를 쓰는 서버가 데이터 폴더 없이 뜨면 제품 폴더도 쓴다. 부른 쪽은 같은 동기 단계에서 모듈 변수를 비운다.
+ */
+export function handOver(server: TestServer) {
+  const users = folderCleanup(() => server.close());
+  onTestFinished(users.cleanUp);
+  ownHome(users.cleanUp);
+  return users;
+}
 
 /** 구독이 받은 것: Event frame과 전역 설정 변경 신호(`settings_changed`) 수. */
 export type Received = { events: Event[]; settingsSignals: number };
@@ -146,6 +234,19 @@ export async function startTestServer({
   const sockets = new Set<() => void>();
   /** 서버의 끝. 한 번만 하고, 끄기를 부른 쪽과 정리가 같은 결과를 기다린다. */
   let stopped: Promise<void> | undefined;
+  /** 서버를 끈다: 연 Event stream을 먼저 끊고(시험이 청한 닫힘) 한 번만 끈다(`stopWithin`). */
+  const stopOnce = (running: RunningServer) => {
+    for (const terminate of sockets) terminate();
+    return (stopped ??= stopWithin(running, "the test server"));
+  };
+  /** 서버의 끝을 확인한 뒤의 정리: DB를 닫고 이 helper가 만든 작업 폴더를 지운다. 둘은 서로 독립이라 모두 시도한다. */
+  const release = () =>
+    attemptAll([
+      () => closeDatabase(database),
+      async () => {
+        if (ownDataDir) await removeFolder(ownDataDir);
+      },
+    ]);
 
   const request: TestServer["request"] = async (
     method,
@@ -212,24 +313,16 @@ export async function startTestServer({
   } catch (error) {
     // 원래 실패를 그대로 알린다. 서버가 닫힌 것을 확인한 뒤에만 그 서버가 쓰는 DB와 폴더를 닫고 지운다. 확인하지 못하면 둘 다
     // 남긴다(`folderCleanup`). 치우기가 실패하면 그 실패를 원래 실패와 함께 알린다.
-    const dataDir = ownDataDir;
-    const closing = folderCleanup(() =>
-      attemptAll([
-        () => database.close(),
-        async () => {
-          if (dataDir) await removeFolder(dataDir);
-        },
-      ])
-    );
-    closing.own(
-      () =>
-        server &&
-        within(
-          server.close(),
-          serverStopMs,
-          "stopping the test server did not finish"
-        )
-    );
+    const closing = folderCleanup(release);
+    // 넘겨받은 서버는 끈다. 서버가 시작에 실패했으면(`server` 없음) 시작이 자기 정리를 마쳤는지 본다.
+    closing.own(() => {
+      if (server) return stopOnce(server);
+      if (!failedStartEnded(error))
+        throw new Error(
+          "cleaning up after the failed start of the test server was not confirmed",
+          { cause: error }
+        );
+    });
     const failures = await attemptEach([closing.cleanUp]);
     if (failures.length > 0)
       throw combinedFailure(
@@ -257,14 +350,7 @@ export async function startTestServer({
     tickCompactions: () => server.tickCompactions(),
     deliverNotifications: () => server.deliverNotifications(),
     stopProgress: () => server.progress(),
-    stopServer() {
-      for (const terminate of sockets) terminate();
-      return (stopped ??= within(
-        server.close(),
-        serverStopMs,
-        "stopping the test server did not finish"
-      ));
-    },
+    stopServer: () => stopOnce(server!),
     async subscribe(scope, { origin } = {}) {
       const query =
         scope.kind === "organization"
@@ -278,22 +364,8 @@ export async function startTestServer({
     },
     async close() {
       // 넘기기 전 실패의 정리와 같다. 서버의 끝(끄기를 이미 불렀으면 그 결과)을 확인한 뒤에만 DB와 폴더를 닫고 지운다.
-      const closing = folderCleanup(() =>
-        attemptAll([
-          () => database.close(),
-          async () => {
-            if (ownDataDir) await removeFolder(ownDataDir);
-          },
-        ])
-      );
-      closing.own(() => {
-        for (const terminate of sockets) terminate();
-        return (stopped ??= within(
-          server.close(),
-          serverStopMs,
-          "stopping the test server did not finish"
-        ));
-      });
+      const closing = folderCleanup(release);
+      closing.own(() => stopOnce(server!));
       await closing.cleanUp();
     },
   };

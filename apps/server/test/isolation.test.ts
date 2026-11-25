@@ -23,12 +23,14 @@ import {
 } from "@babojubot/runtime";
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { jsonBodyLimitBytes } from "../src/app.ts";
+import { startServer } from "../src/index.ts";
 import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import {
   eventually,
   eventuallyMs,
+  handOver,
   ownedListener,
-  serverStopMs,
+  ownStart,
   startTestServer,
   within,
   type TestServer,
@@ -80,34 +82,28 @@ describe("isolation switch", () => {
   });
 
   it("keeps the saved value across a server restart", async () => {
-    // 다시 띄운 서버의 폴더는 그 서버가 끝난 뒤에만 지운다. 시험 서버(DB)도 다시 띄운 서버가 끝난 뒤에만 닫는다: 다시 띄운 서버가
-    // 그 DB를 쓰기 때문이다. 둘을 이 폴더의 정리 한 단계에 차례로 둔다(앞이 실패하면 뒤를 하지 않고 폴더도 남긴다).
+    // 다시 띄운 서버의 폴더는 그 서버가 끝난 뒤에만 지운다(`folderCleanup`). 시험 서버(DB)는 다시 띄운 서버와 그 폴더의 정리가 끝난 뒤에만
+    // 닫는다(`handOver`): 다시 띄운 서버가 그 DB를 쓰기 때문이다.
     const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-isolation-"));
     const folder = folderCleanup(() => removeFolder(dataDir));
     onTestFinished(folder.cleanUp);
     t = await startTestServer({ providers: createFakeProviders(1) });
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await t.stopServer();
-    // 여기부터 시험 서버는 afterEach가 아니라 위 정리가 소유한다.
     const first = t;
+    const users = handOver(first);
     t = undefined;
-    const { startServer } = await import("../src/index.ts");
-    const restarted: { again?: Awaited<ReturnType<typeof startServer>> } = {};
-    folder.own(async () => {
-      if (restarted.again)
-        await within(
-          restarted.again.close(),
-          serverStopMs,
-          "stopping the restarted server did not finish"
-        );
-      await first.close();
-    });
-    const again = (restarted.again = await startServer({
-      db: first.db,
-      port: 0,
-      dataDir,
-      providers: createFakeProviders(1),
-    }));
+    users.own(folder.cleanUp);
+    const again = await ownStart(
+      folder.own,
+      startServer({
+        db: first.db,
+        port: 0,
+        dataDir,
+        providers: createFakeProviders(1),
+      }),
+      "the restarted server"
+    ).started;
     const res = await fetch(again.url + "/api/providers");
     expect(providerSettingsSchema.parse(await res.json()).isolated).toBe(true);
   });

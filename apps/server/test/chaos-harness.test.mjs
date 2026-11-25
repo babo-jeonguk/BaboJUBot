@@ -866,39 +866,50 @@ describe("chaos harness on a fake connection", () => {
     ).toBe(true);
   }, 120_000);
 
-  it("stops waiting for a server start when the scene is aborted", async () => {
-    // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 폴더는 만든 직후 정리에 맡기고, 서버를 끈 뒤에 지운다. 홈은 서버 정리(`dispose`)가
-    // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
-    const home = await withCleanup(async (defer) => {
-      const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
-      const folder = folderCleanup(() => removeFolder(harnessDir));
-      defer(folder.cleanUp);
-      const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
-      const server = chaosServer({
-        home,
-        harnessDir,
-        connection: "fake-live",
-        database: "persistent",
+  /**
+   * 장면 서버 정리(`dispose`)의 상한. 서버 트리 정지의 상한을 더한 값이다: SIGTERM 뒤 유예 30초(`scripts/live/chaos-server.mjs` `stop`
+   * 기본값) + 감독 실행기 정지 상한 20초(`supervisorStopLimitMs`) + 끝 확인 상한 10초(`endLimitMs`, 둘 다
+   * `packages/process/src/supervised.ts`). 남은 DB 정리는 서버가 끝난 뒤의 짧은 열고 닫기라 이 상한 안에 든다고 보고, 넘기면 무엇을
+   * 기다렸는지 알리고 폴더를 남긴다.
+   */
+  const disposeMs = 30_000 + 20_000 + 10_000;
+  it(
+    "stops waiting for a server start when the scene is aborted",
+    async () => {
+      // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 폴더는 만든 직후 정리에 맡기고, 서버를 끈 뒤에 지운다. 홈은 서버 정리(`dispose`)가
+      // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
+      const home = await withCleanup(async (defer) => {
+        const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
+        const folder = folderCleanup(() => removeFolder(harnessDir));
+        defer(folder.cleanUp);
+        const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
+        const server = chaosServer({
+          home,
+          harnessDir,
+          connection: "fake-live",
+          database: "persistent",
+        });
+        folder.own(() =>
+          within(server.dispose(), disposeMs, "disposing the scene server")
+        );
+        // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
+        // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
+        const scene = new AbortController();
+        const starting = awaitedLater(server.start(scene.signal));
+        await vi.waitUntil(() => server.starts === 1, {
+          timeout: 30_000,
+          interval: 10,
+        });
+        const reason = new Error("scene aborted");
+        scene.abort(reason);
+        await expect(starting).rejects.toBe(reason);
+        expect(server.running).toBe(false);
+        return home;
       });
-      // 장면 서버의 정리는 트리 정지(유예 30초)와 남은 DB 정리를 한다. 이 시험의 시한(60초)보다 짧게 기다려, 넘기면 무엇을 기다렸는지
-      // 알리고 폴더를 남긴다.
-      folder.own(() =>
-        within(server.dispose(), 45_000, "disposing the scene server")
-      );
-      // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
-      // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
-      const scene = new AbortController();
-      const starting = awaitedLater(server.start(scene.signal));
-      await vi.waitUntil(() => server.starts === 1, {
-        timeout: 30_000,
-        interval: 10,
-      });
-      const reason = new Error("scene aborted");
-      scene.abort(reason);
-      await expect(starting).rejects.toBe(reason);
-      expect(server.running).toBe(false);
-      return home;
-    });
-    expect(await postgresAlive(home)).toBe(false);
-  }, 60_000);
+      expect(await postgresAlive(home)).toBe(false);
+      // 시험 시한은 본문과 정리의 상한을 더한 값이다: 시작 대기 확인 30초(위 `waitUntil`) + 중단된 시작의 끝 확인 30초(`chaos-server.mjs`
+      // `kill`) + 정리 `disposeMs` + Postgres 확인 10초(`postgresAlive`의 `limitMs`).
+    },
+    30_000 + 30_000 + disposeMs + 10_000
+  );
 });

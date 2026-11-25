@@ -14,7 +14,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ArtifactFileRead } from "@babojubot/contracts";
-import { beforeAll, expect, it, type TestContext } from "vitest";
+import { afterEach, beforeAll, expect, it, type TestContext } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
 import {
@@ -23,6 +23,7 @@ import {
   gapOutcome,
   junctionSeen,
   realScratch,
+  removeRetries,
   runPinned,
   windows,
 } from "./files-volume.ts";
@@ -70,7 +71,7 @@ const outsideBytes = "OUTSIDE-SECRET";
 const refusal = (refusal: string) => ({ ok: false, refusal });
 
 /** 시험마다의 폴더 정리. 폴더와 그 안에서 도는 것(읽는 프로세스·명령, socket 파일 서버, 막은 권한)의 끝을 함께 맡는다. */
-const folders = testFolders();
+const folders = testFolders(afterEach, removeRetries);
 
 async function world() {
   const root = await realScratch(folders, "bjc-");
@@ -674,6 +675,14 @@ it("C16 refuses a FIFO without opening it, also when the file turns into one rig
   note(context, "C16", "pass");
 });
 
+/** socket 파일을 만들 수 없는 파일 시스템·권한에서 `listen`이 받는 운영체제 오류(socket(2)·bind(2)). */
+const socketRefusals = [
+  "EACCES",
+  "EPERM",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "ENAMETOOLONG",
+];
 it("C17 refuses a Unix socket", async (context) => {
   if (windows)
     without(
@@ -692,10 +701,11 @@ it("C17 refuses a Unix socket", async (context) => {
   ).then(
     () => "",
     (error: unknown) => {
-      // 운영체제가 socket 파일을 만들지 못한 것(오류 코드)만 이 환경의 한계다. 그 밖(상한 등)은 실패다.
+      // 이 파일 시스템이 socket 파일을 만들지 못한다는 운영체제의 답만 이 환경의 한계다. 그 밖(상한, Node의 인수 오류 등)은 실패다.
       const code = (error as NodeJS.ErrnoException).code;
-      if (typeof code !== "string") throw error;
-      return code;
+      if (typeof code === "string" && socketRefusals.includes(code))
+        return code;
+      throw error;
     }
   );
   if (listening)
@@ -923,9 +933,29 @@ const deny = async (target: string, folder: boolean) => {
   ]);
   return denial(set, set.ok ? await run("icacls", [target]) : undefined);
 };
+/**
+ * 막은 권한을 되돌린다. 폴더 정리 단계에서 부르므로 `run`(띄운 자식을 폴더 정리에 맡김)을 쓰지 않고 이 단계 안에서 끝을 기다린다:
+ * execFile의 콜백은 자식이 끝나고 출력이 닫힌 뒤 오고, 시한(8초, 폴더 정리의 단계 상한 10초 안)에 닿으면 SIGKILL로 끝낸다. 되돌리지
+ * 못하면 그 원인으로 거절해 폴더를 남긴다.
+ */
 const allow = async (target: string, folder: boolean) => {
-  if (!windows) await chmod(target, folder ? 0o755 : 0o644);
-  else await run("icacls", [target, "/remove:d", "*S-1-1-0"]);
+  if (!windows) return chmod(target, folder ? 0o755 : 0o644);
+  await new Promise<void>((resolve, reject) =>
+    execFile(
+      "icacls",
+      [target, "/remove:d", "*S-1-1-0"],
+      { timeout: 8_000, killSignal: "SIGKILL", windowsHide: true },
+      (error, stdout, stderr) =>
+        error
+          ? reject(
+              new Error(
+                `could not restore the permission of ${target}: ${`${stdout}${stderr}`.trim()}`,
+                { cause: error }
+              )
+            )
+          : resolve()
+    )
+  );
 };
 it("C26 refuses a file it may not read and a folder it may not search", async (context) => {
   const { got, shared } = await world();

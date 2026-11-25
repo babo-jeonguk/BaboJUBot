@@ -8,7 +8,7 @@ import {
 } from "@babojubot/db/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Workspaces, WorkspaceIdentityError } from "../src/workspace.ts";
-import { within } from "./support.ts";
+import { within, closeDatabase } from "./support.ts";
 import { attemptAll } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
@@ -75,7 +75,7 @@ async function organization() {
       "a folder preparation did not end"
     );
   const database = await createTestDatabase();
-  const users = folderCleanup(() => database.close());
+  const users = folderCleanup(() => closeDatabase(database));
   cleanups.push(users.cleanUp);
   users.own(prepared);
   const root = await mkdtemp(path.join(tmpdir(), "identity-swap-"));

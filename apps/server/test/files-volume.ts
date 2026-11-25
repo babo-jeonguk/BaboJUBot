@@ -32,9 +32,13 @@ export type Folders = ReturnType<typeof testFolders>;
 export async function scratch(folders: Folders, prefix: string) {
   return folders.adopt(await mkdtemp(path.join(filesBase(), prefix)));
 }
-/** 지운다. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 기본보다 길게 다시 시도한다. */
-export const remove = (folder: string) =>
-  removeFolder(folder, { retries: 10, retryDelayMs: 200 });
+/**
+ * 지우기의 다시 시도. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 기본보다 길게 다시 시도한다. 시험 파일의 폴더
+ * 정리(`testFolders(afterEach, removeRetries)`)와 `remove`가 함께 쓴다.
+ */
+export const removeRetries = { retries: 10, retryDelayMs: 200 };
+/** 지운다(`removeRetries`). */
+export const remove = (folder: string) => removeFolder(folder, removeRetries);
 
 /** 이 파일 시스템에 없는 기능과 그 오류 코드. 빈 문자열이면 있다(FAT은 링크가 없다). */
 export type FeatureGaps = {

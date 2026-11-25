@@ -26,10 +26,9 @@ import { outsideContract } from "./stand-ins.ts";
 import { awaitedLater } from "@babojubot/process/test-cleanup";
 import {
   eventually,
-  eventuallyMs,
   startTestServer,
-  within,
   type TestServer,
+  heldOrEnded,
 } from "./support.ts";
 
 // 넓힌 프로바이더 계약(#96): 실행 중 끼워 넣기와 거절 뒤 줄 세우기, 준비 확인의 갱신 시점, 실행 시도 상세의 사용량.
@@ -366,16 +365,7 @@ describe("provider readiness", () => {
       t!.request("POST", "/api/providers/fake-2/readiness")
     );
     // 확인이 붙잡히기 전에 요청이 끝나면 그 끝으로 기다림을 끝낸다.
-    await within(
-      Promise.race([
-        older.reached,
-        first.then(() => {
-          throw new Error("the first recheck ended before it was held");
-        }),
-      ]),
-      eventuallyMs,
-      "the first recheck was not held"
-    );
+    await heldOrEnded(older.reached, first, "the first recheck");
     const second = await t!.request("POST", "/api/providers/fake-2/readiness");
     expect(
       providerSettingsSchema.parse(second.body).providers[1]!.readiness
@@ -409,16 +399,7 @@ describe("provider readiness", () => {
     const rechecking = awaitedLater(
       t!.request("POST", "/api/providers/fake-2/readiness")
     );
-    await within(
-      Promise.race([
-        slow.reached,
-        rechecking.then(() => {
-          throw new Error("the recheck ended before it was held");
-        }),
-      ]),
-      eventuallyMs,
-      "the recheck was not held"
-    );
+    await heldOrEnded(slow.reached, rechecking, "the recheck");
     expect(await readinessOf("fake-2")).toMatchObject({
       status: "not_ready",
       checking: true,

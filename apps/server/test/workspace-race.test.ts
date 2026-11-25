@@ -1,8 +1,13 @@
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { testFolders } from "@babojubot/process/testing";
-import { featureGaps, realScratch, runPinned } from "./files-volume.ts";
+import {
+  featureGaps,
+  realScratch,
+  removeRetries,
+  runPinned,
+} from "./files-volume.ts";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
 
@@ -13,7 +18,7 @@ const withLinks = it.skipIf(lacks.symlink !== "");
 // 경로를 확인하는 사이에 폴더나 파일을 바꿔치기해도 다른 조직의 파일을 읽지 않는다.
 // 읽는 프로세스의 파일 작업 앞뒤 모든 시점에 바꿔치기(필요하면 원상 복구까지)를 넣어 본다.
 /** 시험마다의 폴더 정리. 폴더와 그 안에서 도는 읽는 프로세스의 끝을 함께 맡는다(`files-volume.ts` `runPinned`). */
-const folders = testFolders();
+const folders = testFolders(afterEach, removeRetries);
 async function organizations() {
   const root = await realScratch(folders, "babojubot-race-");
   const base = path.join(root, "organizations");

@@ -12,13 +12,18 @@ type Hook = (cleanup: () => Promise<void>) => void;
 /**
  * 시험 폴더를 만들고 정리까지 맡는다. 정리는 hook(기본: 시험마다)에서 기다리며, 시험이 성공했든 중간에 실패했든 같은 순서다.
  * 1. `own`·`ownChild`로 맡긴 것(폴더 안에서 도는 프로그램, 진행 중인 쓰기)을 늦게 맡긴 것부터 멈추고, 끝나기를 시한 안에서 기다린다.
- * 2. 모두 끝났을 때만 폴더를 지운다(`removeFolder`: Windows의 일시적인 잠김만 정해진 횟수 다시 시도).
+ * 2. 모두 끝났을 때만 폴더를 지운다(`removeFolder`: Windows의 일시적인 잠김만 정해진 횟수 다시 시도. 지운 항목이 잠시 남는 볼륨(SMB 등)은
+ *    `retries`·`retryDelayMs`로 늘린다).
  * 끝나지 않은 것이 있으면 폴더는 지우지 않는다. 지우기가 그 탓에 실패해 원인을 가리지 않도록, 그 실패만 알린다.
  */
 export function testFolders(
   hook: Hook = afterEach,
-  // 정리에서 기다리는 시한. 넘으면 그것이 끝나지 않은 채로 시험이 실패한다.
-  { stopTimeoutMs = 10_000 }: { stopTimeoutMs?: number } = {}
+  // 정리에서 기다리는 시한. 넘으면 그것이 끝나지 않은 채로 시험이 실패한다. `retries`·`retryDelayMs`는 폴더 지우기의 다시 시도다.
+  {
+    stopTimeoutMs = 10_000,
+    retries,
+    retryDelayMs,
+  }: { stopTimeoutMs?: number; retries?: number; retryDelayMs?: number } = {}
 ) {
   const folders: string[] = [];
   const stops: { stop: () => Promise<unknown>; what: string }[] = [];
@@ -40,7 +45,13 @@ export function testFolders(
     }
     // 한 폴더를 지우지 못해도 나머지를 지우고, 지우지 못한 폴더를 모두 알린다.
     await attemptAll(
-      folders.splice(0).map((folder) => () => removeFolder(folder))
+      folders.splice(0).map(
+        (folder) => () =>
+          removeFolder(folder, {
+            ...(retries === undefined ? {} : { retries }),
+            ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
+          })
+      )
     );
   });
   return {

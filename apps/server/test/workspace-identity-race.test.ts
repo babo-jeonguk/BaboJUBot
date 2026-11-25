@@ -8,7 +8,7 @@ import {
 import { settled } from "@babojubot/contracts";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
-import { within } from "./support.ts";
+import { within, closeDatabase } from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -57,7 +57,7 @@ it("does not mistake a mark just written by another preparation for a missing on
   // 준비는 이 DB와 폴더를 쓴다. 시작한 준비가 모두 끝난 것을 확인한 뒤에만 DB를 닫고 폴더를 지운다. 끝나지 않은 준비가 있으면
   // 둘 다 남기고 그 실패를 알린다(`folderCleanup`). 준비의 성공·실패는 시험 본문이 기다려 단언하므로 정리는 끝남만 본다.
   const database = await createTestDatabase();
-  const users = folderCleanup(() => database.close());
+  const users = folderCleanup(() => closeDatabase(database));
   onTestFinished(users.cleanUp);
   const root = await mkdtemp(path.join(tmpdir(), "identity-race-"));
   const folder = folderCleanup(() => removeFolder(root));

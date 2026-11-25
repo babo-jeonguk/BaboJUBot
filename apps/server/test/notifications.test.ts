@@ -32,6 +32,10 @@ import {
   startTestServer,
   within,
   type TestServer,
+  handOver,
+  ownStart,
+  closeDatabase,
+  stopWithin,
 } from "./support.ts";
 import { ownHome } from "./product-home.ts";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
@@ -290,29 +294,19 @@ describe("notification outbox and fake channel", () => {
     await t.deliverNotifications();
     await t.stopServer();
 
-    // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 그래서 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다. 여기부터 시험 서버는
-    // afterEach가 아니라 이 시험의 정리 한 단계가 차례로 소유한다(앞이 실패하면 DB를 닫지 않는다).
+    // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 그래서 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다(`handOver`).
     const first = t;
+    const users = handOver(first);
     t = undefined;
-    // 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다. 다시 띄운 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다.
-    const users = folderCleanup(() => first.close());
-    onTestFinished(users.cleanUp);
-    ownHome(users.cleanUp);
-    const handed: { server?: Awaited<ReturnType<typeof startServer>> } = {};
-    users.own(
-      () =>
-        handed.server &&
-        within(
-          handed.server.close(),
-          serverStopMs,
-          "stopping the restarted server did not finish"
-        )
-    );
-    const restarted = (handed.server = await startServer({
-      db: first.db,
-      port: 0,
-      now: () => new Date(Date.now() + 60_000),
-    }));
+    const restarted = await ownStart(
+      users.own,
+      startServer({
+        db: first.db,
+        port: 0,
+        now: () => new Date(Date.now() + 60_000),
+      }),
+      "the restarted server"
+    ).started;
     await restarted.deliverNotifications();
     const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
     const records = fakeChannelMessagesSchema
@@ -845,7 +839,7 @@ describe("channel replies", () => {
   it("refuses to start with more than one channel", async () => {
     // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
-    const users = folderCleanup(() => database.close());
+    const users = folderCleanup(() => closeDatabase(database));
     onTestFinished(users.cleanUp);
     // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다.
     ownHome(users.cleanUp);
@@ -855,25 +849,15 @@ describe("channel replies", () => {
       listen: () => {},
       close: async () => {},
     });
-    const starting = startServer({
-      db: database.db,
-      port: 0,
-      notificationChannels: [quiet("a"), quiet("b")],
-    });
-    // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
-    users.own(async () => {
-      const [outcome] = await within(
-        Promise.allSettled([starting]),
-        serverStopMs,
-        "the start that should have failed did not end"
-      );
-      if (outcome.status === "fulfilled")
-        await within(
-          outcome.value.close(),
-          serverStopMs,
-          "stopping the server whose start should have failed did not finish"
-        );
-    });
+    const starting = ownStart(
+      users.own,
+      startServer({
+        db: database.db,
+        port: 0,
+        notificationChannels: [quiet("a"), quiet("b")],
+      }),
+      "the server whose start should fail"
+    ).started;
     await expect(starting).rejects.toThrow("exactly one notification channel");
   });
 
@@ -892,30 +876,10 @@ describe("channel replies", () => {
     });
     await awaitingApproval(agents, "시작 실패 조직");
     await t.stopServer();
-    // 아래에서 시험 서버의 DB로 서버를 하나 더 시작한다. 그 시작이 넘겨받혔다면 그 서버가 끝난 뒤에만 시험 서버(DB)를 닫는다.
-    // 여기부터 시험 서버는 afterEach가 아니라 이 시험의 정리 한 단계가 차례로 소유한다.
+    // 아래에서 시험 서버의 DB로 서버를 하나 더 시작한다. 시험 서버(DB)는 그 시작이 끝난 것을 확인한 뒤에만 닫는다(`handOver`).
     const first = t;
+    const users = handOver(first);
     t = undefined;
-    let starting: ReturnType<typeof startServer> | undefined;
-    // 시험 서버(DB)는 아래 시작이 넘겨받혔다면 그 서버가 끝난 뒤에만 닫는다. 그 서버는 파일의 제품 폴더도 쓴다.
-    const users = folderCleanup(() => first.close());
-    onTestFinished(users.cleanUp);
-    ownHome(users.cleanUp);
-    users.own(async () => {
-      if (!starting) return;
-      // 거절을 기대하지만 넘겨받으면 그 서버를 닫는다. 거절은 아래 단언이 본다.
-      const [outcome] = await within(
-        Promise.allSettled([starting]),
-        serverStopMs,
-        "the start that should have failed did not end"
-      );
-      if (outcome.status === "fulfilled")
-        await within(
-          outcome.value.close(),
-          serverStopMs,
-          "stopping the server whose start should have failed did not finish"
-        );
-    });
 
     // 시계가 부를 때마다 10초씩 가서, 멈추지 않은 relay라면 주기 확인마다 재시도 예정이 지난 알림을 다시 보낸다.
     let tick = 0;
@@ -938,14 +902,18 @@ describe("channel replies", () => {
     // 주기 확인(setInterval)을 시험이 돌린다. 제품에서 setInterval은 주기 확인만 쓰고, 그 밖의 타이머는 실제 시간 그대로다.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      starting = startServer({
-        db: first.db,
-        port: 0,
-        now: () => new Date(base + tick++ * 10_000),
-        notificationChannels: [broken],
-        notificationPollMs: 10,
-        heartbeatPollMs: 10,
-      });
+      const starting = ownStart(
+        users.own,
+        startServer({
+          db: first.db,
+          port: 0,
+          now: () => new Date(base + tick++ * 10_000),
+          notificationChannels: [broken],
+          notificationPollMs: 10,
+          heartbeatPollMs: 10,
+        }),
+        "the server whose start should fail"
+      ).started;
       await expect(starting).rejects.toThrow("토큰 거부");
       // 실패한 시작은 주기 확인을 하나도 남기지 않는다. 남았다면 시간을 옮길 때 재시도 예정이 지난 알림을 다시 보낸다.
       expect(vi.getTimerCount()).toBe(0);
@@ -961,7 +929,7 @@ describe("channel replies", () => {
   it("still frees the port and reports the start error when closing the failed channel also throws", async () => {
     // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
-    const users = folderCleanup(() => database.close());
+    const users = folderCleanup(() => closeDatabase(database));
     onTestFinished(users.cleanUp);
     // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다.
     ownHome(users.cleanUp);
@@ -1005,10 +973,9 @@ describe("channel replies", () => {
           "the start that should have failed did not end"
         );
         if (outcome.status === "fulfilled")
-          await within(
-            outcome.value.close(),
-            serverStopMs,
-            "stopping the server whose start should have failed did not finish"
+          await stopWithin(
+            outcome.value,
+            "the server whose start should have failed"
           );
       });
       await expect(starting).rejects.toThrow("토큰 거부");

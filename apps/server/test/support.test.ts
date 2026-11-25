@@ -13,7 +13,7 @@ import {
   eventuallyMs,
   openEventStream,
   ownedListener,
-  readinessSettleMs,
+  ownStart,
   startTestServer,
   within,
 } from "./support.ts";
@@ -38,36 +38,11 @@ async function ownTemporaryFolder() {
   return { temp, own: folder.own };
 }
 
-/**
- * helper로 시험 서버를 띄우고 그 끝을 이 시험의 폴더 정리(`own`)가 소유하게 한다. 넘겨받았으면 정리가 닫는다. 넘기기 전에 실패했으면
- * helper가 자기 정리를 마친 것을 확인한다: helper는 정리가 모두 끝났을 때만 원래 오류 하나로 거절하고, 정리가 실패하면 그 실패를 원래
- * 오류와 함께 묶어(AggregateError) 거절한다. 묶인 실패면(원래 오류가 묶인 것이어서 가를 수 없을 때도) 바깥 폴더를 남기고 받은 실패를
- * 원인으로 알린다. 돌려주는 값은 helper가 낸 결과 그대로다.
- */
-function startOwnedBy(
-  own: (stop: () => unknown) => void,
+/** helper로 시험 서버를 띄우고 그 끝을 이 시험의 폴더 정리(`own`)가 소유하게 한다(`ownStart`). 돌려주는 값은 helper가 낸 결과 그대로다. */
+const startOwnedBy = (
+  own: (stop: () => Promise<void>) => void,
   options?: Parameters<typeof startTestServer>[0]
-) {
-  const started = startTestServer(options);
-  own(async () => {
-    // helper가 넘기기까지 기다리는 상한(준비 확인)을 넘기면 끝을 확인하지 못한 것으로 실패하고 폴더를 남긴다.
-    const outcome = await within(
-      started.then(
-        (t) => ({ t }),
-        (error: unknown) => ({ error })
-      ),
-      readinessSettleMs,
-      "the test server helper did not end"
-    );
-    if ("t" in outcome) return outcome.t.close();
-    if (outcome.error instanceof AggregateError)
-      throw new Error(
-        "the test server helper's own cleanup after its failure was not confirmed; the test folder is kept",
-        { cause: outcome.error }
-      );
-  });
-  return started;
-}
+) => ownStart(own, startTestServer(options), "the test server").started;
 
 it("removes the workspace folder it made and keeps the start error when the server cannot start", async () => {
   const { temp, own } = await ownTemporaryFolder();

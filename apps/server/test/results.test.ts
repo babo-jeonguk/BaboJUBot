@@ -24,8 +24,12 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { startTestServer, type TestServer } from "./support.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  startTestServer,
+  type TestServer,
+  handOver,
+  ownStart,
+} from "./support.ts";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -365,18 +369,22 @@ describe("result submission and final completion", () => {
 
     // 서버를 다시 시작해 남은 깨우기를 다시 확인해도 실행 시도는 없다.
     await t.stopServer();
-    // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 닫는다.
-    await withCleanup(async (defer) => {
-      const restarted = await startServer({
-        db: t!.db,
+    // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 시험 서버(DB)는 다시 띄운 서버가 끝난 것을 확인한 뒤에만 닫는다(`handOver`).
+    const first = t;
+    const users = handOver(first);
+    t = undefined;
+    const restarted = await ownStart(
+      users.own,
+      startServer({
+        db: first.db,
         port: 0,
         runtime: agents.runtime,
-      });
-      defer(() => restarted.close());
-      await restarted.drain();
-    });
+      }),
+      "the restarted server"
+    ).started;
+    await restarted.drain();
     const { listRuns } = await import("@babojubot/db");
-    expect(await listRuns(t.db, org.id)).toEqual(runsAfterCompletion);
+    expect(await listRuns(first.db, org.id)).toEqual(runsAfterCompletion);
   });
 
   it("lets a run admitted before final completion finish on its own while its research writes are refused, and starts no run afterwards", async () => {

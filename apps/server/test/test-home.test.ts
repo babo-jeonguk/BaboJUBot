@@ -1,4 +1,7 @@
 import { existsSync } from "node:fs";
+import { folderCleanup } from "@babojubot/process/test-cleanup";
+import { ownHome } from "./product-home.ts";
+import { closeDatabase, ownStart } from "./support.ts";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,10 +22,16 @@ it("keeps the product folder of a server started without one outside the reposit
   );
   expect(relative.startsWith("..") || path.isAbsolute(relative)).toBe(false);
 
+  // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다. 그 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다(`ownHome`).
   const database = await createTestDatabase();
-  onTestFinished(() => database.close());
-  const server = await startServer({ db: database.db, port: 0 });
-  onTestFinished(() => server.close());
+  const users = folderCleanup(() => closeDatabase(database));
+  onTestFinished(users.cleanUp);
+  ownHome(users.cleanUp);
+  const server = await ownStart(
+    users.own,
+    startServer({ db: database.db, port: 0 }),
+    "the server"
+  ).started;
   const res = await fetch(`${server.url}/api/organizations`, {
     method: "POST",
     headers: { "content-type": "application/json" },
