@@ -313,6 +313,17 @@ export function createRelayHub(): RelayHub {
     return { research, protectedPorts };
   };
 
+  /**
+   * 정책의 모든 칸을 읽었는가(판정 한 자리). 아니면 새 연결은 거부하고, 다시 보기는 닫는 이유가 `policy_unavailable`이다.
+   */
+  const readable = (
+    policy: Policy
+  ): policy is {
+    research: readonly Destination[];
+    protectedPorts: readonly number[];
+  } =>
+    policy.research !== "unreadable" && policy.protectedPorts !== "unreadable";
+
   const rulesFor = (
     relay: Relay,
     research: readonly Destination[],
@@ -332,16 +343,13 @@ export function createRelayHub(): RelayHub {
     relay: Relay
   ): Promise<{ rules: EgressRules; closing: EgressRefusal }> => {
     const policy = await policyOf(relay);
-    const unreadable =
-      policy.research === "unreadable" ||
-      policy.protectedPorts === "unreadable";
     return {
       rules: rulesFor(
         relay,
         policy.research === "unreadable" ? [] : policy.research,
         policy.protectedPorts === "unreadable" ? "all" : policy.protectedPorts
       ),
-      closing: unreadable ? "policy_unavailable" : "policy_changed",
+      closing: readable(policy) ? "policy_changed" : "policy_unavailable",
     };
   };
 
@@ -363,18 +371,16 @@ export function createRelayHub(): RelayHub {
     relay.acquire(async (signal) => {
       // 정책의 한 칸이라도 읽지 못하면 열지 않는다(모름을 허용으로 바꾸지 않음).
       const policy = await relay.whileOpen(() => policyOf(relay));
-      const { research, protectedPorts } = policy;
-      const decision: EgressDecision =
-        research === "unreadable" || protectedPorts === "unreadable"
-          ? { allowed: false, reason: "policy_unavailable" }
-          : await relay.whileOpen(() =>
-              decideDestination(
-                rulesFor(relay, research, protectedPorts),
-                host,
-                port,
-                resolveAll
-              )
-            );
+      const decision: EgressDecision = readable(policy)
+        ? await relay.whileOpen(() =>
+            decideDestination(
+              rulesFor(relay, policy.research, policy.protectedPorts),
+              host,
+              port,
+              resolveAll
+            )
+          )
+        : { allowed: false, reason: "policy_unavailable" };
       if (!decision.allowed) {
         refuse(relay, host, port, decision.reason);
         return { refused: decision.reason };

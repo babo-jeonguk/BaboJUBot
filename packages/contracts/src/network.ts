@@ -50,7 +50,8 @@ export type UpdateNetworkPolicyInput = z.infer<
  * - `address_not_allowed`: 허용한 이름이지만 이 컴퓨터·내부망·metadata 같은 금지 주소로 풀렸다.
  * - `not_resolved`: 이름을 주소로 풀지 못했다.
  * - `protocol_not_supported`: HTTP 프록시(CONNECT·절대 주소 요청) 밖의 요청이다.
- * - `policy_unavailable`: 정책을 읽지 못했다. 새 연결은 열지 않고, 다시 볼 때는 확인하지 못한 연결을 닫는다.
+ * - `policy_unavailable`: 정책을 읽지 못했다. 새 연결은 열지 않는다. 다시 볼 때 정책의 한 칸이라도 읽지 못했으면, 그때 좁힌 규칙으로 닫는
+ *   연결도 이 이유로 알린다.
  * - `policy_changed`: 사용자가 목록을 줄여 이미 열린 연결을 닫았다.
  */
 export const egressRefusals = [
