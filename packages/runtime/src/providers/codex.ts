@@ -53,7 +53,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { type AttemptLoginFile, fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
-import { removeAttemptFolder } from "./attempt-folder.ts";
+import { attemptFolder, type AttemptFolder } from "./attempt-folder.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -485,7 +485,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
         if (!placement) return failed();
         // 권한은 실행 시도를 정리하는 이 try 안에서 받는다. 어디서 끝나든 finally가 거두고 이 실행 시도 전용 폴더를 지운다.
         let grant: RelayGrant | undefined;
-        let attempt: string | undefined;
+        let attempt: AttemptFolder | undefined;
         try {
           let loginFile: AttemptLoginFile | undefined;
           if (prepared.attemptLogin) {
@@ -502,8 +502,13 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 )
             );
             if (!grant) return { ...failed(), error: relayFailure };
-            attempt = await mkdtemp(
-              path.join(os.tmpdir(), "babojubot-attempt-")
+            attempt = attemptFolder(
+              await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-")),
+              {
+                kind: "attempt folder",
+                connection: id,
+                runId: request.identity.runId,
+              }
             );
             loginFile = await prepared.attemptLogin(attempt, grant.token);
           }
@@ -593,6 +598,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
               cwd,
               env,
               container,
+              attempt,
             });
             // 중계가 실패해 멈췄으면 취소가 아니라 중계 실패다. 사용자의 중단은 그대로 취소다.
             if (grant?.failed.aborted && !control.signal.aborted)
@@ -660,6 +666,11 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
                 connection.close();
               }
             },
+          });
+          // 이 실행 시도 폴더(격리 실행의 로그인 파일)를 쓰는 프로그램. 폴더 정리가 연결을 닫고 그 끝을 기다린다.
+          attempt?.usedBy({
+            end: () => connection.close(),
+            done: connection.done,
           });
           /** 일반 요청. 응답이 없으면 실패이며 다시 보내지 않는다(아래 catch가 연결을 닫는다). */
           const rpc = (method: string, params: unknown) =>
@@ -814,12 +825,7 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           return { ...result, usage };
         } finally {
           grant?.revoke();
-          if (attempt)
-            await removeAttemptFolder(attempt, {
-              kind: "attempt folder",
-              connection: id,
-              runId: request.identity.runId,
-            });
+          await attempt?.remove();
         }
       },
     },
@@ -839,6 +845,8 @@ async function executeExec(
     cwd: string;
     env: NodeJS.ProcessEnv;
     container?: ContainerLaunch;
+    /** 이 실행 시도 폴더(격리 실행의 로그인 파일). 띄운 프로그램을 맡긴다. */
+    attempt?: AttemptFolder;
   }
 ): Promise<RunResult> {
   const { command, config, stateDir, cwd, env, container } = launch;
@@ -902,6 +910,7 @@ async function executeExec(
       }
     },
   });
+  launch.attempt?.usedBy(child);
   const cancel = () => {
     child.interrupt();
     child.end();

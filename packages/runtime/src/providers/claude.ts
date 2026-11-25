@@ -53,7 +53,7 @@ import {
   type RelayGrant,
   type RelayProfile,
 } from "./credential-relay.ts";
-import { removeAttemptFolder } from "./attempt-folder.ts";
+import { attemptFolder } from "./attempt-folder.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
@@ -342,9 +342,13 @@ async function executeClaude(
     if (refusal !== undefined) return { ...failed(), error: refusal };
   }
   // 컨테이너에서는 조직의 제품 폴더가 그 조직의 같은 연결 에이전트 컨테이너에 모두 들어가므로, 토큰이 든 이 실행 시도의 파일은 그 밖에 두고 이 컨테이너에만 읽기로 넣는다.
-  const temp = placement.container
-    ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
-    : await mkdtemp(path.join(home, "attempt-"));
+  const attempt = attemptFolder(
+    placement.container
+      ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
+      : await mkdtemp(path.join(home, "attempt-")),
+    { kind: "attempt folder", connection: connection.id, runId: request.runId }
+  );
+  const temp = attempt.path;
   let launch: ContainerLaunch | undefined;
   try {
     launch = placement.container?.({
@@ -354,11 +358,7 @@ async function executeClaude(
       destinations: providerDestinations.claude,
     });
   } catch (error) {
-    await removeAttemptFolder(temp, {
-      kind: "attempt folder",
-      connection: connection.id,
-      runId: request.runId,
-    });
+    await attempt.remove();
     if (error instanceof ContainerRefusal)
       return { ...failed(), error: error.message };
     throw error;
@@ -383,7 +383,8 @@ async function executeClaude(
       );
       if (!grant) return { ...failed(), error: relayFailure };
     }
-    const config = path.join(temp, "mcp.json");
+    // 조직 도구 토큰이 든 설정은 이 실행 시도 폴더에 넣은 자격 증명 사본이다.
+    const config = attempt.credential("mcp.json");
     await writeFile(
       config,
       JSON.stringify({
@@ -565,6 +566,8 @@ async function executeClaude(
           });
       },
     });
+    // 이 실행 시도 폴더를 쓰는 프로그램. 폴더 정리가 끝내고 그 끝을 기다린다.
+    attempt.usedBy(process);
     const startup = setTimeout(() => process.end(), startupLimitMs);
     if (request.runId)
       active.set(request.runId, (message) => {
@@ -686,10 +689,6 @@ async function executeClaude(
     }
   } finally {
     grant?.revoke();
-    await removeAttemptFolder(temp, {
-      kind: "attempt folder",
-      connection: connection.id,
-      runId: request.runId,
-    });
+    await attempt.remove();
   }
 }

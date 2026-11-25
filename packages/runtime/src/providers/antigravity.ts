@@ -49,7 +49,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
-import { removeAttemptFolder } from "./attempt-folder.ts";
+import { attemptFolder, type AttemptFolder } from "./attempt-folder.ts";
 /** 프로그램이 JSON-RPC 오류로 거절한 요청. */
 class AcpRejection extends Error {}
 /** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */
@@ -312,8 +312,8 @@ export function createAntigravityProvider(options: {
     },
     async execute(request, control) {
       let grant: RelayGrant | undefined,
-        attempt: string | undefined,
-        logs: string | undefined;
+        attempt: AttemptFolder | undefined,
+        logs: AttemptFolder | undefined;
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
@@ -343,7 +343,14 @@ export function createAntigravityProvider(options: {
               )
           );
           if (!grant) return failure(relayFailure);
-          attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
+          attempt = attemptFolder(
+            await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-")),
+            {
+              kind: "attempt folder",
+              connection: connectionId,
+              runId: request.identity.runId,
+            }
+          );
           const file = await prepared.attemptLogin(attempt, grant.token);
           try {
             container = placement.container({
@@ -358,7 +365,14 @@ export function createAntigravityProvider(options: {
             throw error;
           }
         } else
-          logs = await mkdtemp(path.join(os.tmpdir(), "babojubot-agy-log-"));
+          logs = attemptFolder(
+            await mkdtemp(path.join(os.tmpdir(), "babojubot-agy-log-")),
+            {
+              kind: "log folder",
+              connection: connectionId,
+              runId: request.identity.runId,
+            }
+          );
         const runControl = grant
           ? {
               ...control,
@@ -369,7 +383,7 @@ export function createAntigravityProvider(options: {
           `/api/relay/${encodeURIComponent(connectionId)}`,
           request.access.toolsBaseUrl
         ).href;
-        const logFile = logs ? path.join(logs, "agy.log") : undefined;
+        const logFile = logs ? path.join(logs.path, "agy.log") : undefined;
         const args = [
           "acp",
           "--disable-telemetry",
@@ -477,6 +491,9 @@ export function createAntigravityProvider(options: {
               errored = true;
           },
         });
+        // 이 실행 시도의 폴더(로그인 파일, 기록)를 쓰는 프로그램. 폴더 정리가 끝내고 그 끝을 기다린다.
+        attempt?.usedBy(child);
+        logs?.usedBy(child);
         void child.done.then(() => {
           for (const waiter of pending.values())
             waiter.reject(new Error("Protocol closed"));
@@ -642,20 +659,7 @@ export function createAntigravityProvider(options: {
           : failure();
       } finally {
         grant?.revoke();
-        await Promise.all([
-          attempt &&
-            removeAttemptFolder(attempt, {
-              kind: "attempt folder",
-              connection: connectionId,
-              runId: request.identity.runId,
-            }),
-          logs &&
-            removeAttemptFolder(logs, {
-              kind: "log folder",
-              connection: connectionId,
-              runId: request.identity.runId,
-            }),
-        ]);
+        await Promise.all([attempt?.remove(), logs?.remove()]);
       }
     },
   };

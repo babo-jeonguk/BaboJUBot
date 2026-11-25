@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import type { AttemptFolder } from "./attempt-folder.ts";
 import path from "node:path";
 import { credentialResidue, residueRefusalFor } from "./credential-relay.ts";
 import { connectionFolders } from "./folders.ts";
@@ -42,10 +43,11 @@ export type PreparedLogin =
       home: string;
       /**
        * 격리 실행에만 있다. 실행 시도 전용 폴더 `attempt`(부른 쪽이 만들고 지운다)에 권한 `token`을 담은 로그인 파일을 쓰고,
-       * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 돌려준 파일을 그 컨테이너에만 읽기로 넣는다.
+       * 조직 폴더의 로그인 자리에 권한 없는 자리 표시를 둔다. 돌려준 파일을 그 컨테이너에만 읽기로 넣는다. 로그인 파일은 그 폴더의
+       * 자격 증명 사본으로 기록한다(`AttemptFolder.credential`).
        */
       attemptLogin?: (
-        attempt: string,
+        attempt: AttemptFolder,
         token: string
       ) => Promise<AttemptLoginFile>;
     };
@@ -173,7 +175,7 @@ export function fileLogin(
         async attemptLogin(attempt, token) {
           // 조직 폴더는 그 조직의 모든 컨테이너에 쓰기로 들어간다. 권한이 든 로그인 파일은 실행 시도 전용 폴더에 두고,
           // 그 컨테이너에만 조직 폴더의 로그인 자리 위에 읽기로 넣는다. 조직 폴더에는 권한 없는 자리 표시만 둔다.
-          const source = path.join(attempt, path.basename(shape.loginFile));
+          const source = attempt.credential(path.basename(shape.loginFile));
           await writeFile(source, shape.contents(token), {
             mode: 0o600,
             flag: "wx",

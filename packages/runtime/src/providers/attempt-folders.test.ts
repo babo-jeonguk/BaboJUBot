@@ -241,8 +241,15 @@ describe("an attempt whose programs were not confirmed ended", () => {
     const kept = await attemptFolders(root);
     expect(kept).toHaveLength(1);
     expect(await readdir(kept[0]!)).toEqual(["instructions.md"]);
-    expect(logged()).toContain(
-      `[provider] the programs of run ${input.runId} on connection claude were not confirmed ended (ENOENT); its attempt folder is kept at ${kept[0]} without the credential copies put in it`
+    // 원인은 띄우지 못한 것(ENOENT)이고, 그 프로그램에 입력을 쓰다 끊긴 것(EPIPE)이 함께 올 수 있다(두 사건의 차례는 정해지지 않는다).
+    const prefix = `[provider] the programs of run ${input.identity.runId} on connection claude were not confirmed ended (`;
+    const suffix = `); its attempt folder is kept at ${kept[0]} without the credential copies put in it`;
+    const lines = logged().filter((line) => line.startsWith(prefix));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.endsWith(suffix)).toBe(true);
+    const causes = lines[0]!.slice(prefix.length, -suffix.length).split(", ");
+    expect([["ENOENT"], ["ENOENT", "EPIPE"]]).toContainEqual(
+      [...causes].sort()
     );
     expect(logged().join("\n")).not.toContain("private-run-token");
   });

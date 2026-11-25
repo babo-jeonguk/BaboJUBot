@@ -61,7 +61,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { record } from "./record.ts";
-import { removeAttemptFolder } from "./attempt-folder.ts";
+import { attemptFolder } from "./attempt-folder.ts";
 const failure = (): RunResult => ({
   stopReason: "failed",
   error: "프로바이더 실행이 실패했습니다.",
@@ -608,7 +608,11 @@ export function createOpenCodeProvider(options: {
     productHome: string,
     runId?: string
   ) {
-    const directory = await mkdtemp(path.join(productHome, "attempt-")),
+    const attempt = attemptFolder(
+        await mkdtemp(path.join(productHome, "attempt-")),
+        { kind: "attempt folder", connection: connectionId, runId }
+      ),
+      directory = attempt.path,
       password = crypto.randomUUID();
     const lifetime = new AbortController();
     let interrupt: (() => void) | undefined;
@@ -626,16 +630,11 @@ export function createOpenCodeProvider(options: {
       cleaned = true;
       if (timer) clearTimeout(timer);
       lifetime.abort();
-      if (child) {
-        child.end();
-        await child.done;
-      }
+      // 서버를 끝내고 그 끝을 확인한 뒤에만 폴더를 지운다(`attemptFolder`).
+      child?.end();
+      await child?.done;
       if (listening) signal.removeEventListener("abort", abort);
-      await removeAttemptFolder(directory, {
-        kind: "attempt folder",
-        connection: connectionId,
-        runId,
-      });
+      await attempt.remove();
     };
     const close = cleanup;
     try {
@@ -695,7 +694,7 @@ export function createOpenCodeProvider(options: {
           }
         },
       });
-      child = started;
+      child = attempt.usedBy(started);
       const stop = () => started.end();
       lifetime.signal.addEventListener("abort", stop, { once: true });
       if (lifetime.signal.aborted) stop();
