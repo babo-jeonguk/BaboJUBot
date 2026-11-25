@@ -162,10 +162,7 @@ posix.each(["SIGINT", "SIGHUP"] as const)(
   async (signal) => {
     // 임시 Postgres는 이 시험의 임시 폴더에 띄운다. 폴더 정리가 서버와 관찰한 Postgres의 끝을 확인한 뒤에만 지운다.
     const temp = temporaryFolder();
-    const folder = folderCleanup(() => removeFolder(temp.dir));
-    onTestFinished(folder.cleanUp);
-    const leftover: { postgres?: ObservedPostgres } = {};
-    folder.own(() => stopLeftover(leftover.postgres));
+    const { folder, leftover } = postgresFolder(temp.dir);
     const child = startMain(
       { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
       { group: true }
@@ -187,17 +184,12 @@ it.each(stopRequests)(
   "stops the embedded Postgres it was starting when $name arrives during startup",
   async ({ ipc, send }) => {
     const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
-    // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
-    const folder = folderCleanup(() => removeFolder(home));
-    onTestFinished(folder.cleanUp);
+    const { folder, leftover } = postgresFolder(home);
     const pidFile = path.join(home, "postgres", "postmaster.pid");
     const child = startMain(
       { BABOJUBOT_HOME: home, EMBEDDED_POSTGRES_PORT: "0" },
       { ipc }
     );
-    // 정리는 Postgres를 찾기 전에 등록한다. 찾은 뒤에는 그 Postgres를 맡는다.
-    const leftover: { postgres?: ObservedPostgres } = {};
-    folder.own(() => stopLeftover(leftover.postgres));
     folder.own(child.stop);
     const postgres = (leftover.postgres = await waitForPostmaster(
       child,
@@ -289,9 +281,7 @@ posix.each(posixStopRequests)(
   "ends with a failure at its configured shutdown deadline after $name and leaves no Postgres behind",
   async ({ ipc, send }) => {
     const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
-    // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
-    const folder = folderCleanup(() => removeFolder(home));
-    onTestFinished(folder.cleanUp);
+    const { folder, leftover } = postgresFolder(home);
     const child = startMain(
       {
         BABOJUBOT_HOME: home,
@@ -300,9 +290,6 @@ posix.each(posixStopRequests)(
       },
       { ipc }
     );
-    // 정리는 Postgres를 찾기 전에 등록한다. 찾은 뒤에는 그 Postgres를 맡는다.
-    const leftover: { postgres?: ObservedPostgres } = {};
-    folder.own(() => stopLeftover(leftover.postgres));
     folder.own(child.stop);
     await child.ready();
     const postgres = (leftover.postgres = lockedPostgres(
@@ -327,12 +314,7 @@ posix.each(posixStopRequests)(
 // 임시 내장 Postgres를 멈추고 그 dataDir를 지운다. 임시 폴더(TMP)를 이 시험의 폴더로 바꿔 서버가 만든 임시 DB만 본다.
 it("finishes its own shutdown on a stop request from the parent and leaves no temporary Postgres behind", async () => {
   const temp = temporaryFolder();
-  // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
-  const folder = folderCleanup(() => removeFolder(temp.dir));
-  onTestFinished(folder.cleanUp);
-  // 정리는 Postgres를 찾기 전에 등록한다. 찾지 못하면 끝을 확인할 수 없어 폴더를 남긴다.
-  const leftover: { postgres?: ObservedPostgres } = {};
-  folder.own(() => stopLeftover(leftover.postgres));
+  const { folder, leftover } = postgresFolder(temp.dir);
   const child = startMain(
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
@@ -353,12 +335,7 @@ it("finishes its own shutdown on a stop request from the parent and leaves no te
 // 정리할 기회가 없어 다음 시작이 남은 Postgres를 멈춘다(db/embedded.ts).
 it("finishes its own shutdown when the parent's channel closes", async () => {
   const temp = temporaryFolder();
-  // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
-  const folder = folderCleanup(() => removeFolder(temp.dir));
-  onTestFinished(folder.cleanUp);
-  // 정리는 Postgres를 찾기 전에 등록한다. 찾지 못하면 끝을 확인할 수 없어 폴더를 남긴다.
-  const leftover: { postgres?: ObservedPostgres } = {};
-  folder.own(() => stopLeftover(leftover.postgres));
+  const { folder, leftover } = postgresFolder(temp.dir);
   const child = startMain(
     { BABOJUBOT_EPHEMERAL_DB: "1", ...temp.env },
     { ipc: true }
@@ -787,6 +764,19 @@ async function expectGone(postgres: ObservedPostgres, timeout = 5_000) {
  * 시험이 끝남을 확인하지 못한 Postgres만 끝내고, 끝난 것을 확인한다. 그 뒤에야 폴더를 지운다. 확인한 뒤에는 그 번호를 다시 보지
  * 않는다(다른 프로세스가 썼을 수 있다).
  */
+/**
+ * 시험 폴더와 그 안에서 서버가 띄울 Postgres의 소유. 폴더는 만든 직후 정리에 맡기고, 그 안 Postgres의 끝은 서버를 띄우기 전에 맡긴다
+ * (정리는 역순이라 서버의 끝 뒤에 돈다). 관찰한 Postgres는 `leftover.postgres`에 넣는다. 관찰하지 못하면 끝을 확인할 수 없어 폴더를
+ * 남기고 실패한다(`stopLeftover`). 서버는 띄운 직후 `folder.own(child.stop)`으로 맡긴다.
+ */
+function postgresFolder(dir: string) {
+  const folder = folderCleanup(() => removeFolder(dir));
+  onTestFinished(folder.cleanUp);
+  const leftover: { postgres?: ObservedPostgres } = {};
+  folder.own(() => stopLeftover(leftover.postgres));
+  return { folder, leftover };
+}
+
 async function stopLeftover(postgres: ObservedPostgres | undefined) {
   // 관찰하지 못한 Postgres는 같은 프로세스인지 알 근거가 없어 끄지도, 끝났다고 보지도 않는다. 폴더를 남기고 실패한다(fail closed).
   if (!postgres)

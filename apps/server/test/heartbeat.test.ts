@@ -6,7 +6,7 @@ import {
 import { leadReplyScript } from "@babojubot/runtime";
 import { createGate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { startServer } from "../src/index.ts";
+
 import {
   chatMessages,
   goal,
@@ -18,8 +18,7 @@ import {
 import {
   startTestServer,
   type TestServer,
-  handOver,
-  ownStart,
+  startOnDatabaseOf,
 } from "./support.ts";
 
 let t: TestServer | undefined;
@@ -195,18 +194,15 @@ describe("heartbeat", () => {
     time.advance(minutes(55));
     // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 시험 서버(DB)는 다시 띄운 서버가 끝난 것을 확인한 뒤에만 닫는다(`handOver`).
     const first = t;
-    const users = handOver(first);
-    t = undefined;
-    const restarted = await ownStart(
-      users.own,
-      startServer({
-        db: first.db,
-        port: 0,
+    const restarted = await startOnDatabaseOf(
+      first,
+      {
         runtime: agents.runtime,
         now: time.now,
-      }),
+      },
       "the restarted server"
     ).started;
+    t = undefined;
     await restarted.tickHeartbeats();
     await restarted.tickHeartbeats();
     await restarted.drain();

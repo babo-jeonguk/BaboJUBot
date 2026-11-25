@@ -1,6 +1,5 @@
 import {
   agentDetailSchema,
-  attemptAll,
   organizationDetailSchema,
   providerSettingsSchema,
   runSummaryListSchema,
@@ -19,11 +18,10 @@ import {
 } from "./scenarios.ts";
 import {
   eventually,
-  eventuallyMs,
   startTestServer,
-  within,
   type TestServer,
   heldOrEnded,
+  releaseHeld,
 } from "./support.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
@@ -139,15 +137,10 @@ describe("concurrent global settings writes", () => {
           await locked.wait(new AbortController().signal);
         });
         defer(() =>
-          within(
-            attemptAll([
-              () => locked.open(),
-              () => blocker,
-              () => changing,
-              () => restoring,
-            ]),
-            eventuallyMs,
-            "the held row and the competing writes did not end"
+          releaseHeld(
+            () => locked.open(),
+            [() => blocker, () => changing, () => restoring],
+            "the held row and the competing writes"
           )
         );
         // 행을 잡기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
@@ -203,10 +196,10 @@ describe("concurrent global settings writes", () => {
         await inserted.wait(new AbortController().signal);
       });
       defer(() =>
-        within(
-          attemptAll([() => inserted.open(), () => inserting, () => saving]),
-          eventuallyMs,
-          "the held insert and the competing write did not end"
+        releaseHeld(
+          () => inserted.open(),
+          [() => inserting, () => saving],
+          "the held insert and the competing write"
         )
       );
       // insert하기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.

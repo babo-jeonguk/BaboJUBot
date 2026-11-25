@@ -189,16 +189,52 @@ export const heldOrEnded = (
   );
 
 /**
- * 시험 서버의 정리를 모듈의 afterEach에서 이 시험의 정리로 넘긴다. 그 서버(DB와 작업 폴더)는 돌려준 정리(`folderCleanup`)에 맡긴 것
- * (그 DB를 쓰는 다른 서버 등)이 모두 끝난 뒤에만 닫는다. 정리는 시험 정리와 파일의 제품 폴더 정리(`ownHome`) 둘 다에 같은 결과로 맡긴다:
- * 그 DB를 쓰는 서버가 데이터 폴더 없이 뜨면 제품 폴더도 쓴다. 부른 쪽은 같은 동기 단계에서 모듈 변수를 비운다.
+ * 그것을 쓰는 것(돌려준 정리의 `own`)이 모두 끝난 뒤에만 `close`를 하는 정리(`folderCleanup`). 시험 정리와 파일의 제품 폴더 정리
+ * (`ownHome`) 둘 다에 같은 결과로 맡긴다: 그것을 쓰는 서버가 데이터 폴더 없이 뜨면 제품 폴더도 쓴다.
  */
-export function handOver(server: TestServer) {
-  const users = folderCleanup(() => server.close());
+export function closedAfterUsers(close: () => Promise<void>) {
+  const users = folderCleanup(close);
   onTestFinished(users.cleanUp);
   ownHome(users.cleanUp);
   return users;
 }
+
+/**
+ * 시험 서버의 정리를 모듈의 afterEach에서 이 시험의 정리로 넘긴다. 그 서버(DB와 작업 폴더)는 돌려준 정리에 맡긴 것(그 DB를 쓰는 다른
+ * 서버 등)이 모두 끝난 뒤에만 닫는다(`closedAfterUsers`). 부른 쪽은 같은 동기 단계에서 모듈 변수를 비운다.
+ */
+export const handOver = (server: TestServer) =>
+  closedAfterUsers(() => server.close());
+
+/**
+ * 시험 서버(`first`)를 이 시험의 정리로 넘기고(`handOver`) 그 DB로 서버를 하나 더 띄운다. 새 서버는 띄우는 즉시 그 정리가 소유하므로
+ * (`ownStart`) 시험 서버의 DB는 새 서버의 끝을 확인한 뒤에만 닫힌다. 부른 쪽은 같은 동기 단계에서 모듈 변수를 비운다.
+ */
+export function startOnDatabaseOf(
+  first: TestServer,
+  options: Omit<ServerOptions, "db" | "port">,
+  what: string,
+  ended?: StartEnded
+) {
+  const users = handOver(first);
+  return ownStart(
+    users.own,
+    startServer({ db: first.db, port: 0, ...options }),
+    what,
+    ended
+  );
+}
+
+/**
+ * 시험이 붙잡아 둔 것을 풀고(`open`) 붙잡혀 있던 일(`pending`: transaction, 요청)이 모두 끝나기를 상한 안에서 기다린다. 하나가 실패해도
+ * 나머지를 기다리고 실패를 모아 알린다. 상한을 넘기면 그 일은 계속 돌고 정리는 실패한다(그 DB는 닫히지 않고 남는다, fail closed).
+ */
+export const releaseHeld = (
+  open: () => unknown,
+  pending: (() => unknown)[],
+  what: string
+) =>
+  within(attemptAll([open, ...pending]), eventuallyMs, `${what} did not end`);
 
 /** 구독이 받은 것: Event frame과 전역 설정 변경 신호(`settings_changed`) 수. */
 export type Received = { events: Event[]; settingsSignals: number };

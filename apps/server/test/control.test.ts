@@ -19,7 +19,7 @@ import {
   type Gate,
 } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { startServer } from "../src/index.ts";
+
 import { insertLegacyOrganization } from "@babojubot/db/testing";
 import {
   chatMessages,
@@ -33,8 +33,7 @@ import {
 import {
   startTestServer,
   type TestServer,
-  handOver,
-  ownStart,
+  startOnDatabaseOf,
 } from "./support.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
@@ -463,17 +462,14 @@ describe("organization stop", () => {
     await t.stopServer();
     // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 시험 서버(DB)는 다시 띄운 서버가 끝난 것을 확인한 뒤에만 닫는다(`handOver`).
     const first = t;
-    const users = handOver(first);
-    t = undefined;
-    const restarted = await ownStart(
-      users.own,
-      startServer({
-        db: first.db,
-        port: 0,
+    const restarted = await startOnDatabaseOf(
+      first,
+      {
         runtime: agents.runtime,
-      }),
+      },
       "the restarted server"
     ).started;
+    t = undefined;
     await restarted.drain();
     const { listRuns } = await import("@babojubot/db");
     // 생성 깨우기를 받은 실행 시도와 중단으로 취소된 실행 시도뿐이다.

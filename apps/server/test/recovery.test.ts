@@ -57,6 +57,7 @@ import {
   ownStart,
   heldOrEnded,
   startDiagnostics,
+  releaseHeld,
 } from "./support.ts";
 import { ownHome } from "./product-home.ts";
 import {
@@ -725,10 +726,9 @@ describe("server start recovery barrier", () => {
     const serverEnd: { stop?: () => Promise<void> } = {};
     databaseUsers.push(() => serverEnd.stop?.());
     const holding = holdRow(database.db, late!.runId, held);
-    databaseUsers.push(async () => {
-      held.open();
-      await within(holding, eventuallyMs, "the row hold did not end");
-    });
+    databaseUsers.push(() =>
+      releaseHeld(() => held.open(), [() => holding], "the row hold")
+    );
     // 잠그기 전에 transaction이 실패하면 `reached`는 오지 않으므로 그 실패로 끝낸다.
     await heldOrEnded(held.reached, holding, "the row hold");
     // 서버는 복구가 끝나기 전에 듣기 시작하므로, 포트 0에서 듣게 하고 듣기 시작할 때 알리는 주소를 받는다.

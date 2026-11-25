@@ -30,13 +30,12 @@ import {
   ownedListener,
   startTestServer,
   type TestServer,
-  handOver,
   ownStart,
   closeDatabase,
   startDiagnostics,
+  startOnDatabaseOf,
+  closedAfterUsers,
 } from "./support.ts";
-import { ownHome } from "./product-home.ts";
-import { folderCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -294,17 +293,14 @@ describe("notification outbox and fake channel", () => {
 
     // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 그래서 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다(`handOver`).
     const first = t;
-    const users = handOver(first);
-    t = undefined;
-    const restarted = await ownStart(
-      users.own,
-      startServer({
-        db: first.db,
-        port: 0,
+    const restarted = await startOnDatabaseOf(
+      first,
+      {
         now: () => new Date(Date.now() + 60_000),
-      }),
+      },
       "the restarted server"
     ).started;
+    t = undefined;
     await restarted.deliverNotifications();
     const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
     const records = fakeChannelMessagesSchema
@@ -837,10 +833,8 @@ describe("channel replies", () => {
   it("refuses to start with more than one channel", async () => {
     // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
-    const users = folderCleanup(() => closeDatabase(database));
-    onTestFinished(users.cleanUp);
-    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다.
-    ownHome(users.cleanUp);
+    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`closedAfterUsers`).
+    const users = closedAfterUsers(() => closeDatabase(database));
     const quiet = (name: string): NotificationChannel => ({
       name,
       deliver: async () => {},
@@ -877,10 +871,8 @@ describe("channel replies", () => {
     });
     await awaitingApproval(agents, "시작 실패 조직");
     await t.stopServer();
-    // 아래에서 시험 서버의 DB로 서버를 하나 더 시작한다. 시험 서버(DB)는 그 시작이 끝난 것을 확인한 뒤에만 닫는다(`handOver`).
+    // 아래에서 시험 서버의 DB로 서버를 하나 더 시작한다. 시험 서버(DB)는 그 시작이 끝난 것을 확인한 뒤에만 닫는다(`startOnDatabaseOf`).
     const first = t;
-    const users = handOver(first);
-    t = undefined;
 
     // 시계가 부를 때마다 10초씩 가서, 멈추지 않은 relay라면 주기 확인마다 재시도 예정이 지난 알림을 다시 보낸다.
     let tick = 0;
@@ -905,19 +897,18 @@ describe("channel replies", () => {
     const diagnostics = startDiagnostics();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
-      const starting = ownStart(
-        users.own,
-        startServer({
-          db: first.db,
-          port: 0,
+      const starting = startOnDatabaseOf(
+        first,
+        {
           now: () => new Date(base + tick++ * 10_000),
           notificationChannels: [broken],
           notificationPollMs: 10,
           heartbeatPollMs: 10,
-        }),
+        },
         "the server whose start should fail",
         diagnostics.endedWith({ error: [], warn: [] })
       ).started;
+      t = undefined;
       await expect(starting).rejects.toThrow("토큰 거부");
       // 실패한 시작은 주기 확인을 하나도 남기지 않는다. 남았다면 시간을 옮길 때 재시도 예정이 지난 알림을 다시 보낸다.
       expect(vi.getTimerCount()).toBe(0);
@@ -933,10 +924,8 @@ describe("channel replies", () => {
   it("still frees the port and reports the start error when closing the failed channel also throws", async () => {
     // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
-    const users = folderCleanup(() => closeDatabase(database));
-    onTestFinished(users.cleanUp);
-    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다.
-    ownHome(users.cleanUp);
+    // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`closedAfterUsers`).
+    const users = closedAfterUsers(() => closeDatabase(database));
     /** 그 port를 듣는 listener. 시험 정리가 소유하고, 돌려준 `close`로 시험 중간에 포트를 비운다. */
     const listening = (port: number) =>
       ownedListener(

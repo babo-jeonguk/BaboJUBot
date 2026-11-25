@@ -25,7 +25,12 @@ import {
   wakeText,
   type ModelRequest,
 } from "./local-model.ts";
-import { startTestServer, type TestServer } from "./support.ts";
+import {
+  startTestServer,
+  type TestServer,
+  ownStart,
+  helperStartEnded,
+} from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -94,21 +99,26 @@ describe.skipIf(!program)(
       // OpenCode가 아직 쓰는 dataDir는 서버가 닫힌 뒤에만 지운다.
       folder = folderCleanup(() => removeFolder(dataDir));
       const [fake] = createFakeProviders(1, { adapter: () => agents.runtime });
-      t = await startTestServer({
-        providers: [
-          fake!,
-          createOpenCodeProvider({
-            dataDir,
-            command: [
-              process.execPath,
-              path.resolve("test/fixtures/opencode-local-model.mjs"),
-              program!,
-              model.url,
-            ],
-          }),
-        ],
-      });
-      folder.own(() => t.close());
+      // 시험 서버(OpenCode를 띄움)는 시작하는 즉시 폴더 정리가 소유한다. 넘기기 전에 실패하면 helper가 자기 정리를 마쳤을 때만 끝으로 본다.
+      t = await ownStart(
+        folder.own,
+        startTestServer({
+          providers: [
+            fake!,
+            createOpenCodeProvider({
+              dataDir,
+              command: [
+                process.execPath,
+                path.resolve("test/fixtures/opencode-local-model.mjs"),
+                program!,
+                model.url,
+              ],
+            }),
+          ],
+        }),
+        "the test server",
+        helperStartEnded
+      ).started;
     });
     // 모델 서버는 그것을 부르는 OpenCode(서버가 띄움)가 끝난 뒤에만 닫는다. 서버·폴더 정리가 실패하면 닫지 않고 그 실패를 알린다.
     afterAll(() =>

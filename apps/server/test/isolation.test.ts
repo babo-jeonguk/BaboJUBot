@@ -23,17 +23,16 @@ import {
 } from "@babojubot/runtime";
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { jsonBodyLimitBytes } from "../src/app.ts";
-import { startServer } from "../src/index.ts";
+
 import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import {
   eventually,
   eventuallyMs,
-  handOver,
   ownedListener,
-  ownStart,
   startTestServer,
   within,
   type TestServer,
+  startOnDatabaseOf,
 } from "./support.ts";
 import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
 
@@ -82,8 +81,8 @@ describe("isolation switch", () => {
   });
 
   it("keeps the saved value across a server restart", async () => {
-    // 다시 띄운 서버의 폴더는 그 서버가 끝난 뒤에만 지운다(`folderCleanup`). 시험 서버(DB)는 다시 띄운 서버와 그 폴더의 정리가 끝난 뒤에만
-    // 닫는다(`handOver`): 다시 띄운 서버가 그 DB를 쓰기 때문이다.
+    // 다시 띄운 서버는 시험 서버의 DB와 이 폴더를 쓴다. 시험 서버(DB)도 이 폴더도 다시 띄운 서버의 끝(한 번만 도는 같은 끝)을 확인한
+    // 뒤에만 닫거나 지운다(`startOnDatabaseOf`, `folderCleanup`).
     const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-isolation-"));
     const folder = folderCleanup(() => removeFolder(dataDir));
     onTestFinished(folder.cleanUp);
@@ -91,19 +90,15 @@ describe("isolation switch", () => {
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
     await t.stopServer();
     const first = t;
-    const users = handOver(first);
-    t = undefined;
-    users.own(folder.cleanUp);
-    const again = await ownStart(
-      folder.own,
-      startServer({
-        db: first.db,
-        port: 0,
-        dataDir,
-        providers: createFakeProviders(1),
-      }),
+    const restarted = startOnDatabaseOf(
+      first,
+      { dataDir, providers: createFakeProviders(1) },
       "the restarted server"
-    ).started;
+    );
+    t = undefined;
+    // 다시 띄운 서버의 폴더도 그 서버의 끝(같은 결과)을 확인한 뒤에만 지운다.
+    folder.own(restarted.stop);
+    const again = await restarted.started;
     const res = await fetch(again.url + "/api/providers");
     expect(providerSettingsSchema.parse(await res.json()).isolated).toBe(true);
   });
