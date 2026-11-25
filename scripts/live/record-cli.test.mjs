@@ -98,18 +98,18 @@ function recording(recordings) {
 
 /**
  * 중계가 아직 쓰고 있는 녹화에 `kind` 기록이 닿으면 이행한다. 중계가 밖으로 알리지 않는 일(떠난 요청자)의 기록을 기다릴 때 쓴다.
- * 알릴 수단이 없는 상태라 바로 한 번 확인하고, 닿지 않았으면 깨어나 다시 확인한다. 상한(`eventMs`) 안에 닿지 않거나 녹화를 읽지
- * 못하면 그 까닭으로 거절한다.
+ * 알릴 수단이 없는 상태라 바로 한 번 확인하고, 닿지 않았으면 깨어나 다시 확인한다. 상한은 공용 `within`(`eventMs`)이 두고, 넘기면
+ * 다시 확인하기를 멈춘다. 녹화를 읽지 못하면 그 까닭으로 거절한다.
  */
 function recordedRow(recordings, kind) {
-  const deadline = Date.now() + eventMs;
-  return new Promise((resolve, reject) => {
+  /** 상한으로 기다림이 끝나면 다시 확인하지 않는다. */
+  let stopped = false;
+  const seen = new Promise((resolve, reject) => {
     const check = () => {
+      if (stopped) return;
       try {
         if (writtenRows(recordings).rows.some((row) => row.kind === kind))
           resolve(undefined);
-        else if (Date.now() > deadline)
-          reject(new Error(`record-cli did not record ${kind}`));
         else setTimeout(check, 20);
       } catch (error) {
         reject(error);
@@ -117,6 +117,11 @@ function recordedRow(recordings, kind) {
     };
     check();
   });
+  return within(seen, eventMs, `record-cli did not record ${kind}`).finally(
+    () => {
+      stopped = true;
+    }
+  );
 }
 
 /** 시험 안의 사건 대기 상한. 넘기면 무엇을 기다렸는지 알리고 실패한다. */

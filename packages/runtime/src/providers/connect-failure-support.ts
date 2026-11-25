@@ -1,6 +1,10 @@
 import type * as httpModule from "node:http";
 import type * as netModule from "node:net";
+import path from "node:path";
 import { vi } from "vitest";
+import { attemptAll } from "@babojubot/contracts";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { within } from "@babojubot/process/test-support";
 
 // 시험이 정한 포트로 가는 연결 하나를 정한 오류로 실패시킨다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 그
 // 번호를 잡으면 제품 결함 없이 실패한다(#294 외부 리뷰 2회차 STD-2). 저장소가 OS 호출 실패를 넣는 방식(`vi.mock`의 모듈 대역)으로
@@ -167,4 +171,40 @@ export function failingHttp(real: typeof httpModule, net: typeof netModule) {
   const createServer = creating(Server) as typeof real.createServer;
   const replaced = { request, Server, createServer };
   return { ...real, ...replaced, default: { ...real, ...replaced } };
+}
+
+/**
+ * `at`에 맞는 중계 서버의 닫기가 실패를 알리게 하고(`serverFaults.close`, 서버는 실제로 닫힌다), 그 실패로 중계가 남긴 폴더를
+ * 정리(`own`)에 맡긴다. `closing`은 그 중계들의 닫기 전부가 끝나는 promise를 돌려준다(중계의 `close`는 한 번이라 시험이 이미 닫았으면
+ * 그 결과, 실행 시도·확인이 닫으면 그 끝). 정리는 그것이 끝나기를 상한 안에서 기다린 뒤, 대역이 실패를 알린 주소의 폴더만 지운다.
+ * 닫기가 거절했는데 대역이 실패시킨 닫기가 하나도 없으면(시험이 닫기 전에 실패해 대역이 풀린 뒤의 실제 닫기 실패 등) 그 거절을 던지고
+ * 아무것도 지우지 않는다. 대역이 실패를 알린 주소(`failedAt`)를 돌려준다. 시험마다 비우는 `failedClose`와 달리 정리 때까지 남는다.
+ */
+export function failingRelayCloses(
+  own: (step: () => Promise<void>) => void,
+  at: (address: string) => boolean,
+  closing: () => Promise<unknown>,
+  code = "EBUSY"
+) {
+  const failedAt: string[] = [];
+  serverFaults.close = {
+    code,
+    at,
+    failed: (address) => failedAt.push(address),
+  };
+  own(async () => {
+    const failure = await within(
+      closing(),
+      10_000,
+      "the relays did not close"
+    ).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    if (failure !== undefined && failedAt.length === 0) throw failure;
+    await attemptAll(
+      failedAt.map((address) => () => removeFolder(path.dirname(address)))
+    );
+  });
+  return { failedAt: failedAt as readonly string[] };
 }

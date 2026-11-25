@@ -400,7 +400,8 @@ describe("plugins still activating (#286)", () => {
     const root = await folders.make("opencode-activating-");
     const file = path.join(root, "activating.json");
     await writeFile(file, JSON.stringify(scene));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // 경고는 그대로 내보내고 기록만 한다.
+    const warn = vi.spyOn(console, "warn");
     onTestFinished(() => warn.mockRestore());
     const result = await createOpenCodeProvider({
       dataDir: root,

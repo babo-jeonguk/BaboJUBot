@@ -25,9 +25,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import {
-  attemptAll,
   hasErrorCode,
-  settled,
   orIfMissing,
   type EgressRefusal,
   type ProviderConnection,
@@ -58,7 +56,6 @@ import {
   runDocker,
 } from "./container.ts";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import { lifelineHolder } from "@babojubot/process/test-cleanup";
 import {
   manualClock,
@@ -68,6 +65,7 @@ import {
 import { relaySockets } from "./relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
 import {
+  failingRelayCloses,
   refusing,
   resetRefusing,
   serverFaults,
@@ -3265,25 +3263,16 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
   it("still removes its container when the relay does not close, and fails the check", async () => {
     const { environment, removals } = await cleanProbe();
     // 확인이 연 중계의 egress 서버 닫기가 실패를 알린다(서버는 실제로 닫힌다). 닫힘을 확인하지 못한 중계는 폴더를 남기므로, 그
-    // 폴더는 시험이 지운다. 대역의 기록은 시험마다 `afterEach`가 비우므로(이 정리보다 먼저 돈다) 대역이 실패를 알린 주소를 여기
-    // 따로 모은다. 정리는 확인(그 중계 닫기 전부)이 끝난 뒤에만 지운다.
-    const failedAt: string[] = [];
-    serverFaults.close = {
-      code: "EBUSY",
-      at: (address) => path.basename(address) === relaySockets.egress,
-      failed: (address) => failedAt.push(address),
-    };
-    // 확인을 시작한 직후(사이에 기다림 없이) 그 정리를 맡긴다.
+    // 폴더는 확인(그 중계 닫기 전부)이 끝난 뒤 정리가 지운다(`failingRelayCloses`). 확인을 시작한 직후(사이에 기다림 없이) 맡긴다.
     const probing = environment.probe(
       { blocked: [], forbidden: [] },
       AbortSignal.timeout(10_000)
     );
-    onTestFinished(async () => {
-      await within(settled(probing), 10_000, "the isolation probe did not end");
-      await attemptAll(
-        failedAt.map((address) => () => removeFolder(path.dirname(address)))
-      );
-    });
+    const { failedAt } = failingRelayCloses(
+      onTestFinished,
+      (address) => path.basename(address) === relaySockets.egress,
+      () => probing
+    );
     // 거절을 먼저 받는다. 남긴 폴더의 위치는 대역이 실패시킨 닫기 뒤에야 안다.
     const failure = await probing.then(
       () => undefined,

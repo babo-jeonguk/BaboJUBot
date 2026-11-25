@@ -7,16 +7,15 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   destinationSchema,
   egressRefusalMessages,
-  hasErrorCode,
   isDisconnect,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import { ownedClosable } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 import {
   refusing,
+  failingRelayCloses,
   resetRefusing,
   serverFaults,
 } from "./connect-failure-support.ts";
@@ -1092,15 +1091,18 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   const socketOf = (relay: { directory: string }, name: string) =>
     path.join(relay.directory, name);
   /**
-   * `addresses`에서 듣는 중계 서버의 닫기가 EBUSY로 실패를 알리게 한다(서버는 실제로 닫힌다). 듣지 않던 서버의 원래 오류
-   * (ERR_SERVER_NOT_RUNNING)는 그대로 둔다.
+   * `addresses`에서 듣는 중계 서버의 닫기가 EBUSY로 실패를 알리게 하고(서버는 실제로 닫힌다), 그로 남은 폴더를 정리에 맡긴다
+   * (`failingRelayCloses`). `closing`은 그 중계들의 닫기다.
    */
-  const failCloses = (...addresses: string[]) => {
-    serverFaults.close = {
-      code: "EBUSY",
-      at: (address) => addresses.includes(address),
-    };
-  };
+  const failCloses = (
+    closing: () => Promise<unknown>,
+    ...addresses: string[]
+  ) =>
+    failingRelayCloses(
+      onTestFinished,
+      (address) => addresses.includes(address),
+      closing
+    );
   /** 중계 서버 하나의 닫기가 실패했을 때의 거절: 남긴 폴더를 밝히고, 원인 사슬 끝에 그 닫기 오류가 있다. */
   const keptFolder = (relay: { directory: string }, code: string) => ({
     message: `the relay could not be closed; its folder ${relay.directory} is kept`,
@@ -1114,43 +1116,15 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   /** 남긴 폴더의 위치를 알리는 중계의 경고. 거절을 받는 쪽은 코드만 기록한다. */
   const keptWarning = (relay: { directory: string }, codes: string) =>
     `[provider] the isolated run relay's servers did not all close; its folder is kept at ${relay.directory} (${codes})`;
-  /** 대역이 실패시킨 닫기(EBUSY, 서버는 실제로 닫힘) 하나로 난 거절인가. */
-  const failedByDouble = (failure: unknown) =>
-    failure instanceof Error &&
-    failure.cause instanceof Error &&
-    hasErrorCode("EBUSY")(failure.cause.cause);
-  /**
-   * 닫기에 실패한 중계가 남긴 폴더. 중계를 연 직후 맡긴다. 정리는 먼저 그 중계의 닫기를 받는다(닫기는 한 번이라 시험이 이미 닫았으면
-   * 그 결과다). 시험이 닫기 전에 실패했으면 대역이 풀린 뒤라 실제 닫기가 폴더까지 지운다. 대역이 실패시킨 닫기(EBUSY)만 받아들이고 그
-   * 폴더를 지운다(대역의 서버는 실제로 닫혔다). 그 밖의 닫기 실패는 서버가 남았을 수 있으므로 지우지 않고 던진다.
-   */
-  const removeAfter = (relay: {
-    directory: string;
-    close: () => Promise<void>;
-  }) =>
-    onTestFinished(async () => {
-      const failure = await within(
-        relay.close(),
-        10_000,
-        "the relay did not close"
-      ).then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      if (failure !== undefined && !failedByDouble(failure)) throw failure;
-      await removeFolder(relay.directory);
-    });
-
   // 닫기 콜백의 실패는 거절로 드러낸다(CODING_STANDARDS.md#제품-코드). 서버가 닫혔음을 확인하지 못했으므로 그 소켓 파일이 있는 폴더도
   // 지우지 않고 남긴다(#297 자원 표, 닫힘 확인 뒤에만 지우기). 실패 원인은 닫기의 거절에 남는다.
   it("fails its close with the cause when a relay server does not close, and keeps its folder", async () => {
     const { relays } = hub();
-    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warned = vi.spyOn(console, "warn");
     onTestFinished(() => warned.mockRestore());
     const relay = relays.open({ identity, required: [] });
-    removeAfter(relay);
     await relay.ready;
-    failCloses(socketOf(relay, relaySockets.egress));
+    failCloses(() => relay.close(), socketOf(relay, relaySockets.egress));
     await expect(relay.close()).rejects.toMatchObject(
       keptFolder(relay, "EBUSY")
     );
@@ -1169,12 +1143,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const unhandled = vi.fn();
     process.on("unhandledRejection", unhandled);
     onTestFinished(() => void process.off("unhandledRejection", unhandled));
-    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warned = vi.spyOn(console, "warn");
     onTestFinished(() => warned.mockRestore());
     serverFaults.listen = { code: "EACCES" };
     const relay = relays.open({ identity, required: [] });
-    removeAfter(relay);
-    failCloses(socketOf(relay, relaySockets.tools));
+    failCloses(() => relay.close(), socketOf(relay, relaySockets.tools));
     await expect(relay.ready).rejects.toThrow("listen failed");
     expect(serverFaults.refusedListen.mock.calls).toEqual([
       [socketOf(relay, relaySockets.egress)],
@@ -1195,14 +1168,13 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
 
   it("closes every relay when the hub closes and fails with each relay's failure, not only the first", async () => {
     const { relays } = hub();
-    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warned = vi.spyOn(console, "warn");
     onTestFinished(() => warned.mockRestore());
     const first = relays.open({ identity, required: [] });
-    removeAfter(first);
     const second = relays.open({ identity, required: [] });
-    removeAfter(second);
     await Promise.all([first.ready, second.ready]);
     failCloses(
+      () => relays.close(),
       socketOf(first, relaySockets.egress),
       socketOf(second, relaySockets.egress)
     );
