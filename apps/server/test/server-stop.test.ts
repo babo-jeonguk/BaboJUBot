@@ -172,6 +172,8 @@ function getOver(agent: http.Agent, url: string) {
   return new Promise<{ connection?: string; reused: boolean }>(
     (resolve, reject) => {
       const req = http.get(url, { agent }, (res) => {
+        // 응답 도중 끊기면 `end` 대신 이 오류가 온다.
+        res.on("error", reject);
         res.resume();
         res.on("end", () =>
           resolve({

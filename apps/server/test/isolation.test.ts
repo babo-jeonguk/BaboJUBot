@@ -119,6 +119,8 @@ function overSocket(
       });
       req.on("response", (res) => {
         let body = "";
+        // 응답 도중 끊기면 `end` 대신 이 오류가 온다. 받은 데까지의 본문을 답으로 내주지 않는다.
+        res.on("error", reject);
         res.on("data", (chunk) => (body += chunk));
         res.on("end", () =>
           resolve({
@@ -141,6 +143,14 @@ function connectOver(directory: string, target: string) {
       const socket = net.connect(path.join(directory, "egress.sock"));
       let text = "";
       socket.once("error", reject);
+      // 중계가 답(header 끝)을 다 보내기 전에 닫으면 기다림을 그 닫힘으로 끝낸다. 답을 받은 뒤의 닫힘은 이미 정해진 결과를 바꾸지 않는다.
+      socket.once("close", () =>
+        reject(
+          new Error(
+            `the relay closed the connection before answering CONNECT ${target}: ${JSON.stringify(text)}`
+          )
+        )
+      );
       socket.on("connect", () =>
         socket.write(`CONNECT ${target} HTTP/1.1\r\n\r\n`)
       );
