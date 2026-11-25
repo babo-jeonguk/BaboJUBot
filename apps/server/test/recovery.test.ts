@@ -11,7 +11,6 @@ import {
   organizationDetailSchema,
   runDetailSchema,
   runSummaryListSchema,
-  streamFrameSchema,
   type RuntimeAdapter,
 } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
@@ -37,7 +36,6 @@ import {
   writes,
   type Gate,
 } from "@babojubot/runtime/testing";
-import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import {
@@ -50,6 +48,7 @@ import {
 } from "./scenarios.ts";
 import {
   eventuallyMs,
+  openEventStream,
   startTestServer,
   within,
   type TestServer,
@@ -737,7 +736,9 @@ describe("server start recovery barrier", () => {
     // `held`가 열기 전에는 끝나지 않으므로, 그 알림도 이때까지 나갈 수 없다.
     await stream.caughtUp();
     expect(runtime.executions()).toEqual([]);
-    expect(stream.types().filter((t) => t !== "message.created")).toEqual([]);
+    expect(
+      stream.events.map((e) => e.type).filter((t) => t !== "message.created")
+    ).toEqual([]);
     expect(await runStatus(late!.runId)).toBe("running");
     held.open();
     const running = await within(
@@ -746,13 +747,17 @@ describe("server start recovery barrier", () => {
       "the server did not finish starting"
     );
     await running.drain();
+    // 끝난 실행 시도가 보낸 Event를 모두 받은 뒤에 닫는다. 그사이 연결이 실패했으면 그 실패로 끝난다.
+    await stream.caughtUp();
     stream.close();
 
     // 복구된 깨우기는 다시 처리되고, 복구 중에 보낸 메시지는 같은 조직의 다음 실행 시도가 받는다.
     expect(runtime.executions().sort()).toEqual(
       [early!.leadId, late!.leadId].sort()
     );
-    const types = stream.types().filter((t) => t !== "message.created");
+    const types = stream.events
+      .map((e) => e.type)
+      .filter((t) => t !== "message.created");
     expect(types.slice(0, 2)).toEqual(["run.finished", "run.finished"]);
     expect(types.filter((t) => t === "run.finished")).toHaveLength(4);
     expect(
@@ -888,53 +893,10 @@ async function until(
   if (failed) throw failed.error;
 }
 
-type Stream = {
-  types: () => string[];
-  /** 서버가 지금까지 이 연결로 보낸 Event를 모두 받을 때까지 기다린다(ping 뒤의 pong은 그 앞 frame 뒤에 온다). */
-  caughtUp: () => Promise<void>;
-  close: () => void;
-};
-
-/**
- * 전체 Event stream을 구독해 받은 Event 종류를 순서대로 모은다. 서버가 듣기 시작한 뒤(`onListening`)에 부르므로 다시 시도하지 않는다.
- * 연결 오류나 읽을 수 없는 frame은 "아직"이 아니라 실패다. 준비 뒤에 온 읽을 수 없는 frame은 받은 Event를 볼 때(`types`) 드러낸다.
- * 연결은 서버를 닫을 때 함께 끊긴다.
- */
-async function listen(base: string): Promise<Stream> {
-  const types: string[] = [];
-  let unreadable: { error: unknown } | undefined;
-  const socket = new WebSocket(base.replace(/^http/, "ws") + eventStreamPath);
-  await within(
-    new Promise<void>((resolve, reject) => {
-      socket.once("error", reject);
-      socket.on("message", (data) => {
-        try {
-          const frame = streamFrameSchema.parse(JSON.parse(String(data)));
-          if (frame.type === "ready") resolve();
-          if (frame.type === "event") types.push(frame.event.type);
-        } catch (error) {
-          unreadable ??= { error };
-          reject(error);
-        }
-      });
-    }),
-    eventuallyMs,
-    "the Event stream did not get ready"
+/** 전체 Event stream을 구독한다. 서버가 듣기 시작한 뒤(`onListening`)에 부르므로 다시 시도하지 않는다(`openEventStream`). */
+async function listen(base: string) {
+  const { subscription } = await openEventStream(
+    base.replace(/^http/, "ws") + eventStreamPath
   );
-  return {
-    types: () => {
-      if (unreadable) throw unreadable.error;
-      return [...types];
-    },
-    caughtUp: () =>
-      within(
-        new Promise<void>((resolve) => {
-          socket.once("pong", () => resolve());
-          socket.ping();
-        }),
-        eventuallyMs,
-        "the Event stream's pong did not finish"
-      ),
-    close: () => socket.close(),
-  };
+  return subscription;
 }

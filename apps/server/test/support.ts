@@ -53,6 +53,12 @@ export type Subscription = {
   expectNoEvents: (since?: number) => Promise<void>;
   /** 받은 전역 설정 변경 신호(`settings_changed`) 수. */
   settingsSignals: () => number;
+  /**
+   * 서버가 지금까지 이 연결로 보낸 frame을 모두 받을 때까지 기다린다(ping을 보내 pong을 받는다. 한 연결의 frame은 보낸 순서로 온다).
+   * 연결이 실패했으면 그 실패로 끝난다.
+   */
+  caughtUp: () => Promise<void>;
+  /** 시험이 청한 닫힘. 그 뒤의 닫힘은 실패가 아니다. */
   close: () => void;
 };
 
@@ -126,7 +132,8 @@ export async function startTestServer({
   // 넘겨받은 폴더는 넘긴 쪽이 치운다. 이 helper가 만든 폴더만 지운다.
   let ownDataDir: string | undefined;
   let server: RunningServer | undefined;
-  const sockets = new Set<WebSocket>();
+  /** 연 Event stream의 즉시 끊기. 서버를 끄기 전에 모두 끊는다(시험이 청한 닫힘이다). */
+  const sockets = new Set<() => void>();
   /** 서버의 끝. 한 번만 하고, 끄기를 부른 쪽과 정리가 같은 결과를 기다린다. */
   let stopped: Promise<void> | undefined;
 
@@ -243,74 +250,19 @@ export async function startTestServer({
     deliverNotifications: () => server.deliverNotifications(),
     stopProgress: () => server.progress(),
     stopServer() {
-      for (const socket of sockets) socket.terminate();
+      for (const terminate of sockets) terminate();
       return (stopped ??= server.close());
     },
-    subscribe(scope, { origin } = {}) {
+    async subscribe(scope, { origin } = {}) {
       const query =
         scope.kind === "organization"
           ? `?organizationId=${encodeURIComponent(scope.organizationId)}`
           : "";
-      const socket = new WebSocket(
+      const { subscription } = await openEventStream(
         server.url.replace(/^http/, "ws") + eventStreamPath + query,
-        { origin }
+        { origin, opened: (terminate) => sockets.add(terminate) }
       );
-      sockets.add(socket);
-      const events: Event[] = [];
-      let settingsSignals = 0;
-      let waiter: (() => void) | undefined;
-      let taken = 0;
-      return new Promise((resolve, reject) => {
-        socket.once("error", reject);
-        socket.once("unexpected-response", (_req, res) =>
-          reject(new Error(`upgrade refused: ${res.statusCode}`))
-        );
-        socket.on("message", (data) => {
-          const frame = streamFrameSchema.parse(JSON.parse(String(data)));
-          if (frame.type === "ready") return resolve(subscription);
-          if (frame.type === "settings_changed") {
-            settingsSignals++;
-            return;
-          }
-          events.push(frame.event);
-          waiter?.();
-        });
-        const subscription: Subscription = {
-          events,
-          next(timeoutMs = eventuallyMs) {
-            return new Promise((ok, fail) => {
-              const take = () => {
-                if (taken >= events.length) return false;
-                waiter = undefined;
-                clearTimeout(timer);
-                ok(events[taken++]!);
-                return true;
-              };
-              const timer = setTimeout(
-                () => fail(new Error("no Event arrived")),
-                timeoutMs
-              );
-              if (!take()) waiter = take;
-            });
-          },
-          async expectNoEvents(since = 0) {
-            await within(
-              new Promise<void>((ok) => {
-                socket.once("pong", () => ok());
-                socket.ping();
-              }),
-              eventuallyMs,
-              "the Event stream's pong did not finish"
-            );
-            if (events.length > since)
-              throw new Error(
-                `unexpected Event: ${JSON.stringify(events.slice(since))}`
-              );
-          },
-          settingsSignals: () => settingsSignals,
-          close: () => socket.close(),
-        };
-      });
+      return subscription;
     },
     async close() {
       // 넘기기 전 실패의 정리와 같다. 서버의 끝(끄기를 이미 불렀으면 그 결과)을 확인한 뒤에만 DB와 폴더를 닫고 지운다.
@@ -323,12 +275,138 @@ export async function startTestServer({
         ])
       );
       closing.own(() => {
-        for (const socket of sockets) socket.terminate();
+        for (const terminate of sockets) terminate();
         return (stopped ??= server.close());
       });
       await closing.cleanUp();
     },
   };
+}
+
+/**
+ * Event stream 연결 하나를 열고 준비(`ready` frame)를 기다린다. 연결의 실패는 하나로 모은다: 연결 오류, 거절된 연결(업그레이드 응답),
+ * 시험이 청하지 않은 닫힘, 읽지 못한 frame 가운데 먼저 온 것이다. 준비·다음 Event·순서 표시(pong) 대기가 모두 그 실패로 끝난다.
+ * 준비 뒤의 실패를 버리면 연결이 끊겨도 다음 대기가 시한까지 기다리거나 받은 Event가 모자란 채 단언했다(#298 리뷰 1회차 SPEC-2).
+ * `close`와 `terminate`는 시험이 청한 닫힘이라 실패가 아니다. `opened`는 연결을 만든 직후 그 `terminate`를 받는다(정리 등록).
+ */
+export async function openEventStream(
+  url: string,
+  {
+    origin,
+    opened,
+  }: { origin?: string; opened?: (terminate: () => void) => void } = {}
+): Promise<{ subscription: Subscription; terminate: () => void }> {
+  const socket = new WebSocket(url, { origin });
+  let closing = false;
+  const terminate = () => {
+    closing = true;
+    socket.terminate();
+  };
+  opened?.(terminate);
+  let failure: { error: unknown } | undefined;
+  /** 지금 기다리는 쪽의 거절. 연결이 실패하면 모두 그 실패로 끝난다. */
+  const waiting = new Set<(error: unknown) => void>();
+  const fail = (error: unknown) => {
+    failure ??= { error };
+    for (const reject of waiting) reject(failure.error);
+  };
+  /** `until`이 끝나거나 연결이 실패할 때까지. 이미 실패했으면 바로 그 실패다. */
+  const unlessFailed = <T>(until: Promise<T>) =>
+    new Promise<T>((resolve, reject) => {
+      if (failure) return reject(failure.error);
+      waiting.add(reject);
+      until.then(
+        (value) => {
+          waiting.delete(reject);
+          resolve(value);
+        },
+        (error: unknown) => {
+          waiting.delete(reject);
+          reject(error);
+        }
+      );
+    });
+  socket.on("error", (error) => fail(error));
+  socket.once("unexpected-response", (_req, res) =>
+    fail(new Error(`upgrade refused: ${res.statusCode}`))
+  );
+  socket.on("close", (code, reason) => {
+    if (!closing)
+      fail(
+        new Error(
+          `the Event stream closed before the test closed it (code ${code}${reason.length ? `, ${reason.toString()}` : ""})`
+        )
+      );
+  });
+  const events: Event[] = [];
+  let settingsSignals = 0;
+  let arrived: (() => void) | undefined;
+  let ready!: () => void;
+  const readied = new Promise<void>((resolve) => (ready = resolve));
+  socket.on("message", (data) => {
+    try {
+      const frame = streamFrameSchema.parse(JSON.parse(String(data)));
+      if (frame.type === "ready") return ready();
+      if (frame.type === "settings_changed") {
+        settingsSignals++;
+        return;
+      }
+      events.push(frame.event);
+      arrived?.();
+    } catch (error) {
+      fail(error);
+    }
+  });
+  const caughtUp = () =>
+    within(
+      unlessFailed(
+        new Promise<void>((resolve) => {
+          socket.once("pong", () => resolve());
+          socket.ping();
+        })
+      ),
+      eventuallyMs,
+      "the Event stream's pong did not finish"
+    );
+  let taken = 0;
+  const subscription: Subscription = {
+    events,
+    next: (timeoutMs = eventuallyMs) =>
+      within(
+        unlessFailed(
+          new Promise<Event>((resolve) => {
+            const take = () => {
+              if (taken >= events.length) return;
+              arrived = undefined;
+              resolve(events[taken++]!);
+            };
+            arrived = take;
+            take();
+          })
+        ),
+        timeoutMs,
+        "no Event arrived"
+      ),
+    async expectNoEvents(since = 0) {
+      await caughtUp();
+      if (events.length > since)
+        throw new Error(
+          `unexpected Event: ${JSON.stringify(events.slice(since))}`
+        );
+    },
+    settingsSignals: () => settingsSignals,
+    caughtUp,
+    close: () => {
+      closing = true;
+      socket.close();
+    },
+  };
+  await within(
+    unlessFailed(readied),
+    eventuallyMs,
+    "the Event stream did not get ready"
+  );
+  return { subscription, terminate };
 }
 
 /** 막힌 순서를 시한 안에 그 이름으로 알린다. 테스트 전체 시한까지 기다리지 않는다. 공용 시험 도움을 그대로 내보낸다. */
