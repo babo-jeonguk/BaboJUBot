@@ -175,8 +175,12 @@ it.each([
 // 성공은 통과, 장면이 선언한 코드 하나는 받고, 그 밖의 코드(실행기의 끝을 확인하지 못함 등)는 정리 실패로 폴더를 남긴다.
 it.each([
   { failure: undefined, expectStop: undefined, kept: false },
-  { failure: "TREE_LEFT", expectStop: "TREE_LEFT", kept: false },
-  { failure: "SUPERVISOR_NOT_ENDED", expectStop: "TREE_LEFT", kept: true },
+  { failure: "TREE_LEFT", expectStop: "TREE_LEFT" as const, kept: false },
+  {
+    failure: "SUPERVISOR_NOT_ENDED",
+    expectStop: "TREE_LEFT" as const,
+    kept: true,
+  },
   { failure: "TREE_LEFT", expectStop: undefined, kept: true },
 ])(
   "judges a launched tree's real stop that fails with $failure when the scene expects $expectStop",

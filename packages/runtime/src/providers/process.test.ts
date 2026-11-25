@@ -14,7 +14,9 @@ import { testFolders } from "./test-folders.ts";
 const tree = vi.hoisted(() => ({
   run: undefined as undefined | (() => unknown),
 }));
-// 띄운 트리는 모두 공용 실행 경계 대역(`owningLaunchTree`)이 띄운 직후 그 실제 끄기를 폴더 정리에 맡긴다.
+// 실행 시도(`startProcess`)가 띄운 트리는 공용 실행 경계 대역(`owningLaunchTree`)이 띄운 직후 그 실제 끄기를 폴더 정리에 맡긴다.
+// 짧은 확인 명령(`runProbe`→`runTree`)의 트리는 대역을 거치지 않는다: `runTree`가 트리 전체의 끝을 확인한 뒤에만 돌려주고 확인하지
+// 못하면 던지므로, 시험은 그 결과를 기다리거나(취소한 probe는 정리가 결과를 받는다) 그 거절로 실패한다.
 vi.mock("@babojubot/process", async (importOriginal) => {
   const real = await importOriginal<typeof import("@babojubot/process")>();
   return {

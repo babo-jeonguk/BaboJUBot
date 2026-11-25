@@ -20,20 +20,10 @@ afterEach(() => {
 });
 async function run(stopFails: boolean) {
   const stateDir = await folders.make("babojubot-record-");
-  // 제품에는 실제로 끈 뒤 답하는 끄기를 돌려준다. `stopFails`면 그 뒤 실패로 답한다. 받은 인수를 남긴다(제품은 인수 없이 부른다).
-  const calls: unknown[][] = [];
-  folders.treeScene({
-    productStop:
-      (real) =>
-      async (...received) => {
-        calls.push(received);
-        await real(...received);
-        if (stopFails)
-          throw new Error(
-            "programs of this tree did not end (left: 1 (the tree did not end))"
-          );
-      },
-  });
+  // 실패 장면은 제품에 실제로 끈 뒤 실패로 답하는 끄기를 돌려준다. 받은 인수는 `calls`에 남는다(제품은 인수 없이 부른다).
+  const { calls } = stopFails
+    ? folders.treeScene({ failProductStop: "after-stopping" })
+    : { calls: undefined };
   const start = () =>
     startProcess({
       stateDir,
@@ -49,9 +39,11 @@ async function run(stopFails: boolean) {
     ? folders.ownBrokenRun(start())
     : folders.ownRun(start());
   const exit = await within(attempt.done, 30_000, "the run did not finish");
-  // 제품은 대역의 끄기를 인수 없이 불렀다.
-  expect(calls).not.toHaveLength(0);
-  for (const received of calls) expect(received).toEqual([]);
+  // 실패 장면이면 제품은 대역의 끄기를 인수 없이 불렀다.
+  if (calls) {
+    expect(calls).not.toHaveLength(0);
+    for (const received of calls) expect(received).toEqual([]);
+  }
   return { exit, records: await readdir(path.join(stateDir, "processes")) };
 }
 

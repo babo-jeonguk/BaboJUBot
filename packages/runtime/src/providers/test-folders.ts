@@ -34,14 +34,17 @@ export function owningLaunchTree<
 }
 
 /**
- * 이 시험에서 띄우는 트리의 장면. 정리는 각 트리의 실제 끄기 결과를 오류 코드(`TreeStopFailure.code`)로 판정한다: 성공은 통과,
- * `expectStop`을 준 장면은 그 코드 하나만 더 받는다. 그 밖의 실패(`SUPERVISOR_NOT_ENDED` 등)는 정리 실패다. 실제 끄기는 실행기가 끝난
- * 것을 확인하거나 강제로 끝낸 뒤에만 답을 판정하므로(`TREE_LEFT`는 실행기가 끝난 뒤의 답이다), 받은 코드도 실행기의 끝을 뜻한다.
- * `productStop`을 주면 제품에는 실제 끄기로 만든 그 끄기를 돌려준다(실제 트리는 바꾸지 않는다).
+ * 이 시험에서 띄우는 트리의 장면. 정리는 각 트리의 실제 끄기 결과를 판정한다: 성공(트리 전체와 감독 실행기의 끝)만 통과하고, 그 밖의
+ * 실패(`SUPERVISOR_NOT_ENDED` 등)는 정리 실패다.
+ * - `expectStop: "TREE_LEFT"`: 실행기가 남은 프로그램이 있다고 답하는 장면. 그 답은 실행기가 끝난 뒤에만 오므로(실제 끄기는 실행기가
+ *   끝난 것을 확인하거나 강제로 끝낸 뒤에 답을 판정한다) 이 코드 하나는 받는다. 그때 확인되는 것은 실행기의 끝뿐이고, 남은 프로그램의
+ *   끝은 그 장면이 따로 맡은 정리가 확인해야 한다.
+ * - `failProductStop`: 제품에는 실패로 답하는 끄기를 돌려준다(실제 트리는 바꾸지 않는다). `"without-stopping"`은 아무것도 끄지 않고,
+ *   `"after-stopping"`은 실제로 끈 뒤 실패로 답한다. 제품이 그 끄기에 넘긴 인수는 `treeScene`이 돌려주는 `calls`에 남는다.
  */
 type TreeScene = {
-  expectStop?: string;
-  productStop?: (real: LaunchedTree["stop"]) => LaunchedTree["stop"];
+  expectStop?: "TREE_LEFT";
+  failProductStop?: "without-stopping" | "after-stopping";
 };
 
 /** 시험이 만든 프로바이더 연결. 멈춤 신호를 받는 호출(실행·준비 확인·압축·모델 목록)을 정리가 맡는다. */
@@ -59,10 +62,11 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
   const folders = processFolders(...args);
   /** 이 시험의 트리 장면. 정한 시험의 정리가 끝나면 비운다(다음 시험에 남지 않는다). */
   let scene: TreeScene = {};
-  /** 공용 실행 경계 대역이 띄운 트리. 실제 끄기를 띄운 직후 폴더 정리에 맡기고, 장면(`scene`)의 기대 코드로 판정한다. */
+  /** 공용 실행 경계 대역이 띄운 트리. 실제 끄기를 띄운 직후 폴더 정리에 맡기고, 장면(`scene`)으로 판정한다. */
   const ownLaunchedTree = <T extends StoppableTree>(
     tree: T,
-    { expectStop, productStop }: TreeScene
+    { expectStop, failProductStop }: TreeScene,
+    calls: unknown[][] = []
   ): T => {
     folders.own(async () => {
       try {
@@ -72,10 +76,22 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
           throw error;
       }
     }, "a launched tree, by its real stop");
-    return productStop ? { ...tree, stop: productStop(tree.stop) } : tree;
+    if (!failProductStop) return tree;
+    return {
+      ...tree,
+      stop: async (...received: Parameters<T["stop"]>) => {
+        calls.push(received);
+        if (failProductStop === "after-stopping") await tree.stop(...received);
+        throw new Error(
+          "programs of this tree did not end (left: 1 (the tree did not end))"
+        );
+      },
+    };
   };
+  /** 이 시험의 장면에서 제품이 실패로 답하는 끄기에 넘긴 인수. */
+  let sceneCalls: unknown[][] = [];
   const ownTree = <T extends StoppableTree>(tree: T): T =>
-    ownLaunchedTree(tree, scene);
+    ownLaunchedTree(tree, scene, sceneCalls);
   // 경계 대역을 건 파일(대역은 시험 파일이 공용 실행을 처음 가져올 때 걸린다)에서만 트리를 맡는다. 그런 파일의 둘째 `testFolders`는 던진다.
   if (boundary) {
     if (treeOwner)
@@ -175,8 +191,9 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
   };
   /**
    * 일부러 `broken`으로 끝나는 실행 시도(시작 실패·입력 실패·주입한 끄기 실패·트리 밖 프로그램). `done`은 끝의 증거가 아니므로
-   * 판정하지 않는다. 정리는 실행 시도를 끝내고 제품의 일(기록·출력 닫기)이 끝나기를 기다릴 뿐이고, 프로그램과 감독 실행기의 끝은
-   * 공용 실행 경계 대역이 띄운 직후 맡은 실제 끄기가 장면의 기대 코드로 확인한다(`treeScene`). 그 대역이 없는 파일에서는 던진다.
+   * 판정하지 않는다. 정리는 실행 시도를 끝내고 제품의 일(기록·출력 닫기)이 끝나기를 기다릴 뿐이다. 트리의 끝은 공용 실행 경계 대역이
+   * 띄운 직후 맡은 실제 끄기가 확인한다(`treeScene`): 성공이면 트리 전체와 감독 실행기의 끝, `expectStop: "TREE_LEFT"` 장면이면 감독
+   * 실행기의 끝뿐이고 남은 프로그램은 그 장면이 따로 맡은 정리가 확인한다. 그 대역이 없는 파일에서는 던진다.
    */
   const ownBrokenRun = <
     T extends { end: () => void; done: Promise<{ broken: boolean }> },
@@ -200,9 +217,13 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
     treeScene(next: TreeScene) {
       ownsTrees();
       scene = next;
+      const calls: unknown[][] = [];
+      sceneCalls = calls;
       folders.own(async () => {
         scene = {};
+        sceneCalls = [];
       }, "tree scene");
+      return { calls };
     },
     /** 시험이 만든 프로바이더 연결을 정리에 맡긴다(위 `ownProvider`). */
     ownProvider,

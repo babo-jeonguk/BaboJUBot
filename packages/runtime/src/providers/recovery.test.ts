@@ -312,10 +312,12 @@ it("stops a process it recorded itself", async () => {
     stdio: ["ignore", "ignore", "ignore"],
   });
   // 시험이 어디서 끝나든 트리를 끈다(launchTree의 stop()은 끝을 그룹·표식·묶음으로 확인한다). 다만 복구의 실제 실행기 정리가 이
-  // 트리의 실행기를 대상으로 성공했으면(실행기가 기록한 실행기와, 있으면 표식을 가진 프로그램이 남지 않았음을 확인) 부르지 않는다.
-  // 대상은 요청의 기록한 프로세스가 이 트리의 실행기인가(번호와 실행기가 알린 시작 시각)로 본다. 표식만으로는 보지 않는다: 실행기의
-  // 환경에는 표식이 없어 표식 정리는 실행기에 닿지 않는다. Windows는 실행기를 끄면 묶음이 닫혀 트리가 끝난다. 밖에서 끝난 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보). 대표의 끝(`exited`)은
-  // 실행기의 끝이 아니므로 그 증거로 쓰지 않는다. 복구가 실패했거나 확인되지 않았으면 stop()이 끝을 확인하고, 그것도 실패하면 폴더(기록 포함)를 남긴다.
+  // 트리의 실행기를 대상으로 성공했으면 부르지 않는다: 밖에서 끝난 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보).
+  // 대상은 요청의 기록한 프로세스가 이 트리의 실행기인가(번호와 실행기가 알린 시작 시각)로 본다. 그 정리의 성공은 실행기가 기록한
+  // 실행기와, 표식을 받은 Linux·macOS에서는 표식을 가진 프로그램(대표 포함)이 남지 않았음을 확인한 것이다. 표식 정리가 없는
+  // Windows에서는 실행기를 끄면 묶음이 닫혀 트리가 끝나는 것이 공용 실행의 계약이다(`launchTree`). `tree.exited`는 실행기가 끝나도
+  // 이행하므로 대표의 끝의 증거로 쓰지 않는다. 복구가 실패했거나 확인되지 않았으면 stop()이 끝을 확인하고, 그것도 실패하면 폴더(기록
+  // 포함)를 남긴다.
   let recoveredBySupervisor = false;
   folders.own(async () => {
     if (!recoveredBySupervisor) await tree.stop();
@@ -339,8 +341,6 @@ it("stops a process it recorded itself", async () => {
       request.recorded?.start === supervisorStart
   );
   expect(recoveredBySupervisor).toBe(true);
-  // 실행기를 끈 복구 뒤에 대표도 끝났다.
-  await within(tree.exited, 20_000, "the recorded tree's leader did not end");
   expect(await readdir(path.dirname(file))).toEqual([]);
 }, 60_000);
 

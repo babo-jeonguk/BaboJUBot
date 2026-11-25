@@ -1,14 +1,10 @@
 import { randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunResult } from "@babojubot/contracts";
 import { planOrganizationCreation, planOwnerMessage } from "@babojubot/core";
 import { eq, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   findConversation,
@@ -30,12 +26,11 @@ import {
 } from "./runs.ts";
 import { conversations, organizations, wakes } from "./schema.ts";
 import {
-  closeThenDrop,
   createTestDatabase,
   type TestDatabase,
+  withDatabaseBefore,
 } from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestDatabase;
@@ -316,51 +311,10 @@ describe("Lead conversations", () => {
   });
 });
 
-/**
- * `tag` 직전까지만 적용한 DB를 같은 cluster에 따로 만들어 `fn`에 넘긴다. `fn`은 옛 모양의 행을 넣고 `migrateAll`로 끝까지 올린다.
- */
-async function withDatabaseBefore(
-  tag: string,
-  fn: (pool: pg.Pool, migrateAll: () => Promise<void>) => Promise<void>
-) {
-  const migrations = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../migrations"
-  );
-  await withCleanup(async (defer) => {
-    const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
-    defer(() => removeFolder(before));
-    await fsp.cp(migrations, before, { recursive: true });
-    const journalPath = path.join(before, "meta/_journal.json");
-    const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
-      entries: { tag: string }[];
-    };
-    const index = journal.entries.findIndex((e) => e.tag === tag);
-    journal.entries = journal.entries.slice(0, index);
-    await fsp.writeFile(journalPath, JSON.stringify(journal));
-
-    const name = `backfill_${randomUUID().replaceAll("-", "")}`;
-    await t.db.execute(sql.raw(`create database ${name}`));
-    const url = new URL(t.url);
-    url.pathname = `/${name}`;
-    // 풀은 만들 때 연결하지 않는다. 정리는 풀을 닫은 뒤에만 DB를 지운다(`closeThenDrop`).
-    const pool = new pg.Pool({ connectionString: url.toString() });
-    defer(() =>
-      closeThenDrop(
-        name,
-        () => pool.end(),
-        () => t.db.execute(sql.raw(`drop database ${name}`))
-      )
-    );
-    const db = drizzle(pool);
-    await migrate(db, { migrationsFolder: before });
-    await fn(pool, () => migrate(db, { migrationsFolder: migrations }));
-  });
-}
-
 describe("migration 0014_lead_conversations", () => {
   it("gives every existing organization a default conversation holding its earlier messages", async () => {
     await withDatabaseBefore(
+      t,
       "0014_lead_conversations",
       async (pool, migrateAll) => {
         const orgA = randomUUID();

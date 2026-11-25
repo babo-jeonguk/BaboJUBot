@@ -1,4 +1,13 @@
 import { randomUUID } from "node:crypto";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
+import pg from "pg";
+import { removeFolder } from "@babojubot/process/remove-folder";
+import { withCleanup } from "@babojubot/process/test-cleanup";
 import { inject } from "vitest";
 import type { TestProject } from "vitest/node";
 import {
@@ -42,7 +51,7 @@ const sideDatabaseStepMs = 10_000;
  * 않고 DB를 남긴 채 그 원인으로 실패한다. 지우기도 상한 안에서 기다린다. 상한은 기다림만 끝내므로, 넘긴 단계는 그 원인과 함께
  * 실패로 남는다(그 연결·지우기를 대신 끝내지는 않는다).
  */
-export async function closeThenDrop(
+async function closeThenDrop(
   name: string,
   close: () => Promise<unknown>,
   drop: () => Promise<unknown>
@@ -100,6 +109,50 @@ export function testClusterPort() {
       "테스트 cluster가 없습니다. vitest 설정의 globalSetup에 packages/db/src/test-cluster.ts를 넣으세요."
     );
   return port;
+}
+
+/**
+ * `tag` 직전까지만 적용한 DB를 같은 cluster에 따로 만들어 `fn`에 넘긴다. `fn`은 옛 모양의 행을 넣고 `migrateAll`로 끝까지 올린다.
+ * 정리(`fn`이 끝나거나 실패한 뒤)는 풀을 닫은 뒤에만 그 DB를 지우고(`closeThenDrop`), 그 뒤 옮긴 마이그레이션 폴더를 지운다.
+ */
+export async function withDatabaseBefore(
+  t: TestDatabase,
+  tag: string,
+  fn: (pool: pg.Pool, migrateAll: () => Promise<void>) => Promise<void>
+) {
+  const migrations = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../migrations"
+  );
+  await withCleanup(async (defer) => {
+    const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
+    defer(() => removeFolder(before));
+    await fsp.cp(migrations, before, { recursive: true });
+    const journalPath = path.join(before, "meta/_journal.json");
+    const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
+      entries: { tag: string }[];
+    };
+    const index = journal.entries.findIndex((e) => e.tag === tag);
+    journal.entries = journal.entries.slice(0, index);
+    await fsp.writeFile(journalPath, JSON.stringify(journal));
+
+    const name = `before_${randomUUID().replaceAll("-", "")}`;
+    await t.db.execute(sql.raw(`create database ${name}`));
+    const url = new URL(t.url);
+    url.pathname = `/${name}`;
+    // 풀은 만들 때 연결하지 않는다. 정리는 풀을 닫은 뒤에만 DB를 지운다(`closeThenDrop`).
+    const pool = new pg.Pool({ connectionString: url.toString() });
+    defer(() =>
+      closeThenDrop(
+        name,
+        () => pool.end(),
+        () => t.db.execute(sql.raw(`drop database ${name}`))
+      )
+    );
+    const db = drizzle(pool);
+    await migrate(db, { migrationsFolder: before });
+    await fn(pool, () => migrate(db, { migrationsFolder: migrations }));
+  });
 }
 
 /**

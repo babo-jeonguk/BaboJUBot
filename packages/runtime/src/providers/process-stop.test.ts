@@ -52,17 +52,10 @@ async function holder(label: string, body = keep) {
 describe("stopping a tree", () => {
   it("ends an attempt as broken when its stop fails and the leader does not end", async () => {
     const leader = await holder("stuck-attempt");
-    // 제품에는 아무것도 끄지 않고 실패하는 끄기를 돌려준다. 받은 인수를 남긴다(제품은 인수 없이 부른다). 실제 끄기는 정리가 부른다.
-    const calls: unknown[][] = [];
-    folders.treeScene({
-      productStop:
-        () =>
-        async (...received) => {
-          calls.push(received);
-          throw new Error(
-            "programs of this tree did not end (left: 1 (the tree did not end))"
-          );
-        },
+    // 제품에는 아무것도 끄지 않고 실패하는 끄기를 돌려준다. 받은 인수는 `calls`에 남는다(제품은 인수 없이 부른다). 실제 끄기는
+    // 정리가 부른다.
+    const { calls } = folders.treeScene({
+      failProductStop: "without-stopping",
     });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => error.mockRestore());
