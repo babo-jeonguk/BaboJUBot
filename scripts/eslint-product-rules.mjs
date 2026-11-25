@@ -2161,6 +2161,61 @@ const noServerNotRunning = {
   },
 };
 
+/** 단정·`!`(그리고 `await`)만 벗긴 값. 선택 사슬(`ChainExpression`)은 벗기지 않는다. */
+function withoutAssertions(node, { await: unwrapAwait = false } = {}) {
+  let value = node;
+  while (
+    value.type === "TSAsExpression" ||
+    value.type === "TSSatisfiesExpression" ||
+    value.type === "TSNonNullExpression" ||
+    (unwrapAwait && value.type === "AwaitExpression")
+  )
+    value =
+      value.type === "AwaitExpression" ? value.argument : value.expression;
+  return value;
+}
+
+/** 빈 배열·빈 객체 문자(`[]`, `{}`, 단정 포함). */
+function isEmptyLiteral(node) {
+  const value = withoutAssertions(node);
+  return (
+    (value.type === "ArrayExpression" && value.elements.length === 0) ||
+    (value.type === "ObjectExpression" && value.properties.length === 0)
+  );
+}
+
+/**
+ * 선택 사슬로 부른 결과(`a?.f()`, `a?.f?.()`, `a?.b.f()`, `await a?.f()`)의 없음을 `??`로 빈 배열·빈 객체로 바꾸는 모양. 붙지 않았을 수 있는
+ * 것(`?.`)이 없음을 "아무것도 없음"으로 접는다. 그 호출이 정책·권한 조회면 모름이 허용으로 바뀐다(중계가 떼어진 정책의 보호 포트를 빈
+ * 목록으로 접어 이 컴퓨터의 보호 포트를 열 뻔했다, #286 PR #299 외부 리뷰 2회차 대응). 없을 때의 판정은 그 자리에서 드러나게 둔다.
+ */
+const noAbsentCallAsEmpty = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "do not fold the absence of an optional call's result into an empty array or object",
+    },
+    schema: [],
+    messages: {
+      folded:
+        "붙지 않았을 수 있는 것(`?.`)을 부른 결과의 없음을 빈 값으로 접지 않습니다. 정책·권한 조회면 모름이 허용으로 바뀝니다. 없을 때의 판정(거부 등)을 그 자리에서 정하거나, 기본값을 호출 결과가 아니라 읽은 값에 두세요(`(a ?? []).filter(f)`). CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    return {
+      LogicalExpression(node) {
+        if (node.operator !== "??" || !isEmptyLiteral(node.right)) return;
+        const left = withoutAssertions(node.left, { await: true });
+        if (left.type !== "ChainExpression") return;
+        if (withoutAssertions(left.expression).type === "CallExpression")
+          context.report({ node, messageId: "folded" });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -2184,5 +2239,6 @@ export default {
     "nul-free-file-shape": nulFreeFileShape,
     "git-path-list-nul": gitPathListNul,
     "no-server-not-running": noServerNotRunning,
+    "no-absent-call-as-empty": noAbsentCallAsEmpty,
   },
 };

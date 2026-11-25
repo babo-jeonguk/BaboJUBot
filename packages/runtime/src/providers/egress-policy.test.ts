@@ -173,6 +173,33 @@ describe("egress destination decision", () => {
     ).toEqual({ allowed: false, reason: "address_not_allowed" });
   });
 
+  // 보호 포트를 읽지 못하면 이 컴퓨터의 모든 포트를 보호한다(모름을 허용으로 바꾸지 않음, #286 PR #299 외부 리뷰 2회차 대응). 이 컴퓨터가
+  // 아닌 주소(사용자가 적은 내부 주소 포함)는 보호 포트와 상관이 없다.
+  it("protects every port of this computer when the protected ports are unknown", async () => {
+    const policy = rules(
+      [
+        { host: "localhost", port: 11434, addresses: ["127.0.0.1"] },
+        { host: "models.lan", port: 8000, addresses: ["10.0.0.5"] },
+        { host: "api.example.com", port: 443 },
+      ],
+      { protectedPorts: "all" }
+    );
+    const resolve = resolver({
+      localhost: ["127.0.0.1"],
+      "models.lan": ["10.0.0.5"],
+      "api.example.com": ["93.184.216.34"],
+    });
+    expect(
+      await decideDestination(policy, "localhost", 11434, resolve)
+    ).toEqual({ allowed: false, reason: "address_not_allowed" });
+    expect(
+      await decideDestination(policy, "models.lan", 8000, resolve)
+    ).toEqual({ allowed: true, addresses: ["10.0.0.5"] });
+    expect(
+      await decideDestination(policy, "api.example.com", 443, resolve)
+    ).toEqual({ allowed: true, addresses: ["93.184.216.34"] });
+  });
+
   it("reports a name it cannot resolve", async () => {
     expect(
       await decideDestination(

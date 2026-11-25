@@ -227,7 +227,7 @@ export function OrganizationScreen({ section: fixed }: { section?: string }) {
 function OrganizationDashboard({ org }: { org: OrganizationDetail }) {
   const approvals = useApprovals(org.id);
   const results = useResultSubmissions(org.id);
-  const pending = approvals.data?.filter((a) => a.status === "pending") ?? [];
+  const pending = (approvals.data ?? []).filter((a) => a.status === "pending");
   const pendingResult = results.data?.find((r) => r.status === "pending");
   const workers = org.agents.filter((a) => a.role === "worker").length;
   return (

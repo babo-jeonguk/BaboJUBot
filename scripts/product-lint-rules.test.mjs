@@ -1066,3 +1066,40 @@ test("product code outside @babojubot/files does not write its own open of a pla
         `${place}: ${shape}`
       );
 });
+
+const absentCallRule = ["product/no-absent-call-as-empty"];
+
+// 선택 사슬로 부른 결과의 없음을 빈 배열·빈 객체로 접으면, 정책·권한 조회에서 "붙지 않음(모름)"이 "제한 없음"이 된다. 중계가 떼어진
+// 정책의 보호 포트를 빈 목록으로 접었다(#286 PR #299 외부 리뷰 2회차 대응).
+test("product code does not fold an optional call's absent result into an empty value", async () => {
+  const folded = {
+    "an optional call": `export const ports = (hooks?: { ports(): number[] }) => hooks?.ports() ?? [];\n`,
+    "an optional method": `export const ports = (hooks: { ports?: () => Record<string, number> }) => hooks.ports?.() ?? {};\n`,
+    "an awaited optional call": `export const read = async (hooks?: { read(): Promise<string[]> }) => (await hooks?.read()) ?? [];\n`,
+    "a call after an optional link": `export const list = (data?: { items: string[] }) => data?.items.filter((item) => item !== "") ?? [];\n`,
+    "an asserted empty value": `export const ports = (hooks?: { ports(): number[] }) => hooks?.ports() ?? ([] as number[]);\n`,
+    "an asserted call": `export const ports = (hooks?: { ports(): number[] }) => (hooks?.ports() as number[]) ?? [];\n`,
+    "a non-null call": `export const ports = (hooks?: { ports(): number[] | undefined }) => hooks?.ports()! ?? [];\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(folded)) {
+      const [message, ...rest] = await lint(code, place, absentCallRule);
+      assert.ok(message, `${place}: ${shape} not reported`);
+      assert.deepEqual(rest, [], `${place}: ${shape}`);
+      assert.match(message.message, /모름이 허용으로/);
+    }
+  const kept = {
+    "a plain call": `export const ports = (read: () => number[] | undefined) => read() ?? [];\n`,
+    "an optional read": `export const items = (data?: { items: string[] }) => data?.items ?? [];\n`,
+    "a default on the read value": `export const list = (data?: string[]) => (data ?? []).filter((item) => item !== "");\n`,
+    "a non-empty default": `export const ports = (hooks?: { ports(): number[] }) => hooks?.ports() ?? [1];\n`,
+    "a named default": `const fallback: number[] = [];\nexport const ports = (hooks?: { ports(): number[] }) => hooks?.ports() ?? fallback;\n`,
+  };
+  for (const place of productPlaces)
+    for (const [shape, code] of Object.entries(kept))
+      assert.deepEqual(
+        await lint(code, place, absentCallRule),
+        [],
+        `${place}: ${shape}`
+      );
+});

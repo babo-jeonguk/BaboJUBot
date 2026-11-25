@@ -108,6 +108,12 @@ export const relaySockets = {
   inbound: "inbound.sock",
 } as const;
 
+/** 이 중계가 지금 붙은 정책에서 읽은 것. 떼어졌거나 읽지 못한 칸은 "unreadable"(판정은 읽은 쪽이 아니라 쓰는 쪽이 한다). */
+type Policy = {
+  research: readonly Destination[] | "unreadable";
+  protectedPorts: readonly number[] | "unreadable";
+};
+
 type Tunnel = {
   host: string;
   port: number;
@@ -264,26 +270,56 @@ export function createRelayHub(): RelayHub {
     );
   };
 
+  /**
+   * 지금 붙은 정책을 읽는다(정책 읽기 한 자리). 정책을 한 번 잡아 보호 포트와 연구 목록을 같은 정책에서 읽는다. 떼어졌거나 읽지 못한
+   * 칸은 "unreadable"이고, 그 판정(새 연결은 거부, 다시 보기는 좁힘)은 쓰는 쪽이 한다. 경고는 무엇을 못 읽었는지만 남긴다.
+   */
+  const policyOf = async (relay: Relay): Promise<Policy> => {
+    const current = hooks;
+    if (!current) {
+      console.warn("[provider] the relay's policy is detached");
+      return { research: "unreadable", protectedPorts: "unreadable" };
+    }
+    const protectedPorts =
+      continueAfterFailure(
+        () => current.protectedPorts(),
+        (error) =>
+          console.warn(
+            `[provider] the protected ports could not be read (${failureCode(error)})`
+          )
+      ) ?? "unreadable";
+    const research =
+      (await continueAfterFailure(
+        () => current.research(relay.identity),
+        (error) =>
+          console.warn(
+            `[provider] the research destinations could not be read (${failureCode(error)})`
+          )
+      )) ?? "unreadable";
+    return { research, protectedPorts };
+  };
+
   const rulesFor = (
     relay: Relay,
-    research: readonly Destination[]
+    research: readonly Destination[],
+    protectedPorts: EgressRules["protectedPorts"]
   ): EgressRules => ({
     destinations: [...relay.required, ...research],
-    protectedPorts: hooks?.protectedPorts() ?? [],
+    protectedPorts,
     hostAddresses: hostAddresses(),
   });
 
-  /** 다시 볼 때의 지금 규칙. 연구 목록을 읽지 못하거나 붙인 것이 없으면 필수 목적지만 쓴다. */
+  /**
+   * 다시 볼 때의 지금 규칙. 모름을 허용으로 바꾸지 않는다: 연구 목록을 읽지 못하면 필수 목적지만, 보호 포트를 읽지 못하면 이 컴퓨터의
+   * 모든 포트를 보호한다("all").
+   */
   const currentRules = async (relay: Relay): Promise<EgressRules> => {
-    const research =
-      (await continueAfterFailure(
-        async () => (await hooks?.research(relay.identity)) ?? [],
-        (error) =>
-          console.warn(
-            `[provider] the research destinations could not be read; only required destinations are allowed (${failureCode(error)})`
-          )
-      )) ?? [];
-    return rulesFor(relay, research);
+    const policy = await policyOf(relay);
+    return rulesFor(
+      relay,
+      policy.research === "unreadable" ? [] : policy.research,
+      policy.protectedPorts === "unreadable" ? "all" : policy.protectedPorts
+    );
   };
 
   /** 열린 연결 하나를 지금 규칙에 맞지 않아 회수한다. 소켓을 닫고 이유를 알린다. */
@@ -302,20 +338,20 @@ export function createRelayHub(): RelayHub {
    */
   const destination = (relay: Relay, host: string, port: number) =>
     relay.acquire(async (signal) => {
-      const research = await relay.whileOpen(() =>
-        continueAfterFailure(
-          () => hooks!.research(relay.identity),
-          (error) =>
-            console.warn(
-              `[provider] the research destinations could not be read; the connection is refused (${failureCode(error)})`
-            )
-        )
-      );
-      const decision: EgressDecision = research
-        ? await relay.whileOpen(() =>
-            decideDestination(rulesFor(relay, research), host, port, resolveAll)
-          )
-        : { allowed: false, reason: "policy_unavailable" };
+      // 정책의 한 칸이라도 읽지 못하면 열지 않는다(모름을 허용으로 바꾸지 않음).
+      const policy = await relay.whileOpen(() => policyOf(relay));
+      const { research, protectedPorts } = policy;
+      const decision: EgressDecision =
+        research === "unreadable" || protectedPorts === "unreadable"
+          ? { allowed: false, reason: "policy_unavailable" }
+          : await relay.whileOpen(() =>
+              decideDestination(
+                rulesFor(relay, research, protectedPorts),
+                host,
+                port,
+                resolveAll
+              )
+            );
       if (!decision.allowed) {
         refuse(relay, host, port, decision.reason);
         return { refused: decision.reason };
@@ -545,7 +581,18 @@ export function createRelayHub(): RelayHub {
       if (relay.identity.runId)
         req.headers[relayIdentityHeaders.run] = relay.identity.runId;
       else delete req.headers[relayIdentityHeaders.run];
-      hooks!.tools(req, res);
+      // 정책이 떼어졌으면(hub 닫기) 도구 경로로 넘기지 않고 거부한다.
+      const current = hooks;
+      if (!current) {
+        res.writeHead(503, {
+          "x-babojubot-refusal": "policy_unavailable",
+          "content-type": "text/plain; charset=utf-8",
+          connection: "close",
+        });
+        res.end(egressRefusalMessages.policy_unavailable);
+        return;
+      }
+      current.tools(req, res);
     });
 
   return {
@@ -600,7 +647,12 @@ export function createRelayHub(): RelayHub {
         },
         whileOpen(start) {
           if (life.signal.aborted) return Promise.reject(reason());
-          const work = start();
+          let work: ReturnType<typeof start>;
+          try {
+            work = start();
+          } catch (error) {
+            return Promise.reject(error as Error);
+          }
           return new Promise((resolve, reject) => {
             const stop = () => reject(reason());
             life.signal.addEventListener("abort", stop, { once: true });
@@ -840,9 +892,14 @@ export function createRelayHub(): RelayHub {
       );
     },
     async close() {
+      // 모든 중계의 닫기를 같은 동기 구간에서 먼저 시작한다(각 닫기의 첫 동기 구간에서 그 중계의 수명이 끝남). 그 뒤에 정책을 떼므로
+      // 떼어진 정책을 만나는 중계 일은 시작되지 않는다. 동시에 진행하는 닫기는 만든 즉시 처리기를 달고(앞 닫기를 기다리는 사이 뒤
+      // 닫기의 거절이 처리되지 않은 채 남지 않게), 그 결과는 `attemptAll`이 원래 promise에서 받는다.
+      const closing = [...relays].map((relay) => relay.close());
+      for (const ended of closing) void settled(ended);
       hooks = undefined;
       await attemptAll(
-        [...relays].map((relay) => () => relay.close()),
+        closing.map((ended) => () => ended),
         "the relays could not be closed"
       );
     },

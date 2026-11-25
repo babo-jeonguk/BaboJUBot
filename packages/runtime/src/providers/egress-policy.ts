@@ -15,8 +15,8 @@ import {
 export type EgressRules = {
   /** 지금 열 수 있는 목적지(필수 모델·로그인 목적지와, 연구 단계면 조직의 허용 목록). */
   destinations: readonly Destination[];
-  /** 이 컴퓨터에서 어떤 예외로도 열지 않는 포트(사용자 API·DB). */
-  protectedPorts: readonly number[];
+  /** 이 컴퓨터에서 어떤 예외로도 열지 않는 포트(사용자 API·DB). 읽지 못했으면 "all"(이 컴퓨터의 모든 포트를 막음). */
+  protectedPorts: readonly number[] | "all";
   /** 이 컴퓨터의 주소. 0.0.0.0에 열린 서비스는 이 주소로도 닿으므로 loopback처럼 막는다. */
   hostAddresses: readonly string[];
 };
@@ -148,7 +148,11 @@ function addressAllowed(
       selfRanges.some((range) => cidrContains(range, form)) ||
       own.some((value) => sameAddress(value, form))
   );
-  if (self && rules.protectedPorts.includes(port)) return false;
+  if (
+    self &&
+    (rules.protectedPorts === "all" || rules.protectedPorts.includes(port))
+  )
+    return false;
   const forbidden =
     self ||
     forms.some((form) =>
