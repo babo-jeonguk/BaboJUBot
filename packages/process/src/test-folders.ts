@@ -3,39 +3,16 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach } from "vitest";
-import { removeFolder } from "./remove-folder.ts";
+import { removeFolderWithin } from "./test-cleanup.ts";
 import { within } from "./test-support.ts";
 import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 
 type Hook = (cleanup: () => Promise<void>) => void;
 
 /**
- * 폴더 하나를 상한 안에서 지운다(`removeFolder`, 다시 시도 포함). 넘기면 어느 폴더를 지우다 멈췄는지 알리고 실패한다. 기본 시한
- * 10초는 기본 다시 시도(3회, 대기 합 0.6초)를 담는다. 다시 시도를 늘리면 그 대기의 합보다 긴 `removeTimeoutMs`를 함께 준다.
- * 한계: 시한이 지나도 진행 중인 지우기(`rm`)는 멈추지 않는다.
- */
-export function removeFolderWithin(
-  folder: string,
-  {
-    retries,
-    retryDelayMs,
-    removeTimeoutMs = 10_000,
-  }: { retries?: number; retryDelayMs?: number; removeTimeoutMs?: number } = {}
-) {
-  return within(
-    removeFolder(folder, {
-      ...(retries === undefined ? {} : { retries }),
-      ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
-    }),
-    removeTimeoutMs,
-    `removing ${folder} did not finish`
-  );
-}
-
-/**
  * 시험 폴더를 만들고 정리까지 맡는다. 정리는 hook(기본: 시험마다)에서 기다리며, 시험이 성공했든 중간에 실패했든 같은 순서다.
  * 1. `own`·`ownChild`로 맡긴 것(폴더 안에서 도는 프로그램, 진행 중인 쓰기)을 늦게 맡긴 것부터 멈추고, 끝나기를 시한 안에서 기다린다.
- * 2. 모두 끝났을 때만 폴더를 지운다(`removeFolder`: Windows의 일시적인 잠김만 정해진 횟수 다시 시도. 지운 항목이 잠시 남는 볼륨(SMB 등)은
+ * 2. 모두 끝났을 때만 폴더를 지운다(`removeFolderWithin`: Windows의 일시적인 잠김만 정해진 횟수 다시 시도. 지운 항목이 잠시 남는 볼륨(SMB 등)은
  *    `retries`·`retryDelayMs`로 늘린다).
  * 끝나지 않은 것이 있으면 폴더는 지우지 않는다. 지우기가 그 탓에 실패해 원인을 가리지 않도록, 그 실패만 알린다.
  */

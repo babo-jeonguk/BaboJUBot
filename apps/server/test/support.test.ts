@@ -3,8 +3,11 @@ import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  removeFolderWithin,
+  ownedListener,
+} from "@babojubot/process/test-cleanup";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Event, ProviderConnection } from "@babojubot/contracts";
 import { createFakeProviders } from "@babojubot/runtime";
@@ -12,7 +15,6 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   eventuallyMs,
   openEventStream,
-  ownedListener,
   ownStart,
   startTestServer,
   within,
@@ -36,7 +38,7 @@ afterEach(() => {
  */
 async function ownTemporaryFolder() {
   const temp = await mkdtemp(path.join(tmpdir(), "babojubot-support-"));
-  const folder = folderCleanup(() => removeFolder(temp));
+  const folder = folderCleanup(() => removeFolderWithin(temp));
   onTestFinished(folder.cleanUp);
   for (const name of ["TMPDIR", "TEMP", "TMP"]) vi.stubEnv(name, temp);
   return { temp, own: folder.own };

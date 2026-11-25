@@ -3,8 +3,8 @@ import type * as netModule from "node:net";
 import path from "node:path";
 import { vi } from "vitest";
 import { attemptAll, hasErrorCode } from "@babojubot/contracts";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import { within } from "@babojubot/process/test-support";
+import { removeFolderWithin } from "@babojubot/process/test-cleanup";
 
 // 시험이 정한 포트로 가는 연결 하나를 정한 오류로 실패시킨다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 그
 // 번호를 잡으면 제품 결함 없이 실패한다(#294 외부 리뷰 2회차 STD-2). 저장소가 OS 호출 실패를 넣는 방식(`vi.mock`의 모듈 대역)으로
@@ -235,7 +235,7 @@ export function failingRelayCloses(
     if (failedAt.length === 0 || !keptByDouble(ended.failure, code))
       throw ended.failure;
     await attemptAll(
-      failedAt.map((address) => () => removeFolder(path.dirname(address)))
+      failedAt.map((address) => () => removeFolderWithin(path.dirname(address)))
     );
   });
   return { failedAt: failedAt as readonly string[] };

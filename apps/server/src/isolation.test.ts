@@ -13,8 +13,10 @@ import {
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { CredentialRelayEndpoint } from "@babojubot/contracts";
 import { containerOwner, IsolationGate } from "./isolation.ts";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 
 /** 링크 만들기를 거절하는 오류 코드(링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
 let refusal: string | null = null;
@@ -443,7 +445,7 @@ describe.each([
     async function failedRelay() {
       const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-gate-"));
       // 폴더는 그것을 쓰는 서버가 모두 닫힌 뒤에 지운다. 닫지 못한 서버가 있으면 폴더를 남기고 알린다.
-      const cleanup = folderCleanup(() => removeFolder(dataDir));
+      const cleanup = folderCleanup(() => removeFolderWithin(dataDir));
       onTestFinished(cleanup.cleanUp);
       const server = http.createServer((_req, res) => res.writeHead(200).end());
       await new Promise<void>((resolve) =>

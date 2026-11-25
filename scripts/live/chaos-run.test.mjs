@@ -5,14 +5,16 @@ import { existsSync, mkdtempSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  withCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 import { cleanupScene, prepareScene } from "./chaos-run.mjs";
 
 test("a failing scene preparation removes the folders it made and keeps its error", async () => {
   await withCleanup(async (defer) => {
     const root = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-prepare-"));
-    defer(() => removeFolder(root));
+    defer(() => removeFolderWithin(root));
     const failure = new Error("budget was not written");
     await assert.rejects(
       prepareScene(() => {
@@ -29,7 +31,7 @@ test("a failing scene preparation removes the folders it made and keeps its erro
 test("a prepared scene has its home and harness folders, private to the owner", async () => {
   await withCleanup(async (defer) => {
     const root = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-prepare-"));
-    defer(() => removeFolder(root));
+    defer(() => removeFolderWithin(root));
     const { home, harnessDir } = await prepareScene(() => {}, root);
     assert.deepEqual(
       readdirSync(root).sort(),
@@ -47,7 +49,7 @@ test("a prepared scene has its home and harness folders, private to the owner", 
 test("a scene whose server cleanup failed keeps its harness folder and counts the failure", async (t) => {
   await withCleanup(async (defer) => {
     const root = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-cleanup-"));
-    defer(() => removeFolder(root));
+    defer(() => removeFolderWithin(root));
     const { home, harnessDir } = await prepareScene(() => {}, root);
     const failure = Object.assign(new Error("server did not stop"), {
       code: "EBUSY",

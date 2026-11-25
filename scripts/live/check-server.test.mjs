@@ -4,8 +4,10 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  withCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 import { withCheckServer } from "./check-server.mjs";
 
 /**
@@ -26,7 +28,7 @@ function resources(failing = [], own) {
       prefix: "babojubot-check-server-",
       openDatabase: async () => ({ close: closer("database") }),
       startServer: async ({ workspace }) => {
-        own?.(() => removeFolder(workspace));
+        own?.(() => removeFolderWithin(workspace));
         opened.workspace = workspace;
         return { close: closer("server") };
       },

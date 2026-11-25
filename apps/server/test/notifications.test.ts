@@ -27,7 +27,6 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import {
-  ownedListener,
   startTestServer,
   type TestServer,
   ownStart,
@@ -35,6 +34,7 @@ import {
   startOnDatabaseOf,
   closedAfterUsers,
 } from "./support.ts";
+import { ownedListener } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {

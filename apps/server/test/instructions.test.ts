@@ -26,8 +26,11 @@ import {
   serverHelpers,
 } from "./scenarios.ts";
 import { startTestServer, type TestServer } from "./support.ts";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  withCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -164,7 +167,7 @@ describe("Role·Soul·Skill copy editing", () => {
     // 시험 서버가 이 폴더의 하네스를 쓰므로 서버를 닫은 뒤에 지운다. 닫기가 실패하면 폴더를 남긴다.
     await withCleanup(async (defer) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "harness-"));
-      const folder = folderCleanup(() => removeFolder(dir));
+      const folder = folderCleanup(() => removeFolderWithin(dir));
       defer(folder.cleanUp);
       folder.own(async () => {
         await t?.close();

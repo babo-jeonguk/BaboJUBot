@@ -6,8 +6,11 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { isDisconnect } from "@babojubot/contracts";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
+import {
+  awaitedLater,
+  folderCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
@@ -104,7 +107,7 @@ beforeEach(() => {
  */
 async function ownTemporaryFolder(name = "babojubot-owner-tmp-") {
   const base = await fsp.mkdtemp(path.join(os.tmpdir(), name));
-  const cleanup = folderCleanup(() => removeFolder(base));
+  const cleanup = folderCleanup(() => removeFolderWithin(base));
   onTestFinished(cleanup.cleanUp);
   vi.stubEnv("TMPDIR", base);
   vi.stubEnv("XDG_RUNTIME_DIR", "");

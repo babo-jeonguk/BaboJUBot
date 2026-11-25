@@ -14,13 +14,37 @@ import {
   hasErrorCode,
 } from "@babojubot/contracts";
 import type { Lifelines } from "./lifeline-support.ts";
+import { removeFolder } from "./remove-folder.ts";
 import { reportedPid, within } from "./test-support.ts";
 
 /** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. 모두 시도하기는 `attemptAll`(`@babojubot/contracts`)이 한다. */
 export type CleanupStep = () => unknown;
 
-/** `folderCleanup`이 폴더 지우기를 기다리는 기본 상한. 지우기는 Windows의 일시적인 잠김만 몇 번 다시 시도한다(`removeFolder`). */
+/** `removeFolderWithin`이 폴더 지우기를 기다리는 기본 상한. 지우기는 Windows의 일시적인 잠김만 몇 번 다시 시도한다(`removeFolder`). */
 const folderRemoveMs = 10_000;
+
+/**
+ * 시험 정리가 폴더 하나를 상한 안에서 지운다(`removeFolder`, 다시 시도 포함). 넘기면 어느 폴더를 지우다 멈췄는지 알리고 실패한다.
+ * 기본 상한 10초는 기본 다시 시도(3회, 대기 합 0.6초)를 담는다. 다시 시도를 늘리면 그 대기의 합보다 긴 `removeTimeoutMs`를 함께 준다.
+ * 나머지 선택(`retries`·`retryDelayMs`·`rm`·`wait`)은 `removeFolder`에 그대로 넘긴다.
+ * 한계: 상한은 기다림만 끝낸다. 진행 중인 지우기(`fs.rm`)는 멈출 수단이 없어 그 뒤에도 돌 수 있다. 그래도 정리는 이름 없이 hook
+ * 시한까지 매달리지 않고 무엇을 기다렸는지 알린다.
+ */
+export function removeFolderWithin(
+  folder: string,
+  {
+    removeTimeoutMs = folderRemoveMs,
+    ...options
+  }: NonNullable<Parameters<typeof removeFolder>[1]> & {
+    removeTimeoutMs?: number;
+  } = {}
+) {
+  return within(
+    removeFolder(folder, options),
+    removeTimeoutMs,
+    `removing ${folder} did not finish`
+  );
+}
 
 /**
  * 폴더와 그 안에서 도는 프로그램의 정리. 폴더를 만든 직후 `cleanUp`을 러너나 `withCleanup`에 등록하고, 프로그램을 띄우면 그
@@ -28,13 +52,10 @@ const folderRemoveMs = 10_000;
  * 있으면 폴더를 남기고 그 실패를 알린다(살아 있는 프로그램의 폴더는 지우지 못하거나, 지워도 그 프로그램이 남는다).
  * 멈춤과 지우기는 한 번만 한다. 다시 부르거나 동시에 불러도 그 한 실행의 결과를 받으므로, 멈추지 못한 폴더는 다시 불러도 남는다.
  * 실패한 멈춤을 다시 시도하지 않는다. 정리는 러너가 한 번 부르고, 같은 프로그램을 다시 멈추는 일은 그 멈춤 함수가 맡는다.
- * 지우기는 상한(`removeTimeoutMs`) 안에서 기다리고, 넘기면 그 이유로 실패한다. 상한은 기다림만 끝낸다: 진행 중인 지우기(`fs.rm`)는
- * 멈출 수단이 없어 그 뒤에도 돌 수 있다. 그래도 정리는 이름 없이 hook 시한까지 매달리지 않고 무엇을 기다렸는지 알린다.
+ * 이 정리는 순서만 맡고 상한을 두지 않는다. 멈춤과 마지막 단계(`remove`)가 각자 상한을 가진다: 폴더를 지우면 `removeFolderWithin`을
+ * 넘기고, DB·서버를 닫는 단계는 그 닫기의 상한을 쓴다.
  */
-export function folderCleanup(
-  remove: CleanupStep,
-  { removeTimeoutMs = folderRemoveMs }: { removeTimeoutMs?: number } = {}
-) {
+export function folderCleanup(remove: CleanupStep) {
   const stops: CleanupStep[] = [];
   let cleaning: Promise<void> | undefined;
   return {
@@ -47,11 +68,7 @@ export function folderCleanup(
     cleanUp: () =>
       (cleaning ??= (async () => {
         await attemptAll([...stops].reverse());
-        await within(
-          Promise.resolve().then(remove),
-          removeTimeoutMs,
-          "the test folder was not removed"
-        );
+        await remove();
       })()),
   };
 }
@@ -197,10 +214,10 @@ export function ownedClosable<T extends Closable>(
 
 /**
  * 자원을 끊고(`destroy`) 그 닫힘(`closed`, 자원을 얻은 순간부터 들은 것)을 상한 안에서 확인한다. 닫히지 않으면 `what`과 상한으로
- * 실패한다. `ownedClosable`의 정리가 이것이고, 자원을 나중에 얻는 정리(먼저 등록하고, 자원이 생겼으면 끊음: CONNECT 터널)도 이것을
- * 쓴다. `closed`가 끊김 밖의 오류로 거절하면 그 오류로 실패한다.
+ * 실패한다. `ownedClosable`의 정리다. CONNECT 터널처럼 나중에 생기는 소켓도 따로 맡지 않는다: 그 요청을 태울 연결을 먼저 만들어
+ * `ownedClosable`로 맡기고 요청은 그 위에 태운다(`http.request`의 `createConnection`). 터널은 그 연결 그 자체다.
  */
-export async function endClosable(
+async function endClosable(
   resource: { destroy(): unknown },
   closed: Promise<void>,
   what: string,
@@ -210,59 +227,79 @@ export async function endClosable(
   await within(closed, closeMs, `${what} did not close`);
 }
 
-/** `ownedListener`가 듣기를 기다리는 상한. */
+/** `ownedListener`가 듣기를 기다리는 기본 상한. */
 const listenerListenMs = 10_000;
 
 /**
  * 시험이 띄우는 listener(net·http 서버)의 소유. 만든 서버를 받아 곧바로 그 닫기를 `own`(onTestFinished, withCleanup의 defer,
- * folderCleanup의 own 가운데 그 listener를 소유하는 정리)에 맡기고, 그다음 `at`에서 듣기를 상한 안에서 기다린다.
- * 닫기는 받은 연결을 먼저 끊고(서버 닫기는 연결이 모두 끝나야 끝난다) 닫힘을 상한 안에서 확인한다. 듣기 전에 실패했거나 이미 닫은
- * 서버는 닫을 것이 없다(`ERR_SERVER_NOT_RUNNING`). 그 밖의 닫기 오류와 상한은 실패다. 듣지 못하면 그 오류로 거절된다.
+ * folderCleanup의 own 가운데 그 listener를 소유하는 정리)에 맡기고, 그다음 `at`에서 듣기를 상한(`listenMs`) 안에서 기다린다.
+ * 닫기는 듣기 시도가 끝나기(듣기 시작 또는 듣기 오류)를 본 뒤, 받은 연결을 먼저 끊고(서버 닫기는 연결이 모두 끝나야 끝난다) 닫힘을
+ * 확인한다. 그래서 듣기가 상한을 넘겨 늦게 시작해도 맡긴 닫기가 그 서버를 닫는다. 듣지 못했거나 이미 닫은 서버는 닫을 것이 없다
+ * (`ERR_SERVER_NOT_RUNNING`, 듣기 시도가 끝난 뒤에만 그렇게 본다). 그 밖의 닫기 오류와 상한은 실패다. 듣지 못하면 그 오류로 거절된다.
+ * 듣기 기다림이 상한으로 먼저 끝난 뒤 듣기가 실패하면 그 오류는 시험이 받지 못했으므로 닫기가 그 오류로 실패한다.
  * 돌려주는 `close`는 맡긴 것과 같은 닫기다. 시험 중간에 닫아야 하면(포트를 비우기 등) 그것을 부르고, 정리는 닫을 것이 없음으로 끝난다.
- * 닫기의 상한은 `testFolders`가 멈춤마다 두는 상한(`stopTimeoutMs`, 10초)보다 짧아, 거기 맡겨도 닫기가 그 이유를 먼저 알린다. `folderCleanup`의 멈춤에는 따로 상한이 없어 이 상한이 그 기다림의 끝이다.
+ * 닫기 전체(듣기 시도의 끝 기다림 포함)의 상한은 `testFolders`가 멈춤마다 두는 상한(`stopTimeoutMs`, 10초)보다 짧아, 거기 맡겨도
+ * 닫기가 그 이유를 먼저 알린다. `folderCleanup`의 멈춤에는 따로 상한이 없어 이 상한이 그 기다림의 끝이다.
  */
 export async function ownedListener<S extends net.Server>(
   server: S,
   at: net.ListenOptions,
   own: (close: () => Promise<void>) => void,
-  what: string
+  what: string,
+  { listenMs = listenerListenMs }: { listenMs?: number } = {}
 ): Promise<{ server: S; close: () => Promise<void> }> {
   const connections = new Set<net.Socket>();
   server.on("connection", (socket: net.Socket) => {
     connections.add(socket);
     socket.once("close", () => connections.delete(socket));
   });
-  const close = () => {
-    for (const socket of connections) socket.destroy();
-    return within(
-      new Promise<void>((resolve, reject) =>
-        server.close((error) =>
-          error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-            ? reject(error)
-            : resolve()
-        )
-      ),
+  // 듣기 시도의 끝(듣기 시작이면 이행, 듣기 오류면 그 오류로 거절). 처리기는 듣기 전에 붙이고 끝남을 동기로 세운다. 듣기 자체는
+  // 닫기를 맡긴 뒤에 시작한다. 듣기 기다림이 시도가 끝나기 전에 상한으로 끝났는지는 `listenTimedOut`.
+  let attemptEnded = false;
+  let listenTimedOut = false;
+  const attempt = awaitedLater(
+    new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        attemptEnded = true;
+        server.off("listening", onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        attemptEnded = true;
+        server.off("error", onError);
+        resolve();
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+    })
+  );
+  const close = () =>
+    within(
+      (async () => {
+        const failure = await attempt.then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        // 듣기 기다림이 상한으로 먼저 끝나 아무도 받지 못한 늦은 듣기 오류. 기다림이 받은 오류는 시험이 이미 받았다.
+        if (failure !== undefined && listenTimedOut) throw failure;
+        for (const socket of connections) socket.destroy();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) =>
+            error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
+              ? reject(error)
+              : resolve()
+          )
+        );
+      })(),
       closableCloseMs,
       `${what} did not close`
     );
-  };
   own(close);
+  server.listen(at);
   try {
-    await within(
-      new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(at, () => {
-          server.off("error", reject);
-          resolve();
-        });
-      }),
-      listenerListenMs,
-      `${what} did not start listening`
-    );
+    await within(attempt, listenMs, `${what} did not start listening`);
   } catch (error) {
-    // 상한이 기다림만 끝내면 진행 중인 듣기가 나중에 끝나 서버가 남는다(그때 맡긴 닫기는 이미 "닫을 것 없음"으로 끝났을 수 있다).
-    // 듣기가 끝나는 즉시 닫는다.
-    if (!server.listening) server.once("listening", () => server.close());
+    if (!attemptEnded) listenTimedOut = true;
     throw error;
   }
   return { server, close };

@@ -12,6 +12,7 @@ import {
   ownedClosable,
   ownedListener,
   processAlive,
+  removeFolderWithin,
   withCleanup,
 } from "./test-cleanup.ts";
 import { endChild } from "./process-test-support.ts";
@@ -161,18 +162,6 @@ describe("folderCleanup", () => {
     });
     await expect(folder.cleanUp()).rejects.toBe(server);
     expect(ran).toEqual(["database"]);
-  });
-
-  // 지우기가 매달리면 정리가 이름 없이 hook 시한까지 멈췄다(#297 독립 점검). 지우기를 기다리는 데도 이름 있는 상한을 둔다.
-  it("fails with the reason when removing the folder does not end within its bound", async () => {
-    const folder = folderCleanup(() => new Promise<never>(() => {}), {
-      removeTimeoutMs: 50,
-    });
-    await expect(
-      within(folder.cleanUp(), 5_000, "the folder cleanup did not end")
-    ).rejects.toMatchObject({
-      message: "the test folder was not removed within 50 ms",
-    });
   });
 
   // 정지가 실패한 폴더는 그 안의 프로그램이 아직 쓸 수 있다. 같은 정리를 다시 불러도 지우지 않는다(#243).
@@ -413,6 +402,24 @@ describe("ownedClosable", () => {
 
 // 시험이 띄우는 listener(net·http 서버)는 듣기 전에 그 닫기를 소유자에 맡긴다. 듣기·닫기는 상한 안에서 기다리고, 닫기는 받은 연결을
 // 먼저 끊는다. 듣지 않은 서버·이미 닫은 서버는 닫을 것이 없다(#286 3b-3, server 시험의 같은 계약을 공용 자리로).
+describe("removeFolderWithin", () => {
+  // 지우기가 매달리면 정리가 이름 없이 hook 시한까지 멈췄다(#297 독립 점검). 폴더 지우기를 기다리는 데는 이름 있는 상한을 둔다.
+  it("fails naming the folder when removing it does not end within its bound", async () => {
+    await expect(
+      within(
+        removeFolderWithin("/the/stuck/folder", {
+          rm: () => new Promise<never>(() => {}),
+          removeTimeoutMs: 50,
+        }),
+        5_000,
+        "removeFolderWithin did not end"
+      )
+    ).rejects.toMatchObject({
+      message: "removing /the/stuck/folder did not finish within 50 ms",
+    });
+  });
+});
+
 describe("ownedListener", () => {
   it("hands its close to the owner before listening, and the close ends the connections it took", async () => {
     const server = net.createServer();
@@ -478,10 +485,7 @@ describe("ownedListener", () => {
   // 맡긴 닫기가 듣기 시도가 끝나기 전에 불리면 "닫을 것 없음"으로 이행했고, 그 뒤 듣기가 끝난 서버는 아무도 닫지 않았다
   // (#286 3b-3a merge 설계 점검 1회차 지적 2). 닫기는 듣기 시도의 끝을 본 뒤에 닫는다.
   it("closes a server whose listening ends after its close was called", async () => {
-    let open!: () => void;
-    const server = new GatedListen(
-      new Promise<void>((resolve) => (open = resolve))
-    );
+    const server = new GatedListen();
     const closes: (() => Promise<void>)[] = [];
     const listening = ownedListener(
       server,
@@ -495,7 +499,7 @@ describe("ownedListener", () => {
     const order: string[] = [];
     server.once("listening", () => order.push("listening"));
     const closing = closes[0]!().then(() => order.push("closed"));
-    open();
+    server.open();
     await within(listening, 5_000, "the gated listener did not listen");
     await within(closing, 5_000, "the owner's close did not end");
     expect(order).toEqual(["listening", "closed"]);
@@ -511,10 +515,7 @@ describe("ownedListener", () => {
       "the port holder"
     );
     const { port } = held.address() as net.AddressInfo;
-    let open!: () => void;
-    const server = new GatedListen(
-      new Promise<void>((resolve) => (open = resolve))
-    );
+    const server = new GatedListen();
     // 러너에 맡기지 않는다: 이 서버는 듣기에 실패하므로(이미 쓰는 포트) 남는 것이 없고, 닫기의 실패는 이 시험이 받는다.
     const closes: (() => Promise<void>)[] = [];
     await expect(
@@ -526,23 +527,25 @@ describe("ownedListener", () => {
         { listenMs: 50 }
       )
     ).rejects.toThrow(/the late listener did not start listening/);
-    open();
+    server.open();
     await expect(
       within(closes[0]!(), 5_000, "the owner's close did not end")
     ).rejects.toMatchObject({ code: "EADDRINUSE" });
   });
 });
 
-/** 듣기를 시험이 열 때까지 미루는 서버. 시험이 만들어 인자로 넘기는 인스턴스다(공용 prototype·전역을 바꾸지 않는다). */
+/** 듣기를 시험이 열 때까지(`open`) 미루는 서버. 시험이 만들어 인자로 넘기는 인스턴스다(공용 prototype·전역을 바꾸지 않는다). */
 class GatedListen extends net.Server {
-  constructor(private readonly gate: Promise<void>) {
-    super();
-  }
+  private asked: Parameters<net.Server["listen"]> | undefined;
 
   override listen(...args: unknown[]): this {
-    void this.gate.then(() =>
-      super.listen(...(args as Parameters<net.Server["listen"]>))
-    );
+    this.asked = args as Parameters<net.Server["listen"]>;
     return this;
+  }
+
+  open() {
+    if (!this.asked)
+      throw new Error("the gated server was not asked to listen");
+    super.listen(...this.asked);
   }
 }

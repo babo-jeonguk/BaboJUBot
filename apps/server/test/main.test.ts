@@ -13,7 +13,6 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createTestDatabase, type TestDatabase } from "@babojubot/db/testing";
 import { listOrganizations } from "@babojubot/db";
 import { hasErrorCode, orIfMissing } from "@babojubot/contracts";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   beforeEach,
   expect,
@@ -25,7 +24,7 @@ import {
 import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
-import { ownedListener, pollUntil } from "./support.ts";
+import { pollUntil } from "./support.ts";
 import { ownHome } from "./product-home.ts";
 import { psField } from "@babojubot/process";
 import { reportedPid, within } from "@babojubot/process/test-support";
@@ -35,6 +34,8 @@ import {
   killUnlessGone,
   processAlive,
   withCleanup,
+  removeFolderWithin,
+  ownedListener,
 } from "@babojubot/process/test-cleanup";
 
 const main = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -216,7 +217,7 @@ it.each(stopRequests)(
   async ({ ipc, send }) => {
     const home = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
     // 폴더는 만든 직후 정리에 맡긴다. 그 안에서 도는 것(서버·Postgres)은 띄운 뒤 `own`으로 맡긴다.
-    const folder = folderCleanup(() => removeFolder(home));
+    const folder = folderCleanup(() => removeFolderWithin(home));
     onTestFinished(folder.cleanUp);
     // 이 시험은 Postgres를 관찰하지 않는다. 그 끝의 증거는 서버 진단 전체다: 시작 실패 진단 하나뿐이면 제품이 시작 실패 뒤 Postgres를
     // 멈췄다(멈추지 못하면 그 진단이 따로 남는다). 시험이 그 진단을 확인하기 전에 끝나면 끝을 확인할 수 없어 폴더를 남긴다(fail closed).
@@ -476,7 +477,7 @@ function startMain(
   const dockerConfig = mkdtempSync(
     path.join(tmpdir(), "babojubot-fake-docker-")
   );
-  const dockerFolder = folderCleanup(() => removeFolder(dockerConfig));
+  const dockerFolder = folderCleanup(() => removeFolderWithin(dockerConfig));
   onTestFinished(dockerFolder.cleanUp);
   writeFileSync(
     path.join(dockerConfig, "fake-docker.json"),
@@ -787,7 +788,7 @@ async function expectGone(postgres: ObservedPostgres, timeout = 5_000) {
  * 남기고 실패한다(`stopLeftover`). 서버는 띄운 직후 `folder.own(child.stop)`으로 맡긴다.
  */
 function postgresFolder(dir: string) {
-  const folder = folderCleanup(() => removeFolder(dir));
+  const folder = folderCleanup(() => removeFolderWithin(dir));
   onTestFinished(folder.cleanUp);
   const leftover: { postgres?: ObservedPostgres } = {};
   folder.own(() => stopLeftover(leftover.postgres));

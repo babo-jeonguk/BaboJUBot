@@ -1,6 +1,5 @@
 import { mkdtemp } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
-import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -8,7 +7,6 @@ import {
   attemptEach,
   combinedFailure,
   eventStreamPath,
-  hasErrorCode,
   streamFrameSchema,
   type Event,
   type NotificationChannel,
@@ -25,8 +23,10 @@ import {
   type RunningServer,
   type ServerOptions,
 } from "../src/index.ts";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 import { ownHome } from "./product-home.ts";
 
 /**
@@ -370,7 +370,7 @@ export async function startTestServer({
     attemptAll([
       () => database.close(),
       async () => {
-        if (ownDataDir) await removeFolder(ownDataDir);
+        if (ownDataDir) await removeFolderWithin(ownDataDir);
       },
     ]);
 
@@ -654,53 +654,6 @@ export async function pollUntil<T>(
     });
   if ("error" in seen!) throw seen.error;
   return seen!.value;
-}
-
-/**
- * server 시험이 띄우는 listener(net·http 서버)의 소유. 만든 서버를 받아 곧바로 그 닫기를 `own`(onTestFinished, withCleanup의 defer,
- * folderCleanup의 own 가운데 그 listener를 소유하는 정리)에 맡기고, 그다음 `at`에서 듣기를 상한 안에서 기다린다.
- * 닫기는 받은 연결을 먼저 끊고(서버 닫기는 연결이 모두 끝나야 끝난다) 닫힘을 상한 안에서 확인한다. 듣기 전에 실패했거나 이미 닫은 서버는
- * 닫을 것이 없다(`ERR_SERVER_NOT_RUNNING`). 그 밖의 닫기 오류와 상한은 실패다. 듣지 못하면 그 오류로 거절된다.
- * 돌려주는 `close`는 맡긴 것과 같은 닫기다. 시험 중간에 닫아야 하면(포트를 비우기 등) 그것을 부르고, 정리는 닫을 것이 없음으로 끝난다.
- */
-export async function ownedListener<S extends net.Server>(
-  server: S,
-  at: net.ListenOptions,
-  own: (close: () => Promise<void>) => void,
-  what: string
-): Promise<{ server: S; close: () => Promise<void> }> {
-  const connections = new Set<net.Socket>();
-  server.on("connection", (socket: net.Socket) => {
-    connections.add(socket);
-    socket.once("close", () => connections.delete(socket));
-  });
-  const close = () => {
-    for (const socket of connections) socket.destroy();
-    return within(
-      new Promise<void>((resolve, reject) =>
-        server.close((error) =>
-          error && !hasErrorCode("ERR_SERVER_NOT_RUNNING")(error)
-            ? reject(error)
-            : resolve()
-        )
-      ),
-      eventuallyMs,
-      `${what} did not close`
-    );
-  };
-  own(close);
-  await within(
-    new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(at, () => {
-        server.off("error", reject);
-        resolve();
-      });
-    }),
-    eventuallyMs,
-    `${what} did not start listening`
-  );
-  return { server, close };
 }
 
 /**

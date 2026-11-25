@@ -16,7 +16,11 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  withCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 // 같은 폴더의 도움을 URL로 바로 푼다. URL의 pathname은 퍼센트 인코딩된 글이라 파일 경로나 다른 파일 URL의 재료가 아니다.
@@ -90,7 +94,7 @@ process.exit(await afterOutput(3));
 test("hands back 1 instead of 0, and keeps any other code, when the output cannot be written", () =>
   withCleanup(async (defer) => {
     const folder = mkdtempSync(path.join(tmpdir(), "exit-after-output-pipe-"));
-    const { own, cleanUp } = folderCleanup(() => removeFolder(folder));
+    const { own, cleanUp } = folderCleanup(() => removeFolderWithin(folder));
     defer(cleanUp);
     const driver = path.join(folder, "driver.mjs");
     writeFileSync(

@@ -9,8 +9,11 @@ import { settled } from "@babojubot/contracts";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
 import { within, heldOrEnded, releaseHeld } from "./support.ts";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
+import {
+  awaitedLater,
+  folderCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 
 // 조직을 만든 직후의 폴더 준비와 실행 시도 준비가 겹칠 수 있다. 겹쳤다고 표식이 없는 것으로 보면 멀쩡한 실행이 실패한다.
 // 첫 준비가 기록을 확인하는 동안 다른 준비가 표식을 쓰고 기록까지 남기는 순간을 만든다.
@@ -60,7 +63,7 @@ it("does not mistake a mark just written by another preparation for a missing on
   const users = folderCleanup(() => database.close());
   onTestFinished(users.cleanUp);
   const root = await mkdtemp(path.join(tmpdir(), "identity-race-"));
-  const folder = folderCleanup(() => removeFolder(root));
+  const folder = folderCleanup(() => removeFolderWithin(root));
   onTestFinished(folder.cleanUp);
   const org = await insertLegacyOrganization(database.db, "겹친 준비");
   const workspaces = new Workspaces(root, database.db);

@@ -26,6 +26,7 @@ import {
   killUnlessGone,
   processAlive,
   withCleanup,
+  removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 import {
   attemptAll,
@@ -654,7 +655,10 @@ describe("a Postgres left by a killed process", () => {
         path.join(os.tmpdir(), `babojubot-long-${"x".repeat(90)}-`)
       );
       const cluster = folderCleanup(() =>
-        attemptAll([() => removeCluster(dataDir), () => removeFolder(long)])
+        attemptAll([
+          () => removeCluster(dataDir),
+          () => removeFolderWithin(long),
+        ])
       );
       onTestFinished(cluster.cleanUp);
       vi.stubEnv("TMPDIR", long);
@@ -810,7 +814,7 @@ describe("a Postgres left by a killed process", () => {
     });
     const seen: { postgres?: Postgres } = {};
     let dataDir = "";
-    const cluster = folderCleanup(() => removeFolder(base));
+    const cluster = folderCleanup(() => removeFolderWithin(base));
     onTestFinished(cluster.cleanUp);
     cluster.own(() =>
       attemptAll(
@@ -1048,8 +1052,8 @@ const isAlive = processAlive;
 /** 테스트가 만든 cluster 폴더와 그 옆의 주인 기록을 지운다. */
 async function removeCluster(dataDir: string) {
   await attemptAll([
-    () => removeFolder(dataDir),
-    () => removeFolder(`${dataDir}.owner`),
+    () => removeFolderWithin(dataDir),
+    () => removeFolderWithin(`${dataDir}.owner`),
   ]);
 }
 
