@@ -14,7 +14,11 @@ type Provider = {
  */
 export function testFolders(...args: Parameters<typeof processFolders>) {
   const folders = processFolders(...args);
-  /** 정리가 멈춤 신호를 보내고 끝나기를 기다리는 호출. 시험이 넘긴 신호도 그대로 듣는다. */
+  /**
+   * 정리가 멈춤 신호를 보내고 돌아오기를 기다리는 호출. 시험이 넘긴 신호도 그대로 듣는다. 호출이 돌아온 것은 그 프로그램이 끝났다는
+   * 증거가 아니다: 제품 프로바이더는 프로그램의 끝을 확인하지 못해도(실행 시도의 `broken`) 정상으로 돌아오고, 그 사실을 돌려주는
+   * 값이 없다. 그래서 이 정리는 끝을 확인하지 않는다. 끝의 확인은 #286 3b-3에서 고정물이 쥔 연결로 더한다.
+   */
   const ownCall = <R>(
     signal: AbortSignal,
     start: (signal: AbortSignal) => Promise<R>
@@ -23,15 +27,15 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
     const started = start(AbortSignal.any([signal, stop.signal]));
     folders.own(async () => {
       stop.abort();
-      // 실행의 실패는 시험이 결과로 본다. 정리는 끝났는지만 기다린다.
+      // 실행의 실패는 시험이 결과로 본다. 정리는 호출이 돌아오기만 기다린다(프로그램의 끝은 확인하지 못한다).
       await Promise.allSettled([started]);
     }, "provider run");
     return started;
   };
   /**
    * 시험이 만든 프로바이더 연결. 그 연결로 시작한 실행 시도·준비 확인·압축·모델 목록 조회를 정리가 맡는다.
-   * 시험이 결과를 기다리기 전에 단언·시한으로 실패해도, 정리가 멈춤 신호를 보내고 그 호출이 끝난 뒤에 폴더를 지운다.
-   * 프로바이더는 프로그램과 그 정리가 끝난 뒤에 반환하므로, 호출이 끝나면 폴더 안의 프로그램도 끝났다.
+   * 시험이 결과를 기다리기 전에 단언·시한으로 실패해도, 정리가 멈춤 신호를 보내고 그 호출이 돌아온 뒤에 폴더를 지운다.
+   * 호출이 돌아와도 폴더 안의 프로그램이 끝났는지는 확인하지 못한다(위 `ownCall`).
    */
   /** 이미 정리에 맡긴 adapter. 같은 연결을 다시 맡겨도 실행이 두 번 등록되지 않는다(두 번 기다리고 두 번 실패를 알리지 않는다). */
   const owned = new WeakSet<RuntimeAdapter>();

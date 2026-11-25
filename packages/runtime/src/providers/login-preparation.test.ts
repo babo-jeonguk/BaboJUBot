@@ -109,13 +109,16 @@ const roots: string[] = [];
 const servers: http.Server[] = [];
 /** 시험이 붙잡은 작업을 푸는 함수. 단언이 실패해 시험이 풀지 못한 것도 정리가 푼다. */
 const holds: (() => void)[] = [];
-/** 시험이 시작한 실행. 정리는 붙잡은 작업을 푼 뒤 시한 안에서 이것들이 끝나기를 기다린다. */
+/**
+ * 시험이 시작한 실행. 정리는 붙잡은 작업을 푼 뒤 시한 안에서 이것들이 돌아오기를 기다린다. 돌아온 것은 그 프로그램이 끝났다는
+ * 증거가 아니다(제품 프로바이더는 프로그램의 끝을 확인하지 못해도 정상으로 돌아온다). 끝의 확인은 #286 3b-3에서 더한다.
+ */
 const runs: Promise<unknown>[] = [];
 afterEach(async () => {
   gate = undefined;
   for (const release of holds.splice(0)) release();
   const folders = roots.splice(0);
-  // 풀려난 실행이 끝나기를 시한 안에서 기다린다. 끝나든 시한이 지나든 서버를 닫고 상태를 되돌린다.
+  // 풀려난 실행이 돌아오기를 시한 안에서 기다린다. 돌아오든 시한이 지나든 서버를 닫고 상태를 되돌린다.
   await withCleanup(async (defer) => {
     defer(() =>
       attemptAll(
@@ -135,11 +138,11 @@ afterEach(async () => {
     await within(
       Promise.allSettled(runs.splice(0)),
       10_000,
-      "a run did not end after cleanup"
+      "a run did not return after cleanup"
     );
   });
-  // 실행이 모두 끝났을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 끝나지 않은 실행이
-  // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다.
+  // 실행이 모두 돌아왔을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 돌아오지 않은 실행이
+  // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다. 프로그램의 끝은 확인하지 못한다(위 `runs`).
   await attemptAll(folders.map((root) => () => removeFolder(root)));
 });
 /** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
