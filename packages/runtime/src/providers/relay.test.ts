@@ -1322,6 +1322,39 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(existsSync(relay.directory)).toBe(false);
   });
 
+  // 닫기가 시작된 뒤 받은 연결도 끊는다(#286 PR #299 외부 리뷰 1회차 대응 점검). 서버는 차례로 닫히므로 앞 서버를 닫는 동안 뒤 서버가
+  // 연결을 받을 수 있고, net 서버(inbound)의 닫기는 받은 연결이 모두 끝나야 끝난다. 앞 서버의 닫기를 붙잡아 그 순간을 상태로 만든다.
+  it("drops a connection it accepts after its close began, so its close ends", async () => {
+    const { relays } = hub();
+    const accepted = Promise.withResolvers<void>();
+    serverFaults.listening = (address, server) => {
+      if (typeof address === "string" && address.endsWith(relaySockets.inbound))
+        // 중계의 처리기(만들 때와 듣기 전에 단 것) 뒤에 불린다.
+        server.on("connection", () => accepted.resolve());
+    };
+    const relay = relays.open({ identity, required: [], inbound: true });
+    const release = Promise.withResolvers<void>();
+    serverFaults.holdClose = {
+      at: (address) => address === socketOf(relay, relaySockets.egress),
+      until: release.promise,
+    };
+    await relay.ready;
+    const closing = relay.close();
+    ownedClosable(
+      onTestFinished,
+      net.connect(socketOf(relay, relaySockets.inbound)),
+      "a late inbound connection"
+    );
+    await within(
+      accepted.promise,
+      5_000,
+      "the relay did not accept the late connection"
+    );
+    release.resolve();
+    await within(closing, 5_000, "the relay did not close");
+    expect(existsSync(relay.directory)).toBe(false);
+  });
+
   it("does not open a relay before the server attached its policy", () => {
     const relays = createRelayHub();
     expect(() => relays.open({ identity, required: [] })).toThrow();

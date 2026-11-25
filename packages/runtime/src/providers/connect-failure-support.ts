@@ -57,6 +57,12 @@ export const serverFaults = {
    */
   listening: undefined as
     ((address: unknown, server: netModule.Server) => void) | undefined,
+  /**
+   * 파일 소켓 경로가 `at`에 맞는 서버의 닫기를 `until`이 이행할 때까지 미룬다(그 뒤에는 위 `close` 결함까지 그대로). 시험이 닫기가
+   * 시작된 뒤의 순간을 상태로 붙잡을 때 쓴다.
+   */
+  holdClose: undefined as
+    { at: (address: string) => boolean; until: Promise<void> } | undefined,
 };
 
 export function resetRefusing() {
@@ -67,6 +73,7 @@ export function resetRefusing() {
   serverFaults.close = undefined;
   serverFaults.failedClose.mockReset();
   serverFaults.listening = undefined;
+  serverFaults.holdClose = undefined;
 }
 
 const codeError = (message: string, code: string) =>
@@ -94,6 +101,16 @@ function faultyServer(Base: typeof netModule.Server) {
       return listening;
     }
     override close(callback?: (error?: Error) => void) {
+      const hold = serverFaults.holdClose;
+      const held = this.listenedAt;
+      if (hold && held !== undefined && hold.at(held)) {
+        void hold.until.then(() => this.closeNow(callback));
+        return this;
+      }
+      return this.closeNow(callback);
+    }
+    /** 닫기: `serverFaults.close`가 정한 서버만 실제로 닫은 뒤 그 오류로 실패를 알린다. */
+    closeNow(callback?: (error?: Error) => void) {
       const fault = serverFaults.close;
       const at = this.listenedAt;
       if (!fault || at === undefined || !fault.at(at))
