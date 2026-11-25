@@ -26,6 +26,7 @@ import {
   removeRetries,
   runPinned,
   windows,
+  childEnded,
 } from "./files-volume.ts";
 import { ownedListener } from "./support.ts";
 import { testFolders } from "@babojubot/process/testing";
@@ -130,9 +131,21 @@ const run = (file: string, args: string[], env: Record<string, string> = {}) =>
       execFile(
         file,
         args,
-        { env: { ...process.env, ...env }, timeout: 60_000, windowsHide: true },
-        (error, stdout, stderr) =>
-          resolve({ ok: !error, output: `${stdout}${stderr}`.trim() })
+        {
+          env: { ...process.env, ...env },
+          timeout: 60_000,
+          killSignal: "SIGKILL",
+          windowsHide: true,
+        },
+        // 실패하면 어떻게 끝났는지를 출력의 첫 줄 앞에 붙인다. 호출자는 실패 이유로 출력의 첫 줄을 보인다.
+        (error, stdout, stderr) => {
+          const output = `${stdout}${stderr}`.trim();
+          resolve(
+            error
+              ? { ok: false, output: `${childEnded(error)}: ${output}` }
+              : { ok: true, output }
+          );
+        }
       )
     );
   });
@@ -653,7 +666,7 @@ it("C15 names the final file as changed when it disappears or is replaced right 
 
 const mkfifo = async (target: string) => {
   const result = await run("mkfifo", [target]);
-  return result.ok ? "" : result.output || "mkfifo failed";
+  return result.ok ? "" : result.output;
 };
 it("C16 refuses a FIFO without opening it, also when the file turns into one right after it was checked", async (context) => {
   if (windows) without(context, "C16", "n/a", "Windows에는 FIFO 파일이 없다");

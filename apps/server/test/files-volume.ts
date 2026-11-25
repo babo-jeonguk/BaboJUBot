@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileException } from "node:child_process";
 import {
   link,
   lstat,
@@ -24,6 +24,17 @@ import {
  * `BABOJUBOT_FILES_TMPDIR`로 넘겨 그 파일 시스템에서 같은 시험을 돌린다. 없으면 운영체제의 임시 폴더다.
  */
 export const filesBase = () => process.env.BABOJUBOT_FILES_TMPDIR || tmpdir();
+
+/**
+ * 시험이 띄운 프로그램이 어떻게 끝났는지(실패 원인으로 남긴다). 시한(`timeout`)이나 정리가 죽였으면 그 신호를, 스스로 끝났으면 종료 코드나
+ * 띄우기 실패 코드를 적는다.
+ */
+export const childEnded = (error: ExecFileException) =>
+  error.killed
+    ? `killed with ${error.signal}`
+    : error.signal
+      ? `ended by ${error.signal}`
+      : `failed (${error.code})`;
 
 /** 시험 파일의 폴더 정리(`testFolders`, `@babojubot/process/testing`). 폴더와 그 안에서 도는 것의 끝을 함께 맡는다. */
 export type Folders = ReturnType<typeof testFolders>;
@@ -205,8 +216,13 @@ export const runPinned = (
           },
         },
         (error, stdout) => {
+          // 종료 코드가 없으면(신호로 끝남) 어떻게 끝났는지를 대신 남긴다. 알려진 종료 코드가 아니므로 시험이 그 값을 실패로 보인다.
           if (error)
-            return resolve({ code: error.code, parts: null, bytes: null });
+            return resolve({
+              code: error.code ?? childEnded(error),
+              parts: null,
+              bytes: null,
+            });
           const at = stdout.indexOf(0x0a);
           resolve({
             code: 0,

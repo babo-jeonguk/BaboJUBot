@@ -171,8 +171,8 @@ export const heldOrEnded = (
   within(
     Promise.race([
       held,
-      work.then(() => {
-        throw new Error(`${what} ended before it was held`);
+      work.then((value: unknown) => {
+        throw new Error(`${what} ended before it was held`, { cause: value });
       }),
     ]),
     eventuallyMs,
