@@ -170,7 +170,9 @@ describe("folderCleanup", () => {
     });
     await expect(
       within(folder.cleanUp(), 5_000, "the folder cleanup did not end")
-    ).rejects.toThrow("the test folder was not removed within 50 ms");
+    ).rejects.toMatchObject({
+      message: "the test folder was not removed within 50 ms",
+    });
   });
 
   // 정지가 실패한 폴더는 그 안의 프로그램이 아직 쓸 수 있다. 같은 정리를 다시 불러도 지우지 않는다(#243).
@@ -402,7 +404,9 @@ describe("ownedClosable", () => {
     );
     await expect(
       within(Promise.resolve(steps[0]?.()), 5_000, "the cleanup did not end")
-    ).rejects.toThrow("the stuck request did not close within 50 ms");
+    ).rejects.toMatchObject({
+      message: "the stuck request did not close within 50 ms",
+    });
     expect(destroyed).toEqual([[]]);
   });
 });

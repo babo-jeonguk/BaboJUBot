@@ -382,7 +382,8 @@ export function startProcess(options: {
     code: number | null;
     broken: boolean;
     /**
-     * 이 실행 시도가 띄운 것의 끝을 확인했는가: 트리 전체가 끝났고(끄기 성공), 컨테이너로 돌았으면 그 컨테이너도 없어졌다. 시작
+     * 이 실행 시도가 띄운 것의 끝을 확인했는가: 트리 전체가 끝났고(끄기 성공), 출력이 닫혔고(출력을 쥔 자손이 없음), 컨테이너로
+     * 돌았으면 그 컨테이너도 없어졌다. 시작
      * 실패·입력 실패처럼 끝을 확인한 뒤의 `broken`과 다르다. 실행 시도 폴더는 이 값으로 지울지 정한다(`attemptFolder`).
      */
     ended: boolean;
@@ -412,6 +413,8 @@ export function startProcess(options: {
           };
         /** 트리 전체가 끝난 것을 확인했는가. 확인하기 전에는 기록을 지우지 않는다(#219). */
         let stopped = false;
+        /** 출력이 닫힌 것을 확인했는가. 닫히지 않았으면 트리 밖의 누군가(물려받은 자손)가 출력을 쥐고 아직 돈다. */
+        let outputClosed = false;
         /** 컨테이너가 없어진 것을 확인했는가(컨테이너로 돌지 않았으면 처음부터 참). */
         let containerGone = !options.container;
         const failures = await attemptEach([
@@ -452,6 +455,7 @@ export function startProcess(options: {
                     );
                   }),
                 ]);
+                outputClosed = true;
               } catch (error) {
                 tree.stdout.destroy();
                 tree.stderr.destroy();
@@ -508,7 +512,7 @@ export function startProcess(options: {
         resolve({
           code,
           broken,
-          ended: stopped && containerGone,
+          ended: stopped && outputClosed && containerGone,
           causes,
           stderr,
         });

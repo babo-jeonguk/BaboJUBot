@@ -56,9 +56,9 @@ describe("closeThenDrop", () => {
         },
         50
       )
-    ).rejects.toThrow(
-      "the connections to database side_db did not close within 50 ms"
-    );
+    ).rejects.toMatchObject({
+      message: "the connections to database side_db did not close within 50 ms",
+    });
     expect(dropped).toEqual([]);
   });
 
@@ -70,6 +70,8 @@ describe("closeThenDrop", () => {
         () => new Promise<never>(() => {}),
         50
       )
-    ).rejects.toThrow("database side_db was not dropped within 50 ms");
+    ).rejects.toMatchObject({
+      message: "database side_db was not dropped within 50 ms",
+    });
   });
 });

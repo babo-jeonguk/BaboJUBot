@@ -540,14 +540,18 @@ export function createRelayHub(): RelayHub {
               console.warn(
                 `[provider] the isolated run relay's servers did not all close; its folder is kept at ${directory} (${failures.map(failureCode).join(", ")})`
               );
-              throw new Error(
-                `the relay could not be closed; its folder ${directory} is kept`,
-                {
-                  cause: combinedFailure(
-                    failures,
-                    "the relay's servers did not close"
-                  ),
-                }
+              // 코드만 남기는 쪽(process.ts·실행 시도 폴더의 원인)도 무엇이 실패했는지 알도록 이름 붙은 코드를 둔다.
+              throw Object.assign(
+                new Error(
+                  `the relay could not be closed; its folder ${directory} is kept`,
+                  {
+                    cause: combinedFailure(
+                      failures,
+                      "the relay's servers did not close"
+                    ),
+                  }
+                ),
+                { code: "relay_folder_kept" }
               );
             }
             rmSync(directory, { recursive: true, force: true });

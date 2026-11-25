@@ -100,10 +100,15 @@ function failedExecution(error: unknown): RunResult {
 class HttpFailure extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number) {
-    super(`Provider request failed (HTTP ${status})`);
+  /** `activating`: plugin 활성화 중이라는 답을 상한(`pluginActivationMs`)까지 받았다. 그 밖의 실패 답과 다른 code로 남는다. */
+  constructor(status: number, activating = false) {
+    super(
+      activating
+        ? `OpenCode's plugins did not finish activating within ${pluginActivationMs} ms (HTTP ${status})`
+        : `Provider request failed (HTTP ${status})`
+    );
     this.status = status;
-    this.code = `HTTP_${status}`;
+    this.code = activating ? "plugins_not_activated" : `HTTP_${status}`;
   }
 }
 /**
@@ -738,22 +743,23 @@ export function createOpenCodeProvider(options: {
             signal,
           });
           if (response.ok) return response;
-          // plugin 활성화 중이라는 답만 상한 안에서 다시 묻는다(`pluginsActivating`).
-          if (response.status === 503 && Date.now() < activationUntil) {
-            // 본문을 읽지 못한 실패는 그대로 드러낸다. JSON이 아닌 본문은 "준비 중"이 아니다.
-            const text = await response.text();
-            if (
-              pluginsActivating(
-                orIfUnreadable(() => JSON.parse(text) as unknown, undefined)
-              )
-            ) {
-              await pause(activationPauseMs, undefined, {
-                signal: lifetime.signal,
-              });
-              continue;
-            }
-          } else await response.body?.cancel();
-          throw new HttpFailure(response.status);
+          if (response.status !== 503) {
+            await response.body?.cancel();
+            throw new HttpFailure(response.status);
+          }
+          // plugin 활성화 중이라는 답만 상한 안에서 다시 묻는다(`pluginsActivating`). 상한을 넘긴 그 답은 다른 503과 다른 code로
+          // 실패한다. 본문을 읽지 못한 실패는 그대로 드러낸다. JSON이 아닌 본문은 "준비 중"이 아니다.
+          const text = await response.text();
+          if (
+            !pluginsActivating(
+              orIfUnreadable(() => JSON.parse(text) as unknown, undefined)
+            )
+          )
+            throw new HttpFailure(503);
+          if (Date.now() >= activationUntil) throw new HttpFailure(503, true);
+          await pause(activationPauseMs, undefined, {
+            signal: lifetime.signal,
+          });
         }
       };
       return {

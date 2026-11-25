@@ -160,7 +160,10 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
 
     await expect(
       prepared.attemptLogin(attemptAt(attempt), "grant")
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      message:
+        "the login place in the organization folder is not a folder; the stand-in was not placed",
+    });
     expect(await readFile(original, "utf8")).toBe("REAL LOGIN");
   });
 

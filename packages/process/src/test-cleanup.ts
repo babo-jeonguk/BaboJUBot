@@ -173,7 +173,7 @@ type Closable = {
   destroy(): unknown;
   once(event: "close", listener: () => void): unknown;
 };
-/** `ownedClosable`의 정리가 끊은 자원의 닫힘을 기다리는 기본 상한. 폴더 정리가 단계마다 두는 상한(10초)보다 짧다. */
+/** `ownedClosable`의 정리가 끊은 자원의 닫힘을 기다리는 기본 상한. `testFolders`가 멈춤마다 두는 상한(`stopTimeoutMs`, 10초)보다 짧다. `folderCleanup`의 멈춤에는 따로 상한이 없어 이 상한이 그 기다림의 끝이다. */
 const closableCloseMs = 5_000;
 
 /**
@@ -207,7 +207,7 @@ const listenerListenMs = 10_000;
  * 닫기는 받은 연결을 먼저 끊고(서버 닫기는 연결이 모두 끝나야 끝난다) 닫힘을 상한 안에서 확인한다. 듣기 전에 실패했거나 이미 닫은
  * 서버는 닫을 것이 없다(`ERR_SERVER_NOT_RUNNING`). 그 밖의 닫기 오류와 상한은 실패다. 듣지 못하면 그 오류로 거절된다.
  * 돌려주는 `close`는 맡긴 것과 같은 닫기다. 시험 중간에 닫아야 하면(포트를 비우기 등) 그것을 부르고, 정리는 닫을 것이 없음으로 끝난다.
- * 닫기의 상한은 폴더 정리가 단계마다 두는 상한(10초)보다 짧아, 폴더 정리에 맡겨도 닫기가 그 이유를 먼저 알린다.
+ * 닫기의 상한은 `testFolders`가 멈춤마다 두는 상한(`stopTimeoutMs`, 10초)보다 짧아, 거기 맡겨도 닫기가 그 이유를 먼저 알린다. `folderCleanup`의 멈춤에는 따로 상한이 없어 이 상한이 그 기다림의 끝이다.
  */
 export async function ownedListener<S extends net.Server>(
   server: S,

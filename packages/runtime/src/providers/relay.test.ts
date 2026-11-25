@@ -1104,8 +1104,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   /** 중계 서버 하나의 닫기가 실패했을 때의 거절: 남긴 폴더를 밝히고, 원인 사슬 끝에 그 닫기 오류가 있다. */
   const keptFolder = (relay: { directory: string }, code: string) => ({
     message: `the relay could not be closed; its folder ${relay.directory} is kept`,
+    code: "relay_folder_kept",
     cause: {
       message: `a relay server did not close (${code})`,
+      code,
       cause: { code },
     },
   });
@@ -1127,7 +1129,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     close: () => Promise<void>;
   }) =>
     onTestFinished(async () => {
-      const failure = await relay.close().then(
+      const failure = await within(
+        relay.close(),
+        10_000,
+        "the relay did not close"
+      ).then(
         () => undefined,
         (error: unknown) => error
       );

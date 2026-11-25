@@ -408,18 +408,12 @@ test("record-cli puts a recording proxy in front of the address the program anno
 test("record-cli cuts and records a reply that has no valid status line", async () => {
   await withCleanup(async (defer) => {
     const { recordings, program } = folders(defer);
-    /** @type {Set<net.Socket>} 상위 서버가 받은 연결 */
-    const sockets = new Set();
+    // 응답을 해석하지 못한 쪽이 연결을 놓아도 이쪽 연결은 닫혔다는 알림 없이 남는다. 서버의 닫기(`ownedListener`)가 받은 연결을
+    // 먼저 끊고 닫는다.
     const upstream = net.createServer((socket) => {
-      sockets.add(socket);
       socket.end("garbage\r\n\r\n");
     });
     const port = await listen(defer, upstream);
-    // 응답을 해석하지 못한 쪽이 연결을 놓아도 이쪽 연결은 닫혔다는 알림 없이 남아 서버 닫기가 끝나지 않는다. 정리는 등록 역순이라
-    // 서버를 닫기 전에 받은 연결을 먼저 끊는다.
-    defer(() => {
-      for (const socket of sockets) socket.destroy();
-    });
     const announced = `http://127.0.0.1:${port}/`;
     const run = recordCli(defer, [recordings, process.execPath, program], {
       FAKE_URL: announced,

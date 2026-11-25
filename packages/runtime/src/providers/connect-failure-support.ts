@@ -33,7 +33,13 @@ export const serverFaults = {
    * `failedClose`로 확인한다.
    */
   close: undefined as
-    { code: string; at: (address: string) => boolean } | undefined,
+    | {
+        code: string;
+        at: (address: string) => boolean;
+        /** 실패를 알린 직후(서버는 이미 닫힘) 그 주소로 부른다. 시험마다 비우는 `failedClose`보다 오래 남길 기록에 쓴다. */
+        failed?: (address: string) => void;
+      }
+    | undefined,
   /** 실패를 알린 닫기의 서버가 들은 주소. */
   failedClose: vi.fn<(address: string) => void>(),
 };
@@ -75,7 +81,10 @@ function faultyServer(Base: typeof netModule.Server) {
       if (!fault || at === undefined || !fault.at(at))
         return super.close(callback);
       return super.close((error?: Error) => {
-        if (!error) serverFaults.failedClose(at);
+        if (!error) {
+          serverFaults.failedClose(at);
+          fault.failed?.(at);
+        }
         callback?.(error ?? codeError("close failed", fault.code));
       });
     }
