@@ -7,6 +7,7 @@ import {
   onTestFinished,
   vi,
 } from "vitest";
+import { fakeClock, outcomeAfterDrain } from "../test/support.ts";
 import { AsyncCallbackError, RerunLoop, RerunLoops } from "./rerun-loop.ts";
 
 /** 풀거나 거절할 수 있는 Promise. 시험이 회차의 시작과 끝을 정한다. */
@@ -63,28 +64,6 @@ function failures() {
 }
 
 /**
- * 루프가 시험의 다음 행동 없이 할 수 있는 일을 모두 마친다. 루프는 입출력 없이 microtask와 타이머로만 움직이고, 시험은 가짜 시계를
- * 켠다(아래 `beforeEach`). 그래서 가짜 시계의 타이머를 남김없이 돌리고 microtask가 빈 뒤에는 저절로 일어날 일이 남지 않는다.
- * 틀린 구현이 기다리던 쪽을 먼저 풀면(microtask로든 타이머로든) 이 뒤에는 이미 풀려 있다. 이벤트 루프 한 차례만 기다리면 타이머로
- * 미룬 풀림을 놓쳤다(#286).
- */
-const drained = () => vi.runAllTimersAsync();
-
-/**
- * 루프가 할 수 있는 일을 모두 마친 뒤 기다림의 결과. 회차와 콜백이 모두 곧바로 끝나는 시험에서 쓴다.
- * 회차 완료 표시가 풀리지 않는 구현이면 `"pending"`으로 남는다.
- */
-async function outcomeSoon(waiting: Promise<unknown>) {
-  let outcome: "pending" | "resolved" | { rejected: unknown } = "pending";
-  void waiting.then(
-    () => (outcome = "resolved"),
-    (error: unknown) => (outcome = { rejected: error })
-  );
-  await drained();
-  return outcome;
-}
-
-/**
  * 서버 로그(console.error)에 남긴 줄. 시험 출력에는 찍지 않는다. 진단에는 오류 문구 대신 원인 코드를 남기므로(CODING_STANDARDS.md#제품-코드),
  * 어느 오류가 남았는지 가리려고 시험의 오류마다 다른 코드를 둔다(`coded`).
  */
@@ -96,11 +75,11 @@ function serverLog() {
 /** 원인 코드 `code`를 단 오류. */
 const coded = (code: string) => Object.assign(new Error(code), { code });
 
+// 루프는 입출력 없이 microtask와 타이머로만 움직여, 가짜 시계 위에서 "저절로 일어날 일이 다 일어난 뒤"를 판정한다(`outcomeAfterDrain`).
 beforeEach(() => {
-  vi.useFakeTimers();
+  fakeClock();
 });
 afterEach(() => {
-  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -146,7 +125,7 @@ describe("RerunLoop", () => {
     const settled = loop.settled().then(() => checks.log.push("settled"));
     checks.finish(1);
     await checks.entered(2);
-    await drained();
+    await vi.runAllTimersAsync();
     checks.finish(2);
     await settled;
 
@@ -174,7 +153,7 @@ describe("RerunLoop", () => {
 
     const ran = loop.runNow().then(() => checks.log.push("ran"));
     await checks.entered(1);
-    await drained();
+    await vi.runAllTimersAsync();
     checks.finish(1);
     await ran;
 
@@ -191,7 +170,7 @@ describe("RerunLoop", () => {
     const ran = loop.runNow().then(() => checks.log.push("ran"));
     checks.finish(1);
     await checks.entered(2);
-    await drained();
+    await vi.runAllTimersAsync();
     checks.finish(2);
     await ran;
 
@@ -267,7 +246,7 @@ describe("RerunLoop", () => {
     await checks.entered(1);
     loop.request();
     const closed = loop.close().then(() => checks.log.push("closed"));
-    await drained();
+    await vi.runAllTimersAsync();
     checks.finish(1);
     await closed;
 
@@ -295,7 +274,7 @@ describe("RerunLoop", () => {
     const settled = loop.settled().then(() => checks.log.push("settled"));
     checks.finish(1);
     await checks.entered(2);
-    await drained();
+    await vi.runAllTimersAsync();
     checks.finish(2);
     await settled;
 
@@ -381,7 +360,7 @@ describe("RerunLoop", () => {
     );
 
     loop.request();
-    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.settled())).toBe("resolved");
     // 실패를 넘겨받을 곳이 던졌어도 두 오류 모두 버리지 않는다.
     expect(log.lines()).toEqual([
       [
@@ -390,9 +369,9 @@ describe("RerunLoop", () => {
     ]);
 
     // 회차 완료 표시가 풀렸으므로 다음 요청이 새 회차로 돈다.
-    expect(await outcomeSoon(loop.runNow())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.runNow())).toBe("resolved");
     expect(passes).toBe(2);
-    expect(await outcomeSoon(loop.close())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.close())).toBe("resolved");
   });
 
   it("ends the pass, hands the error to onError and serves the next request when onIdle throws", async () => {
@@ -410,13 +389,13 @@ describe("RerunLoop", () => {
     );
 
     loop.request();
-    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.settled())).toBe("resolved");
     expect(errors).toEqual([broken]);
 
-    expect(await outcomeSoon(loop.runNow())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.runNow())).toBe("resolved");
     expect(passes).toBe(2);
     expect(errors).toEqual([broken, broken]);
-    expect(await outcomeSoon(loop.close())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.close())).toBe("resolved");
   });
 
   it("refuses callbacks that return a promise, in the type and through onError, and still ends the pass", async () => {
@@ -429,9 +408,9 @@ describe("RerunLoop", () => {
       async () => {}
     );
     loop.request();
-    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.settled())).toBe("resolved");
     expect(errors).toEqual([expect.any(AsyncCallbackError)]);
-    expect(await outcomeSoon(loop.close())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.close())).toBe("resolved");
   });
 
   it("hands the rejection of a promise a callback returned to the same report, leaving no rejection unhandled", async () => {
@@ -453,15 +432,15 @@ describe("RerunLoop", () => {
     );
     loop.request();
     // 회차는 그 promise를 기다리지 않고 끝난다.
-    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.settled())).toBe("resolved");
     const asyncReport = new RerunLoop(
       () => Promise.reject(coded("CHECK_FAILED")),
       // @ts-expect-error promise를 돌려주는 onError는 타입 검사에서 거부된다.
       () => Promise.reject(reportBroken)
     );
     asyncReport.request();
-    expect(await outcomeSoon(asyncReport.settled())).toBe("resolved");
-    await drained();
+    expect(await outcomeAfterDrain(asyncReport.settled())).toBe("resolved");
+    await vi.runAllTimersAsync();
 
     expect(errors).toEqual([expect.any(AsyncCallbackError), idleBroken]);
     expect(log.lines()).toEqual([
@@ -484,13 +463,13 @@ describe("RerunLoop", () => {
       async () => {}
     );
     loop.request();
-    expect(await outcomeSoon(loop.settled())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.settled())).toBe("resolved");
     expect(log.lines()).toEqual([
       [
         "[rerun-loop] onError returned a promise (AsyncCallbackError); the failure it was given was CHECK_FAILED",
       ],
     ]);
-    expect(await outcomeSoon(loop.close())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.close())).toBe("resolved");
   });
 
   it("logs the onIdle error when onError throws too, and still ends the pass", async () => {
@@ -508,7 +487,7 @@ describe("RerunLoop", () => {
     );
 
     loop.request();
-    expect(await outcomeSoon(loop.close())).toBe("resolved");
+    expect(await outcomeAfterDrain(loop.close())).toBe("resolved");
     expect(log.lines()).toEqual([
       [
         "[rerun-loop] onError threw while handling a failure; the failure was ON_IDLE_FAILED and onError threw ON_ERROR_FAILED",
@@ -576,7 +555,7 @@ describe("RerunLoops", () => {
     const settled = loops
       .settled("a")
       .then(() => checks.of("a").log.push("settled"));
-    await drained();
+    await vi.runAllTimersAsync();
     checks.of("a").finish(3);
     await settled;
 
@@ -612,7 +591,7 @@ describe("RerunLoops", () => {
     checks.of("a").finish(1);
     await checks.of("a").entered(2);
     expect(loops.busy("a")).toBe(true);
-    await drained();
+    await vi.runAllTimersAsync();
     checks.of("a").finish(2);
     await settled;
 
@@ -648,7 +627,7 @@ describe("RerunLoops", () => {
     await checks.of("a").entered(2);
     expect(forgotten).toEqual(["a"]);
     expect(loops.busy("a")).toBe(true);
-    await drained();
+    await vi.runAllTimersAsync();
     checks.of("a").finish(2);
     await settled;
 
@@ -695,7 +674,7 @@ describe("RerunLoops", () => {
     const settled = loops.settledAll().then(() => order.push("settled"));
     aDone.resolve();
     await bEntered.promise;
-    await drained();
+    await vi.runAllTimersAsync();
     bDone.resolve();
     await settled;
 
@@ -731,7 +710,7 @@ describe("RerunLoops", () => {
     await checks.of("b").entered(1);
     loops.request("a");
     const closed = loops.close().then(() => checks.of("a").log.push("closed"));
-    await drained();
+    await vi.runAllTimersAsync();
     checks.of("a").finish(1);
     checks.of("b").finish(1);
     await closed;
@@ -754,7 +733,7 @@ describe("RerunLoops", () => {
       async () => {}
     );
     loops.request("a");
-    expect(await outcomeSoon(loops.settled("a"))).toBe("resolved");
+    expect(await outcomeAfterDrain(loops.settled("a"))).toBe("resolved");
     expect(loops.busy("a")).toBe(false);
     expect(errors).toEqual([["a", expect.any(AsyncCallbackError)]]);
     expect(
@@ -783,7 +762,7 @@ describe("RerunLoops", () => {
     );
 
     loops.request("a");
-    expect(await outcomeSoon(loops.settled("a"))).toBe("resolved");
+    expect(await outcomeAfterDrain(loops.settled("a"))).toBe("resolved");
     expect(loops.busy("a")).toBe(false);
     expect(log.lines()).toEqual([
       [
@@ -792,9 +771,9 @@ describe("RerunLoops", () => {
     ]);
 
     loops.request("a");
-    expect(await outcomeSoon(loops.settledAll())).toBe("resolved");
+    expect(await outcomeAfterDrain(loops.settledAll())).toBe("resolved");
     expect(passes.get("a")).toBe(2);
-    expect(await outcomeSoon(loops.close())).toBe("resolved");
+    expect(await outcomeAfterDrain(loops.close())).toBe("resolved");
   });
 
   it("forgets the key, hands the error to onError with its key and serves it again when onIdle throws", async () => {
@@ -812,13 +791,13 @@ describe("RerunLoops", () => {
     );
 
     loops.request("a");
-    expect(await outcomeSoon(loops.settled("a"))).toBe("resolved");
+    expect(await outcomeAfterDrain(loops.settled("a"))).toBe("resolved");
     expect(loops.busy("a")).toBe(false);
     expect(errors).toEqual([["a", broken]]);
 
     loops.request("a");
-    expect(await outcomeSoon(loops.settledAll())).toBe("resolved");
+    expect(await outcomeAfterDrain(loops.settledAll())).toBe("resolved");
     expect(passes.get("a")).toBe(2);
-    expect(await outcomeSoon(loops.close())).toBe("resolved");
+    expect(await outcomeAfterDrain(loops.close())).toBe("resolved");
   });
 });

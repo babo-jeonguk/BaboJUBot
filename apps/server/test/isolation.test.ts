@@ -107,10 +107,37 @@ describe("isolation switch", () => {
 });
 
 /**
- * 중계 폴더의 파일 소켓으로 HTTP 요청을 보낸다(컨테이너 안 시작 프로그램이 잇는 길과 같다). 답을 끝까지 받기를 상한 안에서 기다리고,
- * 상한이 지나거나 실패하면 요청을 끊어 실제로 끝낸다. 응답 도중 끊기면 `end` 대신 오류가 오므로 받은 데까지의 본문을 답으로 내주지 않는다.
+ * 중계 소켓으로 보낸 요청 하나의 답을 상한 안에서 기다린다. `answered`가 답을 받는 법을 정하고, 요청 오류·상한은 실패다. 상한이 지나거나
+ * 실패하면 요청(과 그 소켓)을 끊어 실제로 끝낸다.
  */
-async function overSocket(
+async function untilAnswered<T>(
+  request: http.ClientRequest,
+  answered: (
+    resolve: (value: T) => void,
+    reject: (error: unknown) => void
+  ) => void,
+  what: string
+) {
+  try {
+    return await within(
+      new Promise<T>((resolve, reject) => {
+        request.on("error", reject);
+        answered(resolve, reject);
+      }),
+      eventuallyMs,
+      `${what} over the relay socket did not answer`
+    );
+  } catch (error) {
+    request.destroy();
+    throw error;
+  }
+}
+
+/**
+ * 중계 폴더의 파일 소켓으로 HTTP 요청을 보낸다(컨테이너 안 시작 프로그램이 잇는 길과 같다). 답을 끝까지 받는다(`untilAnswered`). 응답 도중
+ * 끊기면 `end` 대신 오류가 오므로 받은 데까지의 본문을 답으로 내주지 않는다.
+ */
+function overSocket(
   socketPath: string,
   route: string,
   init: {
@@ -128,70 +155,56 @@ async function overSocket(
     headers: init.headers ?? {},
     agent: false,
   });
-  try {
-    return await within(
-      new Promise<{ status: number; type: string; body: string }>(
-        (resolve, reject) => {
-          request.on("response", (res) => {
-            let body = "";
-            res.on("error", reject);
-            res.on("data", (chunk) => (body += chunk));
-            res.on("end", () =>
-              resolve({
-                status: res.statusCode!,
-                type: String(res.headers["content-type"] ?? ""),
-                body,
-              })
-            );
-          });
-          request.on("error", reject);
-          request.end(init.body);
-        }
-      ),
-      eventuallyMs,
-      `${method} ${route} over the relay socket did not answer`
-    );
-  } catch (error) {
-    request.destroy();
-    throw error;
-  }
+  return untilAnswered<{ status: number; type: string; body: string }>(
+    request,
+    (resolve, reject) => {
+      request.on("response", (res) => {
+        let body = "";
+        res.on("error", reject);
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode!,
+            type: String(res.headers["content-type"] ?? ""),
+            body,
+          })
+        );
+      });
+      request.end(init.body);
+    },
+    `${method} ${route}`
+  );
 }
 
 /**
  * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 중계의 답을 판정하지 않고 그대로 돌려준다: node:http가 읽은 상태와 거부 이유
- * 머리(`x-babojubot-refusal`), 그 연결의 소켓. CONNECT의 답은 상태와 상관없이 `connect`로 온다(Node http 문서). 답 머리를 상한 안에서
- * 기다리고, 상한이 지나거나 머리를 다 읽기 전에 끊기거나 형식이 틀리면 요청(과 그 소켓)을 끊고 그 실패로 거절된다.
+ * 머리(`x-babojubot-refusal`), 그 연결의 소켓. CONNECT의 답은 상태와 상관없이 `connect`로 온다(Node http 문서). 답 머리를 다 읽기
+ * 전에 끊기거나 형식이 틀리면 그 실패다(`untilAnswered`).
  */
-async function connectOver(directory: string, target: string) {
+function connectOver(directory: string, target: string) {
   const request = http.request({
     socketPath: path.join(directory, "egress.sock"),
     method: "CONNECT",
     path: target,
   });
-  try {
-    return await within(
-      new Promise<{
-        status: number;
-        refusal: string | string[] | undefined;
-        socket: net.Socket;
-      }>((resolve, reject) => {
-        request.once("error", reject);
-        request.once("connect", (response, socket) =>
-          resolve({
-            status: response.statusCode!,
-            refusal: response.headers["x-babojubot-refusal"],
-            socket,
-          })
-        );
-        request.end();
-      }),
-      eventuallyMs,
-      `CONNECT ${target} over the relay socket did not answer`
-    );
-  } catch (error) {
-    request.destroy();
-    throw error;
-  }
+  return untilAnswered<{
+    status: number;
+    refusal: string | string[] | undefined;
+    socket: net.Socket;
+  }>(
+    request,
+    (resolve) => {
+      request.once("connect", (response, socket) =>
+        resolve({
+          status: response.statusCode!,
+          refusal: response.headers["x-babojubot-refusal"],
+          socket,
+        })
+      );
+      request.end();
+    },
+    `CONNECT ${target}`
+  );
 }
 
 /** 중계가 한 요청에 답한 것. 답 머리를 받았으면 상태(CONNECT는 거부 이유 머리도), 받기 전에 끝났으면 그 오류의 원인 코드다. */

@@ -671,15 +671,30 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals) {
 
 /**
  * 거둔 서버의 그룹에 남은 프로세스가 없다. 구성원이 하나라도 살아 있으면 그 그룹 번호는 이 그룹이므로 신호 0으로 본다. 신호는 보내지
- * 않는다. macOS는 거두기 전의 프로세스만 남은 그룹에 EPERM으로 답해(`processAlive`가 던짐) 그것이 거두어질 때까지 다시 본다.
+ * 않는다. macOS는 거두기 전의 프로세스만 남은 그룹에 EPERM으로 답해(`processAlive`가 원인과 함께 던짐) 그것만 "아직 있음"으로 보고
+ * 다시 본다. 그 밖의 실패는 확인하지 못한 것이라 다시 묻지 않고 그 실패로 끝난다(`pollUntil`).
  */
 async function groupEnded(child: ChildProcess) {
-  await expect
-    .poll(() => processAlive(-child.pid!), {
-      timeout: killWaitMs,
-      message: `the process group of server ${child.pid} still has members after the server ended`,
-    })
-    .toBe(false);
+  await pollUntil(
+    () => {
+      try {
+        return processAlive(-child.pid!) ? undefined : true;
+      } catch (error) {
+        if (
+          process.platform === "darwin" &&
+          hasErrorCode("EPERM")((error as Error).cause)
+        )
+          return undefined;
+        throw error;
+      }
+    },
+    {
+      timeoutMs: killWaitMs,
+      intervalMs: 20,
+      timedOut: () =>
+        `the process group of server ${child.pid} still has members after the server ended`,
+    }
+  );
 }
 
 /** 서버의 임시 폴더. 임시 내장 Postgres(`openEphemeralDatabase`)는 이 안에 dataDir를 만든다. */
@@ -757,12 +772,12 @@ function temporaryPostgresEntries(temp: string) {
  * 남을 수 있어(Windows는 완전히 끝날 때까지 살아 있다고 답함) 짧은 시한 안에서 기다린다.
  */
 async function expectGone(postgres: ObservedPostgres, timeout = 5_000) {
-  await expect
-    .poll(() => running(postgres), {
-      timeout,
-      message: `Postgres ${postgres.pid} did not end`,
-    })
-    .toBe(false);
+  // 확인이 실패하면(`ps`·신호 0을 읽지 못함) 다시 묻지 않고 그 실패로 끝난다(`pollUntil`).
+  await pollUntil(() => (running(postgres) ? undefined : true), {
+    timeoutMs: timeout,
+    intervalMs: 20,
+    timedOut: () => `Postgres ${postgres.pid} did not end within ${timeout}ms`,
+  });
   postgres.ended = true;
 }
 

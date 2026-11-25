@@ -1,4 +1,5 @@
 import type { Event } from "@babojubot/contracts";
+import { fakeClock } from "../test/support.ts";
 import type { RunCancellation } from "@babojubot/core";
 import { refused, stored, type AfterCommit } from "@babojubot/db";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -71,10 +72,7 @@ describe("applyAfterCommit", () => {
     ]);
   });
   it("publishes, cancels, waits for the resumed organization, then kicks", async () => {
-    vi.useFakeTimers();
-    onTestFinished(() => {
-      vi.useRealTimers();
-    });
+    fakeClock();
     const f = fakes();
     const applied = applyAfterCommit(f.deps, {
       events: [event(1), event(2)],

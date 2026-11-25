@@ -684,3 +684,34 @@ export async function ownedListener<S extends net.Server>(
   );
   return { server, close };
 }
+
+/**
+ * 이 시험 동안 가짜 시계를 켜고 시험 정리가 되돌린다. 대상 코드가 입출력 없이 microtask와 타이머로만 움직이는 시험에서 쓴다. 그 위에서는
+ * `outcomeAfterDrain`으로 "저절로 일어날 일이 다 일어난 뒤"를 판정한다(#286).
+ */
+export function fakeClock() {
+  vi.useFakeTimers();
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+}
+
+/** 가짜 시계 위에서 대상 코드가 시험의 다음 행동 없이 할 수 있는 일을 모두 마친 뒤 `promise`의 결과. */
+export type DrainedOutcome = "pending" | "resolved" | { rejected: unknown };
+
+/**
+ * 가짜 시계의 타이머를 남김없이 돌리고 microtask가 빈 뒤 `promise`가 어떻게 됐는가. 대상 코드가 입출력 없이 움직이면 이 뒤에는
+ * 저절로 일어날 일이 남지 않으므로, 이때 풀리지 않았으면(`"pending"`) 스스로는 풀리지 않는다. 틀린 구현이 기다리던 쪽을 먼저
+ * 풀면(microtask로든 타이머로든) 이 뒤에는 이미 풀려 있다. 이벤트 루프 한 차례만 기다리면 타이머로 미룬 풀림을 놓쳤다(#286).
+ */
+export async function outcomeAfterDrain(
+  promise: Promise<unknown>
+): Promise<DrainedOutcome> {
+  let outcome: DrainedOutcome = "pending";
+  void promise.then(
+    () => (outcome = "resolved"),
+    (error: unknown) => (outcome = { rejected: error })
+  );
+  await vi.runAllTimersAsync();
+  return outcome;
+}
