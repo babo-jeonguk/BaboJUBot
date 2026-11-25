@@ -1,6 +1,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { answering } from "@babojubot/runtime/testing";
+import { ownedListener } from "./support.ts";
 
 /**
  * 실제 OpenCode가 부르는 OpenAI 호환 가짜 모델(#147). 받은 요청 본문을 모두 남기고, 계정·실제 모델 없이 답한다.
@@ -53,7 +54,12 @@ export const refusedPattern = String.raw`"^[^\\0]*$"`;
 /** 가짜 모델이 한 응답에 내는 도구 호출 하나. `name`은 모델이 받은 도구 정의의 이름(예: `organization_send_message`)이다. */
 export type ModelToolCall = { id: string; name: string; arguments: unknown };
 
-export async function startLocalModel() {
+/**
+ * 로컬 가짜 모델 서버를 띄운다. listener의 닫기는 띄운 직후 `own`(그 서버를 소유하는 정리)에 맡긴다(`ownedListener`).
+ */
+export async function startLocalModel(
+  own: (close: () => Promise<void>) => void
+) {
   const requests: ModelRequest[] = [];
   /**
    * 마지막 메시지가 사용자 메시지인 요청에 도구 호출로 답할지 정한다(#150). 돌려준 호출을 한 응답에 함께 내고(병렬 호출),
@@ -178,7 +184,12 @@ export async function startLocalModel() {
       res.end("data: [DONE]\n\n");
     })
   );
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await ownedListener(
+    server,
+    { port: 0, host: "127.0.0.1" },
+    own,
+    "the local model server"
+  );
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}/v1`,
@@ -188,10 +199,5 @@ export async function startLocalModel() {
     ) {
       toolCalls = plan;
     },
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.closeAllConnections();
-        server.close((error) => (error ? reject(error) : resolve()));
-      }),
   };
 }

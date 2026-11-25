@@ -1,5 +1,11 @@
-import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
-import { featureGaps, filesBase, remove, runPinned } from "./files-volume.ts";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { testFolders } from "@babojubot/process/testing";
+import {
+  featureGaps,
+  realScratch,
+  removeRetries,
+  runPinned,
+} from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { readerExit, Workspaces } from "../src/workspace.ts";
@@ -11,14 +17,10 @@ const withLinks = it.skipIf(lacks.symlink !== "");
 
 // 경로를 확인하는 사이에 폴더나 파일을 바꿔치기해도 다른 조직의 파일을 읽지 않는다.
 // 읽는 프로세스의 파일 작업 앞뒤 모든 시점에 바꿔치기(필요하면 원상 복구까지)를 넣어 본다.
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map(remove));
-});
+/** 시험마다의 폴더 정리. 폴더와 그 안에서 도는 읽는 프로세스의 끝을 함께 맡는다(`files-volume.ts` `runPinned`). */
+const folders = testFolders(afterEach, removeRetries);
 async function organizations() {
-  const created = await mkdtemp(path.join(filesBase(), "babojubot-race-"));
-  roots.push(created);
-  const root = await realpath(created);
+  const root = await realScratch(folders, "babojubot-race-");
   const base = path.join(root, "organizations");
   const mine = path.join(base, "organization-one/shared/dir");
   const other = path.join(base, "organization-two/shared/dir");
@@ -76,7 +78,10 @@ const run = async (
   plan: Record<string, unknown>,
   requested = "dir/a.md"
 ) => {
-  const { code, bytes } = await runPinned(cwd, preload, { requested, plan });
+  const { code, bytes } = await runPinned(folders, cwd, preload, {
+    requested,
+    plan,
+  });
   return { code, content: bytes?.toString("utf8") ?? null };
 };
 const attempt = async (cwd: string, plan: Record<string, unknown>) => {

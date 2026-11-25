@@ -41,6 +41,7 @@ import {
   updateApprovalPolicyInputSchema,
   updateNetworkPolicyInputSchema,
   egressRefusalMessages,
+  failureCode,
   updateHeartbeatInputSchema,
   updateProviderDefaultsInputSchema,
   updateProviderLimitInputSchema,
@@ -228,7 +229,7 @@ const serverErrors: ErrorRequestHandler = (error, _req, res, _next) => {
     res.status(413).json({ error: { code: "body_too_large" } });
     return;
   }
-  console.error("[server]", error);
+  console.error(`[server] a request failed (${failureCode(error)})`);
   res.status(500).json({ error: { code: "internal" } });
 };
 
@@ -419,7 +420,9 @@ export async function startServer({
             "isolation relay policy revalidation"
           )
           .catch((error: unknown) =>
-            console.error("[isolation] relay policy revalidation failed", error)
+            console.error(
+              `[isolation] relay policy revalidation failed (${failureCode(error)})`
+            )
           );
       })
     : () => {};
@@ -449,7 +452,9 @@ export async function startServer({
           "isolation relay refusal record"
         )
         .catch((error: unknown) =>
-          console.error("[isolation] relay refusal record failed", error)
+          console.error(
+            `[isolation] relay refusal record failed (${failureCode(error)})`
+          )
         );
     },
   });
@@ -1232,8 +1237,10 @@ export async function startServer({
   server.on("upgrade", (req, socket, head) => {
     void inFlight
       .track(() => upgrade(req, socket, head), "event stream connection")
-      .catch((error) => {
-        console.error("[event-stream]", error);
+      .catch((error: unknown) => {
+        console.error(
+          `[event-stream] a connection could not be opened (${failureCode(error)})`
+        );
         refuse(socket, 500);
       });
   });
@@ -1359,7 +1366,9 @@ export async function startServer({
     await gate
       .removeOrphans()
       .catch((error: unknown) =>
-        console.warn("[isolation] leftover containers were not removed", error)
+        console.warn(
+          `[isolation] leftover containers were not removed (${failureCode(error)})`
+        )
       );
     await cleanupAntigravityWorkspaces(dataDir);
     await recoverInterruptedSteers(db);
@@ -1382,8 +1391,10 @@ export async function startServer({
     });
   } catch (error) {
     // 끄다가 난 오류는 남기고, 호출자에게는 시작을 막은 원래 오류를 돌려준다.
-    await stop().catch((stopError) =>
-      console.error("[server] stopping after a failed start failed", stopError)
+    await stop().catch((stopError: unknown) =>
+      console.error(
+        `[server] stopping after a failed start failed (${failureCode(stopError)})`
+      )
     );
     throw error;
   }

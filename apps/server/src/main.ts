@@ -12,6 +12,7 @@ import {
   steerOutcomes,
   usageSchema,
   destinationSchema,
+  failureCode,
 } from "@babojubot/contracts";
 import {
   createConnection,
@@ -174,8 +175,7 @@ async function start() {
       .close()
       .catch((closeError: unknown) =>
         console.error(
-          "[server] closing the database after a failed start failed",
-          closeError
+          `[server] closing the database after a failed start failed (${failureCode(closeError)})`
         )
       );
     throw error;
@@ -194,7 +194,8 @@ async function shutdown(reason: string) {
   }, budget.cleanupMs).unref();
   const ok = await closeStarted(
     startup,
-    (message, error) => console.error(message, error),
+    // 진단에는 오류 문구 대신 원인 코드를 남긴다. 문구에는 바깥 출력(내장 Postgres가 시작 전에 끝나면 그 로그 끝)이 섞인다.
+    (message, error) => console.error(`${message} (${failureCode(error)})`),
     (where) => (closing = where)
   );
   process.exit(ok ? 0 : 1);

@@ -11,7 +11,6 @@ import {
   organizationDetailSchema,
   runDetailSchema,
   runSummaryListSchema,
-  streamFrameSchema,
   type RuntimeAdapter,
 } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
@@ -37,8 +36,7 @@ import {
   writes,
   type Gate,
 } from "@babojubot/runtime/testing";
-import WebSocket from "ws";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import {
   calls,
@@ -50,13 +48,20 @@ import {
 } from "./scenarios.ts";
 import {
   eventuallyMs,
+  openEventStream,
+  pollUntil,
   startTestServer,
   within,
   type TestServer,
+  ownStart,
+  heldOrEnded,
+  startDiagnostics,
+  releaseHeld,
+  homeUsers,
 } from "./support.ts";
+
 import {
   awaitedLater,
-  folderCleanup,
   withCleanup,
   type CleanupStep,
 } from "@babojubot/process/test-cleanup";
@@ -64,24 +69,40 @@ import {
 // 서버 재시작 복구. 실행 중 서버가 멈추면 그 실행 시도는 `server_restart`로 끝나고, 받은 깨우기는 다시 처리되어 새 실행 시도가 생긴다.
 
 let database: TestDatabase | undefined;
+/** 시험이 지금 쓰는 서버. 띄우는 즉시 그 끝을 DB를 쓰는 것으로 맡긴다(`startOwned`). */
 let server: RunningServer | undefined;
+/** 지금 서버의 끝(한 번만 돈다). 시험 본문이 중간에 끌 때도 이것을 부르고, 정리가 같은 결과를 받는다. */
+let stopServer: (() => Promise<void>) | undefined;
 let t: TestServer | undefined;
 /** 그 시험의 DB를 쓰는 것(시작 중인 서버, 서버 프로세스)의 끝. `server` 말고 따로 띄운 것을 시험이 맡긴다. */
 let databaseUsers: CleanupStep[] = [];
 afterEach(() => {
-  const [running, db, test, users] = [server, database, t, databaseUsers];
+  const [db, test, users] = [database, t, databaseUsers];
   server = undefined;
+  stopServer = undefined;
   database = undefined;
   t = undefined;
   databaseUsers = [];
   // 서버와 DB를 쓰는 것이 모두 끝난 것을 확인한 뒤에만 그 DB(재시작한 서버가 쓰는 시험 서버 `t`의 DB 포함)를 닫는다. 하나라도
   // 확인하지 못하면 DB를 남기고 그 실패를 알린다(`folderCleanup`). 한 단계가 실패해도 나머지를 닫는다.
-  const closing = folderCleanup(() =>
-    attemptAll([() => db?.close(), () => test?.close()])
+  // 이 서버들은 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`homeUsers`).
+  const closing = homeUsers(() =>
+    attemptAll([() => db && db.close(), () => test?.close()])
   );
-  for (const end of [() => running?.close(), ...users]) closing.own(end);
+  for (const end of users) closing.own(end);
   return closing.cleanUp();
 });
+
+/** 서버를 띄우고 띄우는 즉시 그 끝을 이 시험의 DB를 쓰는 것으로 맡긴다(`ownStart`). */
+function startOwned(options: Parameters<typeof startServer>[0]) {
+  const owned = ownStart(
+    (stop) => databaseUsers.push(stop),
+    startServer(options),
+    "the server"
+  );
+  stopServer = owned.stop;
+  return owned.started;
+}
 
 const api = (base: () => string) => {
   const call = async (method: string, path: string, body?: unknown) => {
@@ -139,7 +160,7 @@ describe("server restart recovery", () => {
   it("ends a run the server stopped during as a server restart and hands its wakes to a new run after the restart", async () => {
     database = await createTestDatabase();
     const gate = createGate();
-    server = await startServer({
+    server = await startOwned({
       db: database.db,
       port: 0,
       runtime: quietCreation(
@@ -158,8 +179,10 @@ describe("server restart recovery", () => {
     await gate.reached;
     const [interrupted] = await http.runs(org.id);
 
-    await server.close();
-    server = await startServer({ db: database.db, port: 0 });
+    // 정리가 맡은 같은 끝(한 번만 돈다)으로 끈다. 끄지 못했으면 정리가 같은 실패를 받아 DB를 닫지 않는다.
+    await stopServer!();
+    server = undefined;
+    server = await startOwned({ db: database.db, port: 0 });
     await server.drain();
 
     const [next, old] = await http.runs(org.id);
@@ -307,7 +330,7 @@ describe("accepted steer across a restart (#159)", () => {
   it("hands a message the stopped run had accepted by steering to the run after the first restart, once, and keeps both runs' records", async () => {
     database = await createTestDatabase();
     const gate = createGate();
-    server = await startServer({
+    server = await startOwned({
       db: database.db,
       port: 0,
       runtime: quietCreation(
@@ -336,9 +359,11 @@ describe("accepted steer across a restart (#159)", () => {
     });
 
     // 정상 종료: 진행 중 실행 시도는 취소되어 돌아와 `server_restart`로 끝나고 받은 깨우기를 다시 대기시킨다.
-    await server.close();
+    // 정리가 맡은 같은 끝(한 번만 돈다)으로 끈다. 끄지 못했으면 정리가 같은 실패를 받아 DB를 닫지 않는다.
+    await stopServer!();
+    server = undefined;
     let received: string[][] = [];
-    server = await startServer({
+    server = await startOwned({
       db: database.db,
       port: 0,
       runtime: quietCreation(
@@ -391,9 +416,11 @@ describe("accepted steer across a restart (#159)", () => {
       finished?.type === "run.finished" && finished.payload.requeuedWakeIds
     ).toHaveLength(2);
     // 다시 시작해도 더 받지 않는다.
-    await server.close();
+    // 정리가 맡은 같은 끝(한 번만 돈다)으로 끈다. 끄지 못했으면 정리가 같은 실패를 받아 DB를 닫지 않는다.
+    await stopServer!();
+    server = undefined;
     received = [];
-    server = await startServer({ db: database.db, port: 0 });
+    server = await startOwned({ db: database.db, port: 0 });
     await server.drain();
     expect(await http.runs(org.id)).toHaveLength(3);
   });
@@ -537,20 +564,20 @@ async function crashAndRestart(
       ? await insertLegacyOrganization(database!.db, "crash 조직")
       : await before.createOrganization("crash 조직");
     if (say) await before.say(org.id, say);
-    await vi
-      .waitUntil(() => committed(before, org.id), {
-        timeout: 5_000,
-        interval: 25,
-      })
-      .catch(() => {
-        throw new Error(`${stopAfter} never committed in 5s`);
-      });
+    await pollUntil(
+      async () => (await committed(before, org.id)) || undefined,
+      {
+        timeoutMs: 5_000,
+        intervalMs: 25,
+        timedOut: () => `waited 5000ms for ${stopAfter} to be committed`,
+      }
+    );
     if (alsoSay) await before.say(org.id, alsoSay);
     child.kill("SIGKILL");
     await exitedWithin(10_000);
     return org.id;
   });
-  server = await startServer({ db: database.db, port: 0 });
+  server = await startOwned({ db: database.db, port: 0 });
   await server.drain();
   const http = api(() => server!.url);
   const [next, old] = await http.runs(orgId);
@@ -590,7 +617,7 @@ describe("demo Lead flows across a restart right after a stage-changing write", 
     await trigger();
     await gate.reached;
     await t!.stopServer();
-    server = await startServer({ db: t!.db, port: 0, runtime: agents.runtime });
+    server = await startOwned({ db: t!.db, port: 0, runtime: agents.runtime });
     await server.drain();
     return api(() => server!.url);
   }
@@ -691,45 +718,43 @@ describe("server start recovery barrier", () => {
     let base = "";
     const http = api(() => base);
     // 이 시험이 띄운 서버와 붙잡은 행은 이 DB를 쓴다. afterEach는 등록 역순으로 행을 풀고 그 transaction이 끝난 것을 확인한 뒤
-    // 시작 작업의 결과를 회수해 그 서버를 닫고, 모두 확인했을 때만 DB를 닫는다.
-    const started: { server?: Promise<RunningServer> } = {};
-    databaseUsers.push(async () => {
-      if (started.server)
-        await (
-          await within(
-            started.server,
-            eventuallyMs,
-            "the server start did not end"
-          )
-        ).close();
-    });
+    // 시작 작업의 결과를 회수해 그 서버를 닫고, 모두 확인했을 때만 DB를 닫는다. 서버의 끝은 행을 푼 뒤에 와야 하므로(등록 역순) 행을
+    // 붙잡기 전에 그 자리를 등록해 두고, 서버를 띄우는 즉시 채운다.
+    const serverEnd: { stop?: () => Promise<void> } = {};
+    databaseUsers.push(() => serverEnd.stop?.());
     const holding = holdRow(database.db, late!.runId, held);
-    databaseUsers.push(async () => {
-      held.open();
-      await within(holding, eventuallyMs, "the row hold did not end");
-    });
-    // 잠그기 전에 transaction이 실패하면 `reached`는 오지 않으므로 그 실패로 끝낸다.
-    await within(
-      Promise.race([held.reached, holding]),
-      eventuallyMs,
-      "the row was not held"
+    databaseUsers.push(() =>
+      releaseHeld(() => held.open(), [() => holding], "the row hold")
     );
+    // 잠그기 전에 transaction이 실패하면 `reached`는 오지 않으므로 그 실패로 끝낸다.
+    await heldOrEnded(held.reached, holding, "the row hold");
     // 서버는 복구가 끝나기 전에 듣기 시작하므로, 포트 0에서 듣게 하고 듣기 시작할 때 알리는 주소를 받는다.
     let heard!: (url: string) => void;
     const listening = new Promise<string>((resolve) => (heard = resolve));
-    const starting = (started.server = startServer({
-      db: database.db,
-      port: 0,
-      runtime: runtime.adapter,
-      onListening: heard,
-    }));
+    const { started: starting } = ownStart(
+      (stop) => (serverEnd.stop = stop),
+      startServer({
+        db: database.db,
+        port: 0,
+        runtime: runtime.adapter,
+        onListening: heard,
+      }),
+      "the server"
+    );
     base = await within(
       Promise.race([listening, starting.then(() => listening)]),
       eventuallyMs,
       "the server did not start listening"
     );
-    await until(
-      async () => (await runStatus(early!.runId)) === "server_restart"
+    await pollUntil(
+      async () =>
+        (await runStatus(early!.runId)) === "server_restart" || undefined,
+      {
+        timeoutMs: 10_000,
+        intervalMs: 25,
+        timedOut: () =>
+          "waited 10000ms for the early run to end with server_restart",
+      }
     );
     const stream = await listen(base);
     // 다른 시작 경로: 앞쪽이 복구된 조직에 사용자가 메시지를 보낸다. 저장은 되지만 실행 시도는 아직 시작하지 않는다.
@@ -737,9 +762,13 @@ describe("server start recovery barrier", () => {
     // 시간을 기다리지 않는다. 복구가 끝나기 전의 촉진은 응답 전에 그 자리에서 버려지고(`kick`), 메시지의 Event는 응답 전에
     // 나간다. 그래서 응답과 이 연결의 순서 표시 뒤에 보면 이 요청이 남긴 것은 모두 보인다. 붙잡아 둔 뒤쪽 복구는
     // `held`가 열기 전에는 끝나지 않으므로, 그 알림도 이때까지 나갈 수 없다.
-    await stream.caughtUp();
+    const beforeRecovery = await stream.received();
     expect(runtime.executions()).toEqual([]);
-    expect(stream.types().filter((t) => t !== "message.created")).toEqual([]);
+    expect(
+      beforeRecovery.events
+        .map((e) => e.type)
+        .filter((t) => t !== "message.created")
+    ).toEqual([]);
     expect(await runStatus(late!.runId)).toBe("running");
     held.open();
     const running = await within(
@@ -748,13 +777,17 @@ describe("server start recovery barrier", () => {
       "the server did not finish starting"
     );
     await running.drain();
+    // 끝난 실행 시도가 보낸 Event를 모두 받은 뒤에 닫는다. 그사이 연결이 실패했으면 그 실패로 끝난다.
+    const afterRecovery = await stream.received();
     stream.close();
 
     // 복구된 깨우기는 다시 처리되고, 복구 중에 보낸 메시지는 같은 조직의 다음 실행 시도가 받는다.
     expect(runtime.executions().sort()).toEqual(
       [early!.leadId, late!.leadId].sort()
     );
-    const types = stream.types().filter((t) => t !== "message.created");
+    const types = afterRecovery.events
+      .map((e) => e.type)
+      .filter((t) => t !== "message.created");
     expect(types.slice(0, 2)).toEqual(["run.finished", "run.finished"]);
     expect(types.filter((t) => t === "run.finished")).toHaveLength(4);
     expect(
@@ -773,15 +806,26 @@ describe("server start recovery barrier", () => {
     const [early, late] = await leftRunning(database.db, 2);
     const runtime = countingRuntime();
     const restore = await failRunEnd(database.db, late!.runId);
-    await expect(
-      startServer({ db: database.db, port: 0, runtime: runtime.adapter })
-    ).rejects.toThrow();
+    // 거절을 기대한다(뒤쪽 복구 저장이 실패한다). 시작 실패 뒤 정리가 모두 됐으면 그 시작 동안의 진단은 아래 목록뿐이다. 진단 전체가
+    // 그와 같을 때만 정리를 확인한 것으로 본다.
+    const diagnostics = startDiagnostics();
+    const starting = ownStart(
+      (stop) => databaseUsers.push(stop),
+      startServer({
+        db: database.db,
+        port: 0,
+        runtime: runtime.adapter,
+      }),
+      "the server whose start should fail",
+      diagnostics.endedWith({ error: [], warn: [] })
+    ).started;
+    await expect(starting).rejects.toThrow();
     expect(await runStatus(early!.runId)).toBe("server_restart");
     expect(await runStatus(late!.runId)).toBe("running");
     expect(runtime.executions()).toEqual([]);
 
     await restore();
-    server = await startServer({
+    server = await startOwned({
       db: database.db,
       port: 0,
       runtime: runtime.adapter,
@@ -861,51 +905,14 @@ function holdRow(db: Database, runId: string, gate: Gate) {
   });
 }
 
-async function until(check: () => Promise<boolean>) {
-  await vi
-    .waitUntil(() => check().catch(() => false), {
-      timeout: 10_000,
-      interval: 25,
-    })
-    .catch(() => {
-      throw new Error("condition never held in 10s");
-    });
-}
-
-type Stream = {
-  types: () => string[];
-  /** 서버가 지금까지 이 연결로 보낸 Event를 모두 받을 때까지 기다린다(ping 뒤의 pong은 그 앞 frame 뒤에 온다). */
-  caughtUp: () => Promise<void>;
-  close: () => void;
-};
-
-/** 전체 Event stream을 구독해 받은 Event 종류를 순서대로 모은다. 서버가 듣기 시작할 때까지 다시 시도한다. */
-async function listen(base: string): Promise<Stream> {
-  const types: string[] = [];
-  let socket!: WebSocket;
-  await until(
-    () =>
-      new Promise<boolean>((resolve) => {
-        socket = new WebSocket(base.replace(/^http/, "ws") + eventStreamPath);
-        socket.once("error", () => resolve(false));
-        socket.on("message", (data) => {
-          const frame = streamFrameSchema.parse(JSON.parse(String(data)));
-          if (frame.type === "ready") resolve(true);
-          if (frame.type === "event") types.push(frame.event.type);
-        });
-      })
+/**
+ * 전체 Event stream을 구독한다. 서버가 듣기 시작한 뒤(`onListening`)에 부르므로 다시 시도하지 않는다(`openEventStream`). 연결은 만든 직후
+ * 시험 정리에 맡겨, 시험이 중간에 실패해도 끊는다(시험이 청한 닫힘이라 실패가 아니다).
+ */
+async function listen(base: string) {
+  const { subscription } = await openEventStream(
+    base.replace(/^http/, "ws") + eventStreamPath,
+    { opened: (terminate) => onTestFinished(terminate) }
   );
-  return {
-    types: () => [...types],
-    caughtUp: () =>
-      within(
-        new Promise<void>((resolve) => {
-          socket.once("pong", () => resolve());
-          socket.ping();
-        }),
-        eventuallyMs,
-        "the Event stream's pong did not finish"
-      ),
-    close: () => socket.close(),
-  };
+  return subscription;
 }

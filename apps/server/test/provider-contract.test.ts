@@ -23,7 +23,13 @@ import { createGate, type Gate } from "@babojubot/runtime/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chatMessages, goal, idle, scriptedAgents } from "./scenarios.ts";
 import { outsideContract } from "./stand-ins.ts";
-import { eventually, startTestServer, type TestServer } from "./support.ts";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
+import {
+  eventually,
+  startTestServer,
+  type TestServer,
+  heldOrEnded,
+} from "./support.ts";
 
 // 넓힌 프로바이더 계약(#96): 실행 중 끼워 넣기와 거절 뒤 줄 세우기, 준비 확인의 갱신 시점, 실행 시도 상세의 사용량.
 
@@ -312,7 +318,8 @@ describe("provider readiness", () => {
       providerSettingsSchema.parse(rechecked.body).providers[1]!.readiness
     ).toMatchObject({ status: "ready", reason: null, checking: false });
     // 확인을 시작할 때와 끝낼 때 다시 불러오라는 신호가 간다.
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(2);
+    // 이 요청은 확인을 끝낸 뒤 답하므로 두 신호 모두 응답 전에 나갔다.
+    expect((await watcher.received()).settingsSignals).toBe(2);
     expect(
       (await t!.request("POST", "/api/providers/nope/readiness")).status
     ).toBe(404);
@@ -324,7 +331,7 @@ describe("provider readiness", () => {
     await expect
       .poll(async () => (await readinessOf("fake-2")).reason, eventually)
       .toBe("credentials_unverified");
-    expect(watcher.events).toEqual([]);
+    expect((await watcher.received()).events).toEqual([]);
   });
 
   it("saves only the latest check and stops showing it as checking once that check ends, even if an older one is still going", async () => {
@@ -353,8 +360,12 @@ describe("provider readiness", () => {
           : adapter,
     });
     started = checks;
-    const first = t!.request("POST", "/api/providers/fake-2/readiness");
-    await older.reached;
+    // 붙잡은 확인을 기다리는 요청이다. 시험이 먼저 실패해도 처리하지 않은 거절로 남지 않는다(서버 정리가 끝낸다).
+    const first = awaitedLater(
+      t!.request("POST", "/api/providers/fake-2/readiness")
+    );
+    // 확인이 붙잡히기 전에 요청이 끝나면 그 끝으로 기다림을 끝낸다.
+    await heldOrEnded(older.reached, first, "the first recheck");
     const second = await t!.request("POST", "/api/providers/fake-2/readiness");
     expect(
       providerSettingsSchema.parse(second.body).providers[1]!.readiness
@@ -385,8 +396,10 @@ describe("provider readiness", () => {
           : adapter,
     });
     const org = await createOrganization("느린 확인 조직", "fake-2");
-    const rechecking = t!.request("POST", "/api/providers/fake-2/readiness");
-    await slow.reached;
+    const rechecking = awaitedLater(
+      t!.request("POST", "/api/providers/fake-2/readiness")
+    );
+    await heldOrEnded(slow.reached, rechecking, "the recheck");
     expect(await readinessOf("fake-2")).toMatchObject({
       status: "not_ready",
       checking: true,
@@ -559,6 +572,10 @@ describe("usage numbers outside the contract (#140)", () => {
       expect(run!.error).toBe(
         "프로바이더가 계약 밖의 종료 결과를 돌려주었습니다."
       );
+      // 진단에는 프로바이더가 돌려준 값 대신 원인 코드만 남긴다(CODING_STANDARDS.md#제품-코드).
+      expect(error.mock.calls).toEqual([
+        ["[runs] runtime returned an invalid result (ZodError)"],
+      ]);
     } finally {
       error.mockRestore();
     }

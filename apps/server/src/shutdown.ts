@@ -40,12 +40,13 @@ export async function closeStarted(
     return false;
   }
   const { server, handle } = started;
-  // 실패는 닫기가 끝나는 대로 알린다. 뒤 닫기가 정리 시한을 넘겨 멈춰도 앞 실패는 남는다.
-  const close = async (resource: { close(): Promise<void> }) => {
+  // 실패는 닫기가 끝나는 대로 알린다. 뒤 닫기가 정리 시한을 넘겨 멈춰도 앞 실패는 남는다. 진단에는 원인 코드만 남으므로(main.ts)
+  // 어느 자원의 닫기가 실패했는지는 문구로 가른다.
+  const close = async (name: string, resource: { close(): Promise<void> }) => {
     try {
       await resource.close();
     } catch (error) {
-      report("[server] shutdown failed", error);
+      report(`[server] closing ${name} failed`, error);
       throw error;
     }
   };
@@ -53,11 +54,11 @@ export async function closeStarted(
     async () => {
       if (!server) return;
       step("the server", () => server.progress?.());
-      await close(server);
+      await close("the server", server);
     },
     async () => {
       step("the database", () => handle.progress?.());
-      await close(handle);
+      await close("the database", handle);
     },
   ]);
   return failures.length === 0;

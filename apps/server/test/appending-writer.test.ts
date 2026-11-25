@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { fakeClock, outcomeAfterDrain } from "./support.ts";
 import { keepAppending } from "./appending-writer.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
@@ -28,24 +29,16 @@ function heldAppend(fail?: Error) {
     },
   };
 }
-const settled = async (promise: Promise<unknown>) => {
-  let done = false;
-  void promise.then(
-    () => (done = true),
-    () => (done = true)
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  return done;
-};
-
 it("waits for an append already in progress before it reports stopped", async () => {
+  fakeClock();
   const held = heldAppend();
   const writer = keepAppending("run.log", "더\n", { append: held.append });
+  await vi.advanceTimersByTimeAsync(1);
   await held.firstStarted;
   const stopped = writer.stop();
   const callsAtStop = held.calls();
 
-  expect(await settled(stopped)).toBe(false);
+  expect(await outcomeAfterDrain(stopped)).toBe("pending");
   held.release();
   await stopped;
   expect(held.calls()).toBe(callsAtStop);
@@ -77,31 +70,29 @@ it("fails by name when an append in progress never finishes", async () => {
 });
 
 it("does not start the next append before the one in progress has finished", async () => {
-  vi.useFakeTimers();
-  try {
-    const held = heldAppend();
-    const writer = keepAppending("run.log", "더\n", { append: held.append });
-    await vi.advanceTimersByTimeAsync(50);
-    expect(held.calls()).toBe(1);
-    held.release();
-    await vi.advanceTimersByTimeAsync(50);
-    expect(held.calls()).toBeGreaterThan(1);
-    await writer.stop();
-  } finally {
-    vi.useRealTimers();
-  }
+  fakeClock();
+  const held = heldAppend();
+  const writer = keepAppending("run.log", "더\n", { append: held.append });
+  await vi.advanceTimersByTimeAsync(50);
+  expect(held.calls()).toBe(1);
+  held.release();
+  await vi.advanceTimersByTimeAsync(50);
+  expect(held.calls()).toBeGreaterThan(1);
+  await writer.stop();
 });
 
 it("waits for the append in progress when the test fails before it stops the writer", async () => {
+  fakeClock();
   const held = heldAppend();
   const writer = keepAppending("run.log", "더\n", { append: held.append });
+  await vi.advanceTimersByTimeAsync(1);
   await held.firstStarted;
   // 시험 본문이 단언에서 실패해도 등록한 정리가 writer를 멈추고 진행 중인 쓰기를 기다린다.
   const test = withCleanup(async (defer) => {
     defer(() => writer.stop());
     throw new Error("assertion failed");
   });
-  expect(await settled(test)).toBe(false);
+  expect(await outcomeAfterDrain(test)).toBe("pending");
   held.release();
   await expect(test).rejects.toThrow("assertion failed");
   expect(held.calls()).toBe(1);

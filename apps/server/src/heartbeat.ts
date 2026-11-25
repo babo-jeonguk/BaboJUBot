@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { failureCode } from "@babojubot/contracts";
 import { runDueHeartbeats, type Database } from "@babojubot/db";
 import { applyAfterCommit, type AfterCommitDeps } from "./after-commit.ts";
 import { RerunLoop } from "./rerun-loop.ts";
@@ -20,7 +21,9 @@ export class HeartbeatScheduler {
   readonly #loop = new RerunLoop(
     () => this.#check(),
     (error) =>
-      console.error("[heartbeat] checking due heartbeats failed", error)
+      console.error(
+        `[heartbeat] checking due heartbeats failed (${failureCode(error)})`
+      )
   );
 
   constructor(options: {

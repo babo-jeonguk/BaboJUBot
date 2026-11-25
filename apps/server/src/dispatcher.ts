@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   type AgentRecoveryBlockReason,
+  failureCode,
   isolateUsageNumbers,
   runResultSchema,
   runtimeActivitySchema,
@@ -88,7 +89,9 @@ export class RunDispatcher {
   readonly #handling = new RerunLoops(
     (agentId) => this.#dispatch(agentId),
     (agentId, error) =>
-      console.error(`[runs] dispatch for agent ${agentId} stopped`, error)
+      console.error(
+        `[runs] dispatch for agent ${agentId} stopped (${failureCode(error)})`
+      )
   );
   /** 진행 중인 실행 시도와 그 연결의 adapter. 끼워 넣기는 여기 있는 실행 시도에만 간다. */
   readonly #active = new Map<
@@ -187,7 +190,9 @@ export class RunDispatcher {
         ? "accepted"
         : "rejected";
     } catch (error) {
-      console.error(`[runs] run ${message.runId} steer failed`, error);
+      console.error(
+        `[runs] run ${message.runId} steer failed (${failureCode(error)})`
+      );
       return "rejected";
     }
   }
@@ -221,7 +226,7 @@ export class RunDispatcher {
     try {
       await kickWaiting();
     } catch (error) {
-      console.error(`[runs] kicking ${what} failed`, error);
+      console.error(`[runs] kicking ${what} failed (${failureCode(error)})`);
       void this.#retrying(`kicking ${what}`, kickWaiting);
     }
   }
@@ -275,7 +280,9 @@ export class RunDispatcher {
         await task();
         return;
       } catch (error) {
-        console.error(`[runs] ${what} failed, retrying`, error);
+        console.error(
+          `[runs] ${what} failed, retrying (${failureCode(error)})`
+        );
         if (this.#closed) return;
         try {
           await delay(backoffMs, undefined, { signal: this.#recovery.signal });
@@ -374,15 +381,16 @@ export class RunDispatcher {
       if (parsed.success) result = parsed.data;
       else {
         console.error(
-          "[runs] runtime returned an invalid result",
-          parsed.error
+          `[runs] runtime returned an invalid result (${failureCode(parsed.error)})`
         );
         result = failed("프로바이더가 계약 밖의 종료 결과를 돌려주었습니다.");
       }
     } catch (error) {
       // 프로바이더 오류 내용은 공개 기록에 그대로 옮기지 않는다. 조직 폴더 확인 실패, 격리 실행 거절, 감독 실행기를 쓸 수 없어
       // 프로그램을 띄우지 않은 거절은 제품이 쓴 안내라 그대로 보인다.
-      console.error(`[runs] run ${run.id} runtime error`, error);
+      console.error(
+        `[runs] run ${run.id} runtime error (${failureCode(error)})`
+      );
       result = controller.signal.aborted
         ? cancelled
         : error instanceof WorkspaceIdentityError ||
@@ -476,8 +484,7 @@ export class RunDispatcher {
         return { kind: "ok", request };
       } catch (error) {
         console.error(
-          `[runs] run ${run.id} intent recovery failed (attempt ${attempt})`,
-          error
+          `[runs] run ${run.id} intent recovery failed (attempt ${attempt}, ${failureCode(error)})`
         );
         if (attempt >= recoveryAttempts)
           return { kind: "blocked", reason: "retry_exhausted" };
@@ -512,7 +519,9 @@ export class RunDispatcher {
             : await finishRun(this.#db, runId, result, source);
       } catch (error) {
         if (attempt >= 3) throw error;
-        console.error(`[runs] run ${runId} finish failed, retrying`, error);
+        console.error(
+          `[runs] run ${runId} finish failed, retrying (${failureCode(error)})`
+        );
         await new Promise((r) => setTimeout(r, 100 * attempt));
       }
     }
@@ -533,7 +542,9 @@ export class RunDispatcher {
       });
       if (event) this.#hub.publish(event);
     } catch (error) {
-      console.error(`[runs] run ${runId} could not record an activity`, error);
+      console.error(
+        `[runs] run ${runId} could not record an activity (${failureCode(error)})`
+      );
     }
   }
 }

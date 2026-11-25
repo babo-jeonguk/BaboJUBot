@@ -1,6 +1,5 @@
 import {
   agentDetailSchema,
-  attemptAll,
   organizationDetailSchema,
   providerSettingsSchema,
   runSummaryListSchema,
@@ -17,8 +16,14 @@ import {
   scriptedAgents,
   serverHelpers,
 } from "./scenarios.ts";
-import { eventually, startTestServer, type TestServer } from "./support.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  eventually,
+  startTestServer,
+  type TestServer,
+  heldOrEnded,
+  releaseHeld,
+} from "./support.ts";
+import { awaitedLater, withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -114,43 +119,54 @@ describe("concurrent global settings writes", () => {
         leadDefault: initial.leadDefault,
         workerDefault: initial.workerDefault,
       };
-      const locked = createGate();
-      const blocker = t.db.transaction(async (tx) => {
-        await tx.execute(
-          `select 1 from provider_defaults where role = 'worker' for update`
-        );
-        await locked.wait(new AbortController().signal);
-      });
-      await locked.reached;
       const replacement = {
         ...original,
         leadDefault: { provider: "fake-2", model: null },
       };
       const final = repeatChoice ? replacement : original;
-      const changing = t.request("PUT", "/api/providers/defaults", replacement);
-      let restoring: ReturnType<TestServer["request"]> | undefined;
-      // 붙잡은 행을 풀고 경쟁한 쓰기가 모두 끝나기를 기다린다. 하나가 실패해도 나머지를 기다린다.
+      // 경쟁한 쓰기. 정리(`releaseHeld`)와 시험 끝의 단언이 나중에 기다린다.
+      const writes: {
+        changing?: ReturnType<TestServer["request"]>;
+        restoring?: ReturnType<TestServer["request"]>;
+      } = {};
+      // 행을 붙잡은 transaction과 경쟁한 쓰기는 이 정리가 소유한다(만든 직후 등록). 붙잡은 행을 풀고 모두 끝나기를 기다린다.
+      // 하나가 실패해도 나머지를 기다린다.
       await withCleanup(async (defer) => {
+        const locked = createGate();
+        const blocker = t!.db.transaction(async (tx) => {
+          await tx.execute(
+            `select 1 from provider_defaults where role = 'worker' for update`
+          );
+          await locked.wait(new AbortController().signal);
+        });
         defer(() =>
-          attemptAll([
+          releaseHeld(
             () => locked.open(),
-            () => blocker,
-            () => changing,
-            () => restoring,
-          ])
+            [() => blocker, () => writes.changing, () => writes.restoring],
+            "the held row and the competing writes"
+          )
+        );
+        // 행을 잡기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
+        await heldOrEnded(locked.reached, blocker, "the row hold");
+        // 경쟁한 쓰기는 정리(`releaseHeld`)가 나중에 기다린다. 그 전에 실패해도 처리하지 않은 거절로 남지 않는다.
+        writes.changing = awaitedLater(
+          t!.request("PUT", "/api/providers/defaults", replacement)
         );
         // 첫 PUT이 lead를 잡고 worker를 기다리면, 두 번째 PUT은 lead를 기다린다.
         await waitForSettingsWriters(1);
-        restoring = t!.request("PUT", "/api/providers/defaults", final);
+        writes.restoring = awaitedLater(
+          t!.request("PUT", "/api/providers/defaults", final)
+        );
         await waitForSettingsWriters(2);
       });
-      expect((await changing).status).toBe(200);
-      expect((await restoring!).status).toBe(200);
+      expect((await writes.changing!).status).toBe(200);
+      expect((await writes.restoring!).status).toBe(200);
       expect(await settings()).toMatchObject(final);
-      await expect
-        .poll(() => watcher.settingsSignals(), eventually)
-        .toBe(repeatChoice ? 1 : 2);
-      expect(watcher.events).toEqual([]);
+      // 신호는 응답 전에 나가므로 두 PUT이 끝난 뒤 받은 것이 전부다.
+      expect(await watcher.received()).toEqual({
+        events: [],
+        settingsSignals: repeatChoice ? 1 : 2,
+      });
     }
   );
 
@@ -169,34 +185,45 @@ describe("concurrent global settings writes", () => {
       });
       expect(saved.status).toBe(200);
     }
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
+    expect((await watcher.received()).settingsSignals).toBe(1);
   });
 
   it("signals a limit replacement even when the competing insert was initially invisible", async () => {
     t = await startTestServer();
     const watcher = await t.subscribe({ kind: "all" });
-    const inserted = createGate();
-    // 상한 행이 아직 없을 때 다른 transaction이 1을 만들고 commit 직전이다.
-    const inserting = t.db.transaction(async (tx) => {
-      await tx.execute(
-        `insert into provider_limits (provider, max_concurrent_runs) values ('fake', 1)`
-      );
-      await inserted.wait(new AbortController().signal);
-    });
-    await inserted.reached;
-    const saving = t.request("PUT", "/api/providers/fake/limit", {
-      maxConcurrentRuns: 2,
-    });
-    // 붙잡은 insert를 풀고 두 쓰기가 끝나기를 기다린다. 하나가 실패해도 나머지를 기다린다.
+    // 경쟁한 쓰기. 정리(`releaseHeld`)와 시험 끝의 단언이 나중에 기다린다.
+    const writes: { saving?: ReturnType<TestServer["request"]> } = {};
+    // 붙잡은 insert와 경쟁한 쓰기는 이 정리가 소유한다(만든 직후 등록). 붙잡은 insert를 풀고 두 쓰기가 끝나기를 기다린다.
+    // 하나가 실패해도 나머지를 기다린다.
     await withCleanup(async (defer) => {
+      const inserted = createGate();
+      // 상한 행이 아직 없을 때 다른 transaction이 1을 만들고 commit 직전이다.
+      const inserting = t!.db.transaction(async (tx) => {
+        await tx.execute(
+          `insert into provider_limits (provider, max_concurrent_runs) values ('fake', 1)`
+        );
+        await inserted.wait(new AbortController().signal);
+      });
       defer(() =>
-        attemptAll([() => inserted.open(), () => inserting, () => saving])
+        releaseHeld(
+          () => inserted.open(),
+          [() => inserting, () => writes.saving],
+          "the held insert and the competing write"
+        )
+      );
+      // insert하기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
+      await heldOrEnded(inserted.reached, inserting, "the competing insert");
+      // 경쟁한 쓰기는 정리(`releaseHeld`)가 나중에 기다린다. 그 전에 실패해도 처리하지 않은 거절로 남지 않는다.
+      writes.saving = awaitedLater(
+        t!.request("PUT", "/api/providers/fake/limit", {
+          maxConcurrentRuns: 2,
+        })
       );
       await waitForSettingsWriters(1);
     });
-    expect((await saving).status).toBe(200);
+    expect((await writes.saving!).status).toBe(200);
     expect((await settings()).providers[0]!.maxConcurrentRuns).toBe(2);
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
+    expect((await watcher.received()).settingsSignals).toBe(1);
   });
 });
 
@@ -242,8 +269,10 @@ describe("provider connections and agent choices", () => {
       model: "fake-2-max",
     });
     // 전역 설정은 조직 Event가 아니라 다시 불러오라는 신호로 다른 화면에 간다.
-    await expect.poll(() => watcher.settingsSignals(), eventually).toBe(1);
-    expect(watcher.events).toEqual([]);
+    expect(await watcher.received()).toEqual({
+      events: [],
+      settingsSignals: 1,
+    });
 
     // 고르지 않은 Lead는 Lead 기본값, 승인으로 생긴 작업자는 작업자 기본값을 복사하고 각자의 연결로 실행된다.
     const org = await researching(agents, "기본값 조직");
