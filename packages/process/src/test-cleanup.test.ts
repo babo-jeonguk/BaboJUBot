@@ -474,4 +474,75 @@ describe("ownedListener", () => {
     expect(closes).toHaveLength(1);
     await within(closes[0]!(), 5_000, "the close did not end");
   });
+
+  // 맡긴 닫기가 듣기 시도가 끝나기 전에 불리면 "닫을 것 없음"으로 이행했고, 그 뒤 듣기가 끝난 서버는 아무도 닫지 않았다
+  // (#286 3b-3a merge 설계 점검 1회차 지적 2). 닫기는 듣기 시도의 끝을 본 뒤에 닫는다.
+  it("closes a server whose listening ends after its close was called", async () => {
+    let open!: () => void;
+    const server = new GatedListen(
+      new Promise<void>((resolve) => (open = resolve))
+    );
+    const closes: (() => Promise<void>)[] = [];
+    const listening = ownedListener(
+      server,
+      { port: 0, host: "127.0.0.1" },
+      (step) => {
+        closes.push(step);
+        onTestFinished(step);
+      },
+      "the gated listener"
+    );
+    const order: string[] = [];
+    server.once("listening", () => order.push("listening"));
+    const closing = closes[0]!().then(() => order.push("closed"));
+    open();
+    await within(listening, 5_000, "the gated listener did not listen");
+    await within(closing, 5_000, "the owner's close did not end");
+    expect(order).toEqual(["listening", "closed"]);
+    expect(server.listening).toBe(false);
+  });
+
+  // 듣기 기다림이 상한으로 먼저 끝난 뒤 듣기가 실패하면 그 오류를 아무도 받지 않았다(지적 2). 맡긴 닫기가 그 오류로 실패한다.
+  it("fails its close with a listen failure that came after the listen bound", async () => {
+    const { server: held } = await ownedListener(
+      net.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the port holder"
+    );
+    const { port } = held.address() as net.AddressInfo;
+    let open!: () => void;
+    const server = new GatedListen(
+      new Promise<void>((resolve) => (open = resolve))
+    );
+    // 러너에 맡기지 않는다: 이 서버는 듣기에 실패하므로(이미 쓰는 포트) 남는 것이 없고, 닫기의 실패는 이 시험이 받는다.
+    const closes: (() => Promise<void>)[] = [];
+    await expect(
+      ownedListener(
+        server,
+        { port, host: "127.0.0.1" },
+        (step) => closes.push(step),
+        "the late listener",
+        { listenMs: 50 }
+      )
+    ).rejects.toThrow(/the late listener did not start listening/);
+    open();
+    await expect(
+      within(closes[0]!(), 5_000, "the owner's close did not end")
+    ).rejects.toMatchObject({ code: "EADDRINUSE" });
+  });
 });
+
+/** 듣기를 시험이 열 때까지 미루는 서버. 시험이 만들어 인자로 넘기는 인스턴스다(공용 prototype·전역을 바꾸지 않는다). */
+class GatedListen extends net.Server {
+  constructor(private readonly gate: Promise<void>) {
+    super();
+  }
+
+  override listen(...args: unknown[]): this {
+    void this.gate.then(() =>
+      super.listen(...(args as Parameters<net.Server["listen"]>))
+    );
+    return this;
+  }
+}
