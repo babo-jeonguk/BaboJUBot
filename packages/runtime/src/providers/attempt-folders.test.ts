@@ -2,6 +2,7 @@ import { readdir, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
+import { attemptFolder } from "./attempt-folder.ts";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
 import { request } from "./test-support.ts";
@@ -20,10 +21,15 @@ const inject = vi.hoisted(() => ({
   writeFails: undefined as string | undefined,
   /** 시험 중에 만들어진 임시 폴더. 지우지 못하게 한 폴더도 시험 정리가 지운다. */
   made: [] as string[],
+  /** 끝난 파일 쓰기의 이름(실제 쓰기가 이행한 뒤 넣는다). */
+  written: [] as string[],
+  /** 지우기마다 그 대상과, 불린 순간 이미 끝나 있던 쓰기의 이름(첫 await 전에 기록한다). */
+  removed: vi.fn<(target: string, writtenBefore: string[]) => void>(),
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
+    inject.removed(String(target), [...inject.written]);
     if (inject.removeFails?.test(String(target)))
       throw Object.assign(new Error(`EBUSY: resource busy or locked, rm`), {
         code: "EBUSY",
@@ -35,7 +41,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       throw Object.assign(new Error("ENOSPC: no space left on device"), {
         code: "ENOSPC",
       });
-    return real.writeFile(target, ...rest);
+    await real.writeFile(target, ...rest);
+    inject.written.push(path.basename(String(target)));
   };
   const mkdtemp = (async (prefix: string) => {
     const made = await real.mkdtemp(prefix);
@@ -59,6 +66,8 @@ const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 afterEach(() => {
   inject.removeFails = undefined;
   inject.writeFails = undefined;
+  inject.written.splice(0);
+  inject.removed.mockReset();
   for (const made of inject.made.splice(0)) folders.adopt(made);
   vi.restoreAllMocks();
 });
@@ -276,5 +285,66 @@ describe("an attempt whose programs were not confirmed ended", () => {
     expect(
       logged().filter((line) => line.includes("were not confirmed ended"))
     ).toEqual([]);
+  });
+});
+
+// 실행 시도 폴더는 프로그램 띄우기와 자격 증명 사본 쓰기를 스스로 한다(#286 PR #299 외부 리뷰 1회차 SPEC-2와 같은 종류: 얻은 뒤에
+// 등록받으면 지우기가 시작된 뒤의 등록이 정리 밖에 남는다). 지우기가 시작되면 띄우지도 쓰지도 않고, 지우기는 진행 중인 쓰기의 끝을
+// 본 뒤 지운다. 지우기는 한 번이고, 다시 불러도 같은 지우기다.
+describe("an attempt folder being removed", () => {
+  const removingCode = { code: "attempt_folder_removing" };
+  /** 끝을 확인한 프로그램 하나(지우기가 폴더를 통째로 지우는 길). */
+  const endedProgram = () => ({
+    end: vi.fn(),
+    done: Promise.resolve({ ended: true, causes: [] as string[] }),
+  });
+  const made = async () => {
+    const folder = await folders.make("attempt-removing-");
+    return {
+      folder,
+      attempt: attemptFolder(folder, {
+        kind: "attempt folder",
+        connection: "test",
+      }),
+    };
+  };
+
+  it("starts no program and writes no credential copy once its removal began", async () => {
+    const { folder, attempt } = await made();
+    const removing = attempt.remove();
+    const start = vi.fn(endedProgram);
+    expect(() => attempt.usedBy(start)).toThrow(
+      expect.objectContaining(removingCode)
+    );
+    expect(start).not.toHaveBeenCalled();
+    await expect(
+      attempt.credential("auth.json", "secret")
+    ).rejects.toMatchObject(removingCode);
+    expect(attempt.remove()).toBe(removing);
+    await removing;
+    expect(inject.written).toEqual([]);
+    expect(await readdir(path.dirname(folder))).not.toContain(
+      path.basename(folder)
+    );
+  });
+
+  it("removes the folder only after a credential copy being written has been written", async () => {
+    const { folder, attempt } = await made();
+    attempt.usedBy(endedProgram);
+    // 결과를 만들 때 바로 값으로 받는다(거절을 처리하지 않은 채 두지 않는다).
+    const writing = attempt.credential("auth.json", "secret").then(
+      (at) => ({ at }),
+      (error: unknown) => ({ error })
+    );
+    const removing = attempt.remove();
+    await removing;
+    const removals = inject.removed.mock.calls.filter(
+      ([target]) => target === folder
+    );
+    expect(removals[0]).toEqual([folder, ["auth.json"]]);
+    expect(await writing).toMatchObject({ error: removingCode });
+    expect(await readdir(path.dirname(folder))).not.toContain(
+      path.basename(folder)
+    );
   });
 });
