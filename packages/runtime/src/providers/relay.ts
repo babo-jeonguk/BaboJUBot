@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import {
   attemptAll,
+  attemptEach,
+  combinedFailure,
   continueAfterFailure,
   egressRefusalMessages,
   failureCode,
@@ -507,7 +509,7 @@ export function createRelayHub(): RelayHub {
             for (const socket of [...idle, ...loose]) socket.destroy();
             // 폴더에는 서버들의 소켓 파일이 있다. 모든 서버가 닫혔음을 확인한 뒤에만 지우고, 하나라도 확인하지 못하면 폴더를 남기고
             // 그 원인으로 실패한다(지우면 아직 듣는 서버가 남은 채로 닫힌 것처럼 보인다).
-            await attemptAll(
+            const failures = await attemptEach(
               servers.map(
                 (server) => () =>
                   new Promise<void>((resolve, reject) => {
@@ -527,9 +529,19 @@ export function createRelayHub(): RelayHub {
                       else resolve();
                     });
                   })
-              ),
-              `the relay could not be closed; its folder ${directory} is kept`
+              )
             );
+            // 실패가 하나여도 남긴 폴더의 위치가 거절에 남도록 늘 감싼다. 원인은 cause에 그대로 있다.
+            if (failures.length > 0)
+              throw new Error(
+                `the relay could not be closed; its folder ${directory} is kept`,
+                {
+                  cause: combinedFailure(
+                    failures,
+                    "the relay's servers did not close"
+                  ),
+                }
+              );
             rmSync(directory, { recursive: true, force: true });
           })()),
       };

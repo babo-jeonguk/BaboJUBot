@@ -3279,13 +3279,18 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
         failedAt.map((address) => () => removeFolder(path.dirname(address)))
       )
     );
-    await expect(
-      environment.probe(
-        { blocked: [], forbidden: [] },
-        AbortSignal.timeout(10_000)
-      )
-    ).rejects.toThrow("a relay server did not close (EBUSY)");
+    // 거절을 먼저 받는다. 남긴 폴더의 위치는 대역이 실패시킨 닫기 뒤에야 안다.
+    const failure = await environment
+      .probe({ blocked: [], forbidden: [] }, AbortSignal.timeout(10_000))
+      .then(
+        () => undefined,
+        (error: unknown) => error
+      );
     expect(serverFaults.failedClose.mock.calls).toEqual([failedAt]);
+    expect(failure).toMatchObject({
+      message: `the relay could not be closed; its folder ${path.dirname(failedAt[0]!)} is kept`,
+      cause: { message: "a relay server did not close (EBUSY)" },
+    });
     expect(await removals()).toEqual([
       {
         args: ["rm", "-f", expect.stringMatching(/^babojubot-probe-/)],

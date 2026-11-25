@@ -1101,6 +1101,19 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       at: (address) => addresses.includes(address),
     };
   };
+  /** 중계 서버 하나의 닫기가 실패했을 때의 거절: 남긴 폴더를 밝히고, 원인 사슬 끝에 그 닫기 오류가 있다. */
+  const keptFolder = (relay: { directory: string }, code: string) => ({
+    message: `the relay could not be closed; its folder ${relay.directory} is kept`,
+    cause: {
+      message: `a relay server did not close (${code})`,
+      cause: { code },
+    },
+  });
+  /** 대역이 실패시킨 닫기(EBUSY, 서버는 실제로 닫힘) 하나로 난 거절인가. */
+  const failedByDouble = (failure: unknown) =>
+    failure instanceof Error &&
+    failure.cause instanceof Error &&
+    hasErrorCode("EBUSY")(failure.cause.cause);
   /**
    * 닫기에 실패한 중계가 남긴 폴더. 중계를 연 직후 맡긴다. 정리는 먼저 그 중계의 닫기를 받는다(닫기는 한 번이라 시험이 이미 닫았으면
    * 그 결과다). 시험이 닫기 전에 실패했으면 대역이 풀린 뒤라 실제 닫기가 폴더까지 지운다. 대역이 실패시킨 닫기(EBUSY)만 받아들이고 그
@@ -1115,11 +1128,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         () => undefined,
         (error: unknown) => error
       );
-      if (
-        failure !== undefined &&
-        !(failure instanceof Error && hasErrorCode("EBUSY")(failure.cause))
-      )
-        throw failure;
+      if (failure !== undefined && !failedByDouble(failure)) throw failure;
       await removeFolder(relay.directory);
     });
 
@@ -1131,8 +1140,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     removeAfter(relay);
     await relay.ready;
     failCloses(socketOf(relay, relaySockets.egress));
-    await expect(relay.close()).rejects.toThrow(
-      "a relay server did not close (EBUSY)"
+    await expect(relay.close()).rejects.toMatchObject(
+      keptFolder(relay, "EBUSY")
     );
     expect(serverFaults.failedClose.mock.calls).toEqual([
       [socketOf(relay, relaySockets.egress)],
@@ -1158,8 +1167,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(serverFaults.refusedListen.mock.calls).toEqual([
       [socketOf(relay, relaySockets.egress)],
     ]);
-    await expect(relay.close()).rejects.toThrow(
-      "a relay server did not close (EBUSY)"
+    await expect(relay.close()).rejects.toMatchObject(
+      keptFolder(relay, "EBUSY")
     );
     expect(serverFaults.failedClose.mock.calls).toEqual([
       [socketOf(relay, relaySockets.tools)],
