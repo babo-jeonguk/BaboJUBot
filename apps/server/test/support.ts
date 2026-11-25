@@ -45,7 +45,9 @@ export const readinessSettleMs = 100_000;
 /**
  * 시험이 띄운 서버(`startServer`의 결과)의 끄기를 기다리는 상한. 제품의 서버 끄기(`app.ts`의 `stop`)는 단계마다 상한을 두지 않고,
  * 실행 진입점이 종료 시한(`main.ts`의 `BABOJUBOT_SHUTDOWN_TIMEOUT_MS`, 기본 30초)으로 전체를 끊는다. 시험은 진입점을 거치지 않으므로
- * 같은 값으로 기다린다: 제품이 정한 시한 안의 느린 끄기를 실패로 바꾸지 않고, 넘기면 끝을 확인하지 못한 것으로 실패한다. 그때 그 서버가
+ * 같은 값으로 기다린다: 제품이 정한 시한 안의 느린 끄기를 실패로 바꾸지 않고, 넘기면 끝을 확인하지 못한 것으로 실패한다. 다만 시험 서버
+ * helper의 `close`(끄기 + DB 닫기 + 폴더 지우기)를 이 상한으로 감싸는 곳(`ownStart`로 helper 결과를 끄는 시험)은 안쪽 상한의 합보다
+ * 먼저 끊을 수 있다. 그때도 실패하고 폴더를 남긴다(fail closed). 그때 그 서버가
  * 쓰는 DB와 폴더는 남는다(fail closed). 상한을 넘겨도 끄기는 멈추지 않는다. 시험 hook 시한(120초, `vitest.config.ts`)보다 짧아
  * 무엇을 기다렸는지 알린다.
  */
@@ -193,8 +195,17 @@ export const heldOrEnded = (
  * (`ownHome`) 둘 다에 같은 결과로 맡긴다: 그것을 쓰는 서버가 데이터 폴더 없이 뜨면 제품 폴더도 쓴다.
  */
 export function closedAfterUsers(close: () => Promise<void>) {
-  const users = folderCleanup(close);
+  const users = homeUsers(close);
   onTestFinished(users.cleanUp);
+  return users;
+}
+
+/**
+ * `closedAfterUsers`에서 시험 정리 등록만 뺀 것: 쓰는 것이 모두 끝난 뒤에만 `close`를 하는 정리를 파일의 제품 폴더 정리(`ownHome`)에
+ * 맡긴다. 시험 정리는 부른 쪽이 맞는 hook(afterEach 등)에서 `cleanUp`으로 돌린다.
+ */
+export function homeUsers(close: () => Promise<void>) {
+  const users = folderCleanup(close);
   ownHome(users.cleanUp);
   return users;
 }

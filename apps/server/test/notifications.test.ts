@@ -293,14 +293,16 @@ describe("notification outbox and fake channel", () => {
 
     // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 그래서 시험 서버(DB)는 다시 띄운 서버가 끝난 뒤에만 닫는다(`handOver`).
     const first = t;
-    const restarted = await startOnDatabaseOf(
+    const restartedStart = startOnDatabaseOf(
       first,
       {
         now: () => new Date(Date.now() + 60_000),
       },
       "the restarted server"
-    ).started;
+    );
+    // 새 서버를 띄운 같은 동기 단계에서 모듈의 시험 서버를 비운다. 그 뒤로는 시험 서버의 끝을 이 시험의 정리가 맡는다.
     t = undefined;
+    const restarted = await restartedStart.started;
     await restarted.deliverNotifications();
     const res = await fetch(`${restarted.url}/api/channels/fake/messages`);
     const records = fakeChannelMessagesSchema

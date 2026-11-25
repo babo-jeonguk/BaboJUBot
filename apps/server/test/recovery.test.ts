@@ -58,11 +58,11 @@ import {
   heldOrEnded,
   startDiagnostics,
   releaseHeld,
+  homeUsers,
 } from "./support.ts";
-import { ownHome } from "./product-home.ts";
+
 import {
   awaitedLater,
-  folderCleanup,
   withCleanup,
   type CleanupStep,
 } from "@babojubot/process/test-cleanup";
@@ -86,14 +86,12 @@ afterEach(() => {
   databaseUsers = [];
   // 서버와 DB를 쓰는 것이 모두 끝난 것을 확인한 뒤에만 그 DB(재시작한 서버가 쓰는 시험 서버 `t`의 DB 포함)를 닫는다. 하나라도
   // 확인하지 못하면 DB를 남기고 그 실패를 알린다(`folderCleanup`). 한 단계가 실패해도 나머지를 닫는다.
-  const closing = folderCleanup(() =>
+  // 이 서버들은 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`homeUsers`).
+  const closing = homeUsers(() =>
     attemptAll([() => db && closeDatabase(db), () => test?.close()])
   );
   for (const end of users) closing.own(end);
-  // 이 서버들은 데이터 폴더를 넘기지 않아 파일의 제품 폴더를 쓴다. 그 폴더는 이 정리가 끝을 확인한 뒤에만 지운다.
-  const cleaned = closing.cleanUp();
-  ownHome(() => cleaned);
-  return cleaned;
+  return closing.cleanUp();
 });
 
 /** 서버를 띄우고 띄우는 즉시 그 끝을 이 시험의 DB를 쓰는 것으로 맡긴다(`ownStart`). */

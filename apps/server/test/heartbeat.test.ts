@@ -194,15 +194,17 @@ describe("heartbeat", () => {
     time.advance(minutes(55));
     // 다시 띄운 서버는 시험 서버의 DB를 쓴다. 시험 서버(DB)는 다시 띄운 서버가 끝난 것을 확인한 뒤에만 닫는다(`handOver`).
     const first = t;
-    const restarted = await startOnDatabaseOf(
+    const restartedStart = startOnDatabaseOf(
       first,
       {
         runtime: agents.runtime,
         now: time.now,
       },
       "the restarted server"
-    ).started;
+    );
+    // 새 서버를 띄운 같은 동기 단계에서 모듈의 시험 서버를 비운다. 그 뒤로는 시험 서버의 끝을 이 시험의 정리가 맡는다.
     t = undefined;
+    const restarted = await restartedStart.started;
     await restarted.tickHeartbeats();
     await restarted.tickHeartbeats();
     await restarted.drain();
