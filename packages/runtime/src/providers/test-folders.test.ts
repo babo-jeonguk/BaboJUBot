@@ -121,3 +121,30 @@ it("owns a provider once even when it is handed to cleanup twice", async () => {
   letGo();
   await expect(run).resolves.toMatchObject({ stopReason: "cancelled" });
 });
+
+// 실행 시도의 끝(`done`)은 그 프로그램이 끝났다는 증거가 아니다. 제품은 트리의 끝을 확인하지 못해도 `broken: true`로 끝낸다.
+// 그런 실행 시도를 맡은 정리는 실패를 드러내고 폴더를 남긴다. 끝난 실행 시도(`broken: false`)를 맡은 정리는 폴더를 지운다.
+it.each([
+  { broken: false, cleanup: "removes", left: false },
+  { broken: true, cleanup: "keeps", left: true },
+])(
+  "ends a run attempt it owns and $cleanup the folder when the attempt reports broken: $broken",
+  async ({ broken, left }) => {
+    const test = folders();
+    const root = await test.make("test-folders-");
+    onTestFinished(() => removeFolder(root));
+    const ended: string[] = [];
+    test.ownRun({
+      end: () => ended.push("end"),
+      done: Promise.resolve({ broken }),
+    });
+    const cleaned = test.cleanup();
+    if (broken)
+      await expect(cleaned).rejects.toThrow(
+        "run attempt ended without confirming that its programs and their cleanup ended (broken)"
+      );
+    else await cleaned;
+    expect(ended).toEqual(["end"]);
+    expect(existsSync(root)).toBe(left);
+  }
+);
