@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { within } from "@babojubot/process/test-support";
 import { expect, it, onTestFinished } from "vitest";
 import { testFolders } from "./test-folders.ts";
 import type { RunResult, RuntimeAdapter } from "@babojubot/contracts";
@@ -51,6 +52,25 @@ function stuckRun() {
   return { stuck, letGo };
 }
 
+/**
+ * 시험이 붙잡은 실행을 남긴 폴더의 정리. 시험이 풀기 전에 실패해도 실행을 풀고, 그 실행이 돌아온 것을 상한 안에서 확인한 뒤에만
+ * 폴더를 지운다(한 정리 안의 차례). 돌아오지 않으면 폴더를 남기고 실패한다.
+ */
+async function endHeldRun(
+  letGo: () => void,
+  { run }: { run?: Promise<RunResult> },
+  root: string
+) {
+  letGo();
+  if (run)
+    await within(
+      run,
+      5_000,
+      "the held provider run did not end after it was let go"
+    );
+  await removeFolder(root);
+}
+
 const runOptions = () => ({
   signal: new AbortController().signal,
   emit: async () => {},
@@ -72,11 +92,12 @@ it("stops a provider run a failed test left in progress and removes the folder o
 it("keeps the folder and fails by name when a provider run does not end after the stop", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
-  onTestFinished(() => removeFolder(root));
   const { stuck, letGo } = stuckRun();
+  const held: { run?: Promise<RunResult> } = {};
+  onTestFinished(() => endHeldRun(letGo, held, root));
   const order: string[] = [];
   const provider = test.ownProvider(heldProvider(order, root, stuck));
-  const run = provider.adapter.execute(request(), runOptions());
+  const run = (held.run = provider.adapter.execute(request(), runOptions()));
   await expect(test.cleanup()).rejects.toThrow(
     "provider run did not stop within 50 ms"
   );
@@ -107,12 +128,13 @@ it("owns the runs of providers made by a factory passed around as a value", asyn
 it("owns a provider once even when it is handed to cleanup twice", async () => {
   const test = folders({ stopTimeoutMs: 50 });
   const root = await test.make("test-folders-");
-  onTestFinished(() => removeFolder(root));
   const { stuck, letGo } = stuckRun();
+  const held: { run?: Promise<RunResult> } = {};
+  onTestFinished(() => endHeldRun(letGo, held, root));
   // owning으로 묶은 factory가 만든 연결을 다시 ownProvider로 감싸도 실행은 정리에 한 번만 맡겨진다.
   const create = test.owning(() => heldProvider([], root, stuck));
   const provider = test.ownProvider(create());
-  const run = provider.adapter.execute(request(), runOptions());
+  const run = (held.run = provider.adapter.execute(request(), runOptions()));
   const failure = await test.cleanup().catch((error: unknown) => error);
   expect(failure).not.toBeInstanceOf(AggregateError);
   expect(failure).toMatchObject({
@@ -121,3 +143,68 @@ it("owns a provider once even when it is handed to cleanup twice", async () => {
   letGo();
   await expect(run).resolves.toMatchObject({ stopReason: "cancelled" });
 });
+
+// 실행 시도의 끝(`done`)은 그 프로그램이 끝났다는 증거가 아니다. 제품은 트리의 끝을 확인하지 못해도 `broken: true`로 끝낸다.
+// 그런 실행 시도를 맡은 정리는 실패를 드러내고 폴더를 남긴다. 끝난 실행 시도(`broken: false`)를 맡은 정리는 폴더를 지운다.
+it.each([
+  { broken: false, cleanup: "removes", left: false },
+  { broken: true, cleanup: "keeps", left: true },
+])(
+  "ends a run attempt it owns and $cleanup the folder when the attempt reports broken: $broken",
+  async ({ broken, left }) => {
+    const test = folders();
+    const root = await test.make("test-folders-");
+    onTestFinished(() => removeFolder(root));
+    const ended: string[] = [];
+    test.ownRun({
+      end: () => ended.push("end"),
+      done: Promise.resolve({ broken }),
+    });
+    const cleaned = test.cleanup();
+    if (broken)
+      await expect(cleaned).rejects.toThrow(
+        "run attempt ended without confirming that its programs and their cleanup ended (broken)"
+      );
+    else await cleaned;
+    expect(ended).toEqual(["end"]);
+    expect(existsSync(root)).toBe(left);
+  }
+);
+
+// 공용 실행 경계 대역이 띄운 트리는 띄운 직후 그 실제 끄기가 폴더 정리에 맡겨진다. 정리는 끄기의 결과를 오류 코드로 판정한다:
+// 성공은 통과, 장면이 선언한 코드 하나는 받고, 그 밖의 코드(실행기의 끝을 확인하지 못함 등)는 정리 실패로 폴더를 남긴다.
+it.each([
+  { failure: undefined, expectStop: undefined, kept: false },
+  { failure: "TREE_LEFT", expectStop: "TREE_LEFT" as const, kept: false },
+  {
+    failure: "SUPERVISOR_NOT_ENDED",
+    expectStop: "TREE_LEFT" as const,
+    kept: true,
+  },
+  { failure: "TREE_LEFT", expectStop: undefined, kept: true },
+])(
+  "judges a launched tree's real stop that fails with $failure when the scene expects $expectStop",
+  async ({ failure, expectStop, kept }) => {
+    const test = folders();
+    const root = await test.make("test-folders-");
+    onTestFinished(() => removeFolder(root));
+    const stops: string[] = [];
+    const tree = {
+      stop: async () => {
+        stops.push("real stop");
+        if (failure)
+          throw Object.assign(new Error(`stop failed (${failure})`), {
+            code: failure,
+          });
+      },
+    };
+    // 이 파일에는 경계 대역이 없어 전역 소유자를 두지 않는다. 대역이 부르는 정리를 직접 부른다.
+    const launched = test.ownLaunchedTree(tree, { expectStop });
+    expect(launched).toBe(tree);
+    const cleaned = test.cleanup();
+    if (kept) await expect(cleaned).rejects.toThrow(`stop failed (${failure})`);
+    else await cleaned;
+    expect(stops).toEqual(["real stop"]);
+    expect(existsSync(root)).toBe(kept);
+  }
+);

@@ -1,6 +1,10 @@
 import { lstat, mkdir, readFile, readlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { RunRequest } from "@babojubot/contracts";
+import {
+  hasErrorCode,
+  orIfMissing,
+  type RunRequest,
+} from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import { loginLink } from "./login-link.ts";
@@ -84,8 +88,15 @@ async function setup() {
     await mkdir(shared, { recursive: true });
     return { ...input, workspace: { cwd: shared, organization: shared } };
   };
+  // 프로그램이 돌기 전에는 파일이 없다. 없음만 빈 기록으로 보고, 그 밖의 읽기 실패는 드러낸다.
   const dumps = async (): Promise<NodeJS.ProcessEnv[]> =>
-    (await readFile(dump, "utf8").catch(() => ""))
+    (
+      await orIfMissing(
+        () => readFile(dump, "utf8"),
+        hasErrorCode("ENOENT"),
+        ""
+      )
+    )
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as NodeJS.ProcessEnv);

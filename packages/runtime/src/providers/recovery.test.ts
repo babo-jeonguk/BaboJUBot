@@ -1,19 +1,28 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, readFile, writeFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it, onTestFinished, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { launchTree } from "@babojubot/process";
 import { recordProcess, recoverProviderProcesses } from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "@babojubot/process/recovery";
-import { readyLine } from "@babojubot/process/testing";
+import { exited, readyLine } from "@babojubot/process/testing";
 import { testFolders } from "./test-folders.ts";
+import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import {
-  killUnlessGone,
-  processAlive,
+  awaitedLater,
+  lifelineHolder,
   withCleanup,
 } from "@babojubot/process/test-cleanup";
-import { attemptAll } from "@babojubot/contracts";
+import { within } from "@babojubot/process/test-support";
 
 /**
  * 실행의 시작: 이 시험 프로세스의 시작 시각을 감독 실행기가 쓰는 단위로 나타낸 것. 기록의 시작 시각은 정리 요청의 실행 시작(`since`)으로도
@@ -49,6 +58,11 @@ function testStart(): string {
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
+  /** 실제 실행기 정리가 성공한(남은 것 없음을 실행기가 확인한) 요청. */
+  cleaned: [] as {
+    lease?: string;
+    recorded?: { pid: number; start: string };
+  }[],
   /** 실행기에 청한 정리 요청 전부. */
   requests: [] as { recorded?: unknown }[],
 }));
@@ -62,33 +76,69 @@ vi.mock("@babojubot/process/recovery", async (original) => {
       lease.requests.push(request);
       if (request.lease !== undefined) lease.stopped.push(request.lease);
       if (lease.fails) throw new Error("the supervisor's cleanup failed");
-      return real.cleanThroughSupervisor(request);
+      const result = await real.cleanThroughSupervisor(request);
+      lease.cleaned.push(request);
+      return result;
     },
   };
 });
 
 // 복구 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 경고하고 넘어간다.
 const folders = testFolders();
-// 시험이 새 세션으로 띄운 프로그램(그룹 번호 = 프로그램 번호). 띄우자마자 넣어, 준비나 단언이 실패해도 그룹째 끄고 끝날 때까지 기다린다.
-const groups: number[] = [];
+// 시험이 띄운 프로그램과 그 정리는 모두 폴더 정리 하나가 맡는다(등록 역순으로 끄고 끝을 확인한 뒤에만 폴더를 지운다). 시험이 직접 띄운
+// 대표는 띄운 직후 `ownChild`에 맡겨, Node가 끝을 보기 전에만 신호하고 끝과 출력 닫힘을 확인한다. 대표가 끝난 뒤 그룹에 남는 구성원은
+// 연결을 쥐고 돌며, 연결이 열려 있음을 본 직후에만 그 번호로 끈다(`leavingMember`). 거둔 대표의 번호(그룹 번호)로는 신호하지도
+// 판정하지도 않는다.
 afterEach(() => {
   lease.fails = false;
   lease.stopped = [];
+  lease.cleaned = [];
   lease.requests = [];
-  // 그룹마다 끄고 끝나기를 기다린다. 한 그룹이 실패해도 나머지 그룹을 정리한다.
-  return attemptAll(
-    groups.splice(0).map((group) => async () => {
-      try {
-        killUnlessGone(-group);
-      } catch (error) {
-        // 거두어지기 전의 프로세스만 남은 그룹에 macOS는 EPERM으로 답한다(groupGone). 끝났는지는 아래 기다림이 확인한다.
-        const code = ((error as Error).cause as NodeJS.ErrnoException).code;
-        if (process.platform !== "darwin" || code !== "EPERM") throw error;
-      }
-      await until(() => groupGone(group));
+});
+// 대표가 끝난 뒤 그룹에 남는 구성원은 연결을 쥐고 돈다. 구성원이 살아 있는 동안 그룹 번호는 다른 그룹에 쓰이지 않는다.
+let lifelines: Lifelines;
+beforeAll(async () => {
+  lifelines = await openLifelines();
+});
+afterAll(() => lifelines.close());
+let members = 0;
+/**
+ * 연결을 쥔 구성원 하나를 자기 그룹에 띄우고, 구성원이 연결을 쥐었다고 알린 뒤 끝나는 대표의 문장(`leader`). 구성원의 정리(`end`)는
+ * 연결이 열려 있음을 본 직후에만 그 번호로 끄고 연결의 닫힘까지 기다린다(`lifelineHolder`). 폴더 정리에도 맡겨, 시험이 중간에
+ * 실패해도 폴더를 지우기 전에 끈다. 이미 끈 구성원에는 다시 신호하지 않는다.
+ */
+async function leavingMember() {
+  const folder = await folders.make("babojubot-member-");
+  const name = `member-${++members}`;
+  const member = lifelineHolder(
+    lifelines,
+    name,
+    path.join(folder, "pid"),
+    'require("node:fs").writeSync(3, "connected\\n");'
+  );
+  folders.own(member.end, name);
+  return {
+    name,
+    end: member.end,
+    leader: `const m = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${member.code} setInterval(() => {}, 1000);`)}], { stdio: ["ignore", "ignore", "ignore", "pipe"] }); m.stdio[3].once("data", () => process.exit(0));`,
+  };
+}
+/** 대표가 끝나고 연결을 쥔 구성원만 남은 새 세션 그룹. 그룹 번호는 끝난 대표의 번호다. 대표는 띄운 직후 정리에 맡긴다. */
+async function leftGroup() {
+  const member = await leavingMember();
+  const leader = folders.ownChild(
+    spawn(process.execPath, ["-e", member.leader], {
+      detached: true,
+      stdio: "ignore",
     })
   );
-});
+  await within(
+    once(leader, "close"),
+    10_000,
+    `group leader ${leader.pid} did not end after its member connected`
+  );
+  return { group: leader.pid!, name: member.name, end: member.end };
+}
 async function records() {
   const root = await folders.make("babojubot-recovery-");
   const directory = path.join(root, "providers/claude/processes");
@@ -115,18 +165,6 @@ it("skips a record that cannot be read and still handles the others", async () =
   expect(await readdir(directory)).toEqual([]);
 });
 
-// 끝난 뒤 거두어지지 않은 프로세스만 남으면 macOS는 ESRCH 대신 EPERM을 돌려준다. 정말 없어질 때까지 본다.
-const groupGone = (group: number) => {
-  try {
-    process.kill(-group, 0);
-    return false;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "ESRCH";
-  }
-};
-const until = (done: () => boolean) =>
-  expect.poll(done, { timeout: 10_000, interval: 25 }).toBe(true);
-
 it("starts even when a record can be neither read nor removed", async () => {
   const { root, directory } = await records();
   await mkdir(path.join(directory, "123.json"));
@@ -138,35 +176,36 @@ it.runIf(process.platform === "linux")(
   "leaves a process group it cannot identify alone and still starts",
   async () => {
     const { root, directory } = await records();
-    const leader = spawn("sh", ["-c", "sleep 30 & exit 0"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    await new Promise((resolve) => leader.on("close", resolve));
-    const group = leader.pid!;
+    const left = await leftGroup();
+    const { group } = left;
+    await writeFile(
+      path.join(directory, `${group}.json`),
+      JSON.stringify({
+        pid: group,
+        start: testStart(),
+        group,
+        boot: (
+          await readFile("/proc/sys/kernel/random/boot_id", "utf8")
+        ).trim(),
+        lease: "not-the-real-lease",
+      })
+    );
+    await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
+    // 끄지 않고 두었다: 남은 구성원의 연결이 열려 있다.
+    expect(lifelines.open(left.name)).toBe(true);
+    // 끝났음을 확인하지 못했으니 기록을 남겨 다음 시작 때 다시 본다.
+    expect(await readdir(directory)).toEqual([`${group}.json`]);
     // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
-    await withCleanup(async (defer) => {
-      defer(() => killUnlessGone(-group));
-      await writeFile(
-        path.join(directory, `${group}.json`),
-        JSON.stringify({
-          pid: group,
-          start: testStart(),
-          group,
-          boot: (
-            await readFile("/proc/sys/kernel/random/boot_id", "utf8")
-          ).trim(),
-          lease: "not-the-real-lease",
-        })
-      );
-      await expect(recoverProviderProcesses(root)).resolves.toBeUndefined();
-      expect(() => process.kill(-group, 0)).not.toThrow();
-      // 끝났음을 확인하지 못했으니 기록을 남겨 다음 시작 때 다시 본다.
-      expect(await readdir(directory)).toEqual([`${group}.json`]);
-    });
-    await until(() => groupGone(group));
-    await recoverProviderProcesses(root);
-    expect(await readdir(directory)).toEqual([]);
+    await left.end();
+    // 구성원이 끝나도 거두어질 때까지 그룹은 남는다(좀비). 시험은 그 상태를 알 수단이 없어, 그룹 번호를 보는 대신 복구가 기록을
+    // 지울 때까지 상한 안에서 다시 확인한다. 끝내 지우지 않으면 그 상한에서 실패한다.
+    await vi.waitFor(
+      async () => {
+        await recoverProviderProcesses(root);
+        expect(await readdir(directory)).toEqual([]);
+      },
+      { timeout: 10_000, interval: 50 }
+    );
   }
 );
 
@@ -177,7 +216,12 @@ const longRunning = () =>
     detached: true,
     stdio: "ignore",
   });
-const gone = (pid: number) => !processAlive(pid);
+/**
+ * 시험이 띄운 자식이 끝났는가. Node가 끝을 보기 전에는 거두어지지 않아 그 번호는 아직 그 자식이고, 거두어지기 전의 좀비도 끝난
+ * 것으로 본다(`exited`).
+ */
+const gone = (child: ChildProcess) =>
+  child.exitCode !== null || child.signalCode !== null || exited(child.pid!);
 
 // 번호가 같아도 시작 시각이 다르면 남이다. 기록의 시작 시각(감독 실행기가 알린 값)과 같은 프로세스만 실행기가 끈다. 시작 시각은 언제
 // 물어도 같으므로 여유를 두지 않는다.
@@ -197,7 +241,7 @@ it("leaves a process whose start differs from the recorded one", async () => {
     })
   );
   await recoverProviderProcesses(root, { platform: withoutProc });
-  expect(gone(child.pid!)).toBe(false);
+  expect(gone(child)).toBe(false);
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
@@ -231,7 +275,7 @@ it.skipIf(process.platform === "win32")(
     expect(lease.requests.map((request) => request.recorded)).toEqual([
       undefined,
     ]);
-    expect(gone(child.pid!)).toBe(false);
+    expect(gone(child)).toBe(false);
     expect(await readdir(directory)).toEqual([file]);
   },
   60_000
@@ -250,7 +294,7 @@ it("keeps a record without a start and leaves the process alone", async () => {
     JSON.stringify({ pid: child.pid, lease: "lease" })
   );
   await recoverProviderProcesses(root, { platform: withoutProc });
-  expect(gone(child.pid!)).toBe(false);
+  expect(gone(child)).toBe(false);
   expect(await readdir(directory)).toEqual([file]);
 }, 30_000);
 
@@ -267,9 +311,18 @@ it("stops a process it recorded itself", async () => {
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
     stdio: ["ignore", "ignore", "ignore"],
   });
-  onTestFinished(async () => {
-    if (tree.pid !== undefined && !gone(tree.pid)) await tree.stop();
-  });
+  // 시험이 어디서 끝나든 트리를 끈다(launchTree의 stop()은 끝을 그룹·표식·묶음으로 확인한다). 다만 복구의 실제 실행기 정리가 이
+  // 트리의 실행기를 대상으로 성공했으면 부르지 않는다: 밖에서 끝난 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보).
+  // 대상은 요청의 기록한 프로세스가 이 트리의 실행기인가(번호와 실행기가 알린 시작 시각), 그리고 Linux·macOS에서는 요청이 이 트리의
+  // 표식을 실었는가로 본다. 그 정리의 성공은 실행기가 기록한 실행기와, Linux·macOS에서는 표식을 가진 프로그램(대표 포함)이 남지
+  // 않았음을 확인한 것이다. 표식 정리가 없는
+  // Windows에서는 실행기를 끄면 묶음이 닫혀 트리가 끝나는 것이 공용 실행의 계약이다(`launchTree`). `tree.exited`는 실행기가 끝나도
+  // 이행하므로 대표의 끝의 증거로 쓰지 않는다. 복구가 실패했거나 확인되지 않았으면 stop()이 끝을 확인하고, 그것도 실패하면 폴더(기록
+  // 포함)를 남긴다.
+  let recoveredBySupervisor = false;
+  folders.own(async () => {
+    if (!recoveredBySupervisor) await tree.stop();
+  }, "the recorded tree");
   expect((await tree.started).kind).toBe("running");
   const file = path.join(home, "processes", `${tree.pid}.json`);
   recordProcess(home, {
@@ -281,12 +334,16 @@ it("stops a process it recorded itself", async () => {
     async () => expect(await readFile(file, "utf8")).toMatch(/"start"/),
     { timeout: 20_000, interval: 50 }
   );
+  const supervisorStart = await tree.supervisorStart;
   await recoverProviderProcesses(root);
-  await tree.exited;
-  await vi.waitFor(() => expect(gone(tree.pid!)).toBe(true), {
-    timeout: 20_000,
-    interval: 50,
-  });
+  recoveredBySupervisor = lease.cleaned.some(
+    (request) =>
+      request.recorded?.pid === tree.pid &&
+      request.recorded?.start === supervisorStart &&
+      // Linux·macOS에서는 표식 정리가 대표를 포함한 프로그램을 끈다. 실행기만 끈 정리로는 트리의 끝이 아니다.
+      (process.platform === "win32" || request.lease === tree.lease)
+  );
+  expect(recoveredBySupervisor).toBe(true);
   expect(await readdir(path.dirname(file))).toEqual([]);
 }, 60_000);
 
@@ -306,7 +363,7 @@ it("does not act on a record that does not match its name", async () => {
     JSON.stringify({ pid: "124; echo hello", lease: "lease" })
   );
   await recoverProviderProcesses(root, { platform: withoutProc });
-  expect(gone(child.pid!)).toBe(false);
+  expect(gone(child)).toBe(false);
   expect(await readdir(directory)).toEqual([]);
 }, 30_000);
 
@@ -314,26 +371,27 @@ it.skipIf(process.platform === "win32")(
   "keeps the record while children outlive their leader on systems without /proc",
   async () => {
     const { root, directory } = await records();
-    const leader = spawn("sh", ["-c", "sleep 30 & exit 0"], {
-      detached: true,
-      stdio: "ignore",
-    });
-    await new Promise((resolve) => leader.on("close", resolve));
-    const group = leader.pid!;
-    // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
-    await withCleanup(async (defer) => {
-      defer(() => killUnlessGone(-group));
-      await writeFile(
-        path.join(directory, `${group}.json`),
-        JSON.stringify({ pid: group, lease: "lease" })
-      );
-      await recoverProviderProcesses(root, { platform: withoutProc });
-      expect(groupGone(group)).toBe(false);
-      expect(await readdir(directory)).toEqual([`${group}.json`]);
-    });
-    await until(() => groupGone(group));
+    const left = await leftGroup();
+    const { group } = left;
+    await writeFile(
+      path.join(directory, `${group}.json`),
+      JSON.stringify({ pid: group, lease: "lease" })
+    );
     await recoverProviderProcesses(root, { platform: withoutProc });
-    expect(await readdir(directory)).toEqual([]);
+    // 끄지 않고 두었다: 남은 구성원의 연결이 열려 있다.
+    expect(lifelines.open(left.name)).toBe(true);
+    expect(await readdir(directory)).toEqual([`${group}.json`]);
+    // 그룹은 시험 중간에 끝내고, 끝난 뒤의 복구를 이어서 본다.
+    await left.end();
+    // 구성원이 끝나도 거두어질 때까지 그룹은 남는다(좀비). 시험은 그 상태를 알 수단이 없어, 그룹 번호를 보는 대신 복구가 기록을
+    // 지울 때까지 상한 안에서 다시 확인한다. 끝내 지우지 않으면 그 상한에서 실패한다.
+    await vi.waitFor(
+      async () => {
+        await recoverProviderProcesses(root, { platform: withoutProc });
+        expect(await readdir(directory)).toEqual([]);
+      },
+      { timeout: 10_000, interval: 50 }
+    );
   },
   30_000
 );
@@ -352,7 +410,7 @@ it("keeps the record of a live process whose start cannot be read", async () => 
   await withCleanup(async (defer) => {
     defer(async () => {
       child.kill("SIGKILL");
-      await closed;
+      await within(closed, 10_000, `process ${child.pid} did not close`);
     });
     defer(() => vi.unstubAllEnvs());
     await writeFile(
@@ -364,7 +422,7 @@ it("keeps the record of a live process whose start cannot be read", async () => 
     vi.stubEnv("PATH", "");
     await recoverProviderProcesses(root, { platform: withoutProc });
     vi.unstubAllEnvs();
-    expect(gone(child.pid!)).toBe(false);
+    expect(gone(child)).toBe(false);
     expect(await readdir(directory)).toEqual([file]);
   });
   await recoverProviderProcesses(root, { platform: withoutProc });
@@ -398,10 +456,15 @@ const marked = async (
       env: { PATH: process.env.PATH, [leaseVariable]: value },
     }
   );
-  groups.push(child.pid!);
-  const closed = new Promise((resolve) => child.on("close", resolve));
+  // 띄운 직후 정리에 맡긴다: 시험이 실패해도 Node가 끝을 보기 전이면 끄고, 끝과 출력 닫힘을 확인한다.
+  folders.ownChild(child);
+  const closed = awaitedLater(once(child, "close"));
   await readyLine(child);
-  return { child, closed };
+  return {
+    child,
+    closed: () =>
+      within(closed, 10_000, `marked program ${child.pid} did not end`),
+  };
 };
 /** 지금 부팅의 식별자. Linux만 기록에 남긴다. */
 const currentBoot = async () =>
@@ -431,8 +494,8 @@ it.each(platforms)(
     const finished = spawnSync(process.execPath, ["-e", ""]).pid;
     await recordFor(directory, finished, value);
     await recoverProviderProcesses(root, { platform });
-    await leftover.closed;
-    expect(gone(ignored.child.pid!)).toBe(false);
+    await leftover.closed();
+    expect(gone(ignored.child)).toBe(false);
     expect(await readdir(directory)).toEqual([]);
   },
   30_000
@@ -444,15 +507,15 @@ it.each(platforms)(
   async (platform) => {
     const { root, directory } = await records();
     const value = crypto.randomUUID();
-    const leader = await marked(
-      value,
-      `require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }).unref()`
-    );
-    await leader.closed;
+    // 구성원은 대표의 표식(환경)을 물려받는다. 대표는 구성원이 연결을 쥔 뒤 끝난다.
+    const member = await leavingMember();
+    const leader = await marked(value, member.leader);
+    await leader.closed();
     const group = leader.child.pid!;
     await recordFor(directory, group, value);
     await recoverProviderProcesses(root, { platform });
-    await until(() => groupGone(group));
+    // 남은 구성원이 꺼졌는지는 그 구성원이 쥔 연결의 닫힘으로 본다(거둔 대표의 그룹 번호로 보지 않는다).
+    await lifelines.closed(member.name);
     expect(await readdir(directory)).toEqual([]);
   },
   30_000

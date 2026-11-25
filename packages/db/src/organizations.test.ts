@@ -1,22 +1,9 @@
 import { randomUUID } from "node:crypto";
-import fsp from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { defaultAgentAppearance } from "@babojubot/contracts";
+import { defaultAgentAppearance, faceColors } from "@babojubot/contracts";
 import { planOrganizationCreation } from "@babojubot/core";
 import { sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
-import {
-  afterAll,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  onTestFinished,
-} from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   findOrganization,
   insertOrganizationCreation,
@@ -26,11 +13,14 @@ import {
 import { migrateDatabase } from "./client.ts";
 import { updateAgentProfile } from "./agents.ts";
 import { findAgentInstructions } from "./harness.ts";
-import { createTestDatabase, type TestDatabase } from "./testing.ts";
+import {
+  createTestDatabase,
+  type TestDatabase,
+  withDatabaseBefore,
+} from "./testing.ts";
 import { updateProviderLimit } from "./providers.ts";
 import { listAgentsWithPendingWakes } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestDatabase;
@@ -202,12 +192,13 @@ describe("organization records", () => {
     const leadA = a.agents[0]!;
     const leadB = b.agents[0]!;
     const orgA = a.organization.id;
+    // 바꿀 얼굴은 지금(ID에서 정한 기본) 얼굴과 반드시 다르다: 색을 지금과 다른 값으로 둔다. 고정 얼굴은 매번 새 ID의 기본
+    // 얼굴과 우연히 같아 바뀐 것이 없게 될 수 있다.
+    const current = defaultAgentAppearance(leadA.id);
     const face = {
-      color: "mint",
-      eyes: "oval",
-      mouth: "flat",
-      accessory: "sprout",
-    } as const;
+      ...current,
+      color: faceColors.find((color) => color !== current.color)!,
+    };
 
     // 다른 조직의 에이전트는 없는 에이전트와 같다.
     expect(
@@ -361,91 +352,68 @@ describe("agent names", () => {
   });
 
   it("migration 0017 renames existing case-insensitive duplicates, keeping the oldest name", async () => {
-    const migrations = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../migrations"
-    );
-    // 0017 직전까지만 적용한 DB를 같은 cluster에 따로 만든다.
-    const before = await fsp.mkdtemp(path.join(os.tmpdir(), "babojubot-mig-"));
-    onTestFinished(() => removeFolder(before));
-    await fsp.cp(migrations, before, { recursive: true });
-    const journalPath = path.join(before, "meta/_journal.json");
-    const journal = JSON.parse(await fsp.readFile(journalPath, "utf8")) as {
-      entries: { tag: string }[];
-    };
-    const index = journal.entries.findIndex(
-      (e) => e.tag === "0017_agent_name_unique"
-    );
-    journal.entries = journal.entries.slice(0, index);
-    await fsp.writeFile(journalPath, JSON.stringify(journal));
-
-    const name = `dedupe_${randomUUID().replaceAll("-", "")}`;
-    await t.db.execute(sql.raw(`create database ${name}`));
-    onTestFinished(async () => {
-      await t.db.execute(sql.raw(`drop database ${name}`));
-    });
-    const url = new URL(t.url);
-    url.pathname = `/${name}`;
-    const pool = new pg.Pool({ connectionString: url.toString() });
-    // 연결을 닫은 뒤에 그 DB를 지운다.
-    onTestFinished(() => pool.end());
-    const db = drizzle(pool);
-    await migrate(db, { migrationsFolder: before });
-    const orgA = randomUUID();
-    const orgB = randomUUID();
-    await pool.query(
-      `insert into organizations (id, name, goal, stage, created_at) values
+    // 0017 직전까지만 적용한 DB를 같은 cluster에 따로 만들어, 옛 모양의 행을 넣고 끝까지 올린다.
+    await withDatabaseBefore(
+      t,
+      "0017_agent_name_unique",
+      async (pool, migrateAll) => {
+        const orgA = randomUUID();
+        const orgB = randomUUID();
+        await pool.query(
+          `insert into organizations (id, name, goal, stage, created_at) values
           ($1, 'A', '목표', 'researching', now()), ($2, 'B', '목표', 'researching', now())`,
-      [orgA, orgB]
-    );
-    // A: Lead를 "연구원 1"로 바꾼 뒤 팀을 승인해 겹친 이름, 대소문자만 다른 이름, 붙일 이름 " 2"를 이미 쓰는 이름.
-    // B: 다른 조직의 같은 이름은 그대로다.
-    const agentsOf = [
-      [orgA, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
-      [orgA, "worker", "연구원 1", "2026-01-02T00:00:00Z"],
-      [orgA, "worker", "연구원 2", "2026-01-02T00:00:00.001Z"],
-      [orgA, "worker", "Analyst", "2026-01-03T00:00:00Z"],
-      [orgA, "worker", "analyst", "2026-01-04T00:00:00Z"],
-      [orgA, "worker", "ANALYST", "2026-01-05T00:00:00Z"],
-      [orgA, "worker", "analyst 2", "2026-01-06T00:00:00Z"],
-      [orgB, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
-    ] as const;
-    for (const [org, role, agentName, at] of agentsOf)
-      await pool.query(
-        `insert into agents (id, organization_id, role, name, created_at) values ($1, $2, $3, $4, $5)`,
-        [randomUUID(), org, role, agentName, at]
-      );
+          [orgA, orgB]
+        );
+        // A: Lead를 "연구원 1"로 바꾼 뒤 팀을 승인해 겹친 이름, 대소문자만 다른 이름, 붙일 이름 " 2"를 이미 쓰는 이름.
+        // B: 다른 조직의 같은 이름은 그대로다.
+        const agentsOf = [
+          [orgA, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
+          [orgA, "worker", "연구원 1", "2026-01-02T00:00:00Z"],
+          [orgA, "worker", "연구원 2", "2026-01-02T00:00:00.001Z"],
+          [orgA, "worker", "Analyst", "2026-01-03T00:00:00Z"],
+          [orgA, "worker", "analyst", "2026-01-04T00:00:00Z"],
+          [orgA, "worker", "ANALYST", "2026-01-05T00:00:00Z"],
+          [orgA, "worker", "analyst 2", "2026-01-06T00:00:00Z"],
+          [orgB, "lead", "연구원 1", "2026-01-01T00:00:00Z"],
+        ] as const;
+        for (const [org, role, agentName, at] of agentsOf)
+          await pool.query(
+            `insert into agents (id, organization_id, role, name, created_at) values ($1, $2, $3, $4, $5)`,
+            [randomUUID(), org, role, agentName, at]
+          );
 
-    await migrate(db, { migrationsFolder: migrations });
+        await migrateAll();
 
-    const { rows } = await pool.query<{
-      organization_id: string;
-      name: string;
-    }>(
-      `select organization_id, name from agents order by organization_id = $1 desc, created_at`,
-      [orgA]
+        const { rows } = await pool.query<{
+          organization_id: string;
+          name: string;
+        }>(
+          `select organization_id, name from agents order by organization_id = $1 desc, created_at`,
+          [orgA]
+        );
+        expect(rows.map((r) => r.name)).toEqual([
+          "연구원 1",
+          "연구원 1 2",
+          "연구원 2",
+          "Analyst",
+          "analyst 3",
+          "ANALYST 4",
+          "analyst 2",
+          "연구원 1",
+        ]);
+        // migration 0021: 프로바이더 열 전에 생긴 에이전트는 가짜 프로바이더·기본 모델로 채워진다.
+        const { rows: providers } = await pool.query(
+          `select distinct provider, model from agents`
+        );
+        expect(providers).toEqual([{ provider: "fake", model: null }]);
+        // index가 생겨 이제 겹치는 이름을 받지 않는다.
+        await expect(
+          pool.query(
+            `insert into agents (id, organization_id, role, name, provider, created_at) values ($1, $2, 'worker', 'ANALYST', 'fake', now())`,
+            [randomUUID(), orgA]
+          )
+        ).rejects.toMatchObject({ code: "23505" });
+      }
     );
-    expect(rows.map((r) => r.name)).toEqual([
-      "연구원 1",
-      "연구원 1 2",
-      "연구원 2",
-      "Analyst",
-      "analyst 3",
-      "ANALYST 4",
-      "analyst 2",
-      "연구원 1",
-    ]);
-    // migration 0021: 프로바이더 열 전에 생긴 에이전트는 가짜 프로바이더·기본 모델로 채워진다.
-    const { rows: providers } = await pool.query(
-      `select distinct provider, model from agents`
-    );
-    expect(providers).toEqual([{ provider: "fake", model: null }]);
-    // index가 생겨 이제 겹치는 이름을 받지 않는다.
-    await expect(
-      pool.query(
-        `insert into agents (id, organization_id, role, name, provider, created_at) values ($1, $2, 'worker', 'ANALYST', 'fake', now())`,
-        [randomUUID(), orgA]
-      )
-    ).rejects.toMatchObject({ code: "23505" });
   });
 });

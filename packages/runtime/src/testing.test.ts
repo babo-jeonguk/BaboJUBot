@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import net from "node:net";
-import { expect, it, onTestFinished } from "vitest";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
+import { readyLine, testFolders } from "@babojubot/process/testing";
+import { expect, it } from "vitest";
 
 // 자식의 import에는 파일 주소를 넘긴다. Windows 경로(`C:\\…`)는 ESM import가 받지 않는다.
 const testing = new URL("./testing.ts", import.meta.url).href;
@@ -32,61 +35,50 @@ const script = `
       res.end("bye", () => process.exit(0));
     })
   );
-  server.listen(0, "127.0.0.1", () => console.log(server.address().port));
+  server.listen(0, "127.0.0.1", () => console.log(server.address().port + "\\nlistening"));
 `;
 
-/** 가짜 서버 자식을 띄우고 듣는 포트를 받는다. `line(text)`는 자식이 그 줄을 알릴 때까지 기다린다. */
+const programs = testFolders();
+
+/**
+ * 가짜 서버 자식을 띄우고 듣는 포트를 받는다. `line(text)`는 자식이 그 줄을 알릴 때까지 기다린다(`readyLine`: 자식이 끝난 뒤에도
+ * 출력이 끝날 때까지 읽는다). `ended()`는 자식이 끝나고 출력이 닫힌 것을 함께 본 종료 코드를 상한 안에서 기다린다. 출력(`stderr()`)은
+ * 그 뒤에 단언한다.
+ */
 async function startFake() {
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  // 실패를 알리지 않아 끝나지 않으면 시험이 끝날 때 끈다.
-  onTestFinished(() => {
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-  });
+  // 실패를 알리지 않아 끝나지 않으면 시험이 끝날 때 끄고, 끝(exit)과 출력 닫힘(close)을 상한 안에서 확인한다(`ownChild`).
+  const child = programs.ownChild(
+    spawn(process.execPath, ["--input-type=module", "-e", script], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+  );
+  // 끝(exit)과 출력의 끝을 함께 본 뒤에 오는 신호. IPC 채널이 없는 자식의 `close`는 끝나고 stdout·stderr가 모두 닫힌 뒤에 온다
+  // (Node child_process 'close'). `exit` 때는 stderr의 마지막 조각이 아직 닿지 않았을 수 있다.
+  const ended = awaitedLater(
+    once(child, "close").then(([code]) => code as number | null)
+  );
   let stdout = "";
   let stderr = "";
-  child.stderr.on("data", (chunk) => (stderr += chunk));
-  const exited = once(child, "exit").then(([code]) => code as number | null);
-  const lines = () => stdout.split("\n").map((l) => l.trim());
-  const line = (text: string) =>
-    new Promise<void>((resolve, reject) => {
-      const check = () => {
-        if (!lines().includes(text)) return;
-        child.stdout.off("data", check);
-        resolve();
-      };
-      child.stdout.on("data", check);
-      check();
-      // 그 줄 없이 끝나면(가져오기 실패 등) 기다리지 않고 그 이유로 실패한다.
-      exited.then(
-        (code) =>
-          reject(
-            new Error(
-              `fake server exited (${code}) before "${text}": ${stderr}`
-            )
-          ),
-        reject
-      );
-    });
   child.stdout.on("data", (chunk) => (stdout += chunk));
-  await new Promise<void>((resolve, reject) => {
-    const check = () => {
-      if (!/^\d+\n/.test(stdout)) return;
-      child.stdout.off("data", check);
-      resolve();
-    };
-    child.stdout.on("data", check);
-    exited.then(
-      (code) =>
-        reject(
-          new Error(`fake server exited (${code}) before listening: ${stderr}`)
-        ),
-      reject
-    );
-  });
-  return { port: Number(lines()[0]), exited, line, stderr: () => stderr };
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const line = (text: string) =>
+    readyLine(child, text).catch((error: unknown) => {
+      throw new Error(`fake server did not print "${text}": ${stderr}`, {
+        cause: error,
+      });
+    });
+  await line("listening");
+  return {
+    port: Number(stdout.split("\n")[0]),
+    ended: () =>
+      within(
+        ended,
+        10_000,
+        `fake server ${child.pid} did not end with its output closed`
+      ),
+    line,
+    stderr: () => stderr,
+  };
 }
 
 /** 요청 머리(와 본문 일부)를 보낸 연결. 끊기는 시험이 정한다. */
@@ -102,7 +94,7 @@ it("answers a failed fake-server handler with a 500 and reports the failure as a
   const response = await fetch(`http://127.0.0.1:${fake.port}/fail`);
   expect(response.status).toBe(500);
   expect(await response.text()).toContain("handler broke");
-  expect(await fake.exited).not.toBe(0);
+  expect(await fake.ended()).toBe(1);
   expect(fake.stderr()).toContain(
     "가짜 HTTP 서버가 GET /fail을 처리하지 못했다"
   );
@@ -117,7 +109,7 @@ it("still reports a handler failure that comes after the client left before the 
   );
   await fake.line("arrived");
   socket.destroy();
-  expect(await fake.exited).not.toBe(0);
+  expect(await fake.ended()).toBe(1);
   expect(fake.stderr()).toContain(
     "가짜 HTTP 서버가 GET /fail-after-leave을 처리하지 못했다"
   );
@@ -136,6 +128,6 @@ it("does not report the client's own cancellation while the handler reads the re
   await fake.line("request closed");
   const bye = await fetch(`http://127.0.0.1:${fake.port}/exit`);
   expect(await bye.text()).toBe("bye");
-  expect(await fake.exited).toBe(0);
+  expect(await fake.ended()).toBe(0);
   expect(fake.stderr()).not.toContain("처리하지 못했다");
 });

@@ -1,6 +1,7 @@
 // Synthetic behavioral peer for `agy acp` (Agent Client Protocol, newline-delimited JSON-RPC over stdio) and `agy models`.
 // No Antigravity or model is invoked. Frame shapes follow agy 1.5.4 transcripts against a mock upstream (#148).
 import { createInterface } from "node:readline";
+import { hasErrorCode, orIfMissing } from "@babojubot/contracts/failure";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { bind, recording } from "./recording.mjs";
@@ -30,9 +31,13 @@ const loginAt = path.join(
 const mounted = JSON.parse(process.env.FAKE_DOCKER_MOUNTS ?? "[]").find(
   (mount) => mount.target === loginAt
 );
-const login = await readFile(mounted?.source ?? loginAt, "utf8")
-  .then((text) => JSON.parse(text))
-  .catch(() => null);
+// 로그인이 없으면 로그인하지 않은 것이다. 그 밖의 읽기 실패와 읽을 수 없는 내용은 숨기지 않고 실패한다.
+const loginText = await orIfMissing(
+  () => readFile(mounted?.source ?? loginAt, "utf8"),
+  hasErrorCode("ENOENT"),
+  null
+);
+const login = loginText === null ? null : JSON.parse(loginText);
 /** 만료된 로그인을 갱신해 같은 자리에 덮어쓴다(링크면 원본 자리). 컨테이너에 넣은 실행 시도 전용 파일은 읽기만 된다. */
 async function refresh() {
   if (!login?.expired || mounted) return;
@@ -168,7 +173,12 @@ for await (const line of createInterface({ input: process.stdin })) {
     const sessionId =
       method === "session/load" ? params.sessionId : crypto.randomUUID();
     const file = path.join(conversations, sessionId + ".db");
-    const note = await readFile(file, "utf8").catch(() => null);
+    // 대화 파일이 없으면 그 대화가 없는 것이다. 그 밖의 읽기 실패는 숨기지 않는다.
+    const note = await orIfMissing(
+      () => readFile(file, "utf8"),
+      hasErrorCode("ENOENT"),
+      null
+    );
     if (method === "session/load" && note === null) {
       out({ id, error: { code: -32603, message: "conversation not found" } });
       continue;
