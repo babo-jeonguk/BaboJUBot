@@ -362,34 +362,28 @@ describe("lifelineHolder", () => {
 // 시험이 만든 소켓·요청은 만든 직후 정리에 맡긴다. 정리는 끊고, 실제 닫힘을 상한 안에서 확인한다(#286 3b-3).
 describe("ownedClosable", () => {
   it("ends an open socket and returns once it closed", async () => {
-    const server = net.createServer();
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        )
-    );
-    await within(
-      new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)),
-      5_000,
-      "the server did not listen"
+    const { server } = await ownedListener(
+      net.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the test server"
     );
     const address = server.address();
     if (address === null || typeof address === "string")
       throw new Error(`the server is not on a TCP port (${address})`);
-    const steps: (() => unknown)[] = [];
+    // 시험 대상이 넘긴 정리는 기록하고 러너에도 맡긴다. 본문이 그 정리를 부르기 전에 실패해도 소켓이 남지 않는다(두 번 불러도 같다).
+    const steps: (() => Promise<void>)[] = [];
     const socket = ownedClosable(
-      (step) => steps.push(step),
+      (step) => {
+        steps.push(step);
+        onTestFinished(step);
+      },
       net.connect(address.port, "127.0.0.1"),
       "the test socket"
     );
     await within(once(socket, "connect"), 5_000, "the socket did not connect");
     expect(steps).toHaveLength(1);
-    await within(
-      Promise.resolve(steps[0]?.()),
-      5_000,
-      "the cleanup did not end"
-    );
+    await within(steps[0]!(), 5_000, "the cleanup did not end");
     expect(socket.destroyed).toBe(true);
     expect(socket.closed).toBe(true);
   });
@@ -419,10 +413,14 @@ describe("ownedListener", () => {
   it("hands its close to the owner before listening, and the close ends the connections it took", async () => {
     const server = net.createServer();
     const owned: { listening: boolean; close: () => Promise<void> }[] = [];
+    // 맡긴 닫기는 기록하고 러너에도 맡긴다. 본문이 닫기 전에 실패해도 서버가 남지 않는다.
     const { close } = await ownedListener(
       server,
       { port: 0, host: "127.0.0.1" },
-      (step) => owned.push({ listening: server.listening, close: step }),
+      (step) => {
+        owned.push({ listening: server.listening, close: step });
+        onTestFinished(step);
+      },
       "the test listener"
     );
     expect(owned.map(({ listening }) => listening)).toEqual([false]);
@@ -462,7 +460,10 @@ describe("ownedListener", () => {
       ownedListener(
         net.createServer(),
         { port, host: "127.0.0.1" },
-        (step) => closes.push(step),
+        (step) => {
+          closes.push(step);
+          onTestFinished(step);
+        },
         "the second listener"
       )
     ).rejects.toMatchObject({ code: "EADDRINUSE" });
