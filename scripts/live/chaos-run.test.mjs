@@ -1,12 +1,13 @@
 // 장면 준비가 실패해도 그때까지 만든 폴더를 남기지 않고 원래 실패를 드러내는지 본다(#255 리뷰 권고). 실제 모델은 부르지 않는다.
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
-import { prepareScene } from "./chaos-run.mjs";
+import { cleanupScene, prepareScene } from "./chaos-run.mjs";
 
 test("a failing scene preparation removes the folders it made and keeps its error", async () => {
   await withCleanup(async (defer) => {
@@ -38,5 +39,50 @@ test("a prepared scene has its home and harness folders, private to the owner", 
     if (process.platform !== "win32")
       for (const dir of [home, harnessDir])
         assert.equal(statSync(dir).mode & 0o777, 0o700);
+  });
+});
+
+// 장면 서버와 시험용 명령은 harness 폴더를 쓴다. 서버 정리가 실패하면 그 끝을 확인하지 못했으므로 폴더를 지우지 않고 남기고, 정리
+// 실패로 센다(#298 자원 표에서 찾음: 그동안 dispose가 실패해도 지웠다).
+test("a scene whose server cleanup failed keeps its harness folder and counts the failure", async (t) => {
+  await withCleanup(async (defer) => {
+    const root = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-cleanup-"));
+    defer(() => removeFolder(root));
+    const { home, harnessDir } = await prepareScene(() => {}, root);
+    const failure = Object.assign(new Error("server did not stop"), {
+      code: "EBUSY",
+    });
+    /** 정리가 부른 dispose 수. 다른 것은 부르지 않는다. */
+    let disposed = 0;
+    const server = {
+      running: false,
+      dispose: async (...received) => {
+        assert.deepEqual(received, []);
+        disposed += 1;
+        throw failure;
+      },
+    };
+    // 정리가 터미널에 알린 줄을 기록만 한다(원래대로 출력된다).
+    const reported = t.mock.method(console, "error");
+    const cleanup = await cleanupScene({
+      server,
+      home,
+      harnessDir,
+      marker: `chaos-cleanup-test-${randomUUID()}`,
+    });
+    reported.mock.restore();
+    assert.equal(disposed, 1);
+    assert.equal(existsSync(harnessDir), true);
+    assert.equal(cleanup.harnessKept, true);
+    assert.equal(cleanup.problems, 1);
+    assert.deepEqual(
+      reported.mock.calls.map((call) => call.arguments),
+      [
+        ["[chaos] scene server cleanup failed (EBUSY)"],
+        [
+          `[chaos] the scene harness folder ${harnessDir} is kept: the scene server or its commands were not confirmed ended`,
+        ],
+      ]
+    );
   });
 });
