@@ -672,50 +672,51 @@ export function createOpenCodeProvider(options: {
       const ready = new Promise<string>((resolve) => {
         resolveUrl = resolve;
       });
-      const started = startProcess({
-        // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
-        stateDir: home,
-        command,
-        args: container
-          ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
-          : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
-        cwd: productHome,
-        env: {
-          ...env(productHome, Boolean(container)),
-          OPENCODE_CONFIG_DIR: directory,
-          OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-          OPENCODE_SERVER_PASSWORD: password,
-        },
-        ...(container ? { container } : {}),
-        onFrame: async (raw) => {
-          const url = record(raw).url;
-          if (typeof url === "string") {
-            if (container) {
-              // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
-              const parsed = orIfUnreadable(() => new URL(url), undefined);
-              if (parsed?.protocol === "http:") {
-                try {
-                  resolveUrl(await started.inboundOrigin());
-                } catch (error) {
-                  console.warn(
-                    `[provider] the OpenCode inbound relay could not open; stopping the server (${failureCode(error)})`
-                  );
-                  lifetime.abort();
+      // 이 실행 시도 폴더(설정)를 쓰는 서버. 폴더가 띄우고 맡으며, 폴더 정리가 끝내고 그 끝을 기다린다.
+      const started = attempt.usedBy(() =>
+        startProcess({
+          // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
+          stateDir: home,
+          command,
+          args: container
+            ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
+            : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
+          cwd: productHome,
+          env: {
+            ...env(productHome, Boolean(container)),
+            OPENCODE_CONFIG_DIR: directory,
+            OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+            OPENCODE_SERVER_PASSWORD: password,
+          },
+          ...(container ? { container } : {}),
+          onFrame: async (raw) => {
+            const url = record(raw).url;
+            if (typeof url === "string") {
+              if (container) {
+                // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
+                const parsed = orIfUnreadable(() => new URL(url), undefined);
+                if (parsed?.protocol === "http:") {
+                  try {
+                    resolveUrl(await started.inboundOrigin());
+                  } catch (error) {
+                    console.warn(
+                      `[provider] the OpenCode inbound relay could not open; stopping the server (${failureCode(error)})`
+                    );
+                    lifetime.abort();
+                  }
                 }
+              } else {
+                const parsed = new URL(url);
+                if (
+                  parsed.hostname === "127.0.0.1" &&
+                  parsed.protocol === "http:"
+                )
+                  resolveUrl(parsed.origin);
               }
-            } else {
-              const parsed = new URL(url);
-              if (
-                parsed.hostname === "127.0.0.1" &&
-                parsed.protocol === "http:"
-              )
-                resolveUrl(parsed.origin);
             }
-          }
-        },
-      });
-      // 이 실행 시도 폴더(설정)를 쓰는 서버. 폴더 정리가 끝내고 그 끝을 기다린다.
-      attempt.usedBy(started);
+          },
+        })
+      );
       const stop = () => started.end();
       lifetime.signal.addEventListener("abort", stop, { once: true });
       if (lifetime.signal.aborted) stop();

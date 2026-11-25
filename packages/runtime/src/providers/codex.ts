@@ -53,7 +53,11 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { type AttemptLoginFile, fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
-import { attemptFolder, type AttemptFolder } from "./attempt-folder.ts";
+import {
+  attemptFolder,
+  startIn,
+  type AttemptFolder,
+} from "./attempt-folder.ts";
 
 export type CodexOptions = {
   dataDir: string;
@@ -616,62 +620,66 @@ export function createCodexProvider(options: CodexOptions): ProviderConnection {
           if (grant?.failed.aborted)
             return { ...failed(), error: relayFailure, nextSession: null };
           args.unshift("app-server");
-          const connection = openCodexConnection({
-            // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
-            stateDir: home,
-            command,
-            args,
-            cwd,
-            env,
-            container,
-            clock,
-            onNotification: (frame) => {
-              const params = record(frame.params);
-              if (params.threadId !== threadId) return;
-              if (frame.method === "thread/tokenUsage/updated") {
-                // 합이 아니라 세션 누계이므로 새 누계가 앞의 누계(잘못된 것이었어도)를 대신한다.
-                totals = readTotals(
-                  record(params.tokenUsage).total,
-                  appServerKeys
-                );
-              }
-              if (frame.method === "turn/completed") {
-                const turn = record(params.turn);
-                if (turn.id !== turnId) return;
-                active.delete(request.identity.runId);
-                result = {
-                  ...failed(),
-                  stopReason:
-                    turn.status === "completed"
-                      ? "completed"
-                      : turn.status === "interrupted"
-                        ? "cancelled"
-                        : "failed",
-                  error:
-                    turn.status === "failed"
-                      ? "프로바이더 실행이 실패했습니다."
-                      : null,
-                  // 사용량은 실행 시도가 끝날 때 한 번 정한다.
-                  usage: null,
-                  nextSession: {
-                    id: threadId,
-                    tokens: totals ? savedTotals(totals, appServerKeys) : {},
-                  },
-                };
-                if (
-                  turn.status === "failed" &&
-                  saysLoginProblem(record(turn.error).message)
-                )
-                  result.errorCode = "login_required";
-                connection.close();
-              }
-            },
-          });
-          // 이 실행 시도 폴더(격리 실행의 로그인 파일)를 쓰는 프로그램. 폴더 정리가 연결을 닫고 그 끝을 기다린다.
-          attempt?.usedBy({
-            end: () => connection.close(),
-            done: connection.done,
-          });
+          // 이 실행 시도 폴더(격리 실행의 로그인 파일)를 쓰는 연결. 폴더가 있으면 폴더가 열고 맡으며, 폴더 정리가 연결을 닫고 그 끝을
+          // 기다린다.
+          const connection = startIn(
+            attempt,
+            () =>
+              openCodexConnection({
+                // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
+                stateDir: home,
+                command,
+                args,
+                cwd,
+                env,
+                container,
+                clock,
+                onNotification: (frame) => {
+                  const params = record(frame.params);
+                  if (params.threadId !== threadId) return;
+                  if (frame.method === "thread/tokenUsage/updated") {
+                    // 합이 아니라 세션 누계이므로 새 누계가 앞의 누계(잘못된 것이었어도)를 대신한다.
+                    totals = readTotals(
+                      record(params.tokenUsage).total,
+                      appServerKeys
+                    );
+                  }
+                  if (frame.method === "turn/completed") {
+                    const turn = record(params.turn);
+                    if (turn.id !== turnId) return;
+                    active.delete(request.identity.runId);
+                    result = {
+                      ...failed(),
+                      stopReason:
+                        turn.status === "completed"
+                          ? "completed"
+                          : turn.status === "interrupted"
+                            ? "cancelled"
+                            : "failed",
+                      error:
+                        turn.status === "failed"
+                          ? "프로바이더 실행이 실패했습니다."
+                          : null,
+                      // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+                      usage: null,
+                      nextSession: {
+                        id: threadId,
+                        tokens: totals
+                          ? savedTotals(totals, appServerKeys)
+                          : {},
+                      },
+                    };
+                    if (
+                      turn.status === "failed" &&
+                      saysLoginProblem(record(turn.error).message)
+                    )
+                      result.errorCode = "login_required";
+                    connection.close();
+                  }
+                },
+              }),
+            (opened) => ({ end: () => opened.close(), done: opened.done })
+          );
           /** 일반 요청. 응답이 없으면 실패이며 다시 보내지 않는다(아래 catch가 연결을 닫는다). */
           const rpc = (method: string, params: unknown) =>
             connection.request(method, params, { timeoutMs: timeouts.request });
@@ -870,47 +878,52 @@ async function executeExec(
   // 준비(와 새 세션으로 다시 시도하기 전의 알림) 뒤 프로세스를 띄우기 직전에 취소를 다시 본다.
   if (control.signal.aborted)
     return { ...failed(), stopReason: "cancelled", error: null };
-  const child = startProcess({
-    stateDir,
-    command,
-    args,
-    cwd,
-    env,
-    container,
-    onFrame: async (raw) => {
-      const frame = record(raw);
-      if (
-        (frame.type === "error" && saysLoginProblem(frame.message)) ||
-        (frame.type === "turn.failed" &&
-          saysLoginProblem(record(frame.error).message))
-      )
-        loginProblem = true;
-      if (
-        frame.type === "thread.started" &&
-        typeof frame.thread_id === "string"
-      ) {
-        id = frame.thread_id;
-        await control.emit({
-          type: "progress",
-          text: "프로바이더가 작업을 시작했습니다.",
-        });
-      }
-      if (frame.type === "turn.completed") {
-        const totals = readTotals(frame.usage, execKeys);
-        result = {
-          stopReason: "completed",
-          error: null,
-          summary: null,
-          nextSession: id
-            ? { id, tokens: savedTotals(totals, execKeys) }
-            : null,
-          usage: providerUsage(launch.provider, codexUsage(totals, before)),
-        };
-        child.end();
-      }
-    },
-  });
-  launch.attempt?.usedBy(child);
+  // 이 실행 시도 폴더(격리 실행의 로그인 파일)를 쓰는 프로그램. 폴더가 있으면 폴더가 띄우고 맡는다.
+  const child = startIn(
+    launch.attempt,
+    () =>
+      startProcess({
+        stateDir,
+        command,
+        args,
+        cwd,
+        env,
+        container,
+        onFrame: async (raw) => {
+          const frame = record(raw);
+          if (
+            (frame.type === "error" && saysLoginProblem(frame.message)) ||
+            (frame.type === "turn.failed" &&
+              saysLoginProblem(record(frame.error).message))
+          )
+            loginProblem = true;
+          if (
+            frame.type === "thread.started" &&
+            typeof frame.thread_id === "string"
+          ) {
+            id = frame.thread_id;
+            await control.emit({
+              type: "progress",
+              text: "프로바이더가 작업을 시작했습니다.",
+            });
+          }
+          if (frame.type === "turn.completed") {
+            const totals = readTotals(frame.usage, execKeys);
+            result = {
+              stopReason: "completed",
+              error: null,
+              summary: null,
+              nextSession: id
+                ? { id, tokens: savedTotals(totals, execKeys) }
+                : null,
+              usage: providerUsage(launch.provider, codexUsage(totals, before)),
+            };
+            child.end();
+          }
+        },
+      }),
+    (started) => started
+  );
   const cancel = () => {
     child.interrupt();
     child.end();
