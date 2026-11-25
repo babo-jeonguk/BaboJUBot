@@ -172,19 +172,32 @@ it.each([
 );
 
 // 공용 실행 경계 대역이 띄운 트리는 띄운 직후 그 실제 끄기가 폴더 정리에 맡겨진다. 정리는 끄기의 결과를 오류 코드로 판정한다:
-// 성공은 통과, 장면이 선언한 코드 하나는 받고, 그 밖의 코드(실행기의 끝을 확인하지 못함 등)는 정리 실패로 폴더를 남긴다.
+// 성공은 통과, 장면이 선언한 코드 하나는 받고, 그 밖의 코드(실행기의 끝을 확인하지 못함 등)는 정리 실패로 폴더를 남긴다. 판정은
+// 오류의 `code`만 본다: 코드 없이 이름만 같은 오류(`failureCode`는 코드가 없으면 이름을 돌려준다)는 그 장면의 답이 아니다(#297 리뷰 권고).
 it.each([
-  { failure: undefined, expectStop: undefined, kept: false },
-  { failure: "TREE_LEFT", expectStop: "TREE_LEFT" as const, kept: false },
+  { failure: undefined, by: "code", expectStop: undefined, kept: false },
+  {
+    failure: "TREE_LEFT",
+    by: "code",
+    expectStop: "TREE_LEFT" as const,
+    kept: false,
+  },
   {
     failure: "SUPERVISOR_NOT_ENDED",
+    by: "code",
     expectStop: "TREE_LEFT" as const,
     kept: true,
   },
-  { failure: "TREE_LEFT", expectStop: undefined, kept: true },
-])(
-  "judges a launched tree's real stop that fails with $failure when the scene expects $expectStop",
-  async ({ failure, expectStop, kept }) => {
+  { failure: "TREE_LEFT", by: "code", expectStop: undefined, kept: true },
+  {
+    failure: "TREE_LEFT",
+    by: "name",
+    expectStop: "TREE_LEFT" as const,
+    kept: true,
+  },
+] as const)(
+  "judges a launched tree's real stop that fails with $failure (by $by) when the scene expects $expectStop",
+  async ({ failure, by, expectStop, kept }) => {
     const test = folders();
     const root = await test.make("test-folders-");
     onTestFinished(() => removeFolder(root));
@@ -193,9 +206,10 @@ it.each([
       stop: async () => {
         stops.push("real stop");
         if (failure)
-          throw Object.assign(new Error(`stop failed (${failure})`), {
-            code: failure,
-          });
+          throw Object.assign(
+            new Error(`stop failed (${failure})`),
+            by === "code" ? { code: failure } : { name: failure }
+          );
       },
     };
     // 이 파일에는 경계 대역이 없어 전역 소유자를 두지 않는다. 대역이 부르는 정리를 직접 부른다.
