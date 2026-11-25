@@ -1731,10 +1731,45 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await relays.revalidate(identity.organizationId);
     await tunnelClosed(tunnel);
     expect(refused).toEqual([
-      { host: "localhost", port: target.port, reason: "policy_changed" },
+      { host: "localhost", port: target.port, reason: "policy_unavailable" },
     ]);
     expect(warned.mock.calls).toEqual([
       ["[provider] the protected ports could not be read (Error)"],
+    ]);
+  });
+
+  // 다시 볼 때 정책을 읽지 못해 닫는 연결은 정책을 확인하지 못한 것으로 알린다(사용자가 목록을 줄여 닫은 것이 아님). 고치기 전에는
+  // 연구 목록을 읽지 못해 필수 목적지만 남긴 다시 보기가 그 연결을 `policy_changed`로 닫았다(#286 PR #299 감독 사전 점검).
+  it("tells a connection closed because the policy could not be read on a revalidation as policy_unavailable", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const target = await fixture("echo");
+    const allowed = [
+      destination({
+        host: "localhost",
+        port: target.port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ];
+    let research = async (): Promise<Destination[]> => allowed;
+    const { relays, refused } = hub({ research: () => research() });
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const tunnel = await openTunnel(
+      relay.directory,
+      `localhost:${target.port}`
+    );
+    expectEstablished(tunnel);
+    research = async () => {
+      throw new Error("db down");
+    };
+    await relays.revalidate(identity.organizationId);
+    await tunnelClosed(tunnel);
+    expect(refused).toEqual([
+      { host: "localhost", port: target.port, reason: "policy_unavailable" },
+    ]);
+    expect(warned.mock.calls).toEqual([
+      ["[provider] the research destinations could not be read (Error)"],
     ]);
   });
 
