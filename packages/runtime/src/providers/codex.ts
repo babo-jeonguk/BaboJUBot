@@ -853,7 +853,7 @@ async function executeExec(
     cwd: string;
     env: NodeJS.ProcessEnv;
     container?: ContainerLaunch;
-    /** 이 실행 시도 폴더(격리 실행의 로그인 파일). 띄운 프로그램을 맡긴다. */
+    /** 이 실행 시도 폴더(격리 실행의 로그인 파일). 있으면 이 폴더가 프로그램을 띄우고 맡는다(`startIn`). */
     attempt?: AttemptFolder;
   }
 ): Promise<RunResult> {

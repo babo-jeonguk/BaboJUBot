@@ -388,7 +388,6 @@ export function createAntigravityProvider(options: {
           `/api/relay/${encodeURIComponent(connectionId)}`,
           request.access.toolsBaseUrl
         ).href;
-
         const args = [
           "acp",
           "--disable-telemetry",
