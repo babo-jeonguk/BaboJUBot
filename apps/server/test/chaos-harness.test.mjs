@@ -1,6 +1,6 @@
 // 실모델 장애 검사(scripts/chaos-live.mjs)의 자동 검사. 실제 모델은 부르지 않는다.
 // 실행 허용 차단, 예산 제한, 결과 판정, 증거 검사, 그리고 가짜 연결·임시 홈·임시 DB로 강제 종료·시간 초과·중단 뒤 정리를 본다.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -37,7 +37,9 @@ import {
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { runCommand } from "@babojubot/process";
 import { openLifelines } from "@babojubot/process/lifelines";
+import { testFolders } from "@babojubot/process/testing";
 import { within } from "@babojubot/process/test-support";
 import {
   awaitedLater,
@@ -51,17 +53,20 @@ const launchAll = { scenes: ids, maxLiveRuns: 24 };
 const sceneById = (id) => scenes.find((s) => s.id === id);
 
 /**
- * 이 홈의 내장 Postgres 프로세스가 남았는지. pgrep은 찾은 것이 없으면 1로 끝난다. 그 밖의 실패(띄우지 못함, 다른 종료 코드)는
- * 남았는지 모르는 것이므로 그 오류로 실패한다. 모든 실패를 "없음"으로 세면 확인하지 못한 홈을 깨끗하다고 보았다(#286).
+ * 이 홈의 내장 Postgres 프로세스가 남았는지. pgrep은 찾았으면 0, 찾은 것이 없으면 1로 끝난다. 그 밖의 끝남(다른 종료 코드, 시한에
+ * 끊김)과 띄우지 못함은 남았는지 모르는 것이므로 그 이유로 실패한다. 모든 실패를 "없음"으로 세면 확인하지 못한 홈을 깨끗하다고
+ * 보았다(#286). 명령은 공용 실행(`runCommand`)으로 돌려 시한에 끝을 보장한다.
  */
-const postgresAlive = (home) => {
-  try {
-    execFileSync("pgrep", ["-f", `${home}/postgres`]);
-    return true;
-  } catch (error) {
-    if (/** @type {{ status?: unknown }} */ (error).status === 1) return false;
-    throw error;
-  }
+const postgresAlive = async (home) => {
+  const result = await runCommand("pgrep", ["-f", `${home}/postgres`], {
+    limitMs: 10_000,
+    maxOutputBytes: 64 * 1024,
+  });
+  if (!result.killed && result.code === 0) return true;
+  if (!result.killed && result.code === 1) return false;
+  throw new Error(
+    `pgrep could not tell whether Postgres of ${home} is left (code ${result.code}, signal ${result.signal}, killed ${result.killed}): ${result.stderr.trim()}`
+  );
 };
 
 describe("chaos harness launch", () => {
@@ -668,7 +673,7 @@ describe("chaos harness on a fake connection", () => {
       postgresLeft: true,
       problems: 0,
     });
-    expect(postgresAlive(home)).toBe(false);
+    expect(await postgresAlive(home)).toBe(false);
     expect(existsSync(home)).toBe(false);
   }, 120_000);
 
@@ -783,24 +788,27 @@ describe("chaos harness on a fake connection", () => {
     // 대표는 끝나고 그룹의 구성원 하나만 남았다. 제품 복구는 우리 것인지 확인할 수 없어 기록을 남긴다.
     // 구성원은 연결을 쥐고 돈다. 정리는 그 연결이 열려 있음을 본 직후에만 그 번호로 끄고, 끝은 연결의 닫힘으로 본다(`lifelineHolder`).
     // 대표가 거두어진 뒤의 그룹 번호로는 신호하지 않는다. 구성원이 끝난 뒤에는 그 번호가 다른 그룹에 쓰였을 수 있다(#286).
+    // 대표와 구성원은 띄우자마자 정리에 맡긴다: 대표는 아직 돌면 끄고 닫힘을 기다리며(`ownChild`), 구성원은 `lifelineHolder`로 끈다.
+    // 둘이 끝난 뒤에만 구성원의 번호 파일 폴더를 지우고, 연결 서버는 그 뒤에 닫는다(정리는 등록 역순).
     const lifelines = await openLifelines();
     onTestFinished(() => lifelines.close());
-    const memberFolder = await mkdtemp(path.join(tmpdir(), "chaos-member-"));
-    const memberCleanup = folderCleanup(() => removeFolder(memberFolder));
-    onTestFinished(memberCleanup.cleanUp);
+    const folders = testFolders((cleanup) => onTestFinished(cleanup));
+    const memberFolder = await folders.make("chaos-member-");
     const member = lifelineHolder(
       lifelines,
       "member",
       path.join(memberFolder, "pid")
     );
-    memberCleanup.own(member.end);
-    const leader = spawn(
-      process.execPath,
-      [
-        "-e",
-        `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${member.code} setInterval(() => {}, 1000);`)}], { stdio: "ignore" }); process.exit(0);`,
-      ],
-      { detached: true, stdio: "ignore" }
+    folders.own(member.end, "the group member");
+    const leader = folders.ownChild(
+      spawn(
+        process.execPath,
+        [
+          "-e",
+          `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`${member.code} setInterval(() => {}, 1000);`)}], { stdio: "ignore" }); process.exit(0);`,
+        ],
+        { detached: true, stdio: "ignore" }
+      )
     );
     await within(once(leader, "exit"), 10_000, "the group leader did not end");
     const group = leader.pid;
@@ -885,6 +893,6 @@ describe("chaos harness on a fake connection", () => {
       await expect(starting).rejects.toBe(reason);
       expect(server.running).toBe(false);
     });
-    expect(postgresAlive(home)).toBe(false);
+    expect(await postgresAlive(home)).toBe(false);
   }, 60_000);
 });
