@@ -56,10 +56,22 @@ export async function runChaos({
   const secrets = new Set();
   const results = [];
   const fake = connection !== "opencode";
-  // 실행 기록·예산 폴더는 만든 직후 지우기를 등록한다. 장면이 실패해도 지우고, 지우기 실패는 그 실패와 함께 알린다.
+  // 실행 기록·예산 폴더는 만든 직후 지우기를 등록한다. 장면 서버들이 이 폴더의 기록·예산 파일을 쓰므로, 띄운 장면의 정리가 모두
+  // 끝났을 때만 지운다. 정리가 끝나지 않은 장면이 있으면 폴더를 남기고 알린다(그 장면은 이미 실패로 결과에 남는다). 지우기 실패는
+  // 장면의 실패와 함께 알린다.
+  /** 정리가 끝나지 않은 장면. */
+  const uncleaned = [];
   await withCleanup(async (defer) => {
     const runDir = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-run-"));
-    defer(() => rm(runDir, { recursive: true, force: true }));
+    defer(async () => {
+      if (uncleaned.length) {
+        console.error(
+          `[chaos] the run folder ${runDir} is kept: the cleanup of ${uncleaned.join(", ")} did not end`
+        );
+        return;
+      }
+      await rm(runDir, { recursive: true, force: true });
+    });
     await chmod(runDir, 0o700);
     const ledger = createLedger(path.join(runDir, "ledger.jsonl"));
     const budgetFile = path.join(runDir, "budget.json");
@@ -110,6 +122,7 @@ export async function runChaos({
         })
       );
       const last = results.at(-1);
+      if (!sceneCleanedUp(last.cleanup)) uncleaned.push(scene.id);
       log(
         `${scene.id} ${scene.title}: ${last.outcome}${last.reason ? ` (${last.reason})` : ""}`
       );
@@ -294,14 +307,7 @@ async function runScene({
   // 사용자 중단·시간 초과에서도 진행 중인 실행을 취소하고 서버·DB·프로세스·홈을 정리한다.
   const cleanup = await cleanupScene({ server, home, harnessDir, marker });
   // 정리가 끝나지 않았으면(서버·홈·시험용 명령이 남음) 장면 결과와 상관없이 실패다.
-  if (
-    !cleanup.serverStopped ||
-    !cleanup.homeRemoved ||
-    cleanup.homeKept ||
-    cleanup.providerRecordsLeft > 0 ||
-    cleanup.problems > 0 ||
-    cleanup.commandPidsLeft > 0
-  ) {
+  if (!sceneCleanedUp(cleanup)) {
     checks = [
       ...checks,
       check("cleanup_complete", false, { source: fake ? "fake" : "live" }),
@@ -325,6 +331,18 @@ async function runScene({
     observations,
     cleanup,
   };
+}
+
+/** 장면 정리가 끝났는가: 서버가 멈추고 홈을 지웠고, 프로세스 기록·시험용 명령·정리 문제가 하나도 남지 않았다. */
+function sceneCleanedUp(cleanup) {
+  return (
+    cleanup.serverStopped &&
+    cleanup.homeRemoved &&
+    !cleanup.homeKept &&
+    cleanup.providerRecordsLeft === 0 &&
+    cleanup.problems === 0 &&
+    cleanup.commandPidsLeft === 0
+  );
 }
 
 /** 장면 정리. 정리에서 난 문제도 결과에 남긴다. */
