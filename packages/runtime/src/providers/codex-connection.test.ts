@@ -207,6 +207,7 @@ describe("a Codex app-server connection", () => {
       // 프로그램은 연결을 쥔 뒤 준비를 알린다. 살아 있음은 그 연결로 본다. 입력이 깨져 연결의 끝은 `broken`이라(제품이 끝을
       // 확인했다는 증거가 없다) 연결 닫기만으로는 프로그램의 끝을 알 수 없다. 프로그램의 끝은 그 연결의 정리가 확인한다: 연결
       // 닫기·끝 기다리기(`openOwned`, 늦게 등록해 먼저 돎) 뒤에 연결의 닫힘을 보고, 남았으면 열려 있음을 본 직후에만 그 번호로 끈다.
+      // 감독 실행기의 끝은 이 정리가 가려내지 못한다(`broken`에 접힌다, 한계).
       const name = `write-fails-${++leftCount}`;
       const held = lifelineHolder(
         lifelines,

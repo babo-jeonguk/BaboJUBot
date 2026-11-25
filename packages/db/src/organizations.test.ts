@@ -385,7 +385,8 @@ describe("agent names", () => {
     await t.db.execute(sql.raw(`create database ${name}`));
     const url = new URL(t.url);
     url.pathname = `/${name}`;
-    // 풀은 만들 때 연결하지 않는다. 정리는 연결을 닫은 뒤에만 그 DB를 지운다(한 정리 안의 차례). 닫지 못하면 DB를 남기고 실패한다.
+    // 풀은 만들 때 연결하지 않는다. 정리는 풀을 닫은 뒤에만 DB를 지운다(한 정리 안의 차례). 풀을 닫지 못하면 DB를 남기고 실패한다.
+    // 각 기다림은 상한을 두지만 넘겨도 풀이나 지우기를 끝내지는 못한다(곁 DB 정리의 공용화와 함께 3b-3).
     const pool = new pg.Pool({ connectionString: url.toString() });
     onTestFinished(async () => {
       await within(

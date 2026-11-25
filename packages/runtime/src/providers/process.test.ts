@@ -203,7 +203,8 @@ describe("runProbe", () => {
     onTestFinished(() => logged.mockRestore());
     // 띄우지 못하는 실행 시도라 그 끝은 `broken`이다. 그래서 `ownRun`(끝을 확인하지 못한 실행 시도를 정리 실패로 드러낸다)에
     // 맡기지 않는다. Linux·macOS에서는 감독 실행기가 실제로 떠서 시작 실패를 알리므로(못 찾은 프로그램을 띄우지 않는 것은
-    // Windows뿐), 정리가 실행 시도를 끝내고 그 일이 끝나기를 기다린다. 제품의 실제 끄기가 실행기의 끝을 기다린다.
+    // Windows뿐), 정리가 실행 시도를 끝내고 그 일이 끝나기를 기다린다. 실행기의 끝을 기다리는 것은 제품의 끄기이고, 그 끝을 확인하지
+    // 못해도 일부러 `broken`인 끝에 접혀 이 정리는 그것을 가려내지 못한다(한계).
     const child = startProcess({
       command: ["/missing/program"],
       args: [],
@@ -299,13 +300,18 @@ describe("runProbe", () => {
           }
         )
       );
-      // 시험이 먼저 실패해도 probe를 취소하고 그 결과를 받는다(늦게 등록해 연결 정리보다 먼저 돎). 취소로 멈춘 결과(`stopped:
-      // aborted`)는 공용 실행이 트리 전체의 끝을 확인한 뒤의 결과라 정리 성공이다. 그 밖의 거절(끝을 확인하지 못함 포함)은 정리
-      // 실패로 넘겨 폴더를 남긴다.
+      // 시험이 먼저 실패해도 probe를 취소하고 그 결과를 받는다(늦게 등록해 연결 정리보다 먼저 돎). 취소로 멈춘 결과는 공용 실행이
+      // 트리 전체의 끝을 확인한 뒤의 결과라 정리 성공이다. 아는 모양은 둘이다: 무시하도록 정한 뒤면 유예 뒤의 SIGKILL, 그 전이면
+      // SIGTERM. 그 밖의 거절(끝을 확인하지 못함 포함)은 정리 실패로 넘겨 폴더를 남긴다.
       folders.own(async () => {
         controller.abort();
         await probing.catch((error: unknown) => {
-          if ((error as { stopped?: unknown } | null)?.stopped !== "aborted")
+          if (
+            ![
+              "stopped: aborted, signal SIGKILL",
+              "stopped: aborted, signal SIGTERM",
+            ].includes(probeEnding(error))
+          )
             throw error;
         });
       }, "the check program's probe");
