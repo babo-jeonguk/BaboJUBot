@@ -36,7 +36,7 @@ import {
   writes,
   type Gate,
 } from "@babojubot/runtime/testing";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { startServer, type RunningServer } from "../src/index.ts";
 import {
   calls,
@@ -893,10 +893,14 @@ async function until(
   if (failed) throw failed.error;
 }
 
-/** 전체 Event stream을 구독한다. 서버가 듣기 시작한 뒤(`onListening`)에 부르므로 다시 시도하지 않는다(`openEventStream`). */
+/**
+ * 전체 Event stream을 구독한다. 서버가 듣기 시작한 뒤(`onListening`)에 부르므로 다시 시도하지 않는다(`openEventStream`). 연결은 만든 직후
+ * 시험 정리에 맡겨, 시험이 중간에 실패해도 끊는다(시험이 청한 닫힘이라 실패가 아니다).
+ */
 async function listen(base: string) {
   const { subscription } = await openEventStream(
-    base.replace(/^http/, "ws") + eventStreamPath
+    base.replace(/^http/, "ws") + eventStreamPath,
+    { opened: (terminate) => onTestFinished(terminate) }
   );
   return subscription;
 }
