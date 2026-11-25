@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
+import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCheckServer } from "./check-server.mjs";
 
 /** 닫힌 순서를 `closed`에 남기는 가짜 DB·서버. `failing`에 든 이름은 닫기에 실패한다. */
@@ -39,7 +40,9 @@ test("a finished check closes the server and the database and removes the folder
   assert.equal(existsSync(opened.workspace), false);
 });
 
-test("a failing server close still closes the database and removes the folder, and the check failure stays visible", async () => {
+// 폴더는 서버가 쓰는 제품 폴더다. 서버나 DB의 닫기가 실패하면 그 끝을 확인하지 못했으므로 폴더를 남긴다(#286 3b-3, 닫힘 확인 뒤에만
+// 지우기). 남은 폴더는 시험이 확인한 뒤 지운다(가짜 서버는 아무것도 돌리지 않는다).
+test("a failing server close still closes the database and keeps the folder, and the check failure stays visible", async () => {
   const { closed, opened, options } = resources(["server"]);
   await assert.rejects(
     withCheckServer(options, () => {
@@ -55,17 +58,23 @@ test("a failing server close still closes the database and removes the folder, a
     }
   );
   assert.deepEqual(closed, ["server", "database"]);
-  assert.equal(existsSync(opened.workspace), false);
+  // 판정 전에 지운다. 단언이 실패해도 폴더를 남기지 않는다.
+  const kept = existsSync(opened.workspace);
+  await removeFolder(opened.workspace);
+  assert.equal(kept, true);
 });
 
-test("a failing database close after a passed check is reported and the folder is still removed", async () => {
+test("a failing database close after a passed check is reported and the folder is kept", async () => {
   const { closed, opened, options } = resources(["database"]);
   await assert.rejects(
     withCheckServer(options, () => "checked"),
     /database close failed/
   );
   assert.deepEqual(closed, ["server", "database"]);
-  assert.equal(existsSync(opened.workspace), false);
+  // 판정 전에 지운다. 단언이 실패해도 폴더를 남기지 않는다.
+  const kept = existsSync(opened.workspace);
+  await removeFolder(opened.workspace);
+  assert.equal(kept, true);
 });
 
 test("a server that does not start leaves no database or folder behind", async () => {
