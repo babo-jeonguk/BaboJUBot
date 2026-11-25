@@ -53,7 +53,6 @@ import {
   startTestServer,
   within,
   type TestServer,
-  closeDatabase,
   ownStart,
   heldOrEnded,
   startDiagnostics,
@@ -88,7 +87,7 @@ afterEach(() => {
   // 확인하지 못하면 DB를 남기고 그 실패를 알린다(`folderCleanup`). 한 단계가 실패해도 나머지를 닫는다.
   // 이 서버들은 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`homeUsers`).
   const closing = homeUsers(() =>
-    attemptAll([() => db && closeDatabase(db), () => test?.close()])
+    attemptAll([() => db && db.close(), () => test?.close()])
   );
   for (const end of users) closing.own(end);
   return closing.cleanUp();

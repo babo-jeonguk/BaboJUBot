@@ -31,7 +31,6 @@ import {
   startTestServer,
   type TestServer,
   ownStart,
-  closeDatabase,
   startDiagnostics,
   startOnDatabaseOf,
   closedAfterUsers,
@@ -836,7 +835,7 @@ describe("channel replies", () => {
     // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
     // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`closedAfterUsers`).
-    const users = closedAfterUsers(() => closeDatabase(database));
+    const users = closedAfterUsers(() => database.close());
     const quiet = (name: string): NotificationChannel => ({
       name,
       deliver: async () => {},
@@ -927,7 +926,7 @@ describe("channel replies", () => {
     // DB는 그것을 쓰는 서버가 끝난 뒤에만 닫는다(`folderCleanup`).
     const database = await createTestDatabase();
     // 여기서 띄우는 서버는 데이터 폴더를 넘기지 않아 파일의 제품 폴더도 쓴다(`closedAfterUsers`).
-    const users = closedAfterUsers(() => closeDatabase(database));
+    const users = closedAfterUsers(() => database.close());
     /** 그 port를 듣는 listener. 시험 정리가 소유하고, 돌려준 `close`로 시험 중간에 포트를 비운다. */
     const listening = (port: number) =>
       ownedListener(

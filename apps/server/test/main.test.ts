@@ -25,7 +25,7 @@ import {
 import { containerOwner } from "../src/isolation.ts";
 import { stopRequest } from "../src/stop-request.ts";
 import { waitForPostmaster } from "./postmaster.ts";
-import { ownedListener, pollUntil, closeDatabase } from "./support.ts";
+import { ownedListener, pollUntil } from "./support.ts";
 import { ownHome } from "./product-home.ts";
 import { psField } from "@babojubot/process";
 import { reportedPid, within } from "@babojubot/process/test-support";
@@ -87,7 +87,7 @@ let databaseUsers: ReturnType<typeof folderCleanup>;
 beforeEach(async ({ onTestFinished }) => {
   const database = await createTestDatabase();
   external = database;
-  const users = folderCleanup(() => closeDatabase(database));
+  const users = folderCleanup(() => database.close());
   databaseUsers = users;
   onTestFinished(users.cleanUp);
 });

@@ -12,11 +12,13 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { failureCode } from "@babojubot/contracts";
-import { removeFolder } from "@babojubot/process/remove-folder";
+
 import { pinnedReaderFile } from "../src/workspace.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
-import { within } from "@babojubot/process/test-support";
-import type { testFolders } from "@babojubot/process/testing";
+import {
+  removeFolderWithin,
+  type testFolders,
+} from "@babojubot/process/testing";
 
 /**
  * 파일 경계 시험이 임시 폴더를 만드는 곳. 환경별 전체 검증(CI `files-*` job)은 시험용 디스크·공유의 폴더를
@@ -43,12 +45,9 @@ export const removeRetries = {
   // 폴더 하나 지우기를 기다리는 시한(`testFolders`). 다시 시도 사이 대기의 합(200ms × 1..10 = 11초, `removeFolder`)보다 길게 둔다.
   removeTimeoutMs: 30_000,
 };
-/** 지운다(`removeRetries`). */
+/** 지운다(`removeRetries`, 시한 안에서: `removeFolderWithin`). */
 export const remove = (folder: string) =>
-  removeFolder(folder, {
-    retries: removeRetries.retries,
-    retryDelayMs: removeRetries.retryDelayMs,
-  });
+  removeFolderWithin(folder, removeRetries);
 
 /** 이 파일 시스템에 없는 기능과 그 오류 코드. 빈 문자열이면 있다(FAT은 링크가 없다). */
 export type FeatureGaps = {
@@ -94,17 +93,13 @@ export const featureGaps = () =>
   (gaps ??= (async () => {
     const made = await mkdtemp(path.join(filesBase(), "bjc-probe-"));
     return withCleanup(async (defer) => {
-      // 만든 직후 정리에 맡긴다. 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다. 지우기와 남은 항목 읽기는
-      // 시험 폴더 지우기와 같은 시한(`removeRetries.removeTimeoutMs`) 안에서 기다리고, 넘기면 실패한다(매달린 볼륨).
+      // 만든 직후 정리에 맡긴다. 지우지 못해도(시한 안에 지우지 못한 것 포함) 기능 판정은 맞다. 그 원인 코드를 경고로 남기고 볼륨
+      // 정리 단계에 맡긴다. 지우기는 시험 폴더와 같은 시한 안에서 기다린다(`remove`).
       defer(() =>
-        within(
-          remove(made).catch(async (error: NodeJS.ErrnoException) =>
-            console.warn(
-              `could not remove ${made} (${error.code}); left: ${JSON.stringify(await listEntries(made))}`
-            )
-          ),
-          removeRetries.removeTimeoutMs,
-          `removing the feature probe folder ${made} did not finish`
+        remove(made).catch((error: unknown) =>
+          console.warn(
+            `could not remove the feature probe folder ${made} (${failureCode(error)}); it is left for the volume cleanup`
+          )
         )
       );
       const probe = await realpath(made);

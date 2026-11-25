@@ -867,12 +867,15 @@ describe("chaos harness on a fake connection", () => {
   }, 120_000);
 
   /**
-   * 장면 서버 정리(`dispose`)의 상한. 서버 트리 정지의 상한을 더한 값이다: SIGTERM 뒤 유예 30초(`scripts/live/chaos-server.mjs` `stop`
-   * 기본값) + 감독 실행기 정지 상한 20초(`supervisorStopLimitMs`) + 끝 확인 상한 10초(`endLimitMs`, 둘 다
-   * `packages/process/src/supervised.ts`). 남은 DB 정리는 서버가 끝난 뒤의 짧은 열고 닫기라 이 상한 안에 든다고 보고, 넘기면 무엇을
+   * 장면 서버 정리(`dispose`)의 상한. 이 시험에서는 중단된 시작이 대표를 이미 끝냈으므로 서버 정지는 바로 돌아오고, 정리는 남은 DB를 제품
+   * 경로로 다시 열고 닫은 뒤 서버 트리를 끈다(`scripts/live/chaos-server.mjs` `dispose`). 그 상한을 더한 값이다(`packages/db/src/embedded.ts`,
+   * `packages/process/src/supervised.ts`):
+   * 남은 Postgres 멈추기 10초 + 시작 60초 + 닫기 30초에 `pg_ctl`마다 여유 15초씩(`leftoverStopSeconds`·`startSeconds`·`stopSeconds`·
+   * `pgCtlMarginMs`), 그리고 트리 정지(감독 실행기 정지 20초 `supervisorStopLimitMs` + 끝 확인 10초 `endLimitMs`). 넘기면 무엇을
    * 기다렸는지 알리고 폴더를 남긴다.
    */
-  const disposeMs = 30_000 + 20_000 + 10_000;
+  const disposeMs =
+    10_000 + 15_000 + (60_000 + 15_000) + (30_000 + 15_000) + 20_000 + 10_000;
   it(
     "stops waiting for a server start when the scene is aborted",
     async () => {

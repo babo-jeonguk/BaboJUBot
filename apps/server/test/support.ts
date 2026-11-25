@@ -160,17 +160,6 @@ export function ownStart<S extends { close(): Promise<void> }>(
 }
 
 /**
- * 시험 DB를 닫고 그 끝을 상한 안에서 기다린다. 빌린 연결이 남아 있으면(그것을 쓰던 것의 끝을 확인하지 못한 경로) 닫기가 기다리므로
- * 상한을 넘기면 실패한다(fail closed). 정상 경로에서는 DB를 쓰던 것이 모두 끝난 뒤에만 부르므로 기다릴 것이 없다.
- */
-export const closeDatabase = (database: { close(): Promise<void> }) =>
-  within(
-    database.close(),
-    eventuallyMs,
-    "closing the test database did not finish"
-  );
-
-/**
  * 시험이 붙잡아 둔 일(`work`)이 붙잡힌 자리(`held`)에 닿기를 상한 안에서 기다린다. 닿기 전에 `work`가 끝나면(성공이든 실패든) 붙잡힘을
  * 확인하지 못한 것이므로 그 끝으로 실패한다(실패면 그 오류, 성공이면 끝났다는 오류).
  */
@@ -308,7 +297,7 @@ export type TestServer = {
     scope: StreamScope,
     options?: { origin?: string }
   ) => Promise<Subscription>;
-  /** 서버·DB·이 helper가 만든 작업 폴더를 치운다. 각 단계를 따로 시도하고 실패를 모아 알린다. */
+  /** 서버를 끈 것을 확인한 뒤에만 DB를 닫고 이 helper가 만든 작업 폴더를 지운다. 한 번만 돌고 다시 부르면 같은 결과를 돌려준다. */
   close: () => Promise<void>;
 };
 
@@ -361,7 +350,7 @@ export async function startTestServer({
   /** 서버의 끝을 확인한 뒤의 정리: DB를 닫고 이 helper가 만든 작업 폴더를 지운다. 둘은 서로 독립이라 모두 시도한다. */
   const release = () =>
     attemptAll([
-      () => closeDatabase(database),
+      () => database.close(),
       async () => {
         if (ownDataDir) await removeFolder(ownDataDir);
       },
@@ -448,6 +437,10 @@ export async function startTestServer({
     throw error;
   }
 
+  // 넘긴 뒤의 정리. 넘기기 전 실패의 정리와 같다: 서버의 끝(끄기를 이미 불렀으면 그 결과)을 확인한 뒤에만 DB와 폴더를 닫고 지운다. 한 번만
+  // 돌고 다시 부르면 같은 결과를 돌려준다(시험 서버를 넘겨받은 정리와 모듈의 afterEach가 함께 불러도 두 번 닫지 않는다).
+  const handed = folderCleanup(release);
+  handed.own(() => stopOnce(server!));
   return {
     baseUrl: server.url,
     db: database.db,
@@ -477,12 +470,7 @@ export async function startTestServer({
       );
       return subscription;
     },
-    async close() {
-      // 넘기기 전 실패의 정리와 같다. 서버의 끝(끄기를 이미 불렀으면 그 결과)을 확인한 뒤에만 DB와 폴더를 닫고 지운다.
-      const closing = folderCleanup(release);
-      closing.own(() => stopOnce(server!));
-      await closing.cleanUp();
-    },
+    close: handed.cleanUp,
   };
 }
 
