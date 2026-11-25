@@ -616,7 +616,6 @@ export function createOpenCodeProvider(options: {
       password = crypto.randomUUID();
     const lifetime = new AbortController();
     let interrupt: (() => void) | undefined;
-    let child: ReturnType<typeof startProcess> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let listening = false;
     let cleaned = false;
@@ -630,11 +629,9 @@ export function createOpenCodeProvider(options: {
       cleaned = true;
       if (timer) clearTimeout(timer);
       lifetime.abort();
-      // 서버를 끝내고 그 끝을 확인한 뒤에만 폴더를 지운다(`attemptFolder`).
-      child?.end();
-      await child?.done;
-      if (listening) signal.removeEventListener("abort", abort);
+      // 맡긴 서버를 끝내고 그 끝을 확인한 뒤에만 폴더를 지운다(`attemptFolder`의 `remove`).
       await attempt.remove();
+      if (listening) signal.removeEventListener("abort", abort);
     };
     const close = cleanup;
     try {
@@ -694,7 +691,8 @@ export function createOpenCodeProvider(options: {
           }
         },
       });
-      child = attempt.usedBy(started);
+      // 이 실행 시도 폴더(설정)를 쓰는 서버. 폴더 정리가 끝내고 그 끝을 기다린다.
+      attempt.usedBy(started);
       const stop = () => started.end();
       lifetime.signal.addEventListener("abort", stop, { once: true });
       if (lifetime.signal.aborted) stop();

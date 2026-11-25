@@ -11,7 +11,7 @@ import { vi } from "vitest";
 // (`http.request`로 붙는 코드면 `node:http`와 `failingHttp`). 시험마다 `refusing.refuse`를 정하고 끝나면 `resetRefusing()`으로 푼다.
 //
 // 같은 대역은 서버 경계(`net.createServer`·`http.createServer`)도 감싼다. 시험이 `serverFaults`를 정하면, 대역이 만든 서버의 다음 듣기
-// 하나나 정한 주소에서 듣는 서버의 닫기가 그 오류로 실패한다(객체·prototype의 메서드를 바꾸지 않고, 대역이 만든 서버만 다르게 답한다).
+// 하나나 정한 파일 소켓 경로에서 듣는 서버의 닫기가 그 오류로 실패한다(객체·prototype의 메서드를 바꾸지 않고, 대역이 만든 서버만 다르게 답한다).
 // 정한 것이 없으면 진짜 서버와 같다. 시험이 끝나면 `resetRefusing()`이 함께 푼다.
 
 export const refusing = {
@@ -28,8 +28,9 @@ export const serverFaults = {
   /** 실패시킨 듣기가 받은 주소. */
   refusedListen: vi.fn<(address: unknown) => void>(),
   /**
-   * 들은 주소가 `at`에 맞는 서버의 닫기가 실제로 닫은 뒤 이 코드로 실패를 알린다(닫기 콜백의 오류). 닫을 것이 없던 서버의 원래
-   * 오류(ERR_SERVER_NOT_RUNNING)는 그대로 넘긴다.
+   * 파일 소켓 경로로 들은 서버 가운데 그 경로가 `at`에 맞는 서버의 닫기가 실제로 닫은 뒤 이 코드로 실패를 알린다(닫기 콜백의 오류).
+   * 포트로 들은 서버는 대상이 아니다. 닫을 것이 없던 서버의 원래 오류(ERR_SERVER_NOT_RUNNING)는 그대로 넘긴다. 결함이 실제로 걸렸는지는
+   * `failedClose`로 확인한다.
    */
   close: undefined as
     { code: string; at: (address: string) => boolean } | undefined,
@@ -52,7 +53,7 @@ const codeError = (message: string, code: string) =>
 /** 대역이 만드는 서버: `serverFaults`가 정한 듣기·닫기만 실패로 답하고, 그 밖에는 진짜 서버(`Base`)와 같다. */
 function faultyServer(Base: typeof netModule.Server) {
   return class extends Base {
-    /** 이 서버가 들은 주소(파일 소켓 경로나 포트). 닫기 결함의 대상을 고를 때 본다. */
+    /** 이 서버가 들은 파일 소켓 경로. 닫기 결함의 대상을 고를 때 본다. 포트로 들은 서버는 없음이라 닫기 결함의 대상이 되지 않는다. */
     listenedAt: string | undefined;
     override listen(...args: unknown[]) {
       const fault = serverFaults.listen;
