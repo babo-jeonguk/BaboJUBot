@@ -1,12 +1,13 @@
-// 이 파일은 `vi.mock("node:net")`·`vi.mock("node:http")` 대역의 factory가 불러온다. 그래서 이 파일과 이 파일이 불러오는 모듈 전체
-// (@babojubot/process의 `test-cleanup.ts`·`test-support.ts`·`remove-folder.ts`, @babojubot/contracts)는 node:net·node:http를 형으로만
-// 불러온다. 값으로 불러오면 대역이 만들어지기 전에 자기 자신을 기다려 시험이 불러오는 단계에서 멈춘다. 두 builtin을 값으로 쓰는 시험
-// 도움은 이 경로 밖(`@babojubot/process/testing`의 `test-connect.ts` 등)에 둔다.
+// 이 파일은 `vi.mock("node:net")`·`vi.mock("node:http")`·`vi.mock("node:dns/promises")` 대역의 factory가 불러온다. 그래서 이 파일과 이
+// 파일이 불러오는 모듈 전체(@babojubot/process의 `test-cleanup.ts`·`test-support.ts`·`remove-folder.ts`, @babojubot/contracts)는 그
+// builtin들을 형으로만 불러온다. 값으로 불러오면 대역이 만들어지기 전에 자기 자신을 기다려 시험이 불러오는 단계에서 멈춘다. 그
+// builtin을 값으로 쓰는 시험 도움은 이 경로 밖(`@babojubot/process/testing`의 `test-connect.ts` 등)에 둔다.
+import type * as dnsModule from "node:dns/promises";
 import type * as httpModule from "node:http";
 import type * as netModule from "node:net";
 import path from "node:path";
 import { vi } from "vitest";
-import { attemptAll, hasErrorCode } from "@babojubot/contracts";
+import { attemptAll, hasErrorCode, parseIp } from "@babojubot/contracts";
 import { within } from "@babojubot/process/test-support";
 import { removeFolderWithin } from "@babojubot/process/test-cleanup";
 
@@ -21,12 +22,45 @@ import { removeFolderWithin } from "@babojubot/process/test-cleanup";
 // 같은 대역은 서버 경계(`net.createServer`·`http.createServer`)도 감싼다. 시험이 `serverFaults`를 정하면, 대역이 만든 서버의 다음 듣기
 // 하나나 정한 파일 소켓 경로에서 듣는 서버의 닫기가 그 오류로 실패한다(객체·prototype의 메서드를 바꾸지 않고, 대역이 만든 서버만 다르게 답한다).
 // 정한 것이 없으면 진짜 서버와 같다. 시험이 끝나면 `resetRefusing()`이 함께 푼다.
+//
+// 시험이 붙잡는 순간(닫기, 조회)은 `gate()`로 건다. 대역의 붙잡기(`serverFaults.holdClose`)는 `gate()`가 만든 것만 받는다.
+
+const gateBrand: unique symbol = Symbol("gate");
+/** 시험이 붙잡은 일을 놓는 gate. 본문이 `open()`으로 열면 `until`이 `"opened"`로 풀린다. */
+export type Gate = {
+  readonly until: Promise<"opened" | "reset">;
+  open(): void;
+  readonly [gateBrand]: true;
+};
+
+/** gate 하나를 만든다. */
+export function gate(): Gate {
+  const { promise, resolve } = Promise.withResolvers<"opened" | "reset">();
+  return { until: promise, open: () => resolve("opened"), [gateBrand]: true };
+}
+
+/** 대역이 붙잡고 있는 연결(`refusing.holdConnect`). `resetRefusing()`이 포기시킨다. */
+const heldSockets = new Set<netModule.Socket>();
 
 export const refusing = {
   /** 실패시킬 포트와 오류 코드. 없으면 아무 연결도 대역하지 않는다. */
   refuse: undefined as { port: number; code: string } | undefined,
   /** 대역한 연결마다 `{ host, port }`로 불린다. */
   dialed: vi.fn<(target: { host: unknown; port: number }) => void>(),
+  /**
+   * 이 포트로 가는 연결을 붙지 않은 채 붙잡는다(연결 중인 소켓). 그 소켓은 부른 쪽이 끊거나 `resetRefusing()`이 ECONNABORTED로
+   * 포기시킬 때까지 연결 중으로 남는다. `refuse`보다 먼저 본다.
+   */
+  holdConnect: undefined as { port: number } | undefined,
+  /** 붙잡은 연결마다 그 소켓으로 불린다. */
+  heldConnect: vi.fn<(socket: netModule.Socket) => void>(),
+};
+
+/** 이름 풀이(`node:dns/promises`의 `lookup`) 대역. 정한 이름만 정한 주소로 답하고, 그 밖의 이름은 진짜로 푼다. */
+export const nameFaults = {
+  lookup: undefined as { host: string; addresses: string[] } | undefined,
+  /** 정한 이름을 물을 때마다 그 이름과 옵션으로 불린다. */
+  looked: vi.fn<(host: string, options: unknown) => void>(),
 };
 
 /** 서버 경계의 결함. 정한 것이 없으면 대역이 만든 서버도 진짜와 같다. */
@@ -58,26 +92,41 @@ export const serverFaults = {
   listening: undefined as
     ((address: unknown, server: netModule.Server) => void) | undefined,
   /**
-   * 파일 소켓 경로가 `at`에 맞는 서버의 닫기를 `until`이 이행할 때까지 미룬다(그 뒤에는 위 `close` 결함까지 그대로). 시험이 닫기가
-   * 시작된 뒤의 순간을 상태로 붙잡을 때 쓴다.
+   * 파일 소켓 경로가 `at`에 맞는 서버의 닫기를 `held`가 풀릴 때까지 미룬다(그 뒤에는 위 `close` 결함까지 그대로). 시험이 닫기가
+   * 시작된 뒤의 순간을 상태로 붙잡을 때 쓴다. 미룬 닫기마다 `heldClose`가 그 주소로 불린다.
    */
   holdClose: undefined as
-    { at: (address: string) => boolean; until: Promise<void> } | undefined,
+    { at: (address: string) => boolean; held: Gate } | undefined,
+  heldClose: vi.fn<(address: string) => void>(),
 };
 
 export function resetRefusing() {
+  for (const socket of heldSockets)
+    socket.destroy(
+      codeError(
+        "a held connect was given up at the double's reset",
+        "ECONNABORTED"
+      )
+    );
+  heldSockets.clear();
   refusing.refuse = undefined;
   refusing.dialed.mockReset();
+  refusing.holdConnect = undefined;
+  refusing.heldConnect.mockReset();
+  nameFaults.lookup = undefined;
+  nameFaults.looked.mockReset();
   serverFaults.listen = undefined;
   serverFaults.refusedListen.mockReset();
   serverFaults.close = undefined;
   serverFaults.failedClose.mockReset();
   serverFaults.listening = undefined;
   serverFaults.holdClose = undefined;
+  serverFaults.heldClose.mockReset();
 }
 
-const codeError = (message: string, code: string) =>
-  Object.assign(new Error(message), { code });
+function codeError(message: string, code: string) {
+  return Object.assign(new Error(message), { code });
+}
 
 /** 대역이 만드는 서버: `serverFaults`가 정한 듣기·닫기만 실패로 답하고, 그 밖에는 진짜 서버(`Base`)와 같다. */
 function faultyServer(Base: typeof netModule.Server) {
@@ -104,12 +153,12 @@ function faultyServer(Base: typeof netModule.Server) {
       const hold = serverFaults.holdClose;
       const held = this.listenedAt;
       if (hold && held !== undefined && hold.at(held)) {
-        hold.until.then(
-          () => this.closeNow(callback),
+        serverFaults.heldClose(held);
+        // gate는 풀리기만 한다(거절하지 않음). 거절이 오면 그 원인을 닫기의 실패로 넘긴다.
+        hold.held.until.then(
+          () => void this.closeNow(callback),
           (error: unknown) =>
-            callback?.(
-              new Error("the held close was not released", { cause: error })
-            )
+            callback?.(new Error("the held close failed", { cause: error }))
         );
         return this;
       }
@@ -138,16 +187,11 @@ function creating(Server: typeof netModule.Server) {
     new Server(...args);
 }
 
-/** `options`가 정한 포트로 가는 연결이면 그 실패를 돌려준다. 실제 연결에서 나오는 오류와 같은 모양(`code`·`syscall`)이다. */
-function refusal(options: unknown): Error | undefined {
-  const refuse = refusing.refuse;
-  if (
-    !refuse ||
-    typeof options !== "object" ||
-    options === null ||
-    !("port" in options) ||
-    Number(options.port) !== refuse.port
-  )
+/** 연결 옵션이 가리키는 `{ host, port }`. 포트가 없는 연결(파일 소켓 경로)은 없음이다. */
+function connectTarget(
+  options: unknown
+): { host: unknown; port: number } | undefined {
+  if (typeof options !== "object" || options === null || !("port" in options))
     return undefined;
   const host =
     "host" in options
@@ -155,9 +199,17 @@ function refusal(options: unknown): Error | undefined {
       : "hostname" in options
         ? options.hostname
         : undefined;
-  refusing.dialed({ host, port: Number(options.port) });
+  return { host, port: Number(options.port) };
+}
+
+/** `options`가 정한 포트로 가는 연결이면 그 실패를 돌려준다. 실제 연결에서 나오는 오류와 같은 모양(`code`·`syscall`)이다. */
+function refusal(options: unknown): Error | undefined {
+  const refuse = refusing.refuse;
+  const target = connectTarget(options);
+  if (!refuse || target?.port !== refuse.port) return undefined;
+  refusing.dialed(target);
   return Object.assign(
-    new Error(`connect ${refuse.code} ${String(host)}:${refuse.port}`),
+    new Error(`connect ${refuse.code} ${String(target.host)}:${refuse.port}`),
     { code: refuse.code, syscall: "connect" }
   );
 }
@@ -169,10 +221,22 @@ function failedSocket(real: typeof netModule, failure: Error) {
   return socket;
 }
 
-/** `node:net` 대역: 정한 포트로 가는 `connect`·`createConnection`을 실패시킨다. */
+/** 붙지 않고 연결 중으로 남는 소켓(`refusing.holdConnect`). 끊기면 실제 연결 중 소켓처럼 `close`를 낸다. */
+function heldSocket(real: typeof netModule) {
+  const socket = new real.Socket();
+  heldSockets.add(socket);
+  socket.once("close", () => heldSockets.delete(socket));
+  refusing.heldConnect(socket);
+  return socket;
+}
+
+/** `node:net` 대역: 정한 포트로 가는 `connect`·`createConnection`을 붙잡거나(`holdConnect`) 실패시킨다(`refuse`). */
 export function failingNet(real: typeof netModule) {
   const passThrough = real.connect as (...args: unknown[]) => netModule.Socket;
   const connect = ((...args: unknown[]) => {
+    const hold = refusing.holdConnect;
+    if (hold && connectTarget(args[0])?.port === hold.port)
+      return heldSocket(real);
     const failure = refusal(args[0]);
     return failure ? failedSocket(real, failure) : passThrough(...args);
   }) as typeof real.connect;
@@ -208,6 +272,32 @@ export function failingHttp(real: typeof httpModule, net: typeof netModule) {
   const createServer = creating(Server) as typeof real.createServer;
   const replaced = { request, Server, createServer };
   return { ...real, ...replaced, default: { ...real, ...replaced } };
+}
+
+/**
+ * `node:dns/promises` 대역: `nameFaults.lookup`이 정한 이름은 그 주소로 답한다. 답의 모양은 진짜 `lookup`과 같다(`all`이면
+ * `{ address, family }` 배열, 아니면 첫 것 하나). 그 밖의 이름은 진짜로 푼다.
+ */
+export function failingDns(real: typeof dnsModule) {
+  const passThrough = real.lookup as (...args: unknown[]) => Promise<unknown>;
+  const lookup = ((host: string, options?: unknown) => {
+    const fault = nameFaults.lookup;
+    if (!fault || host !== fault.host) return passThrough(host, options);
+    nameFaults.looked(host, options);
+    const answers = fault.addresses.map((address) => {
+      const parsed = parseIp(address);
+      if (!parsed)
+        throw new Error(`the double's address is not an IP: ${address}`);
+      return { address, family: parsed.family };
+    });
+    const all =
+      typeof options === "object" &&
+      options !== null &&
+      "all" in options &&
+      options.all === true;
+    return Promise.resolve(all ? answers : answers[0]);
+  }) as typeof real.lookup;
+  return { ...real, lookup, default: { ...real, lookup } };
 }
 
 /**

@@ -7,16 +7,19 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   attemptAll,
   destinationSchema,
+  isDisconnect,
   egressRefusalMessages,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
-import { ownedClosable } from "@babojubot/process/test-cleanup";
+import { ownedClosable, ownedListener } from "@babojubot/process/test-cleanup";
 import { ownedConnect } from "@babojubot/process/testing";
 import { within } from "@babojubot/process/test-support";
 import {
   refusing,
   failingRelayCloses,
+  gate,
+  nameFaults,
   resetRefusing,
   serverFaults,
 } from "./connect-failure-support.ts";
@@ -36,6 +39,12 @@ vi.mock("node:http", async (importOriginal) =>
   (await import("./connect-failure-support.ts")).failingHttp(
     await importOriginal(),
     await import("node:net")
+  )
+);
+// 목적지 이름의 풀이(`relay.ts` `resolveAll`)도 같은 대역이 정한 이름만 정한 주소로 답한다(`nameFaults`).
+vi.mock("node:dns/promises", async (importOriginal) =>
+  (await import("./connect-failure-support.ts")).failingDns(
+    await importOriginal()
   )
 );
 afterEach(() => {
@@ -1334,10 +1343,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         server.on("connection", () => accepted.resolve());
     };
     const relay = relays.open({ identity, required: [], inbound: true });
-    const release = Promise.withResolvers<void>();
+    const release = gate();
     serverFaults.holdClose = {
       at: (address) => address === socketOf(relay, relaySockets.egress),
-      until: release.promise,
+      held: release,
     };
     await relay.ready;
     const closing = relay.close();
@@ -1351,9 +1360,218 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       5_000,
       "the relay did not accept the late connection"
     );
-    release.resolve();
+    release.open();
     await within(closing, 5_000, "the relay did not close");
     expect(existsSync(relay.directory)).toBe(false);
+  });
+
+  // 대역이 붙잡은 닫기는 본문이 풀지 못한 채 끝나도 대역의 reset(afterEach)이 푼다(#286 PR #299 외부 리뷰 2회차 STD-1). 본문이
+  // 실패하면 아무도 풀지 않아 hub·중계 닫기(onTestFinished)가 그 닫기에 걸렸다. vitest는 afterEach를 모든 onTestFinished보다 먼저
+  // 부른다(5.0.5 러너 `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인).
+  it("lets the double's reset release a held relay close the body never released", async () => {
+    const { relays } = hub();
+    const relay = relays.open({ identity, required: [] });
+    const held = gate();
+    // 고치기 전 대역에서도 이 시험의 정리가 멈추지 않게 스스로 연다(hub 뒤에 등록해 hub 닫기보다 먼저 돈다).
+    onTestFinished(() => held.open());
+    const caught = Promise.withResolvers<void>();
+    serverFaults.heldClose.mockImplementation(() => caught.resolve());
+    serverFaults.holdClose = {
+      at: (address) => address === socketOf(relay, relaySockets.egress),
+      held,
+    };
+    await relay.ready;
+    const closing = relay.close();
+    await within(caught.promise, 5_000, "the relay's close was not held");
+    resetRefusing();
+    await within(closing, 5_000, "the relay did not close");
+    expect(existsSync(relay.directory)).toBe(false);
+  });
+
+  // 목적지 연결 획득(정책 조회 → 이름 풀이 → 주소마다 연결)도 중계의 수명을 따른다(#286 PR #299 외부 리뷰 2회차 SPEC-3). 닫기가
+  // 시작되면 진행 중인 조회의 기다림을 끝내고, 연결 중인 소켓을 끊고, 다음 주소에 붙지 않으며, 그 획득의 끝을 본 뒤 끝난다.
+  // 목적지는 시험이 소유한 listener 하나이고, 그 포트로 가는 중계의 연결은 대역이 붙지 않은 채 붙잡는다(`holdConnect`).
+  const kinds = ["CONNECT", "HTTP"] as const;
+  const heldDestination = async () => {
+    const { server } = await ownedListener(
+      net.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the destination"
+    );
+    const { port } = server.address() as net.AddressInfo;
+    refusing.holdConnect = { port };
+    return port;
+  };
+  /** egress.sock에 CONNECT나 절대 주소 GET의 머리를 쓰는 연결. 만든 직후 정리에 맡긴다. */
+  const ask = (
+    relay: { directory: string },
+    kind: (typeof kinds)[number],
+    authority: string
+  ) => {
+    const socket = ownedClosable(
+      onTestFinished,
+      net.connect(socketOf(relay, relaySockets.egress)),
+      `the ${kind} request to the relay`
+    );
+    socket.on("error", (error) => {
+      if (!isDisconnect(error)) throw error;
+    });
+    socket.on("connect", () =>
+      socket.write(
+        kind === "CONNECT"
+          ? `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`
+          : `GET http://${authority}/ HTTP/1.1\r\nHost: ${authority}\r\n\r\n`
+      )
+    );
+  };
+  /** 정책 조회를 gate로 붙잡는 hub. 대역의 reset으로 풀리면 조회 실패로 던진다(중계는 연결 없이 거부한다). */
+  const heldLookupHub = (allowed: Destination[]) => {
+    const lookup = gate();
+    const asked = Promise.withResolvers<void>();
+    const { relays } = hub({
+      research: async () => {
+        asked.resolve();
+        if ((await lookup.until) === "reset")
+          throw new Error(
+            "the held policy lookup was given up at the double's reset"
+          );
+        return allowed;
+      },
+    });
+    return {
+      relays,
+      lookup,
+      asked: () =>
+        within(asked.promise, 5_000, "the relay did not look up its policy"),
+    };
+  };
+  /** 붙잡은 연결을 차례로 받는다(`n`번째). */
+  const heldConnects = () => {
+    const sockets: PromiseWithResolvers<net.Socket>[] = [];
+    const nth = (index: number) =>
+      (sockets[index] ??= Promise.withResolvers<net.Socket>());
+    let count = 0;
+    refusing.heldConnect.mockImplementation((socket) =>
+      nth(count++).resolve(socket)
+    );
+    return (n: number) =>
+      within(
+        nth(n - 1).promise,
+        5_000,
+        `the relay did not make connection ${n} to the destination`
+      );
+  };
+
+  // 목적지가 IP 문자열이라 이름 풀이(스레드풀 I/O)를 거치지 않는다. 고치기 전에는 조회 뒤 판정·연결이 모두 microtask라 서버 닫기
+  // 콜백(nextTick 이후)보다 먼저 연결을 시작했다.
+  it.each(kinds)(
+    "starts no destination connection from a policy lookup that ends after its close began (%s)",
+    async (kind) => {
+      const port = await heldDestination();
+      const { relays, lookup, asked } = heldLookupHub([
+        destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
+      ]);
+      const relay = relays.open({ identity, required: [] });
+      await relay.ready;
+      ask(relay, kind, `127.0.0.1:${port}`);
+      await asked();
+      const closing = relay.close();
+      lookup.open();
+      await within(closing, 5_000, "the relay did not close");
+      expect(refusing.heldConnect).not.toHaveBeenCalled();
+    }
+  );
+
+  // 닫기는 서버의 정책 조회를 기다리지 않는다(조회는 서버의 일이라 결과만 버린다). 조회는 열지 않는다: 대역의 reset이 풀어 조회
+  // 실패로 끝난다.
+  it("ends its close while a policy lookup is still held", async () => {
+    const port = await heldDestination();
+    const { relays, asked } = heldLookupHub([
+      destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    ask(relay, "CONNECT", `127.0.0.1:${port}`);
+    await asked();
+    await within(relay.close(), 5_000, "the relay did not close");
+    expect(existsSync(relay.directory)).toBe(false);
+  });
+
+  it.each(kinds)(
+    "drops a destination connection still being made when its close begins (%s)",
+    async (kind) => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const port = await heldDestination();
+      const { relays, setResearch } = hub();
+      setResearch([
+        destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
+      ]);
+      const relay = relays.open({ identity, required: [] });
+      await relay.ready;
+      const connection = heldConnects();
+      ask(relay, kind, `127.0.0.1:${port}`);
+      const socket = await connection(1);
+      const closing = relay.close();
+      expect(socket.destroyed).toBe(true);
+      await within(closing, 5_000, "the relay did not close");
+      expect(refusing.heldConnect).toHaveBeenCalledTimes(1);
+      expect(warned).not.toHaveBeenCalled();
+    }
+  );
+
+  // 이름이 주소 둘로 풀린다. 첫 주소는 연결 실패, 둘째 주소를 붙잡은 사이 닫기가 시작된다. 닫기 뒤에는 다음 주소로 넘어가지 않고
+  // (주소가 다 떨어진 502 경고도 없음) 붙잡힌 연결을 끊는다.
+  it("tries no further address of a destination once its close began", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const port = await heldDestination();
+    nameFaults.lookup = {
+      host: "relay-retry.test",
+      addresses: ["127.0.0.1", "127.0.0.1"],
+    };
+    const { relays, setResearch } = hub();
+    setResearch([
+      destination({ host: "relay-retry.test", port, addresses: ["127.0.0.1"] }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const connection = heldConnects();
+    ask(relay, "CONNECT", `relay-retry.test:${port}`);
+    (await connection(1)).destroy(
+      Object.assign(new Error("connect ECONNREFUSED"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+      })
+    );
+    const second = await connection(2);
+    const closing = relay.close();
+    expect(second.destroyed).toBe(true);
+    await within(closing, 5_000, "the relay did not close");
+    expect(refusing.heldConnect).toHaveBeenCalledTimes(2);
+    expect(nameFaults.looked.mock.calls).toEqual([
+      ["relay-retry.test", { all: true, verbatim: true }],
+    ]);
+    expect(warned).not.toHaveBeenCalled();
+  });
+
+  // 닫기 시작 뒤에 끝난 정책 조회는 목적지 이름 풀이를 새로 시작하지 않는다. 고치기 전에는 조회 뒤 풀이 호출까지 microtask라 서버
+  // 닫기 콜백보다 먼저 풀이를 시작했다.
+  it("starts no name lookup from a policy lookup that ends after its close began", async () => {
+    const port = await heldDestination();
+    nameFaults.lookup = { host: "relay-late.test", addresses: ["127.0.0.1"] };
+    const { relays, lookup, asked } = heldLookupHub([
+      destination({ host: "relay-late.test", port, addresses: ["127.0.0.1"] }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    ask(relay, "CONNECT", `relay-late.test:${port}`);
+    await asked();
+    const closing = relay.close();
+    lookup.open();
+    await within(closing, 5_000, "the relay did not close");
+    expect(nameFaults.looked).not.toHaveBeenCalled();
   });
 
   it("does not open a relay before the server attached its policy", () => {
