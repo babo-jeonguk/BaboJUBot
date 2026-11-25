@@ -96,8 +96,8 @@ function heldWork(flight: InFlight, label: string, log: string[]) {
   return { release, work };
 }
 
-// `idle()`은 센 일이 모두 끝나야 풀린다. 기다리는 사이 새로 센 일도 기다린다. InFlight는 입출력 없이 microtask로만 움직이므로, 가짜 시계의
-// 타이머를 남김없이 돌린 뒤에도 풀리지 않았으면 일을 풀기 전에는 풀리지 않는다. 타이머로 먼저 풀리는 틀린 구현도 여기서 드러난다.
+// `idle()`은 센 일이 모두 끝나야 풀린다. 기다리는 사이 새로 센 일도 기다린다. 가짜 시계의 타이머와 microtask를 다 돌린 뒤에 판정하므로,
+// microtask나 가짜 시계의 타이머로 먼저 풀리는 틀린 구현은 여기서 드러난다. 실제 시계나 입출력으로 미루는 틀린 구현은 이 판정이 잡지 못한다.
 describe("InFlight.idle", () => {
   it("resolves at once when nothing is counted", async () => {
     await new InFlight().idle();

@@ -80,8 +80,8 @@ describe("applyAfterCommit", () => {
       resumedOrganizationId: "A",
       woken: ["lead", "worker"],
     });
-    // 재개 처리를 풀기 전에 할 수 있는 일을 모두 마치게 한다. 효과는 입출력 없이 microtask와 타이머로만 이어지므로, 가짜 시계의
-    // 타이머를 남김없이 돌린 뒤에는 저절로 일어날 일이 없다. 재개를 기다리지 않는 구현이면 이때 이미 촉진이 있다.
+    // 재개 처리를 풀기 전에 가짜 시계의 타이머와 microtask를 다 돌린다. 재개를 기다리지 않고 microtask나 가짜 시계의 타이머로 촉진하는
+    // 틀린 구현이면 이때 이미 촉진이 있다. 실제 시계나 입출력으로 미루는 틀린 구현은 이 판정이 잡지 못한다.
     await vi.runAllTimersAsync();
     expect(f.calls).toEqual(["publish 1,2", "cancel r1", "resume A"]);
 

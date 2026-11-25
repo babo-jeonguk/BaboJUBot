@@ -687,7 +687,7 @@ export async function ownedListener<S extends net.Server>(
 
 /**
  * 이 시험 동안 가짜 시계를 켜고 시험 정리가 되돌린다. 대상 코드가 microtask와 타이머로 움직이는 시험에서 쓴다. 그 위에서는
- * `outcomeAfterDrain`으로 가짜 시계의 타이머와 microtask가 다 돈 뒤를 판정한다(#286).
+ * `vi.runAllTimersAsync()`나 `outcomeAfterDrain`으로 가짜 시계의 타이머와 microtask가 다 돈 뒤를 판정할 수 있다(#286).
  */
 export function fakeClock() {
   vi.useFakeTimers();
@@ -700,9 +700,10 @@ export function fakeClock() {
 export type DrainedOutcome = "pending" | "resolved" | { rejected: unknown };
 
 /**
- * 가짜 시계의 타이머를 남김없이 돌리고 microtask가 빈 뒤 `promise`가 어떻게 됐는가. 이 뒤에는 가짜 시계의 타이머도 microtask도
- * 남지 않으므로, 이때 풀리지 않았으면(`"pending"`) 가짜 시계로는 더 풀리지 않는다. 실제 시계의 상한(`within`)이나 입출력은 이 뒤에도
- * 따로 풀 수 있다. 틀린 구현이 기다리던 쪽을 먼저 풀면(microtask로든 타이머로든) 이 뒤에는 이미 풀려 있다. 이벤트 루프 한 차례만 기다리면 타이머로 미룬 풀림을 놓쳤다(#286).
+ * 가짜 시계의 타이머를 다 돌리고 microtask가 빈 뒤 `promise`가 어떻게 됐는가. 이 뒤에는 가짜 시계의 타이머도 microtask도
+ * 남지 않는다. 이때 풀리지 않았으면(`"pending"`) 가짜 시계를 더 돌려도 그 자체로는 풀리지 않는다. 실제 시계의 상한(`within`)이나 입출력은
+ * 이 뒤에도 따로 풀 수 있다(그것이 새 가짜 타이머·microtask를 만들 수도 있다). 틀린 구현이 기다리던 쪽을 microtask나 가짜 시계의
+ * 타이머로 먼저 풀면 이 뒤에는 이미 풀려 있다. 이벤트 루프 한 차례만 기다리면 타이머로 미룬 풀림을 놓쳤다(#286).
  */
 export async function outcomeAfterDrain(
   promise: Promise<unknown>

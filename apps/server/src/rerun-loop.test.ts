@@ -75,7 +75,7 @@ function serverLog() {
 /** 원인 코드 `code`를 단 오류. */
 const coded = (code: string) => Object.assign(new Error(code), { code });
 
-// 루프는 입출력 없이 microtask와 타이머로만 움직여, 가짜 시계 위에서 "저절로 일어날 일이 다 일어난 뒤"를 판정한다(`outcomeAfterDrain`).
+// 가짜 시계 위에서, 그 타이머와 microtask가 다 돈 뒤를 판정한다(`outcomeAfterDrain`).
 beforeEach(() => {
   fakeClock();
 });
