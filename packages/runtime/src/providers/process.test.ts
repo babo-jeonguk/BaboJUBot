@@ -14,10 +14,13 @@ import { testFolders } from "./test-folders.ts";
 const tree = vi.hoisted(() => ({
   run: undefined as undefined | (() => unknown),
 }));
+// 실행 시도(`startProcess`)가 띄운 트리는 공용 실행 경계 대역(`owningLaunchTree`)이 띄운 직후 그 실제 끄기를 폴더 정리에 맡긴다.
+// 짧은 확인 명령(`runProbe`→`runTree`)의 트리는 대역을 거치지 않는다: `runTree`가 트리 전체의 끝을 확인한 뒤에만 돌려주고 확인하지
+// 못하면 던지므로, 시험은 그 결과를 기다리거나(취소한 probe는 정리가 결과를 받는다) 그 거절로 실패한다.
 vi.mock("@babojubot/process", async (importOriginal) => {
   const real = await importOriginal<typeof import("@babojubot/process")>();
   return {
-    ...real,
+    ...(await import("./test-folders.ts")).owningLaunchTree(real),
     runTree: (...args: Parameters<typeof real.runTree>) =>
       tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
   };
@@ -201,15 +204,17 @@ describe("runProbe", () => {
   it("leaves why a run's program could not be started", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => logged.mockRestore());
-    // 띄우지 못하는 실행 시도라 끝낼 프로그램이 없고, 그 끝은 `broken`이다. 그래서 `ownRun`(끝을 확인하지 못한 실행 시도를 정리
-    // 실패로 드러낸다)에 맡기지 않는다. 시험은 그 끝을 상한 안에서 기다린다.
-    const child = startProcess({
-      command: ["/missing/program"],
-      args: [],
-      cwd: process.cwd(),
-      env: { PATH: process.env.PATH },
-      onFrame: async () => {},
-    });
+    // 띄우지 못하는 실행 시도라 그 끝은 `broken`이다. 그래서 `ownBrokenRun`에 맡긴다. Linux·macOS에서는 감독 실행기가 실제로 떠서
+    // 시작 실패를 알린다(못 찾은 프로그램을 띄우지 않는 것은 Windows뿐). 실행기의 끝은 경계 대역이 맡은 실제 끄기가 확인한다(성공만 받음).
+    const child = folders.ownBrokenRun(
+      startProcess({
+        command: ["/missing/program"],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        onFrame: async () => {},
+      })
+    );
     expect(
       (await within(child.done, 20_000, "the run did not finish")).broken
     ).toBe(true);
@@ -294,6 +299,21 @@ describe("runProbe", () => {
           }
         )
       );
+      // 시험이 먼저 실패해도 probe를 취소하고 그 결과를 받는다(늦게 등록해 연결 정리보다 먼저 돎). 취소로 멈춘 결과는 공용 실행이
+      // 트리 전체의 끝을 확인한 뒤의 결과라 정리 성공이다. 아는 모양은 둘이다: 무시하도록 정한 뒤면 유예 뒤의 SIGKILL, 그 전이면
+      // SIGTERM. 그 밖의 거절(끝을 확인하지 못함 포함)은 정리 실패로 넘겨 폴더를 남긴다.
+      folders.own(async () => {
+        controller.abort();
+        await probing.catch((error: unknown) => {
+          if (
+            ![
+              "stopped: aborted, signal SIGKILL",
+              "stopped: aborted, signal SIGTERM",
+            ].includes(probeEnding(error))
+          )
+            throw error;
+        });
+      }, "the check program's probe");
       // 연결이 보이면 SIGTERM을 무시하도록 정한 뒤다.
       await lifelines.connected("check program", 20_000);
       controller.abort();

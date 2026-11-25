@@ -537,7 +537,8 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
   it("shows an attempt's own file over the organization folder's file only inside that attempt's container", async () => {
     const org = await organization();
     await mkdir(path.join(org.shared, ".agents"), { recursive: true });
-    const attempt = await mkdtemp(path.join(tmpdir(), "babojubot-attempt-"));
+    // 컨테이너에 붙이는 폴더라, 그 실행 시도의 끝을 확인한 뒤에만 지우는 폴더 정리에 맡긴다(확인하지 못하면 남긴다).
+    const attempt = await programs.make("babojubot-attempt-");
     const target = path.join(org.shared, ".agents/mcp_config.json");
     await writeFile(target, "placeholder");
     await writeFile(path.join(attempt, "mcp_config.json"), "attempt secret");
@@ -547,7 +548,6 @@ describe.skipIf(!available)("isolated runs on a real Docker engine", () => {
       let write;
       try { fs.writeFileSync(file, "changed"); write = "ok"; } catch (e) { write = e.code; }
       console.log(JSON.stringify({ content, write }));`;
-    onTestFinished(() => removeFolder(attempt));
     const own = await inContainer(org, script, {
       files: [{ source: path.join(attempt, "mcp_config.json"), target }],
     });

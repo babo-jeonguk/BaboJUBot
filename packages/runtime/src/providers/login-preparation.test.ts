@@ -16,7 +16,7 @@ import type net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
@@ -109,13 +109,16 @@ const roots: string[] = [];
 const servers: http.Server[] = [];
 /** 시험이 붙잡은 작업을 푸는 함수. 단언이 실패해 시험이 풀지 못한 것도 정리가 푼다. */
 const holds: (() => void)[] = [];
-/** 시험이 시작한 실행. 정리는 붙잡은 작업을 푼 뒤 시한 안에서 이것들이 끝나기를 기다린다. */
+/**
+ * 시험이 시작한 실행. 정리는 붙잡은 작업을 푼 뒤 시한 안에서 이것들이 돌아오기를 기다린다. 돌아온 것은 그 프로그램이 끝났다는
+ * 증거가 아니다(제품 프로바이더는 프로그램의 끝을 확인하지 못해도 정상으로 돌아온다). 끝의 확인은 #286 3b-3에서 더한다.
+ */
 const runs: Promise<unknown>[] = [];
 afterEach(async () => {
   gate = undefined;
   for (const release of holds.splice(0)) release();
   const folders = roots.splice(0);
-  // 풀려난 실행이 끝나기를 시한 안에서 기다린다. 끝나든 시한이 지나든 서버를 닫고 상태를 되돌린다.
+  // 풀려난 실행이 돌아오기를 시한 안에서 기다린다. 돌아오든 시한이 지나든 서버를 닫고 상태를 되돌린다.
   await withCleanup(async (defer) => {
     defer(() =>
       attemptAll(
@@ -135,11 +138,11 @@ afterEach(async () => {
     await within(
       Promise.allSettled(runs.splice(0)),
       10_000,
-      "a run did not end after cleanup"
+      "a run did not return after cleanup"
     );
   });
-  // 실행이 모두 끝났을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 끝나지 않은 실행이
-  // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다.
+  // 실행이 모두 돌아왔을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 돌아오지 않은 실행이
+  // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다. 프로그램의 끝은 확인하지 못한다(위 `runs`).
   await attemptAll(folders.map((root) => () => removeFolder(root)));
 });
 /** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
@@ -275,8 +278,6 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
     container,
     relay: { upstream, verified: true },
   });
-  /** 발급한 실행 시도 권한. */
-  const grants: string[] = [];
   const execute = provider.adapter.execute.bind(provider.adapter);
   provider.adapter.execute = (...args) => {
     const run = execute(...args);
@@ -284,12 +285,10 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
     return run;
   };
   const relay = provider.credentialRelay as CredentialRelay;
-  const grant = relay.grant.bind(relay);
-  relay.grant = (scope) => {
-    const issued = grant(scope);
-    grants.push(issued.token);
-    return issued;
-  };
+  // 발급을 바꾸지 않고 기록만 하는 관찰 spy.
+  const granted = vi.spyOn(relay, "grant");
+  onTestFinished(() => granted.mockRestore());
+  const grants = () => granted.mock.results.map(({ value }) => value.token);
   /** 중계가 받은 요청을 넘겨받은 뒤 부르는 함수. */
   const handed: { then?: () => void } = {};
   const relayUrl = await listen((req, res) => {
@@ -468,15 +467,15 @@ describe.each(connections)("$name", (connection) => {
         control(cancel.signal)
       );
       const attemptFile = await held.reached;
-      expect(env.grants).toHaveLength(1);
+      expect(env.grants()).toHaveLength(1);
       // 살아 있는 권한은 경로 밖 요청에서 거절(403)될 뿐 권한 오류가 아니다.
-      expect(await env.relayStatus(env.grants[0]!)).toBe(403);
+      expect(await env.relayStatus(env.grants()[0]!)).toBe(403);
       cancel.abort();
       held.release();
       const result = await running;
       expect(result.stopReason).toBe("cancelled");
       expect(spawned).toEqual([]);
-      expect(await env.relayStatus(env.grants[0]!)).toBe(401);
+      expect(await env.relayStatus(env.grants()[0]!)).toBe(401);
       await expect(stat(path.dirname(attemptFile))).rejects.toThrow();
       // 조직 폴더에는 권한이 남지 않고, 원본은 그대로다.
       // 없으면 남은 것이 없다. 그 밖의 읽기 실패는 남았는지 모르는 것이라 드러낸다.
@@ -485,7 +484,7 @@ describe.each(connections)("$name", (connection) => {
         hasErrorCode("ENOENT"),
         ""
       );
-      expect(left).not.toContain(env.grants[0]!);
+      expect(left).not.toContain(env.grants()[0]!);
       expect(await readFile(env.original, "utf8")).toBe(
         '{"synthetic-login":1}'
       );

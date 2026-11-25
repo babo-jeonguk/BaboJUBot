@@ -58,6 +58,11 @@ function testStart(): string {
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
+  /** 실제 실행기 정리가 성공한(남은 것 없음을 실행기가 확인한) 요청. */
+  cleaned: [] as {
+    lease?: string;
+    recorded?: { pid: number; start: string };
+  }[],
   /** 실행기에 청한 정리 요청 전부. */
   requests: [] as { recorded?: unknown }[],
 }));
@@ -71,7 +76,9 @@ vi.mock("@babojubot/process/recovery", async (original) => {
       lease.requests.push(request);
       if (request.lease !== undefined) lease.stopped.push(request.lease);
       if (lease.fails) throw new Error("the supervisor's cleanup failed");
-      return real.cleanThroughSupervisor(request);
+      const result = await real.cleanThroughSupervisor(request);
+      lease.cleaned.push(request);
+      return result;
     },
   };
 });
@@ -85,6 +92,7 @@ const folders = testFolders();
 afterEach(() => {
   lease.fails = false;
   lease.stopped = [];
+  lease.cleaned = [];
   lease.requests = [];
 });
 // 대표가 끝난 뒤 그룹에 남는 구성원은 연결을 쥐고 돈다. 구성원이 살아 있는 동안 그룹 번호는 다른 그룹에 쓰이지 않는다.
@@ -303,12 +311,18 @@ it("stops a process it recorded itself", async () => {
     env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
     stdio: ["ignore", "ignore", "ignore"],
   });
-  // 시험이 어디서 끝나든 트리를 끈다(launchTree의 stop()은 끝을 그룹·표식·묶음으로 확인한다). 다만 복구가 실행기를 이미 끝냈고
-  // 그 끝을 시험이 본 뒤에는 부르지 않는다: 밖에서 끝난 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보).
-  let supervisorEnded = false;
-  onTestFinished(async () => {
-    if (!supervisorEnded) await tree.stop();
-  });
+  // 시험이 어디서 끝나든 트리를 끈다(launchTree의 stop()은 끝을 그룹·표식·묶음으로 확인한다). 다만 복구의 실제 실행기 정리가 이
+  // 트리의 실행기를 대상으로 성공했으면 부르지 않는다: 밖에서 끝난 실행기에 stop()을 부르면 규약 위반으로 던진다(제품 쪽 후속 후보).
+  // 대상은 요청의 기록한 프로세스가 이 트리의 실행기인가(번호와 실행기가 알린 시작 시각), 그리고 Linux·macOS에서는 요청이 이 트리의
+  // 표식을 실었는가로 본다. 그 정리의 성공은 실행기가 기록한 실행기와, Linux·macOS에서는 표식을 가진 프로그램(대표 포함)이 남지
+  // 않았음을 확인한 것이다. 표식 정리가 없는
+  // Windows에서는 실행기를 끄면 묶음이 닫혀 트리가 끝나는 것이 공용 실행의 계약이다(`launchTree`). `tree.exited`는 실행기가 끝나도
+  // 이행하므로 대표의 끝의 증거로 쓰지 않는다. 복구가 실패했거나 확인되지 않았으면 stop()이 끝을 확인하고, 그것도 실패하면 폴더(기록
+  // 포함)를 남긴다.
+  let recoveredBySupervisor = false;
+  folders.own(async () => {
+    if (!recoveredBySupervisor) await tree.stop();
+  }, "the recorded tree");
   expect((await tree.started).kind).toBe("running");
   const file = path.join(home, "processes", `${tree.pid}.json`);
   recordProcess(home, {
@@ -320,9 +334,16 @@ it("stops a process it recorded itself", async () => {
     async () => expect(await readFile(file, "utf8")).toMatch(/"start"/),
     { timeout: 20_000, interval: 50 }
   );
+  const supervisorStart = await tree.supervisorStart;
   await recoverProviderProcesses(root);
-  await within(tree.exited, 20_000, "the recorded supervisor did not end");
-  supervisorEnded = true;
+  recoveredBySupervisor = lease.cleaned.some(
+    (request) =>
+      request.recorded?.pid === tree.pid &&
+      request.recorded?.start === supervisorStart &&
+      // Linux·macOS에서는 표식 정리가 대표를 포함한 프로그램을 끈다. 실행기만 끈 정리로는 트리의 끝이 아니다.
+      (process.platform === "win32" || request.lease === tree.lease)
+  );
+  expect(recoveredBySupervisor).toBe(true);
   expect(await readdir(path.dirname(file))).toEqual([]);
 }, 60_000);
 
