@@ -8,7 +8,7 @@ import {
 import { settled } from "@babojubot/contracts";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { Workspaces } from "../src/workspace.ts";
-import { within, closeDatabase } from "./support.ts";
+import { within, closeDatabase, heldOrEnded } from "./support.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { awaitedLater, folderCleanup } from "@babojubot/process/test-cleanup";
 
@@ -82,18 +82,7 @@ it("does not mistake a mark just written by another preparation for a missing on
   };
   const held = prepare("the held first preparation");
   // gate 도착을 기다리는 동안 첫 준비가 실패하면 그 실패로, gate에 닿지 않고 끝나면 그 사실로 끝난다(시한 실패로 바뀌지 않는다).
-  await within(
-    Promise.race([
-      arrived,
-      held.then(() => {
-        throw new Error(
-          "the first preparation ended without reaching the record check"
-        );
-      }),
-    ]),
-    preparationMs,
-    "the first preparation reaching the record check did not finish"
-  );
+  await heldOrEnded(arrived, held, "the first preparation");
   await within(
     prepare("the second preparation"),
     preparationMs,

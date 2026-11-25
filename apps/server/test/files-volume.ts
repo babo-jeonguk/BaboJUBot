@@ -15,6 +15,7 @@ import { failureCode } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { pinnedReaderFile } from "../src/workspace.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 import type { testFolders } from "@babojubot/process/testing";
 
 /**
@@ -93,12 +94,17 @@ export const featureGaps = () =>
   (gaps ??= (async () => {
     const made = await mkdtemp(path.join(filesBase(), "bjc-probe-"));
     return withCleanup(async (defer) => {
-      // 만든 직후 정리에 맡긴다. 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다.
+      // 만든 직후 정리에 맡긴다. 지우지 못해도 기능 판정은 맞다. 남은 항목을 알리고 볼륨 정리 단계에 맡긴다. 지우기와 남은 항목 읽기는
+      // 시험 폴더 지우기와 같은 시한(`removeRetries.removeTimeoutMs`) 안에서 기다리고, 넘기면 실패한다(매달린 볼륨).
       defer(() =>
-        remove(made).catch(async (error: NodeJS.ErrnoException) =>
-          console.warn(
-            `could not remove ${made} (${error.code}); left: ${JSON.stringify(await listEntries(made))}`
-          )
+        within(
+          remove(made).catch(async (error: NodeJS.ErrnoException) =>
+            console.warn(
+              `could not remove ${made} (${error.code}); left: ${JSON.stringify(await listEntries(made))}`
+            )
+          ),
+          removeRetries.removeTimeoutMs,
+          `removing the feature probe folder ${made} did not finish`
         )
       );
       const probe = await realpath(made);

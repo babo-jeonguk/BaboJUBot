@@ -238,7 +238,8 @@ export function startOnDatabaseOf(
 
 /**
  * 시험이 붙잡아 둔 것을 풀고(`open`) 붙잡혀 있던 일(`pending`: transaction, 요청)이 모두 끝나기를 상한 안에서 기다린다. 하나가 실패해도
- * 나머지를 기다리고 실패를 모아 알린다. 상한을 넘기면 그 일은 계속 돌고 정리는 실패한다(그 DB는 닫히지 않고 남는다, fail closed).
+ * 나머지를 기다리고 실패를 모아 알린다. 상한을 넘기면 그 일은 계속 돌고 이 정리는 실패한다. 그 DB의 정리(서버 끄기, DB 닫기)는
+ * 따로 돌며, 그 일이 그 상한들보다 오래 남으면 그 정리도 실패하고 DB를 남긴다(fail closed). 그 안에 끝나면 DB는 닫힌다.
  */
 export const releaseHeld = (
   open: () => unknown,

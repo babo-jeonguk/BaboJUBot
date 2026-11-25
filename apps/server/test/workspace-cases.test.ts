@@ -964,11 +964,12 @@ it("C26 refuses a file it may not read and a folder it may not search", async (c
   await writeFile(file, "A:locked");
   await mkdir(folder);
   await writeFile(path.join(folder, "a.md"), "A:locked/a.md");
-  // 막은 권한은 그 폴더의 정리가 소유한다. 권한을 되돌린 뒤에만 폴더를 지운다(되돌리지 못하면 남기고 실패).
-  const fileDenied = await deny(file, false);
+  // 막은 권한은 그 폴더의 정리가 소유한다. 권한을 되돌린 뒤에만 폴더를 지운다(되돌리지 못하면 남기고 실패). 되돌리기는 막기 전에
+  // 맡긴다: 막기(icacls)는 막은 뒤 결과를 다시 읽느라 한 번 더 기다리고, 막지 않은 대상을 되돌리는 것은 아무 일도 하지 않는다.
   folders.own(() => allow(file, false), "restoring the file permission");
-  const folderDenied = await deny(folder, true);
+  const fileDenied = await deny(file, false);
   folders.own(() => allow(folder, true), "restoring the folder permission");
+  const folderDenied = await deny(folder, true);
   const failed = fileDenied ?? folderDenied;
   if (failed) without(context, "C26", failed.outcome, failed.reason);
   // 관리자 권한 등으로 운영체제가 그래도 열면 이 환경에서는 거부를 확인할 수 없다. 통과로 세지 않는다.
