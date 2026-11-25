@@ -11,7 +11,9 @@ import {
   runSummaryListSchema,
   type ProviderConnection,
   type RunRequest,
+  combinedFailure,
   failureCode,
+  isDisconnect,
 } from "@babojubot/contracts";
 import {
   containerToolsOrigin,
@@ -21,7 +23,7 @@ import {
   type DockerEnvironment,
   type IsolationProbe,
 } from "@babojubot/runtime";
-import { afterEach, describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { jsonBodyLimitBytes } from "../src/app.ts";
 
 import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
@@ -328,6 +330,12 @@ function realConnection(
             defer(() => own.close());
             await own.ready;
             // 컨테이너 안 시작 프로그램처럼 loopback 포트를 tools.sock에 잇는다. 이 실행 시도의 정리가 소유한다.
+            // 다리가 받은 오류 가운데 상대가 떠난 끊김(`isDisconnect`)이 아닌 것은 기록해 두고, 다리를 닫는 같은 정리 단계가 그것들을
+            // 원인으로 실패한다. 다리는 오류에 반대쪽을 끊으므로 연결을 쓰는 쪽에는 끊김만 보이고 원인은 여기에만 남는다.
+            const unexpected = vi.fn<(error: Error) => void>();
+            const noted = (error: Error) => {
+              if (!isDisconnect(error)) unexpected(error);
+            };
             const { server: bridge } = await ownedListener(
               net.createServer((client) => {
                 const upstream = net.connect(
@@ -336,12 +344,29 @@ function realConnection(
                 // 한쪽이 끝나면 다른 쪽도 끊는다. 다리를 닫을 때 받은 연결(`client`)을 끊으면 그 상류도 함께 끝난다.
                 client.once("close", () => upstream.destroy());
                 upstream.once("close", () => client.destroy());
-                client.on("error", () => upstream.destroy());
-                upstream.on("error", () => client.destroy());
+                client.on("error", (error) => {
+                  noted(error);
+                  upstream.destroy();
+                });
+                upstream.on("error", (error) => {
+                  noted(error);
+                  client.destroy();
+                });
                 client.pipe(upstream).pipe(client);
               }),
               { port: 0, host: "127.0.0.1" },
-              defer,
+              (close) =>
+                defer(async () => {
+                  await close();
+                  const errors = unexpected.mock.calls.map(([error]) => error);
+                  if (errors.length)
+                    throw new Error("the tools bridge got connection errors", {
+                      cause: combinedFailure(
+                        errors,
+                        "the tools bridge got connection errors"
+                      ),
+                    });
+                }),
               "the tools bridge"
             );
             const port = (bridge.address() as net.AddressInfo).port;

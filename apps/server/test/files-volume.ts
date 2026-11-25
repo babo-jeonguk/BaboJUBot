@@ -36,9 +36,18 @@ export async function scratch(folders: Folders, prefix: string) {
  * 지우기의 다시 시도. SMB 등에서는 지운 항목이 잠시 남아 폴더를 바로 지우지 못하므로 기본보다 길게 다시 시도한다. 시험 파일의 폴더
  * 정리(`testFolders(afterEach, removeRetries)`)와 `remove`가 함께 쓴다.
  */
-export const removeRetries = { retries: 10, retryDelayMs: 200 };
+export const removeRetries = {
+  retries: 10,
+  retryDelayMs: 200,
+  // 폴더 하나 지우기를 기다리는 시한(`testFolders`). 다시 시도 사이 대기의 합(200ms × 1..10 = 11초, `removeFolder`)보다 길게 둔다.
+  removeTimeoutMs: 30_000,
+};
 /** 지운다(`removeRetries`). */
-export const remove = (folder: string) => removeFolder(folder, removeRetries);
+export const remove = (folder: string) =>
+  removeFolder(folder, {
+    retries: removeRetries.retries,
+    retryDelayMs: removeRetries.retryDelayMs,
+  });
 
 /** 이 파일 시스템에 없는 기능과 그 오류 코드. 빈 문자열이면 있다(FAT은 링크가 없다). */
 export type FeatureGaps = {

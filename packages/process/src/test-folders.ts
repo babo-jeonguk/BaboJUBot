@@ -19,11 +19,20 @@ type Hook = (cleanup: () => Promise<void>) => void;
 export function testFolders(
   hook: Hook = afterEach,
   // 정리에서 기다리는 시한. 넘으면 그것이 끝나지 않은 채로 시험이 실패한다. `retries`·`retryDelayMs`는 폴더 지우기의 다시 시도다.
+  // `removeTimeoutMs`는 폴더 하나를 지우기(다시 시도 포함)를 기다리는 시한이다. 기본은 정리 단계의 시한과 같고, 기본 다시 시도(3회,
+  // 대기 합 0.6초)를 담는다. 다시 시도를 늘리면 그 대기의 합보다 긴 값을 함께 준다. 넘기면 어느 폴더를 지우다 멈췄는지 알리고 실패한다.
+  // 한계: 시한이 지나도 진행 중인 지우기(`rm`)는 멈추지 않는다.
   {
     stopTimeoutMs = 10_000,
     retries,
     retryDelayMs,
-  }: { stopTimeoutMs?: number; retries?: number; retryDelayMs?: number } = {}
+    removeTimeoutMs = stopTimeoutMs,
+  }: {
+    stopTimeoutMs?: number;
+    retries?: number;
+    retryDelayMs?: number;
+    removeTimeoutMs?: number;
+  } = {}
 ) {
   const folders: string[] = [];
   const stops: { stop: () => Promise<unknown>; what: string }[] = [];
@@ -47,10 +56,14 @@ export function testFolders(
     await attemptAll(
       folders.splice(0).map(
         (folder) => () =>
-          removeFolder(folder, {
-            ...(retries === undefined ? {} : { retries }),
-            ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
-          })
+          within(
+            removeFolder(folder, {
+              ...(retries === undefined ? {} : { retries }),
+              ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
+            }),
+            removeTimeoutMs,
+            `removing ${folder} did not finish`
+          )
       )
     );
   });
