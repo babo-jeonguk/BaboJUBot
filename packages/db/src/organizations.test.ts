@@ -32,6 +32,7 @@ import { listAgentsWithPendingWakes } from "./runs.ts";
 import { agents, organizations, wakes } from "./schema.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { within } from "@babojubot/process/test-support";
 
 let t: TestDatabase;
 beforeAll(async () => {
@@ -387,8 +388,16 @@ describe("agent names", () => {
     // 풀은 만들 때 연결하지 않는다. 정리는 연결을 닫은 뒤에만 그 DB를 지운다(한 정리 안의 차례). 닫지 못하면 DB를 남기고 실패한다.
     const pool = new pg.Pool({ connectionString: url.toString() });
     onTestFinished(async () => {
-      await pool.end();
-      await t.db.execute(sql.raw(`drop database ${name}`));
+      await within(
+        pool.end(),
+        10_000,
+        "the dedupe database pool did not close"
+      );
+      await within(
+        t.db.execute(sql.raw(`drop database ${name}`)),
+        10_000,
+        "the dedupe database was not dropped"
+      );
     });
     const db = drizzle(pool);
     await migrate(db, { migrationsFolder: before });
