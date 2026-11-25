@@ -1427,7 +1427,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
           : `GET http://${authority}/ HTTP/1.1\r\nHost: ${authority}\r\n\r\n`
       )
     );
-    return { closed };
+    return { socket, closed };
   };
   /** 정책 조회를 gate로 붙잡는 hub. 대역의 reset으로 풀리면 조회 실패로 던진다(중계는 연결 없이 거부한다). */
   const heldLookupHub = (allowed: Destination[]) => {
@@ -1656,7 +1656,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await Promise.all([first.ready, second.ready]);
     const dialed = Promise.withResolvers<void>();
     refusing.heldConnect.mockImplementation(() => dialed.resolve());
-    const { closed } = ask(second, "CONNECT", `127.0.0.1:${port}`);
+    const { socket, closed } = ask(second, "CONNECT", `127.0.0.1:${port}`);
+    const received = vi.fn();
+    socket.on("data", received);
     await within(asked.promise, 5_000, "the relay did not look up its policy");
     const { held, caught } = holdFirstClose(first);
     const closing = relays.close();
@@ -1668,6 +1670,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       "the CONNECT neither reached the destination nor closed"
     );
     expect(refusing.heldConnect).not.toHaveBeenCalled();
+    // 거부의 답도 없다: 판정 전에 hub 닫기가 그 중계를 끊었다.
+    expect(received).not.toHaveBeenCalled();
     held.open();
     await within(closing, 5_000, "the hub did not close");
   });

@@ -159,6 +159,20 @@ async function resolveAll(host: string) {
   return answers.map((answer) => answer.address);
 }
 
+/** HTTP 답으로 거부한다(`refusalHead`의 답 객체 판). 머리에 이유, 본문은 사용자 안내, 연결은 닫는다. */
+function respondRefusal(
+  res: http.ServerResponse,
+  reason: EgressRefusal,
+  status = 403
+) {
+  res.writeHead(status, {
+    "x-babojubot-refusal": reason,
+    "content-type": "text/plain; charset=utf-8",
+    connection: "close",
+  });
+  res.end(egressRefusalMessages[reason]);
+}
+
 function refusalHead(reason: EgressRefusal, status = 403) {
   const body = `${egressRefusalMessages[reason]}\n`;
   return (
@@ -441,12 +455,7 @@ export function createRelayHub(): RelayHub {
     server.on("request", (req, res) => {
       const url = orIfUnreadable(() => new URL(req.url ?? ""), undefined);
       if (!url || url.protocol !== "http:") {
-        res.writeHead(400, {
-          "x-babojubot-refusal": "protocol_not_supported",
-          "content-type": "text/plain; charset=utf-8",
-          connection: "close",
-        });
-        res.end(egressRefusalMessages.protocol_not_supported);
+        respondRefusal(res, "protocol_not_supported", 400);
         return;
       }
       const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -455,12 +464,7 @@ export function createRelayHub(): RelayHub {
       void ifOpen(relay, async () => {
         const got = await destination(relay, host, port);
         if (got.refused !== undefined) {
-          res.writeHead(403, {
-            "x-babojubot-refusal": got.refused,
-            "content-type": "text/plain; charset=utf-8",
-            connection: "close",
-          });
-          res.end(egressRefusalMessages[got.refused]);
+          respondRefusal(res, got.refused);
           return;
         }
         const headers: http.OutgoingHttpHeaders = {};
@@ -500,12 +504,7 @@ export function createRelayHub(): RelayHub {
             refuse(relay, host, port, "policy_changed");
             socket.destroy();
             if (!res.headersSent) {
-              res.writeHead(403, {
-                "x-babojubot-refusal": "policy_changed",
-                "content-type": "text/plain; charset=utf-8",
-                connection: "close",
-              });
-              res.end(egressRefusalMessages.policy_changed);
+              respondRefusal(res, "policy_changed");
             }
             return;
           }
@@ -584,12 +583,7 @@ export function createRelayHub(): RelayHub {
       // 정책이 떼어졌으면(hub 닫기) 도구 경로로 넘기지 않고 거부한다.
       const current = hooks;
       if (!current) {
-        res.writeHead(503, {
-          "x-babojubot-refusal": "policy_unavailable",
-          "content-type": "text/plain; charset=utf-8",
-          connection: "close",
-        });
-        res.end(egressRefusalMessages.policy_unavailable);
+        respondRefusal(res, "policy_unavailable", 503);
         return;
       }
       current.tools(req, res);
