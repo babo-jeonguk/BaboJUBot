@@ -700,8 +700,9 @@ export function fakeClock() {
 export type DrainedOutcome = "pending" | "resolved" | { rejected: unknown };
 
 /**
- * 가짜 시계의 타이머를 남김없이 돌리고 microtask가 빈 뒤 `promise`가 어떻게 됐는가. 대상 코드가 입출력 없이 움직이면 이 뒤에는
- * 저절로 일어날 일이 남지 않으므로, 이때 풀리지 않았으면(`"pending"`) 스스로는 풀리지 않는다. 틀린 구현이 기다리던 쪽을 먼저
+ * 가짜 시계의 타이머를 남김없이 돌리고 microtask가 빈 뒤 `promise`가 어떻게 됐는가. 이 뒤에는 가짜 시계의 타이머도 microtask도
+ * 남지 않으므로, 이때 풀리지 않았으면(`"pending"`) 가짜 시계로는 더 풀리지 않는다. 실제 시계의 상한(`within`)이나 입출력은 이 뒤에도
+ * 따로 풀 수 있다. 틀린 구현이 기다리던 쪽을 먼저
  * 풀면(microtask로든 타이머로든) 이 뒤에는 이미 풀려 있다. 이벤트 루프 한 차례만 기다리면 타이머로 미룬 풀림을 놓쳤다(#286).
  */
 export async function outcomeAfterDrain(

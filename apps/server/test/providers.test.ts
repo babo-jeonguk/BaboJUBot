@@ -23,7 +23,7 @@ import {
   heldOrEnded,
   releaseHeld,
 } from "./support.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { awaitedLater, withCleanup } from "@babojubot/process/test-cleanup";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -124,8 +124,11 @@ describe("concurrent global settings writes", () => {
         leadDefault: { provider: "fake-2", model: null },
       };
       const final = repeatChoice ? replacement : original;
-      let changing: ReturnType<TestServer["request"]> | undefined;
-      let restoring: ReturnType<TestServer["request"]> | undefined;
+      // 경쟁한 쓰기. 정리(`releaseHeld`)와 시험 끝의 단언이 나중에 기다린다.
+      const writes: {
+        changing?: ReturnType<TestServer["request"]>;
+        restoring?: ReturnType<TestServer["request"]>;
+      } = {};
       // 행을 붙잡은 transaction과 경쟁한 쓰기는 이 정리가 소유한다(만든 직후 등록). 붙잡은 행을 풀고 모두 끝나기를 기다린다.
       // 하나가 실패해도 나머지를 기다린다.
       await withCleanup(async (defer) => {
@@ -139,20 +142,25 @@ describe("concurrent global settings writes", () => {
         defer(() =>
           releaseHeld(
             () => locked.open(),
-            [() => blocker, () => changing, () => restoring],
+            [() => blocker, () => writes.changing, () => writes.restoring],
             "the held row and the competing writes"
           )
         );
         // 행을 잡기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
         await heldOrEnded(locked.reached, blocker, "the row hold");
-        changing = t!.request("PUT", "/api/providers/defaults", replacement);
+        // 경쟁한 쓰기는 정리(`releaseHeld`)가 나중에 기다린다. 그 전에 실패해도 처리하지 않은 거절로 남지 않는다.
+        writes.changing = awaitedLater(
+          t!.request("PUT", "/api/providers/defaults", replacement)
+        );
         // 첫 PUT이 lead를 잡고 worker를 기다리면, 두 번째 PUT은 lead를 기다린다.
         await waitForSettingsWriters(1);
-        restoring = t!.request("PUT", "/api/providers/defaults", final);
+        writes.restoring = awaitedLater(
+          t!.request("PUT", "/api/providers/defaults", final)
+        );
         await waitForSettingsWriters(2);
       });
-      expect((await changing!).status).toBe(200);
-      expect((await restoring!).status).toBe(200);
+      expect((await writes.changing!).status).toBe(200);
+      expect((await writes.restoring!).status).toBe(200);
       expect(await settings()).toMatchObject(final);
       // 신호는 응답 전에 나가므로 두 PUT이 끝난 뒤 받은 것이 전부다.
       expect(await watcher.received()).toEqual({
@@ -183,7 +191,8 @@ describe("concurrent global settings writes", () => {
   it("signals a limit replacement even when the competing insert was initially invisible", async () => {
     t = await startTestServer();
     const watcher = await t.subscribe({ kind: "all" });
-    let saving: ReturnType<TestServer["request"]> | undefined;
+    // 경쟁한 쓰기. 정리(`releaseHeld`)와 시험 끝의 단언이 나중에 기다린다.
+    const writes: { saving?: ReturnType<TestServer["request"]> } = {};
     // 붙잡은 insert와 경쟁한 쓰기는 이 정리가 소유한다(만든 직후 등록). 붙잡은 insert를 풀고 두 쓰기가 끝나기를 기다린다.
     // 하나가 실패해도 나머지를 기다린다.
     await withCleanup(async (defer) => {
@@ -198,18 +207,21 @@ describe("concurrent global settings writes", () => {
       defer(() =>
         releaseHeld(
           () => inserted.open(),
-          [() => inserting, () => saving],
+          [() => inserting, () => writes.saving],
           "the held insert and the competing write"
         )
       );
       // insert하기 전에 transaction이 끝나면(실패 등) 그 끝으로 기다림을 끝낸다.
       await heldOrEnded(inserted.reached, inserting, "the competing insert");
-      saving = t!.request("PUT", "/api/providers/fake/limit", {
-        maxConcurrentRuns: 2,
-      });
+      // 경쟁한 쓰기는 정리(`releaseHeld`)가 나중에 기다린다. 그 전에 실패해도 처리하지 않은 거절로 남지 않는다.
+      writes.saving = awaitedLater(
+        t!.request("PUT", "/api/providers/fake/limit", {
+          maxConcurrentRuns: 2,
+        })
+      );
       await waitForSettingsWriters(1);
     });
-    expect((await saving!).status).toBe(200);
+    expect((await writes.saving!).status).toBe(200);
     expect((await settings()).providers[0]!.maxConcurrentRuns).toBe(2);
     expect((await watcher.received()).settingsSignals).toBe(1);
   });
