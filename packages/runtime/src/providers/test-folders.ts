@@ -1,4 +1,4 @@
-import { failureCode, type RuntimeAdapter } from "@babojubot/contracts";
+import { hasErrorCode, type RuntimeAdapter } from "@babojubot/contracts";
 import type { LaunchedTree } from "@babojubot/process";
 import { testFolders as processFolders } from "@babojubot/process/testing";
 
@@ -72,7 +72,8 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
       try {
         await tree.stop();
       } catch (error) {
-        if (expectStop === undefined || failureCode(error) !== expectStop)
+        // 오류의 `code`만 본다. 코드 없이 이름만 같은 오류는 장면이 선언한 답이 아니다.
+        if (expectStop === undefined || !hasErrorCode(expectStop)(error))
           throw error;
       }
     }, "a launched tree, by its real stop");
