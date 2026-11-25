@@ -400,8 +400,6 @@ describe("ownedClosable", () => {
   });
 });
 
-// 시험이 띄우는 listener(net·http 서버)는 듣기 전에 그 닫기를 소유자에 맡긴다. 듣기·닫기는 상한 안에서 기다리고, 닫기는 받은 연결을
-// 먼저 끊는다. 듣지 않은 서버·이미 닫은 서버는 닫을 것이 없다(#286 3b-3, server 시험의 같은 계약을 공용 자리로).
 describe("removeFolderWithin", () => {
   // 지우기가 매달리면 정리가 이름 없이 hook 시한까지 멈췄다(#297 독립 점검). 폴더 지우기를 기다리는 데는 이름 있는 상한을 둔다.
   it("fails naming the folder when removing it does not end within its bound", async () => {
@@ -420,6 +418,8 @@ describe("removeFolderWithin", () => {
   });
 });
 
+// 시험이 띄우는 listener(net·http 서버)는 듣기 전에 그 닫기를 소유자에 맡긴다. 듣기·닫기는 상한 안에서 기다리고, 닫기는 받은 연결을
+// 먼저 끊는다. 듣지 않은 서버·이미 닫은 서버는 닫을 것이 없다(#286 3b-3, server 시험의 같은 계약을 공용 자리로).
 describe("ownedListener", () => {
   it("hands its close to the owner before listening, and the close ends the connections it took", async () => {
     const server = net.createServer();
@@ -526,11 +526,51 @@ describe("ownedListener", () => {
         "the late listener",
         { listenMs: 50 }
       )
-    ).rejects.toThrow(/the late listener did not start listening/);
+    ).rejects.toMatchObject({
+      message: "the late listener did not start listening within 50 ms",
+    });
     server.open();
     await expect(
       within(closes[0]!(), 5_000, "the owner's close did not end")
     ).rejects.toMatchObject({ code: "EADDRINUSE" });
+  });
+
+  // 닫기 상한이 먼저 끝난 뒤 닫기가 실패하면(늦게 실패한 듣기) 그 원인을 아무도 받지 않았다(#286 3b-3a 5회차 점검). 그 실패를 원인과
+  // 함께 드러낸다.
+  it("reports a failure its close met after the close bound, with the cause", async () => {
+    const { server: held } = await ownedListener(
+      net.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the port holder"
+    );
+    const { port } = held.address() as net.AddressInfo;
+    const server = new GatedListen();
+    let report!: (failure: Error) => void;
+    const reported = new Promise<Error>((resolve) => (report = resolve));
+    // 러너에 맡기지 않는다: 이 서버는 듣기에 실패하므로(이미 쓰는 포트) 남는 것이 없고, 닫기의 실패는 이 시험이 받는다.
+    const closes: (() => Promise<void>)[] = [];
+    await expect(
+      ownedListener(
+        server,
+        { port, host: "127.0.0.1" },
+        (step) => closes.push(step),
+        "the late listener",
+        { listenMs: 50, closeMs: 50, lateFailure: report }
+      )
+    ).rejects.toMatchObject({
+      message: "the late listener did not start listening within 50 ms",
+    });
+    await expect(closes[0]!()).rejects.toMatchObject({
+      message: "the late listener did not close within 50 ms",
+    });
+    server.open();
+    expect(
+      await within(reported, 5_000, "the late failure was not reported")
+    ).toMatchObject({
+      message: "the late listener failed after its close timed out",
+      cause: { code: "EADDRINUSE" },
+    });
   });
 });
 

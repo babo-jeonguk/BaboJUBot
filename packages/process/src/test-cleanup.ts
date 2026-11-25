@@ -246,7 +246,15 @@ export async function ownedListener<S extends net.Server>(
   at: net.ListenOptions,
   own: (close: () => Promise<void>) => void,
   what: string,
-  { listenMs = listenerListenMs }: { listenMs?: number } = {}
+  {
+    listenMs = listenerListenMs,
+    closeMs = closableCloseMs,
+  }: {
+    listenMs?: number;
+    closeMs?: number;
+    /** 닫기 상한이 먼저 끝난 뒤 닫기가 낸 실패를 받는 곳(기본: 러너의 잡히지 않은 오류). */
+    lateFailure?: (failure: Error) => void;
+  } = {}
 ): Promise<{ server: S; close: () => Promise<void> }> {
   const connections = new Set<net.Socket>();
   server.on("connection", (socket: net.Socket) => {
@@ -291,7 +299,7 @@ export async function ownedListener<S extends net.Server>(
           )
         );
       })(),
-      closableCloseMs,
+      closeMs,
       `${what} did not close`
     );
   own(close);

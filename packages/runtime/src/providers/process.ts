@@ -383,8 +383,7 @@ export function startProcess(options: {
     broken: boolean;
     /**
      * 이 실행 시도가 띄운 것의 끝을 확인했는가: 트리 전체가 끝났고(끄기 성공), 출력이 닫혔고(출력을 쥔 자손이 없음), 컨테이너로
-     * 돌았으면 그 컨테이너도 없어졌다. 시작
-     * 실패·입력 실패처럼 끝을 확인한 뒤의 `broken`과 다르다. 실행 시도 폴더는 이 값으로 지울지 정한다(`attemptFolder`).
+     * 돌았으면 그 컨테이너도 없어졌다. 시작 실패·입력 실패처럼 끝을 확인한 뒤의 `broken`과 다르다. 실행 시도 폴더는 이 값으로 지울지 정한다(`attemptFolder`).
      */
     ended: boolean;
     /** `broken`의 까닭(실패 코드). `broken`이 아니면 비어 있다. */
