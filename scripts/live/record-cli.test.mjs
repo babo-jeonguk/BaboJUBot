@@ -19,7 +19,12 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { isDisconnect } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { awaitedLater, withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  awaitedLater,
+  ownedClosable,
+  ownedListener,
+  withCleanup,
+} from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
 const script = fileURLToPath(new URL("./record-cli.mjs", import.meta.url));
@@ -184,29 +189,15 @@ function recordCli(defer, args, env = {}) {
   };
 }
 
-/** 듣고 있는 서버를 닫는다. 듣지 않는 서버(듣기에 실패했거나 이미 닫음)는 닫을 것이 없다. */
-async function closeServer(server) {
-  if (!server.listening) return;
-  await within(
-    new Promise((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve(undefined)))
-    ),
-    eventMs,
-    "the test server did not close"
-  );
-}
-
-/** 시험이 끝나면 닫는 서버를 127.0.0.1의 빈 포트에서 듣게 하고 그 포트를 돌려준다. */
+/** 시험이 끝나면 닫는 서버를 127.0.0.1의 빈 포트에서 듣게 하고 그 포트를 돌려준다. 닫기는 듣기 전에 정리에 맡긴다(`ownedListener`). */
 async function listen(defer, server) {
-  server.listen(0, "127.0.0.1");
-  // 듣기를 기다리기 전에 정리를 등록한다. 기다림이 실패해도 듣기 시작한 서버를 남기지 않는다(#287 리뷰 STD-1).
-  defer(() => closeServer(server));
-  await within(
-    once(server, "listening"),
-    eventMs,
-    "the test server did not start listening"
+  const { server: listening } = await ownedListener(
+    server,
+    { port: 0, host: "127.0.0.1" },
+    defer,
+    "the test server"
   );
-  const address = server.address();
+  const address = listening.address();
   assert.ok(address !== null && typeof address === "object");
   return address.port;
 }
@@ -227,8 +218,12 @@ async function proxyUrl(run, announced) {
  * 프록시가 끊었다는 뜻이다. `reply()`는 그때까지 받은 답이다.
  */
 async function openToProxy(defer, target) {
-  const socket = net.connect(target);
-  defer(() => socket.destroy());
+  // 만든 직후 정리에 맡긴다. 정리는 끊고 그 닫힘을 상한 안에서 확인한다.
+  const socket = ownedClosable(
+    defer,
+    net.connect(target),
+    "the connection to the proxy"
+  );
   let reply = "";
   socket.on("data", (chunk) => (reply += chunk));
   // 연결의 끝은 처음부터 기록한다(연결 직후의 닫힘도 놓치지 않는다). 기록은 거절하지 않고 끝난 까닭(오류)을 값으로 담는다. 판정은
