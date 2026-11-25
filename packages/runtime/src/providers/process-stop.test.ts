@@ -52,11 +52,9 @@ async function holder(label: string, body = keep) {
 describe("stopping a tree", () => {
   it("ends an attempt as broken when its stop fails and the leader does not end", async () => {
     const leader = await holder("stuck-attempt");
-    // 제품에는 아무것도 끄지 않고 실패하는 끄기를 돌려준다. 받은 인수는 `calls`에 남는다(제품은 인수 없이 부른다). 실제 끄기는
+    // 제품에는 아무것도 끄지 않고 실패하는 끄기를 돌려준다(제품이 그것을 인수 없이 불렀는지는 장면의 정리가 본다). 실제 끄기는
     // 정리가 부른다.
-    const { calls } = folders.treeScene({
-      failProductStop: "without-stopping",
-    });
+    folders.treeScene({ failProductStop: "without-stopping" });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => error.mockRestore());
     const attempt = startProcess({
@@ -78,9 +76,6 @@ describe("stopping a tree", () => {
     attempt.end();
     const exit = await within(attempt.done, 30_000, "the run did not finish");
     expect(exit.broken).toBe(true);
-    // 실패는 대역의 끄기에서 왔고, 제품은 그것을 인수 없이 불렀다.
-    expect(calls).not.toHaveLength(0);
-    for (const received of calls) expect(received).toEqual([]);
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("could not all be stopped")
     );

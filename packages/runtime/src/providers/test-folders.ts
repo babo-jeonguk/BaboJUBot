@@ -40,7 +40,7 @@ export function owningLaunchTree<
  *   끝난 것을 확인하거나 강제로 끝낸 뒤에 답을 판정한다) 이 코드 하나는 받는다. 그때 확인되는 것은 실행기의 끝뿐이고, 남은 프로그램의
  *   끝은 그 장면이 따로 맡은 정리가 확인해야 한다.
  * - `failProductStop`: 제품에는 실패로 답하는 끄기를 돌려준다(실제 트리는 바꾸지 않는다). `"without-stopping"`은 아무것도 끄지 않고,
- *   `"after-stopping"`은 실제로 끈 뒤 실패로 답한다. 제품이 그 끄기에 넘긴 인수는 `treeScene`이 돌려주는 `calls`에 남는다.
+ *   `"after-stopping"`은 실제로 끈 뒤 실패로 답한다. 장면의 정리는 제품이 그 끄기를 부르지 않았거나 인수를 넘겼으면 실패한다.
  */
 type TreeScene = {
   expectStop?: "TREE_LEFT";
@@ -219,11 +219,20 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
       scene = next;
       const calls: unknown[][] = [];
       sceneCalls = calls;
+      // 트리 정리보다 먼저 등록해 그 뒤에 돈다. 실패하는 끄기를 넣은 장면이면 제품이 그것을 불렀고, 인수 없이 불렀는지 본다(받은
+      // 인수를 확인하는 결함 주입).
       folders.own(async () => {
         scene = {};
         sceneCalls = [];
+        if (!next.failProductStop) return;
+        if (calls.length === 0)
+          throw new Error("the product never called the failing tree stop");
+        const withArguments = calls.filter((received) => received.length > 0);
+        if (withArguments.length > 0)
+          throw new Error(
+            `the product called the failing tree stop with arguments: ${JSON.stringify(withArguments)}`
+          );
       }, "tree scene");
-      return { calls };
     },
     /** 시험이 만든 프로바이더 연결을 정리에 맡긴다(위 `ownProvider`). */
     ownProvider,
