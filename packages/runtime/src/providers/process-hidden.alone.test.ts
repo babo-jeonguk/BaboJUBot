@@ -2,10 +2,22 @@ import { within } from "@babojubot/process/test-support";
 import { spawn, type ChildProcess } from "node:child_process";
 import { readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { attemptAll } from "@babojubot/contracts";
 import { psField } from "@babojubot/process";
-import { killUnlessGone } from "@babojubot/process/test-cleanup";
+import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
+import {
+  killUnlessGone,
+  lifelineHolder,
+} from "@babojubot/process/test-cleanup";
 import { exited, readyLine } from "@babojubot/process/testing";
 import { startProcess } from "./process.ts";
 import { testFolders } from "./test-folders.ts";
@@ -27,6 +39,11 @@ const ended = ({ pid, start }: Reported) => {
   return psField(pid, "lstart", 10_000) !== start || exited(pid);
 };
 const folders = testFolders();
+let lifelines: Lifelines;
+beforeAll(async () => {
+  lifelines = await openLifelines();
+});
+afterAll(() => lifelines.close());
 afterEach(async () => {
   vi.restoreAllMocks();
   // 시험이 끄지 못한 것은 알린 때와 같은 시작 시각을 본 직후(사이에 기다림 없이)에만 그 번호로 끈다. 시작 시각이 다르거나 없으면
@@ -70,7 +87,7 @@ const { spawn } = require("node:child_process");
 const hidden = spawn("python3", ["-c", ${JSON.stringify(hide)}], { detached: true, stdio: ["ignore", "pipe", "ignore"] });
 hidden.stdout.once("data", () => {
   console.log(JSON.stringify({ hidden: hidden.pid }));
-  process.kill(process.pid, "SIGKILL");
+  process.stdin.once("data", () => process.kill(process.pid, "SIGKILL"));
 });
 setInterval(() => {}, 1000);
 `,
@@ -79,10 +96,13 @@ setInterval(() => {}, 1000);
           cwd: process.cwd(),
           env: { PATH: process.env.PATH },
           stateDir,
+          // 대표는 시험이 남긴 것의 시작 시각을 읽은 뒤에야 끝난다(입력의 진행 신호). 대표가 먼저 끝나면 감독 실행기가 남긴 것을
+          // 그 전에 끌 수 있어, 시작 시각을 읽지 못한 채 시험이 실패했다.
           onFrame: async (frame) => {
             const pid = (frame as { hidden: number }).hidden;
             left = { pid, start: psField(pid, "lstart", 10_000) };
             reported.push(left);
+            run.write({ go: true });
           },
         })
       );
@@ -100,36 +120,50 @@ setInterval(() => {}, 1000);
     it("keep the run's record and are left running when they are not of its tree", async () => {
       const stateDir = await folders.make("babojubot-hidden-");
       const go = path.join(stateDir, "go");
+      // 대표는 연결을 쥐고 돈다. 실행 시도의 끝(`broken`)은 대표의 끝을 말하지 않으므로, 대표의 끝은 이 연결의 정리가 확인한다.
+      // 대표는 연결을 쥔 뒤에야 돌기 시작했다고 알린다. 그래서 시험이 진행시킨 대표가 연결 전에 끝나지 않는다.
+      const leader = lifelineHolder(
+        lifelines,
+        "hidden-test-leader",
+        path.join(await folders.make("babojubot-hidden-leader-"), "pid"),
+        "console.log(JSON.stringify({ started: true }));"
+      );
+      folders.own(leader.end, "the run's leader");
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       let hidden: ChildProcess | undefined;
-      const run = folders.ownRun(
-        startProcess({
-          command: [
-            process.execPath,
-            "-e",
-            `
-console.log(JSON.stringify({ started: true }));
+      // 이 실행 시도는 트리 밖의 프로그램을 확인하지 못해 그 끝이 `broken`이다. 그래서 `ownRun`(끝을 확인하지 못한 실행 시도를
+      // 정리 실패로 드러낸다)에 맡기지 않는다. 정리는 실행 시도를 끝내고 그 일이 끝나기를 기다릴 뿐이다. 프로그램의 끝은 따로 맡긴
+      // 것의 정리가 확인한다: 대표는 그 연결(`leader`), 시험이 띄운 프로그램은 그 자식(`ownChild`).
+      const run = startProcess({
+        command: [
+          process.execPath,
+          "-e",
+          `
+${leader.code}
 setInterval(() => { if (require("node:fs").existsSync(${JSON.stringify(go)})) process.exit(0); }, 20);
 `,
-          ],
-          args: [],
-          cwd: process.cwd(),
-          env: { PATH: process.env.PATH },
-          stateDir,
-          onFrame: async () => {
-            // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 대표를 끝낸다.
-            // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
-            hidden = folders.ownChild(
-              spawn("python3", ["-c", hide], {
-                detached: true,
-                stdio: ["ignore", "pipe", "ignore"],
-              })
-            );
-            await readyLine(hidden, "ready");
-            await writeFile(go, "");
-          },
-        })
-      );
+        ],
+        args: [],
+        cwd: process.cwd(),
+        env: { PATH: process.env.PATH },
+        stateDir,
+        onFrame: async () => {
+          // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 대표를 끝낸다.
+          // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
+          hidden = folders.ownChild(
+            spawn("python3", ["-c", hide], {
+              detached: true,
+              stdio: ["ignore", "pipe", "ignore"],
+            })
+          );
+          await readyLine(hidden, "ready");
+          await writeFile(go, "");
+        },
+      });
+      folders.own(async () => {
+        run.end();
+        await run.done;
+      }, "run attempt that cannot confirm its end");
       const exit = await within(run.done, 30_000, "the run did not finish");
       if (hidden?.pid === undefined)
         throw new Error("the hidden program did not start");

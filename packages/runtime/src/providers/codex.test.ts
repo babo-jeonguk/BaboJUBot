@@ -413,6 +413,9 @@ describe("one app-server connection per call (#145)", () => {
   });
   afterAll(() => lifelines.close());
   let setups = 0;
+  /** 정리가 끝나는 중인 프로그램의 연결 닫힘을 기다리는 시간과, 끈 프로그램의 닫힘을 기다리는 시간. 합이 폴더 정리 상한(10초)보다 짧다. */
+  const endingMs = 3_000;
+  const stoppedMs = 3_000;
   type Step = {
     /** Answer only once the test calls `release` with this name. */
     holdUntil?: string;
@@ -470,16 +473,15 @@ describe("one app-server connection per call (#145)", () => {
       (await lines()).filter((line) => line.pid === undefined);
     const methods = async () => (await sent()).map((line) => line.method);
     /**
-     * 이 프로바이더가 띄운 프로그램이 쥔 연결의 이름. 프로그램은 연결을 쥔 뒤에만 자기 번호를 기록하므로 기록된 프로그램마다 연결이
-     * 있다. 살아 있음·끝남은 이 연결로 보고, 번호는 정리의 신호를 보낼 곳으로만 쓴다.
+     * 이 프로바이더가 띄운 프로그램이 쥔 연결의 이름: 연결 서버가 받은, 이 장면의 접두사를 가진 이름. 프로그램은 시작하자마자 연결을
+     * 쥐고 그 뒤에 요청 기록에 번호를 남기므로, 소유는 기록이 아니라 연결로 정한다(기록은 받은 요청의 단언에만 쓴다). 살아 있음·끝남은
+     * 이 연결로 보고, 이름의 번호는 정리의 신호를 보낼 곳으로만 쓴다.
      */
-    const programs = async () =>
-      (await lines())
-        .filter((line) => line.pid !== undefined)
-        .map((line) => `${prefix}${line.pid}`);
-    /** 띄운 프로그램이 모두 끝났다: 기록된 프로그램마다 연결이 닫힌 것을 상한 안에서 본다. */
+    const programs = () =>
+      lifelines.names().filter((name) => name.startsWith(prefix));
+    /** 띄운 프로그램이 모두 끝났다: 프로그램마다 연결이 닫힌 것을 상한 안에서 본다. */
     const allEnded = async () => {
-      for (const name of await programs()) await lifelines.closed(name);
+      for (const name of programs()) await lifelines.closed(name);
     };
     /**
      * Waits until the program has received `count` requests of `method`. The bound covers starting the program on a slow machine;
@@ -496,31 +498,46 @@ describe("one app-server connection per call (#145)", () => {
     /** Lets the program answer the steps held with `holdUntil: name`. */
     const release = (name: string) => writeFile(path.join(root, name), "");
     // However the test ends, let every held answer go and see the programs end before the folder is removed (#215). The
-    // cleanup first stops the provider's calls (registered later, stopped first), which closes their connections. A program that
-    // still runs then is stopped, and that is reported as a cleanup failure apart from the test's own.
+    // cleanup first stops the provider's calls (registered later, stopped first), which ends their programs; their connections then
+    // close. A program that still runs then is stopped, and that is reported as a cleanup failure apart from the test's own. Every
+    // scene registers this, held answers or not. The two waits share the folder cleanup's bound (`stopTimeoutMs`, 10 s) with room
+    // to spare: the closes of programs already ending, then the closes of the ones stopped here.
     const held = Object.values(steps)
       .flat()
       .flatMap((step) => (step.holdUntil ? [step.holdUntil] : []));
-    if (held.length)
-      folders.own(async () => {
-        await Promise.all(held.map(release));
-        const failures = await attemptEach([allEnded]);
-        if (failures.length === 0) return;
-        // 끝나지 않은 프로그램은 그 연결이 열려 있음을 본 직후(사이에 기다림 없이)에만 그 이름의 번호로 끄고, 끝은 연결의 닫힘으로 본다.
-        const left: string[] = [];
-        for (const name of await programs())
-          if (lifelines.open(name)) {
-            left.push(name);
+    folders.own(async () => {
+      // 풀기 하나가 실패해도 나머지를 풀고 프로그램 확인으로 넘어간다. 그 실패는 마지막에 함께 알린다.
+      const unreleased = await attemptEach(
+        held.map((name) => () => release(name))
+      );
+      const mine = programs();
+      const closedBy = (deadline: number) => (name: string) => () =>
+        lifelines.closed(name, Math.max(1, deadline - Date.now()));
+      const late = await attemptEach(mine.map(closedBy(Date.now() + endingMs)));
+      if (late.length === 0) {
+        if (unreleased.length > 0)
+          throw combinedFailure(unreleased, "held answers could not be let go");
+        return;
+      }
+      // 끝나지 않은 프로그램은 그 연결이 열려 있음을 본 직후(사이에 기다림 없이)에만 그 이름의 번호로 끈다. 하나를 끄지 못해도 나머지를
+      // 끄고, 끝은 연결의 닫힘으로 본다.
+      const left = mine.filter((name) => lifelines.open(name));
+      const stopping = await attemptEach(
+        left.map((name) => () => {
+          if (lifelines.open(name))
             killUnlessGone(
               reportedPid(name.slice(prefix.length), `lifeline ${name}`)
             );
-          }
-        for (const name of left) await lifelines.closed(name);
-        throw combinedFailure(
-          failures,
-          `scripted programs ${left.join(", ")} still ran after their held answers were let go; stopped them`
-        );
-      }, "held scripted answers");
+        })
+      );
+      const unclosed = await attemptEach(
+        left.map(closedBy(Date.now() + stoppedMs))
+      );
+      throw combinedFailure(
+        [...unreleased, ...late, ...stopping, ...unclosed],
+        `scripted programs ${left.join(", ")} still ran after the provider's calls ended; stopped them`
+      );
+    }, "scripted programs");
     return { provider, sent, methods, allEnded, arrived, release };
   }
   /** Whether `promise` has settled by now. Settling is a step the test can see; time passing is not. */

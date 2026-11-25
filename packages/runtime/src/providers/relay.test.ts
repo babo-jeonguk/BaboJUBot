@@ -5,12 +5,14 @@ import path from "node:path";
 import { text } from "node:stream/consumers";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
+  attemptAll,
   destinationSchema,
   egressRefusalMessages,
   isDisconnect,
   type Destination,
   type EgressRefusal,
 } from "@babojubot/contracts";
+import { awaitedLater } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 import { refusing, resetRefusing } from "./connect-failure-support.ts";
 import { createRelayHub, type RelayHooks } from "./relay.ts";
@@ -90,7 +92,8 @@ const identity = {
 /**
  * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내 터널을 연다. 응답 머리는 node:http 클라이언트의 파서가 다 읽은 것(`connect` 이벤트)이고,
  * `head`는 머리 뒤에 함께 온 바이트다. 닫힘은 연 순간부터 듣는다(`closed`: 실제 `close` 이벤트, 상대가 끊어 난 오류는 닫힘의 일부).
- * 시험이 끝나면 연결을 닫는다. 터널이 아닌 답(거부)의 전체는 `answerVia`가 본다.
+ * 정리는 요청을 만든 직후 맡긴다: 답을 받기 전에 상한으로 실패해도 요청이 남지 않고, 터널을 얻으면 같은 정리가 그 연결까지 닫는다.
+ * 요청과 터널은 서로 독립이라 하나가 닫히지 않아도 다른 쪽을 닫고 확인한다. 터널이 아닌 답(거부)의 전체는 `answerVia`가 본다.
  */
 function openTunnel(directory: string, target: string) {
   const request = http.request({
@@ -99,26 +102,48 @@ function openTunnel(directory: string, target: string) {
     path: target,
     headers: { host: target },
   });
+  // 요청은 실패하든 터널을 넘기든 `close`로 끝난다(CONNECT는 `connect`를 알린 뒤 닫는다). 요청의 실패는 아래 `error`가 받는다.
+  const requestClosed = awaitedLater(
+    new Promise<void>((resolve) => request.once("close", () => resolve()))
+  );
+  let tunnel: { socket: net.Socket; closed: () => Promise<void> } | undefined;
+  onTestFinished(() =>
+    attemptAll([
+      async () => {
+        request.destroy();
+        await within(requestClosed, 5_000, "the CONNECT request did not close");
+      },
+      async () => {
+        if (!tunnel) return;
+        tunnel.socket.destroy();
+        await within(tunnel.closed(), 5_000, "the tunnel did not close");
+      },
+    ])
+  );
   return within(
     new Promise<{
       response: http.IncomingMessage;
       socket: net.Socket;
       head: Buffer;
-      closed: Promise<void>;
+      closed: () => Promise<void>;
     }>((resolve, reject) => {
       request.once("error", reject);
       request.once("connect", (response, socket: net.Socket, head: Buffer) => {
-        const closed = new Promise<void>((done, fail) => {
+        // 터널의 끝은 연 순간부터 기록한다. 기록은 거절하지 않고 끝난 까닭(끊김 밖의 오류)을 값으로 담아, 아무도 받지 않는 거절이
+        // 남지 않는다. 판정은 닫힘을 기다리는 쪽(`closed`: 시험이나 정리)이 그때 한다.
+        const ended = new Promise<Error | undefined>((done) => {
+          let failure: Error | undefined;
           socket.on("error", (error) => {
-            if (!isDisconnect(error)) fail(error);
+            if (!isDisconnect(error)) failure ??= error;
           });
-          socket.once("close", () => done());
+          socket.once("close", () => done(failure));
         });
-        // 시험이 끝나면 연결을 닫고 그 닫힘을 상한 안에서 확인한다. 끊김 밖의 오류는 거기서(또는 먼저 기다린 곳에서) 드러난다.
-        onTestFinished(async () => {
-          socket.destroy();
-          await within(closed, 5_000, "the tunnel did not close");
-        });
+        /** 터널이 닫히면 이행한다. 상대가 끊어 난 끊김은 닫힘이고, 그 밖의 오류로 끝났으면 그 오류로 거절한다. */
+        const closed = async () => {
+          const failure = await ended;
+          if (failure !== undefined) throw failure;
+        };
+        tunnel = { socket, closed };
         resolve({ response, socket, head, closed });
       });
       request.end();
@@ -145,7 +170,7 @@ function expectEstablished(tunnel: Awaited<ReturnType<typeof openTunnel>>) {
 
 /** 터널이 닫히기를 상한 안에서 기다린다. 닫히지 않으면 그 이유로 실패한다(닫히지 않음을 시간으로 판정하지 않는다). */
 const tunnelClosed = (tunnel: Awaited<ReturnType<typeof openTunnel>>) =>
-  within(tunnel.closed, 5_000, "the tunnel did not close");
+  within(tunnel.closed(), 5_000, "the tunnel did not close");
 
 /**
  * 중계를 거친 요청 하나의 답 본문. 답은 200이어야 하고, 본문은 끝까지 읽는다. 읽기는 정상 끝·오류·중간 닫힘을 함께 받아, 답이
@@ -169,7 +194,14 @@ async function answerBody(options: http.RequestOptions) {
 /** egress.sock에 CONNECT를 보내고 중계가 연결을 끝낼 때까지 받은 응답 전체(UTF-8)를 상한 안에서 받는다. 거부의 답을 본다. */
 function answerVia(directory: string, target: string) {
   const socket = net.connect(path.join(directory, "egress.sock"));
-  onTestFinished(() => void socket.destroy());
+  // 연결을 만든 직후 정리를 맡긴다. 정리는 연결을 닫고 그 닫힘(`close`)을 상한 안에서 확인한다.
+  const closed = new Promise<void>((resolve) =>
+    socket.once("close", () => resolve())
+  );
+  onTestFinished(async () => {
+    socket.destroy();
+    await within(closed, 5_000, "the CONNECT connection did not close");
+  });
   const chunks: Buffer[] = [];
   socket.on("data", (chunk: Buffer) => chunks.push(chunk));
   socket.on("connect", () =>

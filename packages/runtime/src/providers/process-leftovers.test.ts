@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { within } from "@babojubot/process/test-support";
 import { startProcess } from "./process.ts";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { lifelineHolder } from "@babojubot/process/test-cleanup";
 import { exited } from "@babojubot/process/testing";
-import { attemptAll } from "@babojubot/contracts";
 import { testFolders } from "./test-folders.ts";
 
 // Claude Code·Codex·Antigravity는 셸 명령을 새 세션에 띄운다. 프로그램이 어떻게 끝나든, 실행 시도의 정리가 끝나면(`done`)
@@ -18,20 +18,9 @@ beforeAll(async () => {
 });
 afterAll(() => lifelines.close());
 const folders = testFolders();
-const runs: ReturnType<typeof startProcess>[] = [];
-const leftovers: (() => Promise<void>)[] = [];
-// 단언이 실패해도 시작한 실행 시도를 모두 끝내고, 남은 프로그램을 끄고, 실행 시도마다 정리를 기다린다. 서로 무관한 단계라 앞
-// 단계가 실패해도 나머지를 하고 실패를 모아 알린다. 남은 프로그램을 먼저 꺼서 실행 시도의 정리가 그것에 매이지 않는다. 번호를
-// 남긴 폴더는 그 뒤에 지운다(testFolders의 정리가 이 정리 뒤에 돈다).
-afterEach(async () => {
-  const ended = runs.splice(0);
-  await attemptAll([
-    ...ended.map((run) => () => run.end()),
-    ...leftovers.splice(0),
-    ...ended.map((run) => () => run.done),
-  ]);
-});
-
+/** 실행 시도의 끝(`done`)을 상한 안에서 기다린다. */
+const finished = (run: ReturnType<typeof startProcess>) =>
+  within(run.done, 20_000, "the run did not finish");
 /** 그 프로그램이 아직 돈다: 그 프로그램이 쥔 연결 `name`이 열려 있다. 번호는 신호를 보낼 곳으로만 쓴다. */
 const running = (name: string) => lifelines.open(name);
 /** 연결이 닫혀 프로그램이 끝났음을 상한 안에서 확인한다. */
@@ -65,7 +54,6 @@ async function start(then: string) {
     path.join(folder, "child"),
     "console.log(grandchild.pid);"
   );
-  leftovers.push(child.end, grandchild.end);
   const program = `
 const { spawn } = require("node:child_process");
 const child = spawn(process.execPath, ["-e", ${JSON.stringify(`
@@ -84,16 +72,22 @@ ${keep};
   const reported = new Promise<{ child: number; grandchild: number }>(
     (resolve) => (report = resolve)
   );
-  const run = startProcess({
-    command: [process.execPath, "-e", program],
-    args: [],
-    cwd: process.cwd(),
-    env: { PATH: process.env.PATH },
-    onFrame: async (frame) => {
-      report(frame as { child: number; grandchild: number });
-    },
-  });
-  runs.push(run);
+  // 정리는 폴더 정리 하나가 맡는다. 실행 시도를 띄운 직후 맡기고, 그 실행 시도가 띄울 자식·손자의 정리를 바로 뒤에 맡긴다. 정리는
+  // 늦게 맡긴 것부터 하므로 남은 프로그램을 먼저 끄고(그래서 실행 시도의 정리가 그것에 매이지 않는다), 그 뒤 실행 시도를 끝내고 그
+  // 끝을 확인한다(`ownRun`: 끝을 확인하지 못하면 정리 실패). 한 대상이 실패해도 나머지를 하고, 번호를 남긴 폴더는 모두 끝난 뒤에만 지운다.
+  const run = folders.ownRun(
+    startProcess({
+      command: [process.execPath, "-e", program],
+      args: [],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH },
+      onFrame: async (frame) => {
+        report(frame as { child: number; grandchild: number });
+      },
+    })
+  );
+  folders.own(child.end, names.child);
+  folders.own(grandchild.end, names.grandchild);
   // 번호를 알리기 전에 프로그램이 끝나면 기다리지 않고 실패한다.
   const left = Promise.race([
     reported,
@@ -113,7 +107,7 @@ describe.skipIf(process.platform === "win32")(
         `process.kill(process.pid, "SIGKILL")`
       );
       await left;
-      const exit = await run.done;
+      const exit = await finished(run);
       expect(exit.broken).toBe(false);
       await stopped(names.child, names.grandchild);
     });
@@ -121,7 +115,7 @@ describe.skipIf(process.platform === "win32")(
     it("are stopped when the program exits on its own", async () => {
       const { run, left, names } = await start(`process.exit(0)`);
       await left;
-      const exit = await run.done;
+      const exit = await finished(run);
       expect(exit.code).toBe(0);
       await stopped(names.child, names.grandchild);
     });
@@ -130,7 +124,7 @@ describe.skipIf(process.platform === "win32")(
       const { run, left, names } = await start("");
       await left;
       run.end();
-      await run.done;
+      await finished(run);
       await stopped(names.child, names.grandchild);
     });
 
@@ -147,7 +141,7 @@ describe.skipIf(process.platform === "win32")(
         `process.kill(process.pid, "SIGKILL")`
       );
       await left;
-      await run.done;
+      await finished(run);
       await stopped(names.child, names.grandchild);
       expect(running(other.names.child)).toBe(true);
       expect(running(other.names.grandchild)).toBe(true);
@@ -157,7 +151,7 @@ describe.skipIf(process.platform === "win32")(
       expect(exited(unrelated.pid!)).toBe(false);
       expect(exited(process.pid)).toBe(false);
       other.run.end();
-      await other.run.done;
+      await finished(other.run);
       await stopped(other.names.child, other.names.grandchild);
     });
   }
