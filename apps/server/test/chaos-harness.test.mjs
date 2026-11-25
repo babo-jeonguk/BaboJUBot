@@ -867,18 +867,19 @@ describe("chaos harness on a fake connection", () => {
   }, 120_000);
 
   it("stops waiting for a server start when the scene is aborted", async () => {
-    const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
-    const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
-    const server = chaosServer({
-      home,
-      harnessDir,
-      connection: "fake-live",
-      database: "persistent",
-    });
-    // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 서버를 끈 뒤에 그 폴더를 지운다.
-    await withCleanup(async (defer) => {
+    // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 폴더는 만든 직후 정리에 맡기고, 서버를 끈 뒤에 지운다. 홈은 서버 정리(`dispose`)가
+    // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
+    const home = await withCleanup(async (defer) => {
+      const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
       const folder = folderCleanup(() => removeFolder(harnessDir));
       defer(folder.cleanUp);
+      const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
+      const server = chaosServer({
+        home,
+        harnessDir,
+        connection: "fake-live",
+        database: "persistent",
+      });
       folder.own(() => server.dispose());
       // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
       // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
@@ -892,6 +893,7 @@ describe("chaos harness on a fake connection", () => {
       scene.abort(reason);
       await expect(starting).rejects.toBe(reason);
       expect(server.running).toBe(false);
+      return home;
     });
     expect(await postgresAlive(home)).toBe(false);
   }, 60_000);
