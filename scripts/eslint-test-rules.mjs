@@ -2936,30 +2936,40 @@ function readonlyProperty(property) {
  * 속성·색인, 바뀔 수 있는 배열·Map·Set·클래스 인스턴스(메서드는 쓸 수 있는 속성), 유니온의 한 갈래라도 바뀔 수 있으면 거짓이다. 순환하는
  * 타입은 방문 표시로 끊는다(판정 중인 것은 다른 갈래가 정한다).
  */
-function unchangeableType(checker, type, visiting = new Set()) {
+function unchangeableType(program, type, visiting = new Set()) {
+  const checker = program.getTypeChecker();
   if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return false;
   if (type.flags & unchangeablePrimitives) return true;
   if (type.isUnion() || type.isIntersection())
     return type.types.every((part) =>
-      unchangeableType(checker, part, visiting)
+      unchangeableType(program, part, visiting)
     );
   if (visiting.has(type)) return true;
   visiting.add(type);
   const elements = (reference) =>
     checker
       .getTypeArguments(reference)
-      .every((element) => unchangeableType(checker, element, visiting));
+      .every((element) => unchangeableType(program, element, visiting));
   if (checker.isTupleType(type))
     return (
       /** @type {ts.TupleType} */ (
         /** @type {ts.TypeReference} */ (type).target
       ).readonly && elements(/** @type {ts.TypeReference} */ (type))
     );
-  if (checker.isArrayType(type))
+  // 배열은 기본 라이브러리의 ReadonlyArray일 때만 읽기 전용이다. 같은 이름을 저장소가 선언하거나 넓힌 것은(선언이 기본 라이브러리
+  // 밖에도 있음) 바꿀 수 있는 멤버를 가질 수 있어 증명이 아니다.
+  if (checker.isArrayType(type)) {
+    const symbol = type.getSymbol();
+    const declarations = symbol?.getDeclarations() ?? [];
     return (
-      type.getSymbol()?.getName() === "ReadonlyArray" &&
+      symbol?.getName() === "ReadonlyArray" &&
+      declarations.length > 0 &&
+      declarations.every((declaration) =>
+        program.isSourceFileDefaultLibrary(declaration.getSourceFile())
+      ) &&
       elements(/** @type {ts.TypeReference} */ (type))
     );
+  }
   const properties = checker.getPropertiesOfType(type);
   const indexes = checker.getIndexInfosOfType(type);
   // 속성·색인·서명이 하나도 없는 객체 타입(`object`·`{}`)은 넓은 타입이 속성을 가린 것이라 증명이 아니다.
@@ -2973,12 +2983,12 @@ function unchangeableType(checker, type, visiting = new Set()) {
   return (
     indexes.every(
       (info) =>
-        info.isReadonly && unchangeableType(checker, info.type, visiting)
+        info.isReadonly && unchangeableType(program, info.type, visiting)
     ) &&
     properties.every(
       (property) =>
         readonlyProperty(property) &&
-        unchangeableType(checker, checker.getTypeOfSymbol(property), visiting)
+        unchangeableType(program, checker.getTypeOfSymbol(property), visiting)
     )
   );
 }
@@ -3067,11 +3077,10 @@ function doubleFindings(source, program, factoriesFrom, exported) {
   // 칸: 모듈 범위 선언과 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 선언. 값이 칸인지는 타입이 정한다(#286 현행 기준
   // 1절): 바뀔 수 없음이 증명되는 값만 칸이 아니다. 타입 정보가 없으면 선언만으로 증명되는 함수 리터럴·원시 값 리터럴만 칸이 아니다.
   const typed = source.parserServices;
-  const checker = typed?.program ? typed.program.getTypeChecker() : undefined;
   /** 이 이름(`identifier`, 초기값 `init`)의 값이 바뀔 수 없음이 증명되는가. */
   const provenUnchangeable = (identifier, init) =>
-    checker
-      ? unchangeableType(checker, typed.getTypeAtLocation(identifier))
+    typed?.program
+      ? unchangeableType(typed.program, typed.getTypeAtLocation(identifier))
       : isFunction(unwrapped(init)) || primitive(unwrapped(init));
   const containers = [];
   const bindings = [];
