@@ -12,7 +12,11 @@ import {
   vi,
 } from "vitest";
 import { launchTree } from "@babojubot/process";
-import { recordProcess, recoverProviderProcesses } from "./recovery.ts";
+import {
+  processRecordPids,
+  recordProcess,
+  recoverProviderProcesses,
+} from "./recovery.ts";
 import { leaseVariable, processStartTicks } from "@babojubot/process/recovery";
 import { exited, readyLine } from "@babojubot/process/testing";
 import { testFolders } from "./test-folders.ts";
@@ -54,7 +58,10 @@ function testStart(): string {
   }
 }
 
-// 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다.
+// 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다. 기록 칸은 afterEach가 새로 연다(시험이 본문에서 바꿔 끼우기도
+// 한다). 대역은 불린 순간(첫 `await` 전)의 칸을 잡고 그 칸에만 쓴다: 그 뒤에 칸이 바뀌어도 그 호출의 늦은 기록은 잡아 둔 칸에 남는다
+// (#286 PR #300 외부 리뷰 2회차 종류 A', 감독 결정). `fails`도 불린 순간에 읽는다. 시험이 시한을 넘겨 본문이 afterEach 뒤에도 돌면,
+// 그 뒤에 불린 호출은 다음 시험의 칸을 잡는다(그 시험은 이미 실패했다).
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
@@ -73,11 +80,12 @@ vi.mock("@babojubot/process/recovery", async (original) => {
     cleanThroughSupervisor: async (
       request: Parameters<typeof real.cleanThroughSupervisor>[0]
     ) => {
-      lease.requests.push(request);
-      if (request.lease !== undefined) lease.stopped.push(request.lease);
-      if (lease.fails) throw new Error("the supervisor's cleanup failed");
+      const { requests, stopped, cleaned, fails } = lease;
+      requests.push(request);
+      if (request.lease !== undefined) stopped.push(request.lease);
+      if (fails) throw new Error("the supervisor's cleanup failed");
       const result = await real.cleanThroughSupervisor(request);
-      lease.cleaned.push(request);
+      cleaned.push(request);
       return result;
     },
   };
@@ -697,3 +705,60 @@ it("warns with the failure code and goes on when one connection's record folder 
     expect.stringMatching(/codex process records.*\(ENOTDIR\)/)
   );
 });
+
+// 기록 목록(#286 PR 3b-3b-1): 복구와 같은 자리·같은 이름 판정으로 남은 기록의 번호를 돌려준다. 판정은 하지 않는다(목록만). 복구와
+// 달리 읽지 못한 자리를 넘기지 않고 던진다: 목록을 부르는 쪽(chaos 장면 정리 등)은 "기록 없음"을 프로그램이 끝난 증거로 쓰므로,
+// 읽지 못함을 빈 목록으로 접으면 확인하지 못한 것을 끝난 것으로 센다.
+it("lists the process records of every connection by their numbers", async () => {
+  const root = await folders.make("babojubot-records-");
+  await mkdir(path.join(root, "providers", "codex", "processes"), {
+    recursive: true,
+  });
+  await mkdir(path.join(root, "providers", "opencode", "processes"), {
+    recursive: true,
+  });
+  // 연결 폴더만 있고 기록 폴더가 없는 연결은 기록이 없다.
+  await mkdir(path.join(root, "providers", "claude"), { recursive: true });
+  await writeFile(
+    path.join(root, "providers", "codex", "processes", "123.json"),
+    "{}"
+  );
+  await writeFile(
+    path.join(root, "providers", "opencode", "processes", "456.json"),
+    "{}"
+  );
+  // 기록 이름이 아닌 것(쓰다 만 임시 파일, 숫자가 아닌 이름)은 기록이 아니다.
+  await writeFile(
+    path.join(root, "providers", "codex", "processes", "123.json.tmp"),
+    "{}"
+  );
+  await writeFile(
+    path.join(root, "providers", "codex", "processes", "notes.json"),
+    "{}"
+  );
+
+  expect(processRecordPids(root).toSorted((a, b) => a - b)).toEqual([123, 456]);
+});
+
+it("lists no records when the data folder has no provider folder", async () => {
+  const root = await folders.make("babojubot-records-");
+
+  expect(processRecordPids(root)).toEqual([]);
+});
+
+it.each([
+  ["the provider folder", ["providers"]],
+  ["a connection's record folder", ["providers", "codex", "processes"]],
+])(
+  "throws instead of listing no records when %s cannot be listed",
+  async (_what, place) => {
+    const root = await folders.make("babojubot-records-");
+    await mkdir(path.join(root, ...place.slice(0, -1)), { recursive: true });
+    // 목록을 읽을 수 없는 자리: 폴더 자리에 파일이 있다(ENOTDIR). 없음과 다른 오류다.
+    await writeFile(path.join(root, ...place), "");
+
+    expect(() => processRecordPids(root)).toThrow(
+      expect.objectContaining({ code: "ENOTDIR" })
+    );
+  }
+);

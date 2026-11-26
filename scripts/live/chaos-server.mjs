@@ -2,20 +2,23 @@
 // 이 파일을 설정 파일 경로와 함께 직접 실행하면 그 자식 프로세스가 된다(`node chaos-server.mjs <설정 파일>`).
 // 자식은 제품 서버(startServer)를 루프백·자동 배정 포트로 띄우고, 실행 관문(chaos-budget.mjs gateConnection)으로 연결을 감싼다.
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   attemptAll,
   continueAfterFailure,
   failureCode,
-  hasErrorCode,
-  orIfMissing,
 } from "@babojubot/contracts";
 import { launchTree, prepareSupervisor } from "@babojubot/process";
+import { removeFolderWithin } from "@babojubot/process/test-cleanup";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
-import { sharedVariables } from "@babojubot/runtime";
+import {
+  processRecordPids,
+  recoverProviderProcesses,
+  sharedVariables,
+} from "@babojubot/runtime";
 import { afterOutput } from "../exit-after-output.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -170,18 +173,21 @@ export function chaosServer({
   /**
    * 마지막 정리. 서버를 멈추고, 강제로 끝낸 적이 있으면 남은 내장 DB와 프로바이더 프로세스를 제품 경로로 정리한 뒤 홈을 지운다.
    * 다른 작업의 프로세스는 건드리지 않는다(이 홈의 기록과 이 홈의 DB만 본다).
+   * 계약: 거절은 홈 지우기를 시작하기 전에만 난다(그때 홈은 남긴 것이다). 홈 지우기의 실패·상한 초과는 거절하지 않고 `home:
+   * "unconfirmed"`로 돌려준다(그 까닭은 터미널에 알린다).
    */
   async function dispose() {
     const leftovers = {
       postgres: false,
       providerRecordsFound: 0,
       providerRecordsLeft: 0,
-      // 홈을 지웠는가: 아래 지우기가 이행한 뒤에만 참이다. 기록을 지키려 남기면 거짓이고 그 까닭은 `providerRecordsLeft`가 말한다.
-      homeRemoved: false,
+      // 홈의 끝(`FolderEnd`): 지우기 전에는 남김이다. 기록을 지키려 남기면 남김이고 그 까닭은 `providerRecordsLeft`가 말한다.
+      // 지우기를 시작한 뒤에는 그 결과(지움·확인 못 함)다.
+      /** @type {FolderEnd} */
+      home: "kept",
     };
     const { openDatabase, openEphemeralDatabase } =
       await import("@babojubot/db");
-    const { recoverProviderProcesses } = await import("@babojubot/runtime");
     const pgDir = path.join(home, "postgres");
     // 서버 멈춤, 남은 DB·기록의 제품 정리, 띄운 모든 서버 트리 끄기. 앞 단계가 실패해도 트리는 끄고, 실패를 모아 알린다(홈은 남긴다).
     await cleanUpScene({
@@ -225,8 +231,12 @@ export function chaosServer({
         `[chaos] ${leftovers.providerRecordsLeft} provider process record(s) could not be recovered; kept ${home} for manual cleanup`
       );
     } else {
-      await rm(home, { recursive: true, force: true });
-      leftovers.homeRemoved = true;
+      const removal = await removeEndedFolder(home);
+      leftovers.home = removal.end;
+      if (removal.end === "unconfirmed")
+        console.error(
+          `[chaos] could not confirm that the scene home ${home} was removed (${failureCode(removal.failure)})`
+        );
     }
     return leftovers;
   }
@@ -258,6 +268,52 @@ export function chaosServer({
 }
 
 /**
+ * 정리한 폴더의 끝. `removed`: 지우기 이행을 확인함. `kept`: 그 폴더를 쓰는 것의 끝을 확인하지 못해(또는 사람이 보도록) 지우기를
+ * 시작하지 않음. `unconfirmed`: 지우기를 시작했지만 실패했거나 상한 안에 끝을 보지 못함(`removeFolderWithin`의 상한은 기다림만
+ * 끝내므로 그 뒤에 지워질 수 있다). 남김과 확인 못 함을 한 칸에 접지 않는다.
+ * @typedef {"removed" | "kept" | "unconfirmed"} FolderEnd
+ */
+
+/**
+ * 끝을 확인한 폴더를 상한 안에서 지운다(`removeFolderWithin`, 선택은 그대로 넘긴다). 지우기가 이행했으면 `{ end: "removed" }`,
+ * 실패했거나 상한을 넘겼으면 `{ end: "unconfirmed", failure }`이다. 실패를 "남김"으로 적지 않는다. 지우기를 시작하지 않은 폴더
+ * (`kept`)는 이 함수를 부르지 않는 쪽이 적는다. 실패는 버리지 않고 돌려주어 부르는 쪽이 알리고 문제로 센다.
+ * @param {string} folder
+ * @param {Parameters<typeof removeFolderWithin>[1]} [options]
+ * @returns {Promise<{ end: "removed" } | { end: "unconfirmed", failure: unknown }>}
+ */
+export async function removeEndedFolder(folder, options) {
+  try {
+    await removeFolderWithin(folder, options);
+    return { end: "removed" };
+  } catch (failure) {
+    return { end: "unconfirmed", failure };
+  }
+}
+
+/**
+ * 폴더 끝 하나를 읽는다: 지웠는가, 정리 문제로 세는가. 남김(`kept`)은 그 까닭(서버·명령의 끝 확인 실패, 남은 기록)을 부르는 쪽이 따로
+ * 판정하므로 여기서 문제로 세지 않는다. 확인 못 함(`unconfirmed`)은 문제 하나다.
+ * @param {FolderEnd} end
+ * @returns {{ removed: boolean, problem: 0 | 1 }}
+ */
+export function folderOutcome(end) {
+  switch (end) {
+    case "removed":
+      return { removed: true, problem: 0 };
+    case "kept":
+      return { removed: false, problem: 0 };
+    case "unconfirmed":
+      return { removed: false, problem: 1 };
+    default: {
+      /** @type {never} */
+      const unknown = end;
+      throw new Error(`unknown folder end ${String(unknown)}`);
+    }
+  }
+}
+
+/**
  * 장면 서버의 마지막 정리 순서. 남은 DB·기록의 제품 정리(`cleanLeftovers`, 서로 독립)는 서버가 멈춘 뒤에만 한다: 살아 있는 서버의 DB를
  * 제품 경로로 끄지 않는다. 띄운 서버 트리 끄기(`stopTrees`)는 앞 단계가 실패해도 한다. 실패는 모아 던진다(`attemptAll`).
  */
@@ -285,20 +341,6 @@ function startFailure(message, tail) {
     console.error(`[chaos-server] ${message}; last server output:\n${tail}`);
   return new Error(message);
 }
-
-/** 이 홈에 남은 프로바이더 프로세스 기록의 PID(기록 파일 이름). 서버가 정리를 마치면 그 기록은 없어진다. */
-export function processRecordPids(home) {
-  const root = path.join(home, "providers");
-  return readdir(root).flatMap((provider) =>
-    readdir(path.join(root, provider, "processes"))
-      .filter((n) => /^\d+\.json$/.test(n))
-      .map((n) => Number.parseInt(n, 10))
-  );
-}
-
-/** 폴더의 이름 목록. 폴더가 없으면 빈 목록이고, 권한·디스크 오류는 드러낸다. */
-const readdir = (dir) =>
-  orIfMissing(() => readdirSync(dir), hasErrorCode("ENOENT"), []);
 
 // ---------- 자식 프로세스 ----------
 

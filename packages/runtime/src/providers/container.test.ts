@@ -68,7 +68,6 @@ import {
   failingRelayCloses,
   refusing,
   resetRefusing,
-  serverFaults,
 } from "./connect-failure-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
@@ -3278,7 +3277,9 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
       () => undefined,
       (error: unknown) => error
     );
-    expect(serverFaults.failedClose.mock.calls).toEqual([failedAt]);
+    expect(failedAt.map((address) => path.basename(address))).toEqual([
+      relaySockets.egress,
+    ]);
     expect(failure).toMatchObject({
       message: `the relay could not be closed; its folder ${path.dirname(failedAt[0]!)} is kept`,
       code: "relay_folder_kept",

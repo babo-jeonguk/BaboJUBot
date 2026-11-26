@@ -2,8 +2,16 @@ import { existsSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { text } from "node:stream/consumers";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { finished } from "node:stream/promises";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   attemptAll,
   destinationSchema,
@@ -23,10 +31,14 @@ import { within } from "@babojubot/process/test-support";
 import {
   refusing,
   failingRelayCloses,
-  gate,
+  givenUpAtReset,
+  holdsOwner,
   nameFaults,
+  openTestHolds,
   resetRefusing,
   serverFaults,
+  testHolds,
+  type Holds,
 } from "./connect-failure-support.ts";
 import { osFaults } from "./os-failure-support.ts";
 import { createRelayHub, relaySockets, type RelayHooks } from "./relay.ts";
@@ -57,6 +69,9 @@ vi.mock("node:dns/promises", async (importOriginal) =>
 vi.mock("node:os", async (importOriginal) =>
   (await import("./os-failure-support.ts")).failingOs(await importOriginal())
 );
+// 시험마다 대역이 붙잡는 것(gate·콜백 안 기다림)의 소유자를 연다. 그 끝은 이 시험의 첫 onTestFinished라 hub·중계·listener 닫기 뒤에
+// 돌고, 사건이 오지 않은 기다림과 reset 뒤의 시도를 이 시험의 실패로 알린다(connect-failure-support.ts `openTestHolds`).
+beforeEach(({ onTestFinished }) => openTestHolds(onTestFinished));
 afterEach(() => {
   resetRefusing();
 });
@@ -64,26 +79,33 @@ afterEach(() => {
 const destination = (value: unknown): Destination =>
   destinationSchema.parse(value);
 
-/** 연결 수를 세는 loopback listener. echo하거나 HTTP로 답한다. */
+/**
+ * 연결 수를 세는 loopback listener. echo하거나 HTTP로 답한다. 서버는 만든 직후 이 시험의 정리에 맡긴다(`ownedListener`: 듣기·닫기
+ * 상한, 받은 연결을 끊고 닫힘 확인, 닫기 오류는 실패). `connected()`는 첫 연결 신호다(받으면 이행, 거절하지 않음). 그 신호를 콜백
+ * 안에서 기다리면 기다림의 해제는 부르는 쪽이 이 시험의 소유자(`holds.until`)로 맡는다.
+ */
 async function fixture(kind: "echo" | "http") {
   const accepted: net.Socket[] = [];
-  const server =
+  const { server } = await ownedListener(
     kind === "http"
       ? http.createServer((req, res) =>
           res.end(JSON.stringify({ url: req.url, host: req.headers.host }))
         )
-      : net.createServer((socket) => socket.pipe(socket));
-  server.on("connection", (socket: net.Socket) => accepted.push(socket));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  // 러너가 시험이 끝나면 등록 역순으로 모두 정리한다. 중계 닫기가 실패해도 이 listener를 닫는다.
-  onTestFinished(
-    () =>
-      new Promise<void>((resolve) => {
-        for (const socket of accepted) socket.destroy();
-        server.close(() => resolve());
-      })
+      : net.createServer((socket) => socket.pipe(socket)),
+    { port: 0, host: "127.0.0.1" },
+    onTestFinished,
+    `the ${kind} destination`
   );
-  return { port: (server.address() as net.AddressInfo).port, accepted };
+  const first = Promise.withResolvers<void>();
+  server.on("connection", (socket: net.Socket) => {
+    accepted.push(socket);
+    first.resolve();
+  });
+  return {
+    port: (server.address() as net.AddressInfo).port,
+    accepted,
+    connected: () => first.promise,
+  };
 }
 
 function hub(overrides: Partial<RelayHooks> = {}) {
@@ -104,7 +126,7 @@ function hub(overrides: Partial<RelayHooks> = {}) {
     refused: (_identity, detail) => refused.push(detail),
     ...overrides,
   });
-  onTestFinished(() => relays.close());
+  onTestFinished(() => within(relays.close(), 5_000, "the hub did not close"));
   return {
     relays,
     refused,
@@ -157,7 +179,9 @@ const tunnelClosed = (tunnel: Awaited<ReturnType<typeof openTunnel>>) =>
 function answerTo(options: http.RequestOptions) {
   const request = ownedClosable(
     onTestFinished,
-    http.request(options),
+    // 요청이 자기 연결을 소유한다(`agent: false`). 기본 agent는 keep-alive라 답이 끝나면 소켓이 풀로 돌아가, 요청의 닫힘이 연결의
+    // 닫힘이 아니고 정리가 끊어도 연결이 남는다.
+    http.request({ ...options, agent: false }),
     "the request through the relay"
   );
   return within(
@@ -172,14 +196,108 @@ function answerTo(options: http.RequestOptions) {
 }
 
 /**
- * 중계를 거친 요청 하나의 답 본문(`answerTo`). 답은 200이어야 하고, 본문은 끝까지 읽는다. 읽기는 정상 끝·오류·중간 닫힘을 함께
- * 받아, 답이 중간에 끊기면 그 까닭으로 거절한다. 본문도 상한 안에 와야 한다.
+ * 받은 답의 본문과 그 끝. 본문을 모으고, 첫 조각이 오면 `onFirstChunk`를 한 번 부른다(시험이 답 도중에 끊는 자리). 끝은
+ * `stream.finished`로 받는다: 정상 끝이면 `"ended"`, 오류·중간 닫힘이면 `"broken"`과 그 까닭(`cause`). 상한 안에 끝나야 한다.
+ */
+async function answerEnding(
+  answer: http.IncomingMessage,
+  onFirstChunk?: () => void
+): Promise<
+  | { body: string; ending: "ended" }
+  | { body: string; ending: "broken"; cause: unknown }
+> {
+  let body = "";
+  let chunks = 0;
+  answer.setEncoding("utf8");
+  answer.on("data", (chunk: string) => {
+    body += chunk;
+    chunks += 1;
+    if (chunks === 1) onFirstChunk?.();
+  });
+  return within(
+    finished(answer).then(
+      () => ({ body, ending: "ended" as const }),
+      (cause: unknown) => ({ body, ending: "broken" as const, cause })
+    ),
+    5_000,
+    "the relay's answer did not end"
+  );
+}
+
+/**
+ * 중계를 거친 요청 하나의 답 본문(`answerTo`·`answerEnding`). 답은 200이어야 하고, 본문은 끝까지 읽는다. 답이 중간에 끊기면 그
+ * 까닭(`cause`)과 함께 던진다.
  */
 async function answerBody(options: http.RequestOptions) {
   const answer = await answerTo(options);
   expect(answer.statusCode).toBe(200);
-  return within(text(answer), 5_000, "the relay's answer did not end");
+  const read = await answerEnding(answer);
+  if (read.ending === "broken")
+    throw new Error("the relay's answer broke off", { cause: read.cause });
+  return read.body;
 }
+
+/** 시작한 다시 보기가 상한 안에 끝나기를 기다린다. */
+const revalidated = (revalidation: Promise<void>) =>
+  within(revalidation, 5_000, "the revalidation did not end");
+
+/**
+ * 콜백(정책 hook·대역 구현)이 시험 칸에 담은 기다림을 본문이 상한 안에서 받는다. 콜백이 그 기다림을 시작하지 않았으면 그 이유로
+ * 실패한다. 본문은 답 내용을 단언하기 전에 칸부터 받아, 콜백 안 사건의 실패가 그 까닭으로 본문에 닿게 한다.
+ */
+const fromHook = <T>(held: Promise<T> | undefined, what: string) =>
+  within(
+    held ?? Promise.reject(new Error(`the hook did not start ${what}`)),
+    5_000,
+    `${what} in the hook did not end`
+  );
+
+/**
+ * egress.sock에 보낸 평문 HTTP 요청 하나의 답 상태와 머리(node:http 파서가 읽은 것, `answerTo`). `target`은 요청 줄의 대상(보통
+ * 절대 주소, 프록시 요청이 아닌 요청을 보는 시험은 상대 경로)이다. 본문은 버린다.
+ */
+async function headVia(
+  directory: string,
+  target: string,
+  headers?: http.OutgoingHttpHeaders
+) {
+  const answer = await answerTo({
+    socketPath: path.join(directory, "egress.sock"),
+    path: target,
+    ...(headers && { headers }),
+  });
+  answer.resume();
+  return { status: answer.statusCode, headers: answer.headers };
+}
+
+/**
+ * 중계가 목적지로 붙는 연결(`relay.ts` `dial`의 `net.connect`)을 동작을 바꾸지 않는 spy로 기록한다. 돌려주는 함수는 목적지 `port`로
+ * 붙으려 한 소켓들이다(`localhost`가 두 주소로 풀리면 거부된 시도도 들어 있다).
+ */
+function watchDials() {
+  const connecting = vi.spyOn(net, "connect");
+  onTestFinished(() => void connecting.mockRestore());
+  return (port: number) =>
+    connecting.mock.calls.flatMap((args, index) => {
+      const options: unknown = args[0];
+      const result = connecting.mock.results[index];
+      return typeof options === "object" &&
+        options !== null &&
+        "port" in options &&
+        Number(options.port) === port &&
+        result?.type === "return"
+        ? [result.value]
+        : [];
+    });
+}
+
+/** 중계들이 소켓을 열고 듣기 시작하기를 상한 안에서 기다린다. */
+const ready = (...relays: { ready: Promise<void> }[]) =>
+  within(
+    Promise.all(relays.map((relay) => relay.ready)),
+    5_000,
+    "the relay did not become ready"
+  );
 
 /** egress.sock에 CONNECT를 보내고 중계가 연결을 끝낼 때까지 받은 응답 전체(UTF-8)를 상한 안에서 받는다. 거부의 답을 본다. */
 function answerVia(directory: string, target: string) {
@@ -253,7 +371,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
+    await ready(relay);
     const ok = await openTunnel(relay.directory, `localhost:${target.port}`);
     expectEstablished(ok);
     expect(await roundTrip(ok.socket, "ping")).toBe("ping");
@@ -288,7 +406,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       identity,
       required: [destination({ host: "localhost", port: target.port })],
     });
-    await relay.ready;
+    await ready(relay);
     expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
       refusal("address_not_allowed")
     );
@@ -308,7 +426,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
+    await ready(relay);
     expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
       refusal("address_not_allowed")
     );
@@ -328,7 +446,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
+    await ready(relay);
     const body = await answerBody({
       socketPath: path.join(relay.directory, "egress.sock"),
       path: `http://localhost:${target.port}/page?x=1`,
@@ -343,21 +461,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("passes a redirect back without following it, so the next request is checked again", async () => {
     const forbidden = await fixture("http");
     const accepted: string[] = [];
-    const redirecting = http.createServer((req, res) => {
-      accepted.push(req.url ?? "");
-      res.writeHead(302, {
-        location: `http://127.0.0.1:${forbidden.port}/inside`,
-      });
-      res.end();
-    });
-    await new Promise<void>((resolve) =>
-      redirecting.listen(0, "127.0.0.1", resolve)
-    );
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) =>
-          redirecting.close((error) => (error ? reject(error) : resolve()))
-        )
+    const { server: redirecting } = await ownedListener(
+      http.createServer((req, res) => {
+        accepted.push(req.url ?? "");
+        res.writeHead(302, {
+          location: `http://127.0.0.1:${forbidden.port}/inside`,
+        });
+        res.end();
+      }),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the redirecting destination"
     );
     const port = (redirecting.address() as net.AddressInfo).port;
     const { relays } = hub();
@@ -371,23 +485,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
-    const viaProxy = (target: string) =>
-      new Promise<{ status: number; location?: string }>((resolve, reject) => {
-        const req = http.request({
-          socketPath: path.join(relay.directory, "egress.sock"),
-          path: target,
-        });
-        req.on("response", (res) => {
-          res.resume();
-          resolve({
-            status: res.statusCode ?? 0,
-            location: res.headers.location,
-          });
-        });
-        req.on("error", reject);
-        req.end();
-      });
+    await ready(relay);
+    const viaProxy = async (target: string) => {
+      const { status, headers } = await headVia(relay.directory, target);
+      return { status, location: headers.location };
+    };
     const first = await viaProxy(`http://localhost:${port}/start`);
     expect(first).toEqual({
       status: 302,
@@ -403,7 +505,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const target = await fixture("echo");
     const { relays, refused, setResearch } = hub();
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     const entry = destination({
       host: "localhost",
       port: target.port,
@@ -416,7 +518,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const open = await openTunnel(relay.directory, `localhost:${target.port}`);
     expectEstablished(open);
     setResearch([]);
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     await tunnelClosed(open);
     expect(refused.at(-1)).toEqual({
       host: "localhost",
@@ -429,7 +531,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const target = await fixture("echo");
     const { relays, refused, setResearch } = hub();
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     setResearch([
       destination({
         host: "localhost",
@@ -441,7 +543,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expectEstablished(open);
     // 이름·포트는 그대로 두고 내부 주소 예외만 지운다. 새 연결은 거부되므로 열린 연결도 닫혀야 한다.
     setResearch([destination({ host: "localhost", port: target.port })]);
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     await tunnelClosed(open);
     expect(refused.at(-1)).toEqual({
       host: "localhost",
@@ -454,6 +556,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   });
 
   it("closes a connection admitted under the old policy when the user narrowed it while that connection was opening", async () => {
+    const holds = testHolds();
     const target = await fixture("echo");
     const entry = destination({
       host: "localhost",
@@ -462,6 +565,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
     let current: Destination[] = [entry];
     let narrowing = true;
+    /** hook이 시작한 재검사. hook 안에서는 담고 기다리기만 하고, 그 결과는 답을 받은 뒤 본문이 받는다(`holds.until`). */
+    const started: { revalidation?: Promise<void> } = {};
     const env = hub({
       // 첫 판정이 옛 목록을 읽은 직후 사용자가 목록을 비우고, 그 재검사가 끝난 뒤에야 연결이 열린다.
       research: async () => {
@@ -469,17 +574,24 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         if (narrowing) {
           narrowing = false;
           current = [];
-          await env.relays.revalidate(identity.organizationId);
+          started.revalidation = awaitedLater(
+            holds.until(
+              env.relays.revalidate(identity.organizationId),
+              "the revalidation the policy hook started"
+            )
+          );
+          await started.revalidation;
         }
         return seen;
       },
     });
     const relay = env.relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
+    const answer = await answerVia(relay.directory, `localhost:${target.port}`);
+    // 답 내용보다 먼저 hook의 재검사를 받는다(그 실패가 정책 읽기 실패로 접힌 답보다 먼저 까닭으로 드러난다).
+    await fromHook(started.revalidation, "the revalidation");
     // 판정 뒤 정책이 바뀌어 다시 본 연결은 열지 않고 그 이유로 거부한다(200을 보내지 않는다).
-    expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
-      refusal("policy_changed")
-    );
+    expect(answer).toBe(refusal("policy_changed"));
     expect(env.refused.at(-1)).toEqual({
       host: "localhost",
       port: target.port,
@@ -488,6 +600,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   });
 
   it("answers 502 and keeps serving when a plain HTTP destination resets while the changed policy is rechecked", async () => {
+    const holds = testHolds();
     const target = await fixture("http");
     const entry = destination({
       host: "localhost",
@@ -496,33 +609,61 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
     let calls = 0;
     // 중계가 목적지와 연 소켓을 잡아, 목적지가 끊은 것을 중계가 받았는지 본다.
-    const connect = vi.spyOn(net, "connect");
-    onTestFinished(() => void connect.mockRestore());
-    const relayToTarget = () =>
-      connect.mock.results
-        .map((result) => result.value as net.Socket)
-        .find((socket) => socket.remotePort === target.port);
+    const dialed = watchDials();
+    /**
+     * hook이 담는 것: 첫 판정 중의 재검사, 목적지의 첫 연결, 중계가 목적지로 연 소켓의 닫힘(각 `holds.until`), 재검사 때 살아 있던 그
+     * 소켓들. hook 안에서는 담고 기다리기만 하고, 결과와 단언은 답을 받은 뒤 본문에서 한다.
+     */
+    const recheck: {
+      revalidation?: Promise<void>;
+      reached?: Promise<void>;
+      closed?: Promise<void>;
+      carrying?: net.Socket[];
+    } = {};
     const env = hub({
       research: async () => {
         calls += 1;
         // 첫 판정 중에 정책이 바뀐 것처럼 재검사를 돌려, 연결 뒤 한 번 더 보게 한다.
-        if (calls === 1) await env.relays.revalidate(identity.organizationId);
+        if (calls === 1) {
+          recheck.revalidation = awaitedLater(
+            holds.until(
+              env.relays.revalidate(identity.organizationId),
+              "the revalidation the policy hook started"
+            )
+          );
+          await recheck.revalidation;
+        }
         // 연결 뒤 재검사(세 번째)를 기다리는 동안 목적지가 연결을 RST로 끊고, 중계의 소켓이 그 끊김으로 닫힌 뒤에 답한다.
+        // 재검사는 중계가 목적지에 붙은(`dial`이 이행한) 뒤에 불리므로, 목적지가 그 연결을 받았다는 사건만 기다리면 중계의 소켓은 이미
+        // 있다. hook 안 기다림은 `holds.until`로 시험 칸에 담는다: 이 시험의 reset 전에 시작한 기다림은 그 reset(시험 끝, hub·중계 닫기보다
+        // 먼저)이 풀고, 결과는 본문이 답을 받은 뒤 `fromHook`으로 먼저 받는다. hook 안에 상한을 두면 그 거절이 정책 읽기 실패로 접힌다.
         if (calls === 3) {
-          await vi.waitUntil(
-            () => target.accepted.length > 0 && relayToTarget(),
-            {
-              timeout: 5_000,
-              interval: 5,
-            }
+          recheck.reached = awaitedLater(
+            holds.until(
+              target.connected(),
+              "the destination's first connection"
+            )
           );
-          const socket = relayToTarget()!;
-          // RST는 오류(ECONNRESET) 뒤 close로 온다. once(…, "close")는 그 오류로 거절되므로 close만 듣는다.
-          const closed = new Promise((resolve) =>
-            socket.once("close", resolve)
+          await recheck.reached;
+          const carrying = dialed(target.port).filter(
+            (socket) => !socket.destroyed
           );
-          target.accepted.at(-1)!.resetAndDestroy();
-          await closed;
+          recheck.carrying = carrying;
+          const [socket] = carrying;
+          if (socket) {
+            // RST는 오류(ECONNRESET) 뒤 close로 온다. once(…, "close")는 그 오류로 거절되므로 close만 듣는다.
+            const closed = new Promise<void>((resolve) =>
+              socket.once("close", () => resolve())
+            );
+            target.accepted.at(-1)!.resetAndDestroy();
+            recheck.closed = awaitedLater(
+              holds.until(
+                closed,
+                "the close of the relay's socket to the destination"
+              )
+            );
+            await recheck.closed;
+          }
         }
         return [entry];
       },
@@ -533,27 +674,21 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     process.on("uncaughtException", onUncaught);
     onTestFinished(() => void process.off("uncaughtException", onUncaught));
     const relay = env.relays.open({ identity, required: [] });
-    await relay.ready;
-    const viaProxy = () =>
-      new Promise<number>((resolve, reject) => {
-        const req = http.request({
-          socketPath: path.join(relay.directory, "egress.sock"),
-          path: `http://localhost:${target.port}/page`,
-          agent: false,
-        });
-        // 응답이 오지 않으면 0으로 끝낸다(시험 시간 초과 대신).
-        req.setTimeout(3000, () => {
-          req.destroy();
-          resolve(0);
-        });
-        req.on("response", (res) => {
-          res.resume();
-          resolve(res.statusCode ?? 0);
-        });
-        req.on("error", reject);
-        req.end();
-      });
-    expect(await viaProxy()).toBe(502);
+    await ready(relay);
+    const viaProxy = async () =>
+      (await headVia(relay.directory, `http://localhost:${target.port}/page`))
+        .status;
+    const first = await viaProxy();
+    // 답 내용보다 먼저 hook의 세 기다림을 받는다(사건으로 풀렸는지, 실패면 그 까닭).
+    await fromHook(recheck.revalidation, "the revalidation");
+    await fromHook(recheck.reached, "the destination's first connection");
+    // 재검사 때 중계가 목적지로 연 소켓은 정확히 하나였다(그것을 목적지가 끊었다).
+    expect(recheck.carrying).toHaveLength(1);
+    await fromHook(
+      recheck.closed,
+      "the close of the relay's socket to the destination"
+    );
+    expect(first).toBe(502);
     expect(uncaught).toEqual([]);
     // 같은 중계가 다음 요청을 그대로 처리한다.
     expect(await viaProxy()).toBe(200);
@@ -564,16 +699,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("answers 502 and leaves why when a plain HTTP destination resets before answering", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
-    const server = http.createServer((req) => req.socket.resetAndDestroy());
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve)
-    );
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          server.closeAllConnections();
-          server.close((error) => (error ? reject(error) : resolve()));
-        })
+    const { server } = await ownedListener(
+      http.createServer((req) => req.socket.resetAndDestroy()),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the destination"
     );
     const port = (server.address() as net.AddressInfo).port;
     const { relays } = hub();
@@ -587,20 +717,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
-    const status = await new Promise<number>((resolve, reject) => {
-      const req = http.request({
-        socketPath: path.join(relay.directory, "egress.sock"),
-        path: `http://localhost:${port}/page`,
-        agent: false,
-      });
-      req.on("response", (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
-      });
-      req.on("error", reject);
-      req.end();
-    });
+    await ready(relay);
+    const { status } = await headVia(
+      relay.directory,
+      `http://localhost:${port}/page`
+    );
     expect(status).toBe(502);
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
       "[provider] the relay could not forward a request to an allowed destination; it answered 502 (ECONNRESET)",
@@ -618,20 +739,15 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
       onTestFinished(() => warned.mockRestore());
       const answering: net.Socket[] = [];
-      const server = http.createServer((req, res) => {
-        answering.push(req.socket);
-        res.writeHead(200, { "content-type": "text/plain" });
-        res.write("part");
-      });
-      await new Promise<void>((resolve) =>
-        server.listen(0, "127.0.0.1", resolve)
-      );
-      onTestFinished(
-        () =>
-          new Promise<void>((resolve, reject) => {
-            server.closeAllConnections();
-            server.close((error) => (error ? reject(error) : resolve()));
-          })
+      const { server } = await ownedListener(
+        http.createServer((req, res) => {
+          answering.push(req.socket);
+          res.writeHead(200, { "content-type": "text/plain" });
+          res.write("part");
+        }),
+        { port: 0, host: "127.0.0.1" },
+        onTestFinished,
+        "the destination"
       );
       const port = (server.address() as net.AddressInfo).port;
       const { relays, refused, setResearch } = hub();
@@ -643,34 +759,22 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ]);
       const relay = relays.open({ identity, required: [] });
-      await relay.ready;
-      const received = await new Promise<{ body: string; ending: string }>(
-        (resolve, reject) => {
-          const req = http.request({
-            socketPath: path.join(relay.directory, "egress.sock"),
-            path: `http://localhost:${port}/page`,
-            agent: false,
-          });
-          req.on("response", (res) => {
-            let body = "";
-            res.on("data", (chunk) => {
-              body += chunk;
-              breakOff(answering[0]!);
-            });
-            res.on("end", () => resolve({ body, ending: "ended" }));
-            res.on("error", () => resolve({ body, ending: "broken" }));
-          });
-          req.on("error", reject);
-          req.end();
-        }
+      await ready(relay);
+      const answer = await answerTo({
+        socketPath: path.join(relay.directory, "egress.sock"),
+        path: `http://localhost:${port}/page`,
+      });
+      // 첫 조각을 받으면 목적지가 답 도중에 끊는다. 끊긴 까닭은 중계의 경고 줄이 본다.
+      const { body, ending } = await answerEnding(answer, () =>
+        breakOff(answering[0]!)
       );
-      expect(received).toEqual({ body: "part", ending: "broken" });
+      expect({ body, ending }).toEqual({ body: "part", ending: "broken" });
       expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
         "[provider] an allowed destination's answer broke off in the relay (ECONNRESET)",
       ]);
       // 정리한 연결은 정책이 줄어도 다시 거둘 것이 없다.
       setResearch([]);
-      await relays.revalidate(identity.organizationId);
+      await revalidated(relays.revalidate(identity.organizationId));
       expect(refused).toEqual([]);
     }
   );
@@ -681,23 +785,18 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
     const answering: net.Socket[] = [];
-    const server = net.createServer((socket) => {
-      answering.push(socket);
-      socket.once("data", () =>
-        socket.write(
-          "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n4\r\npart\r\n"
-        )
-      );
-    });
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve)
-    );
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          for (const socket of answering) socket.destroy();
-          server.close((error) => (error ? reject(error) : resolve()));
-        })
+    const { server } = await ownedListener(
+      net.createServer((socket) => {
+        answering.push(socket);
+        socket.once("data", () =>
+          socket.write(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n4\r\npart\r\n"
+          )
+        );
+      }),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the destination"
     );
     const port = (server.address() as net.AddressInfo).port;
     const { relays, refused, setResearch } = hub();
@@ -709,34 +808,21 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
-    const received = await new Promise<{ body: string; ending: string }>(
-      (resolve, reject) => {
-        const req = http.request({
-          socketPath: path.join(relay.directory, "egress.sock"),
-          path: `http://localhost:${port}/page`,
-          agent: false,
-        });
-        req.on("response", (res) => {
-          let body = "";
-          // 첫 조각을 받은 뒤에 목적지가 형식에 맞지 않는 조각 길이를 보낸다(받은 연결 모두에서).
-          res.once("data", () => {
-            for (const socket of answering) socket.write("zz\r\n");
-          });
-          res.on("data", (chunk) => (body += chunk));
-          res.on("end", () => resolve({ body, ending: "ended" }));
-          res.on("error", () => resolve({ body, ending: "broken" }));
-        });
-        req.on("error", reject);
-        req.end();
-      }
-    );
-    expect(received).toEqual({ body: "part", ending: "broken" });
+    await ready(relay);
+    const answer = await answerTo({
+      socketPath: path.join(relay.directory, "egress.sock"),
+      path: `http://localhost:${port}/page`,
+    });
+    // 첫 조각을 받은 뒤에 목적지가 형식에 맞지 않는 조각 길이를 보낸다(받은 연결 모두에서).
+    const { body, ending } = await answerEnding(answer, () => {
+      for (const socket of answering) socket.write("zz\r\n");
+    });
+    expect({ body, ending }).toEqual({ body: "part", ending: "broken" });
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
       "[provider] an allowed destination's answer broke off in the relay (HPE_INVALID_CHUNK_SIZE)",
     ]);
     setResearch([]);
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     expect(refused).toEqual([]);
   });
 
@@ -745,24 +831,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("answers 502, leaves why and lets go of the connection when a plain HTTP destination closes the request without an answer", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
-    const answering: net.Socket[] = [];
-    const server = net.createServer((socket) => {
-      answering.push(socket);
-      socket.once("data", () =>
-        socket.write(
-          "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\n\r\n"
-        )
-      );
-    });
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve)
-    );
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          for (const socket of answering) socket.destroy();
-          server.close((error) => (error ? reject(error) : resolve()));
-        })
+    const { server } = await ownedListener(
+      net.createServer((socket) => {
+        socket.once("data", () =>
+          socket.write(
+            "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\n\r\n"
+          )
+        );
+      }),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the destination"
     );
     const port = (server.address() as net.AddressInfo).port;
     const { relays, refused, setResearch } = hub();
@@ -774,31 +853,18 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
-    const status = await new Promise<number>((resolve, reject) => {
-      const req = http.request({
-        socketPath: path.join(relay.directory, "egress.sock"),
-        path: `http://localhost:${port}/page`,
-        agent: false,
-      });
-      // 답이 오지 않는 결함이 시험 시간 초과로 번지지 않게 한다.
-      req.setTimeout(10_000, () =>
-        reject(new Error("the relay did not answer within 10 s"))
-      );
-      req.on("response", (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
-      });
-      req.on("error", reject);
-      req.end();
-    });
+    await ready(relay);
+    const { status } = await headVia(
+      relay.directory,
+      `http://localhost:${port}/page`
+    );
     expect(status).toBe(502);
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
       "[provider] the relay could not forward a request to an allowed destination; it answered 502 (closed_without_answer)",
     ]);
     // 놓은 연결은 정책이 줄어도 다시 거둘 것이 없다.
     setResearch([]);
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     expect(refused).toEqual([]);
   });
 
@@ -808,36 +874,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("leaves a socket failure after the answer began once, as the answer's end", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
-    const connecting = vi.spyOn(net, "connect");
-    onTestFinished(() => connecting.mockRestore());
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.write("part");
-    });
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve)
-    );
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          server.closeAllConnections();
-          server.close((error) => (error ? reject(error) : resolve()));
-        })
+    const dialed = watchDials();
+    const { server } = await ownedListener(
+      http.createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.write("part");
+      }),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the destination"
     );
     const port = (server.address() as net.AddressInfo).port;
-    /** 중계가 목적지 포트로 붙으려 한 소켓들. `localhost`가 두 주소로 풀리면 거부된 시도도 들어 있다. */
-    const dialed = () =>
-      connecting.mock.calls.flatMap((args, index) => {
-        const options: unknown = args[0];
-        const result = connecting.mock.results[index];
-        return typeof options === "object" &&
-          options !== null &&
-          "port" in options &&
-          Number(options.port) === port &&
-          result?.type === "return"
-          ? [result.value]
-          : [];
-      });
     const { relays, setResearch } = hub();
     setResearch([
       destination({
@@ -847,37 +894,24 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     /** 오류를 넣을 때 살아 있던 소켓: 답을 나르는 연결이다. */
     let carrying: net.Socket[] = [];
-    const received = await new Promise<{ status: number; ending: string }>(
-      (resolve, reject) => {
-        const req = http.request({
-          socketPath: path.join(relay.directory, "egress.sock"),
-          path: `http://localhost:${port}/page`,
-          agent: false,
-        });
-        // 답이 끝나지 않는 결함이 시험 시간 초과로 번지지 않게 한다.
-        req.setTimeout(10_000, () =>
-          reject(new Error("the relayed answer did not end within 10 s"))
+    const answer = await answerTo({
+      socketPath: path.join(relay.directory, "egress.sock"),
+      path: `http://localhost:${port}/page`,
+    });
+    const { ending } = await answerEnding(answer, () => {
+      carrying = dialed(port).filter((socket) => !socket.destroyed);
+      for (const socket of carrying)
+        socket.destroy(
+          Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })
         );
-        req.on("response", (res) => {
-          const status = res.statusCode ?? 0;
-          res.once("data", () => {
-            carrying = dialed().filter((socket) => !socket.destroyed);
-            for (const socket of carrying)
-              socket.destroy(
-                Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })
-              );
-          });
-          res.on("end", () => resolve({ status, ending: "ended" }));
-          res.on("error", () => resolve({ status, ending: "broken" }));
-        });
-        req.on("error", reject);
-        req.end();
-      }
-    );
-    expect(received).toEqual({ status: 200, ending: "broken" });
+    });
+    expect({ status: answer.statusCode, ending }).toEqual({
+      status: 200,
+      ending: "broken",
+    });
     expect(carrying).toHaveLength(1);
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
       "[provider] an allowed destination's answer broke off in the relay (ETIMEDOUT)",
@@ -889,20 +923,23 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
     const ended: string[] = [];
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.write("part");
-      res.on("close", () => ended.push("closed"));
-    });
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve)
+    let closed!: () => void;
+    /** 목적지 쪽 답이 닫혔다(중계가 목적지 쪽을 정리했다). */
+    const destinationClosed = awaitedLater(
+      new Promise<void>((resolve) => (closed = resolve))
     );
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          server.closeAllConnections();
-          server.close((error) => (error ? reject(error) : resolve()));
-        })
+    const { server } = await ownedListener(
+      http.createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.write("part");
+        res.on("close", () => {
+          ended.push("closed");
+          closed();
+        });
+      }),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the destination"
     );
     const port = (server.address() as net.AddressInfo).port;
     const { relays, refused, setResearch } = hub();
@@ -914,28 +951,22 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
-    await new Promise<void>((resolve, reject) => {
-      const req = http.request({
-        socketPath: path.join(relay.directory, "egress.sock"),
-        path: `http://localhost:${port}/page`,
-        agent: false,
-      });
-      req.on("response", (res) => {
-        res.once("data", () => {
-          req.destroy();
-          resolve();
-        });
-      });
-      // 떠난 뒤의 오류는 이미 정해진 결과를 바꾸지 않는다.
-      req.on("error", reject);
-      req.end();
+    await ready(relay);
+    const answer = await answerTo({
+      socketPath: path.join(relay.directory, "egress.sock"),
+      path: `http://localhost:${port}/page`,
     });
-    await expect
-      .poll(() => ended, { timeout: 2000, interval: 20 })
-      .toEqual(["closed"]);
+    // 첫 조각을 받으면 요청자가 떠난다(응답을 끊으면 그 연결이 끊긴다).
+    const { body, ending } = await answerEnding(answer, () => answer.destroy());
+    expect({ body, ending }).toEqual({ body: "part", ending: "broken" });
+    await within(
+      destinationClosed,
+      5_000,
+      "the destination side did not close"
+    );
+    expect(ended).toEqual(["closed"]);
     setResearch([]);
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     expect(refused).toEqual([]);
     expect(warned).not.toHaveBeenCalled();
   });
@@ -946,23 +977,28 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     onTestFinished(() => warned.mockRestore());
     const ended: string[] = [];
     let received!: () => void;
-    const bodyArrived = new Promise<void>((resolve) => (received = resolve));
-    const server = http.createServer((req, res) => {
-      req.once("data", () => received());
-      req.on("end", () => res.end("done"));
-    });
+    const bodyArrived = awaitedLater(
+      new Promise<void>((resolve) => (received = resolve))
+    );
+    let closed!: () => void;
+    /** 목적지가 받은 연결이 닫혔다(중계가 목적지 쪽을 정리했다). */
+    const destinationClosed = awaitedLater(
+      new Promise<void>((resolve) => (closed = resolve))
+    );
+    const { server } = await ownedListener(
+      http.createServer((req, res) => {
+        req.once("data", () => received());
+        req.on("end", () => res.end("done"));
+      }),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the destination"
+    );
     server.on("connection", (socket: net.Socket) =>
-      socket.on("close", () => ended.push("closed"))
-    );
-    await new Promise<void>((resolve) =>
-      server.listen(0, "127.0.0.1", resolve)
-    );
-    onTestFinished(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          server.closeAllConnections();
-          server.close((error) => (error ? reject(error) : resolve()));
-        })
+      socket.on("close", () => {
+        ended.push("closed");
+        closed();
+      })
     );
     const port = (server.address() as net.AddressInfo).port;
     const { relays, refused, setResearch } = hub();
@@ -974,26 +1010,38 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
-    const req = http.request({
-      socketPath: path.join(relay.directory, "egress.sock"),
-      path: `http://localhost:${port}/upload`,
-      method: "POST",
-      agent: false,
-    });
+    await ready(relay);
+    // 요청은 만든 직후 정리에 맡긴다(정리가 끊고 닫힘을 확인한다).
+    const req = ownedClosable(
+      onTestFinished,
+      http.request({
+        socketPath: path.join(relay.directory, "egress.sock"),
+        path: `http://localhost:${port}/upload`,
+        method: "POST",
+        agent: false,
+      }),
+      "the upload through the relay"
+    );
     // 답 전에 스스로 끊은 요청은 Node가 "socket hang up"(ECONNRESET)으로 알린다. 시험 쪽 요청자의 끝이다.
-    const hungUp = new Promise<string | undefined>((resolve) =>
-      req.once("error", (error: NodeJS.ErrnoException) => resolve(error.code))
+    const hungUp = awaitedLater(
+      new Promise<string | undefined>((resolve) =>
+        req.once("error", (error: NodeJS.ErrnoException) => resolve(error.code))
+      )
     );
     req.write("part");
-    await bodyArrived;
+    await within(bodyArrived, 5_000, "the destination did not get the body");
     req.destroy();
-    expect(await hungUp).toBe("ECONNRESET");
-    await expect
-      .poll(() => ended, { timeout: 2000, interval: 20 })
-      .toEqual(["closed"]);
+    expect(
+      await within(hungUp, 5_000, "the request did not end after it left")
+    ).toBe("ECONNRESET");
+    await within(
+      destinationClosed,
+      5_000,
+      "the destination side did not close"
+    );
+    expect(ended).toEqual(["closed"]);
     setResearch([]);
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     expect(refused).toEqual([]);
     expect(warned).not.toHaveBeenCalled();
   });
@@ -1013,7 +1061,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
       ],
     });
-    await relay.ready;
+    await ready(relay);
     expect(await answerVia(relay.directory, `127.0.0.1:${port}`)).toBe(
       "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     );
@@ -1042,30 +1090,114 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
+    await ready(relay);
     expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
       refusal("policy_unavailable")
     );
     expect(target.accepted.length).toBe(0);
   });
 
+  // 정책 hook이 기다리는 사건이 오지 않아도 그 기다림은 시험 끝의 해제(소유자의 reset)로 풀리고, 풀린 까닭이 본문에 닿는다(#286 PR
+  // #300 외부 리뷰 1회차 STD-1). 바깥 답 기다림의 상한은 hook 안 기다림을 끝내지 못한다. 사건이 오지 않은 채 reset에 닿은 기다림은
+  // 소유자의 끝(`end`, 시험 수명의 끝)이 그 이름과 함께 실패로 알린다(본문이 바깥 답 기다림의 상한으로 먼저 실패해도 어느 기다림이
+  // 멈췄는지 결과에 남는다, 2회차). 풀린 hook은 던지고, 제품은 연결 없이 정책 읽기 실패로 거부한다. 이 시험의 소유자가 아닌 따로 만든
+  // 소유자로 reset과 끝을 본문에서 부른다(이 시험의 끝이 실패하지 않게). 1회차의 `expect(() => resetRefusing()).toThrow(…)`는 reset이
+  // 보고하던 동작을 고정한 줄이라 끝이 보고하는 단언으로 바꿨다.
+  it("releases a policy hook's wait at the double's reset when its event never comes, and gives the body why", async () => {
+    const target = await fixture("echo");
+    const asked = Promise.withResolvers<void>();
+    const owner = holdsOwner();
+    /** hook이 담은 기다림. 본문이 해제 뒤 받는다. */
+    const hooked: { wait?: Promise<never> } = {};
+    const { relays } = hub({
+      research: () => {
+        asked.resolve();
+        hooked.wait = awaitedLater(
+          owner.holds.until(
+            new Promise<never>(() => {}),
+            "the event that never comes"
+          )
+        );
+        return hooked.wait;
+      },
+    });
+    // 이 소유자는 대역의 reset이 풀지 않는다. 본문이 먼저 실패해도 hub 닫기보다 먼저 풀리게 hub 뒤에 등록한다(onTestFinished는
+    // 등록 역순으로 돈다).
+    onTestFinished(() => owner.giveUp());
+    const relay = relays.open({ identity, required: [] });
+    await ready(relay);
+    const answer = awaitedLater(
+      answerVia(relay.directory, `localhost:${target.port}`)
+    );
+    await within(asked.promise, 5_000, "the relay did not look up its policy");
+    owner.giveUp();
+    await expect(
+      fromHook(hooked.wait, "the wait for the event that never comes")
+    ).rejects.toMatchObject({
+      message: "the event that never comes was given up at the double's reset",
+    });
+    expect(() => owner.end()).toThrow(
+      new Error(
+        "the test ended while hook waits had not ended: the event that never comes"
+      )
+    );
+    expect(await answer).toBe(refusal("policy_unavailable"));
+    expect(target.accepted.length).toBe(0);
+  });
+
+  // 소유자의 reset(`giveUp`) 뒤에 시작한 기다림·gate는 등록되지 않고 곧바로 거절되며, 그 소유자의 끝(`end`)이 그 시도를 그 시험의
+  // 실패로 알린다(#286 PR #300 외부 리뷰 2회차 STD-1). 고치기 전에는 reset 뒤의 기다림이 등록되어 다음 reset까지 남았고, 그 이름은
+  // 다음 시험의 reset이 알렸다. 이 시험의 소유자가 아닌 따로 만든 소유자로 본다(이 시험의 끝이 실패하지 않게).
+  it("refuses a hold begun after its owner's reset at once and reports it as that owner's failure when it ends", async () => {
+    const owner = holdsOwner();
+    owner.giveUp();
+    await expect(
+      within(
+        owner.holds.until(
+          new Promise<never>(() => {}),
+          "a wait begun after the reset"
+        ),
+        5_000,
+        "the wait begun after the reset was not refused"
+      )
+    ).rejects.toMatchObject({
+      message:
+        "a wait begun after the reset was given up at the double's reset",
+    });
+    // 사건이 이미 왔어도 reset 뒤의 기다림은 거절한다(사건이 이기면 끝난 시험의 hook이 이어 돈다).
+    await expect(
+      within(
+        owner.holds.until(
+          Promise.resolve("came"),
+          "a wait whose event already came"
+        ),
+        5_000,
+        "the wait whose event already came did not end"
+      )
+    ).rejects.toMatchObject({
+      message:
+        "a wait whose event already came was given up at the double's reset",
+    });
+    const lateGate = owner.holds.gate();
+    expect(
+      await within(
+        lateGate.until,
+        5_000,
+        "the gate made after the reset was not released"
+      )
+    ).toBe("reset");
+    expect(() => owner.end()).toThrow(
+      new Error(
+        "holds began after the double's reset: a wait begun after the reset, a wait whose event already came, a gate"
+      )
+    );
+  });
+
   it("refuses requests that are not an HTTP proxy request", async () => {
     const { relays } = hub();
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
-    const status = await new Promise<number>((resolve, reject) => {
-      const req = http.request({
-        socketPath: path.join(relay.directory, "egress.sock"),
-        path: "/relative",
-      });
-      req.on("response", (res) => {
-        res.resume();
-        resolve(res.statusCode ?? 0);
-      });
-      req.on("error", reject);
-      req.end();
-    });
-    expect(status).toBe(400);
+    await ready(relay);
+    expect((await headVia(relay.directory, "/relative")).status).toBe(400);
   });
 
   /** 중계 폴더 안의 파일 소켓 `name`의 주소. */
@@ -1104,14 +1236,15 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const warned = vi.spyOn(console, "warn");
     onTestFinished(() => warned.mockRestore());
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
-    failCloses(() => relay.close(), socketOf(relay, relaySockets.egress));
-    await expect(relay.close()).rejects.toMatchObject(
-      keptFolder(relay, "EBUSY")
+    await ready(relay);
+    const { failedAt } = failCloses(
+      () => relay.close(),
+      socketOf(relay, relaySockets.egress)
     );
-    expect(serverFaults.failedClose.mock.calls).toEqual([
-      [socketOf(relay, relaySockets.egress)],
-    ]);
+    await expect(
+      within(relay.close(), 5_000, "the relay did not close")
+    ).rejects.toMatchObject(keptFolder(relay, "EBUSY"));
+    expect(failedAt).toEqual([socketOf(relay, relaySockets.egress)]);
     expect(existsSync(relay.directory)).toBe(true);
     expect(warned.mock.calls).toEqual([[keptWarning(relay, "EBUSY")]]);
   });
@@ -1128,17 +1261,21 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     onTestFinished(() => warned.mockRestore());
     serverFaults.listen = { code: "EACCES" };
     const relay = relays.open({ identity, required: [] });
-    failCloses(() => relay.close(), socketOf(relay, relaySockets.tools));
-    await expect(relay.ready).rejects.toThrow("listen failed");
+    const { failedAt } = failCloses(
+      () => relay.close(),
+      socketOf(relay, relaySockets.tools)
+    );
+    await expect(ready(relay)).rejects.toMatchObject({
+      message: "listen failed",
+      code: "EACCES",
+    });
     expect(serverFaults.refusedListen.mock.calls).toEqual([
       [socketOf(relay, relaySockets.egress)],
     ]);
-    await expect(relay.close()).rejects.toMatchObject(
-      keptFolder(relay, "EBUSY")
-    );
-    expect(serverFaults.failedClose.mock.calls).toEqual([
-      [socketOf(relay, relaySockets.tools)],
-    ]);
+    await expect(
+      within(relay.close(), 5_000, "the relay did not close")
+    ).rejects.toMatchObject(keptFolder(relay, "EBUSY"));
+    expect(failedAt).toEqual([socketOf(relay, relaySockets.tools)]);
     expect(warned.mock.calls).toEqual([
       ["[provider] the isolated run relay could not open; closing it (EACCES)"],
       [keptWarning(relay, "EBUSY")],
@@ -1153,17 +1290,21 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     onTestFinished(() => warned.mockRestore());
     const first = relays.open({ identity, required: [] });
     const second = relays.open({ identity, required: [] });
-    await Promise.all([first.ready, second.ready]);
+    await ready(first, second);
     // hub의 닫기는 남은 중계만 닫으므로, 정리에는 시험이 부른 그 닫기를 넘긴다(부르기 전에 실패했으면 정리가 처음 부른다).
     let hubClosing: Promise<void> | undefined;
-    failCloses(
+    const { failedAt } = failCloses(
       () => (hubClosing ??= relays.close()),
       socketOf(first, relaySockets.egress),
       socketOf(second, relaySockets.egress)
     );
-    const failure = await (hubClosing = relays.close()).then(
-      () => undefined,
-      (error: unknown) => error
+    const failure = await within(
+      (hubClosing = relays.close()).then(
+        () => undefined,
+        (error: unknown) => error
+      ),
+      5_000,
+      "the hub did not close"
     );
     expect(failure).toBeInstanceOf(AggregateError);
     expect(failure).toMatchObject({
@@ -1174,9 +1315,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       [keptWarning(first, "EBUSY")],
       [keptWarning(second, "EBUSY")],
     ]);
-    expect(serverFaults.failedClose.mock.calls).toEqual([
-      [socketOf(first, relaySockets.egress)],
-      [socketOf(second, relaySockets.egress)],
+    expect(failedAt).toEqual([
+      socketOf(first, relaySockets.egress),
+      socketOf(second, relaySockets.egress),
     ]);
     expect(existsSync(first.directory)).toBe(true);
     expect(existsSync(second.directory)).toBe(true);
@@ -1195,10 +1336,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
+    await ready(relay);
     const open = await openTunnel(relay.directory, `localhost:${target.port}`);
     expectEstablished(open);
-    await relay.close();
+    await within(relay.close(), 5_000, "the relay did not close");
     await tunnelClosed(open);
     expect(existsSync(path.join(relay.directory, "egress.sock"))).toBe(false);
     // 지운 소켓 파일에는 연결할 곳이 없다.
@@ -1210,7 +1351,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("passes organization tool requests to the tools handler with this run's identity, overriding what the container claims", async () => {
     const { relays } = hub();
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     const body = await answerBody({
       socketPath: path.join(relay.directory, "tools.sock"),
       path: "/api/tools/mcp",
@@ -1227,28 +1368,36 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const service = await fixture("http");
     const { relays } = hub();
     const relay = relays.open({ identity, required: [], inbound: true });
-    await relay.ready;
-    // 컨테이너 쪽: inbound.sock에 미리 붙어 있다가 첫 바이트가 오면 컨테이너 안 서버에 잇는다.
-    const reverse = () => {
-      const socket = net.connect(path.join(relay.directory, "inbound.sock"));
-      socket.once("data", (first) => {
-        const local = net.connect(service.port, "127.0.0.1", () => {
-          local.write(first);
-          socket.pipe(local).pipe(socket);
-        });
-        reverse();
-      });
-      onTestFinished(() => void socket.destroy());
-    };
-    reverse();
-    const origin = await relay.inboundOrigin();
-    const first = (await (await fetch(`${origin}/one`)).json()) as {
-      url: string;
-    };
-    const second = (await (await fetch(`${origin}/two`)).json()) as {
-      url: string;
-    };
-    expect([first.url, second.url]).toEqual(["/one", "/two"]);
+    await ready(relay);
+    // 컨테이너 쪽: inbound.sock에 붙은 연결마다 컨테이너 안 서버로 가는 연결을 미리 이어 둔다. 중계는 받은 역방향 연결을 쌓아 두고
+    // 이 컴퓨터의 연결(요청은 `agent: false`라 요청마다 새 연결) 하나에 하나씩 쓰므로, 요청 둘에 짝 둘을 연다. 답이 끝나면 짝의 두
+    // 소켓이 함께 닫힌다. 모든 소켓은 본문에서 만든 같은 식에서 이 시험의 정리에 맡기고(정리가 끊고 닫힘을 확인한다), 처리기 안에서
+    // 소켓을 얻지 않는다(정리가 시작된 뒤 새 소켓을 얻는 길이 없다, #286 PR #300 외부 리뷰 1회차 STD-2).
+    for (const pair of ["first", "second"]) {
+      const reverse = ownedClosable(
+        onTestFinished,
+        net.connect(path.join(relay.directory, "inbound.sock")),
+        `the ${pair} reverse connection from the container side`
+      );
+      const local = ownedClosable(
+        onTestFinished,
+        net.connect(service.port, "127.0.0.1"),
+        `the ${pair} connection to the server inside the container`
+      );
+      reverse.pipe(local).pipe(reverse);
+    }
+    const origin = await within(
+      relay.inboundOrigin(),
+      5_000,
+      "the inbound origin did not end"
+    );
+    const { hostname, port, host } = new URL(origin);
+    const ask = async (where: string) =>
+      JSON.parse(await answerBody({ host: hostname, port, path: where }));
+    expect([await ask("/one"), await ask("/two")]).toEqual([
+      { url: "/one", host },
+      { url: "/two", host },
+    ]);
   });
 
   // 닫기가 시작되면 중계는 새 서버를 만들지 않고, 이미 듣기를 시작한 서버는 듣기 시도가 끝난 뒤 닫는다(#286 PR #299 외부 리뷰
@@ -1308,7 +1457,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     async (_name, order) => {
       const { relays } = hub();
       const relay = relays.open({ identity, required: [], inbound: true });
-      await relay.ready;
+      await ready(relay);
       const loopbacks = watchLoopback();
       let origin: Promise<string>, closing: Promise<void>;
       if (order === "before") {
@@ -1318,8 +1467,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         closing = relay.close();
         origin = relay.inboundOrigin();
       }
-      await expect(origin).rejects.toMatchObject(relayClosed);
-      await closing;
+      await expect(
+        within(origin, 5_000, "the inbound origin did not end")
+      ).rejects.toMatchObject(relayClosed);
+      await within(closing, 5_000, "the relay did not close");
       expect(loopbacks).toEqual([]);
       expect(existsSync(relay.directory)).toBe(false);
     }
@@ -1328,20 +1479,19 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("closes an inbound server only after its listening began, and gives no origin once its close began", async () => {
     const { relays } = hub();
     const relay = relays.open({ identity, required: [], inbound: true });
-    await relay.ready;
+    await ready(relay);
     // 듣기가 불린 신호와 그때 시작한 닫기를 따로 기다린다(닫기 promise를 그대로 넘기면 신호가 닫기 끝을 따라간다).
-    const began = Promise.withResolvers<{ closing: Promise<void> }>();
+    const began = Promise.withResolvers<void>();
+    /** 콜백이 시작한 닫기. 만드는 자리에서 시험 칸에 담는다. 본문이 신호를 놓치면(그때 시험은 이미 실패했다) 그 거절은 처리되지 않은 거절로 새지 않고 버려진다. */
+    const started: { closing?: Promise<void> } = {};
     // loopback 서버의 듣기는 주소 조회를 거쳐 다음 차례에 시작된다. 그 사이에 닫기를 시작한다.
-    const loopbacks = watchLoopback(() =>
-      began.resolve({ closing: relay.close() })
-    );
+    const loopbacks = watchLoopback(() => {
+      started.closing = awaitedLater(relay.close());
+      began.resolve();
+    });
     const origin = relay.inboundOrigin();
-    const { closing } = await within(
-      began.promise,
-      5_000,
-      "the inbound server did not listen"
-    );
-    await within(closing, 5_000, "the relay did not close");
+    await within(began.promise, 5_000, "the inbound server did not listen");
+    await fromHook(started.closing, "the relay's close");
     await expect(
       within(origin, 5_000, "the inbound origin did not end")
     ).rejects.toMatchObject(relayClosed);
@@ -1352,6 +1502,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 닫기가 시작된 뒤 받은 연결도 끊는다(#286 PR #299 외부 리뷰 1회차 대응 점검). 서버는 차례로 닫히므로 앞 서버를 닫는 동안 뒤 서버가
   // 연결을 받을 수 있고, net 서버(inbound)의 닫기는 받은 연결이 모두 끝나야 끝난다. 앞 서버의 닫기를 붙잡아 그 순간을 상태로 만든다.
   it("drops a connection it accepts after its close began, so its close ends", async () => {
+    const holds = testHolds();
     const { relays } = hub();
     const accepted = Promise.withResolvers<void>();
     serverFaults.listening = (address, server) => {
@@ -1360,12 +1511,12 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         server.on("connection", () => accepted.resolve());
     };
     const relay = relays.open({ identity, required: [], inbound: true });
-    const release = gate();
+    const release = holds.gate();
     serverFaults.holdClose = {
       at: (address) => address === socketOf(relay, relaySockets.egress),
       held: release,
     };
-    await relay.ready;
+    await ready(relay);
     const closing = relay.close();
     ownedClosable(
       onTestFinished,
@@ -1382,20 +1533,24 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(existsSync(relay.directory)).toBe(false);
   });
 
-  // 대역이 붙잡은 닫기는 본문이 풀지 못한 채 끝나도 대역의 reset(afterEach)이 푼다(#286 PR #299 외부 리뷰 2회차 STD-1). 본문이
-  // 실패하면 아무도 풀지 않아 hub·중계 닫기(onTestFinished)가 그 닫기에 걸렸다. vitest는 afterEach를 모든 onTestFinished보다 먼저
-  // 부른다(5.0.5 러너 `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인).
+  // 대역이 붙잡은 닫기는 본문이 풀지 못한 채 끝나도 대역의 reset(afterEach)이 이 시험의 소유자를 통해 푼다(#286 PR #299 외부 리뷰
+  // 2회차 STD-1). 본문이 실패하면 아무도 풀지 않아 hub·중계 닫기(onTestFinished)가 그 닫기에 걸렸다. vitest는 afterEach를 모든
+  // onTestFinished보다 먼저 부른다(5.0.5 러너 `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인). 이 시험의
+  // 소유자의 끝은 본문이 등록한 정리 뒤에 돈다(beforeEach가 그 시험의 첫 onTestFinished로 등록): 본문이 등록한 정리가 돌 때 소유자가
+  // 아직 이 시험의 것이다(#286 PR #300 외부 리뷰 2회차).
   it("lets the double's reset release a held relay close the body never released", async () => {
+    const holds = testHolds();
+    onTestFinished(() => expect(testHolds()).toBe(holds));
     const { relays } = hub();
     const relay = relays.open({ identity, required: [] });
-    const held = gate();
+    const held = holds.gate();
     const caught = Promise.withResolvers<void>();
     serverFaults.heldClose.mockImplementation(() => caught.resolve());
     serverFaults.holdClose = {
       at: (address) => address === socketOf(relay, relaySockets.egress),
       held,
     };
-    await relay.ready;
+    await ready(relay);
     const closing = relay.close();
     await within(caught.promise, 5_000, "the relay's close was not held");
     resetRefusing();
@@ -1442,19 +1597,25 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     );
     return { socket, closed };
   };
-  /** 정책 조회를 gate로 붙잡는 hub. 대역의 reset으로 풀리면 조회 실패로 던진다(중계는 연결 없이 거부한다). */
-  const heldLookupHub = (allowed: Destination[]) => {
-    const lookup = gate();
+  /**
+   * 정책 조회를 이 시험의 소유자(`holds`, 본문이 첫 줄에서 잡아 넘김)의 gate로 붙잡는 hub. 대역의 reset으로 풀리면 조회 실패로 던진다(중계는 연결 없이 거부한다). 조회가 풀리면 `allowed`를
+   * 돌려주고, 보호 포트는 `protectedPorts`가 답한다(기본: 없음, `hub`의 기본과 같다).
+   */
+  const heldLookupHub = (
+    holds: Holds,
+    allowed: Destination[],
+    protectedPorts: () => number[] = () => []
+  ) => {
+    const lookup = holds.gate();
     const asked = Promise.withResolvers<void>();
     const { relays } = hub({
       research: async () => {
         asked.resolve();
         if ((await lookup.until) === "reset")
-          throw new Error(
-            "the held policy lookup was given up at the double's reset"
-          );
+          throw givenUpAtReset("the held policy lookup");
         return allowed;
       },
+      protectedPorts,
     });
     return {
       relays,
@@ -1485,12 +1646,13 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it.each(kinds)(
     "starts no destination connection from a policy lookup that ends after its close began (%s)",
     async (kind) => {
+      const holds = testHolds();
       const port = await heldDestination();
-      const { relays, lookup, asked } = heldLookupHub([
+      const { relays, lookup, asked } = heldLookupHub(holds, [
         destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
       ]);
       const relay = relays.open({ identity, required: [] });
-      await relay.ready;
+      await ready(relay);
       ask(relay, kind, `127.0.0.1:${port}`);
       await asked();
       const closing = relay.close();
@@ -1503,12 +1665,13 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 닫기는 서버의 정책 조회를 기다리지 않는다(조회는 서버의 일이라 결과만 버린다). 조회는 열지 않는다: 대역의 reset이 풀어 조회
   // 실패로 끝난다.
   it("ends its close while a policy lookup is still held", async () => {
+    const holds = testHolds();
     const port = await heldDestination();
-    const { relays, asked } = heldLookupHub([
+    const { relays, asked } = heldLookupHub(holds, [
       destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     ask(relay, "CONNECT", `127.0.0.1:${port}`);
     await asked();
     await within(relay.close(), 5_000, "the relay did not close");
@@ -1526,7 +1689,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
       ]);
       const relay = relays.open({ identity, required: [] });
-      await relay.ready;
+      await ready(relay);
       const connection = heldConnects();
       ask(relay, kind, `127.0.0.1:${port}`);
       const socket = await connection(1);
@@ -1554,7 +1717,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       destination({ host: "relay-retry.test", port, addresses: ["127.0.0.1"] }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     const connection = heldConnects();
     ask(relay, "CONNECT", `relay-retry.test:${port}`);
     (await connection(1)).destroy(
@@ -1577,13 +1740,14 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 닫기 시작 뒤에 끝난 정책 조회는 목적지 이름 풀이를 새로 시작하지 않는다. 고치기 전에는 조회 뒤 풀이 호출까지 microtask라 서버
   // 닫기 콜백보다 먼저 풀이를 시작했다.
   it("starts no name lookup from a policy lookup that ends after its close began", async () => {
+    const holds = testHolds();
     const port = await heldDestination();
     nameFaults.lookup = { host: "relay-late.test", addresses: ["127.0.0.1"] };
-    const { relays, lookup, asked } = heldLookupHub([
+    const { relays, lookup, asked } = heldLookupHub(holds, [
       destination({ host: "relay-late.test", port, addresses: ["127.0.0.1"] }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     ask(relay, "CONNECT", `relay-late.test:${port}`);
     await asked();
     const closing = relay.close();
@@ -1595,9 +1759,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // hub 닫기는 모든 중계의 닫기를 같은 동기 구간에서 먼저 시작한 뒤 정책을 뗀다(#286 PR #299 외부 리뷰 2회차 대응, 감독 결정).
   // 고치기 전에는 정책을 먼저 떼고 중계를 하나씩 닫아, 앞 중계를 닫는 사이 뒤 중계가 받은 요청이 떼어진 정책을 만났다. 앞 중계의
   // 닫기를 붙잡아 그 순간을 상태로 만든다.
-  /** 먼저 연 중계의 egress 서버 닫기를 붙잡는다. 붙잡힌 것을 알리는 `caught`와 놓는 gate를 돌려준다. */
-  const holdFirstClose = (first: { directory: string }) => {
-    const held = gate();
+  /** 먼저 연 중계의 egress 서버 닫기를 이 시험의 소유자(`holds`)의 gate로 붙잡는다. 붙잡힌 것을 알리는 `caught`와 놓는 gate를 돌려준다. */
+  const holdFirstClose = (holds: Holds, first: { directory: string }) => {
+    const held = holds.gate();
     const caught = Promise.withResolvers<void>();
     serverFaults.heldClose.mockImplementation(() => caught.resolve());
     serverFaults.holdClose = {
@@ -1612,10 +1776,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   };
 
   it("starts every relay's close before it detaches the policy, so a tools request meets no detached policy", async () => {
+    const holds = testHolds();
     const { relays } = hub();
     const first = relays.open({ identity, required: [] });
     const second = relays.open({ identity, required: [] });
-    await Promise.all([first.ready, second.ready]);
+    await ready(first, second);
     const tools = net.connect(socketOf(second, relaySockets.tools));
     const { closed } = ownClosable(
       onTestFinished,
@@ -1632,7 +1797,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       5_000,
       "the tools connection did not connect"
     );
-    const { held, caught } = holdFirstClose(first);
+    const { held, caught } = holdFirstClose(holds, first);
     const closing = relays.close();
     await caught();
     tools.write("GET /api/tools/mcp HTTP/1.1\r\nHost: tools\r\n\r\n");
@@ -1649,32 +1814,23 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 같은 창에서 정책 조회가 끝난 연결이 떼어진 정책의 보호 포트(빈 목록)로 판정되어 이 컴퓨터의 보호 포트에 붙었다. 고친 뒤에는 hub
   // 닫기가 시작될 때 그 중계가 끊겨 연결이 닫힌다(연결 시작보다 먼저).
   it("starts no connection to a protected port from a policy lookup that ends while the hub closes", async () => {
+    const holds = testHolds();
     const port = await heldDestination();
-    const lookup = gate();
-    const asked = Promise.withResolvers<void>();
-    const { relays } = hub({
-      research: async () => {
-        asked.resolve();
-        if ((await lookup.until) === "reset")
-          throw new Error(
-            "the held policy lookup was given up at the double's reset"
-          );
-        return [
-          destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
-        ];
-      },
-      protectedPorts: () => [port],
-    });
+    const { relays, lookup, asked } = heldLookupHub(
+      holds,
+      [destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] })],
+      () => [port]
+    );
     const first = relays.open({ identity, required: [] });
     const second = relays.open({ identity, required: [] });
-    await Promise.all([first.ready, second.ready]);
+    await ready(first, second);
     const dialed = Promise.withResolvers<void>();
     refusing.heldConnect.mockImplementation(() => dialed.resolve());
     const { socket, closed } = ask(second, "CONNECT", `127.0.0.1:${port}`);
     const received = vi.fn();
     socket.on("data", received);
-    await within(asked.promise, 5_000, "the relay did not look up its policy");
-    const { held, caught } = holdFirstClose(first);
+    await asked();
+    const { held, caught } = holdFirstClose(holds, first);
     const closing = relays.close();
     await caught();
     lookup.open();
@@ -1705,7 +1861,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     expect(await answerVia(relay.directory, `127.0.0.1:${port}`)).toBe(
       refusal("policy_unavailable")
     );
@@ -1733,7 +1889,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ],
     });
-    await relay.ready;
+    await ready(relay);
     const tunnel = await openTunnel(
       relay.directory,
       `localhost:${target.port}`
@@ -1742,7 +1898,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     ports = () => {
       throw new Error("protected ports down");
     };
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     await tunnelClosed(tunnel);
     expect(refused).toEqual([
       { host: "localhost", port: target.port, reason: "policy_unavailable" },
@@ -1768,7 +1924,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     let research = async (): Promise<Destination[]> => allowed;
     const { relays, refused } = hub({ research: () => research() });
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     const tunnel = await openTunnel(
       relay.directory,
       `localhost:${target.port}`
@@ -1777,7 +1933,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     research = async () => {
       throw new Error("db down");
     };
-    await relays.revalidate(identity.organizationId);
+    await revalidated(relays.revalidate(identity.organizationId));
     await tunnelClosed(tunnel);
     expect(refused).toEqual([
       { host: "localhost", port: target.port, reason: "policy_unavailable" },
@@ -1793,22 +1949,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 다시 보기는 던져 연결을 회수하지 못했다. 실패는 실제 OS 조회 경계(`node:os` 모듈 대역)에 넣는다.
   const addressesUnreadable =
     "[provider] this computer's addresses could not be read (ERR_SYSTEM_ERROR)";
-  /** egress.sock을 거친 HTTP 절대 주소 요청 하나의 답 상태와 거부 이유(node:http 파서가 읽은 것, `answerTo`). 본문은 버린다. */
+  /** egress.sock을 거친 HTTP 절대 주소 요청 하나의 답 상태와 거부 이유(`headVia`). */
   const httpAnswer = async (
     relay: { directory: string },
     authority: string
   ) => {
-    const answer = await answerTo({
-      socketPath: socketOf(relay, relaySockets.egress),
-      path: `http://${authority}/`,
-      headers: { host: authority },
-      agent: false,
-    });
-    answer.resume();
-    return {
-      status: answer.statusCode,
-      refusal: answer.headers["x-babojubot-refusal"],
-    };
+    const { status, headers } = await headVia(
+      relay.directory,
+      `http://${authority}/`,
+      { host: authority }
+    );
+    return { status, refusal: headers["x-babojubot-refusal"] };
   };
 
   it.each(kinds)(
@@ -1822,7 +1973,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
       ]);
       const relay = relays.open({ identity, required: [] });
-      await relay.ready;
+      await ready(relay);
       osFaults.interfaces = { cause: "ENOMEM" };
       if (kind === "CONNECT")
         expect(await answerVia(relay.directory, `127.0.0.1:${port}`)).toBe(
@@ -1854,7 +2005,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       }),
     ]);
     const relay = relays.open({ identity, required: [] });
-    await relay.ready;
+    await ready(relay);
     const tunnel = await openTunnel(
       relay.directory,
       `localhost:${target.port}`
@@ -1862,11 +2013,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expectEstablished(tunnel);
     osFaults.interfaces = { cause: "ENOMEM" };
     setResearch([]);
-    await within(
-      relays.revalidate(identity.organizationId),
-      5_000,
-      "the revalidation did not end"
-    );
+    await revalidated(relays.revalidate(identity.organizationId));
     await tunnelClosed(tunnel);
     expect(refused).toEqual([
       { host: "localhost", port: target.port, reason: "policy_unavailable" },
@@ -1895,7 +2042,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }),
       ]);
       const relay = relays.open({ identity, required: [] });
-      await relay.ready;
+      await ready(relay);
       // 판정 도중(이름 풀이 안)에 시작한 다시 보기. 응답을 기다리는 사이 거절돼도 처리되지 않은 거절로 남지 않게, 시작하는 자리에서
       // 나중에 기다릴 것으로 맡긴다.
       const started: { revalidation?: Promise<void> } = {};
@@ -1907,22 +2054,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         );
       });
       const authority = `relay-recheck.test:${target.port}`;
-      if (kind === "CONNECT")
-        expect(await answerVia(relay.directory, authority)).toBe(
-          refusal("policy_unavailable")
-        );
-      else
-        expect(await httpAnswer(relay, authority)).toEqual({
-          status: 403,
-          refusal: "policy_unavailable",
-        });
-      // 판정 도중의 이름 풀이는 한 번이고, 그 안에서 다시 보기를 한 번 시작했다.
+      const answer =
+        kind === "CONNECT"
+          ? await answerVia(relay.directory, authority)
+          : await httpAnswer(relay, authority);
+      // 답 내용보다 먼저 콜백이 시작한 다시 보기를 받는다. 판정 도중의 이름 풀이는 한 번이고, 그 안에서 다시 보기를 한 번 시작했다.
+      await fromHook(started.revalidation, "the revalidation");
       expect(nameFaults.looked).toHaveBeenCalledTimes(1);
-      expect(started.revalidation).toBeDefined();
-      await within(
-        started.revalidation!,
-        5_000,
-        "the revalidation did not end"
+      expect(answer).toEqual(
+        kind === "CONNECT"
+          ? refusal("policy_unavailable")
+          : { status: 403, refusal: "policy_unavailable" }
       );
       expect(refused).toEqual([
         {

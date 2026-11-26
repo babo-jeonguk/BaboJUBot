@@ -91,15 +91,62 @@ test("test code may remove files, use recursive elsewhere and call removeFolder"
       assert.deepEqual(await lint(code, place, removalRules), [], code);
 });
 
-test("code outside tests may remove a folder directly", async () => {
-  // 제품 코드와 손으로 돌리는 스크립트, 외부 프로그램을 흉내 내는 가짜 CLI는 시험 코드 규칙을 받지 않는다.
-  for (const place of [
-    "scripts/lint-sample.mjs",
-    "scripts/live/lint-sample.mjs",
-    "packages/runtime/test-fixtures/lint-sample.mjs",
-  ])
+test("a fake program outside tests may remove a folder directly", async () => {
+  // 외부 프로그램을 흉내 내는 가짜 CLI는 시험 코드 규칙도 스크립트 규칙도 받지 않는다.
+  assert.deepEqual(
+    await lint(
+      folderRemovals["rm with recursive"],
+      "packages/runtime/test-fixtures/lint-sample.mjs",
+      removalRules
+    ),
+    []
+  );
+});
+
+/** 손으로 돌리는 스크립트 자리들. 시험이 아닌 스크립트도 폴더를 상한 안에서 지운다(#286 PR 3b-3b-1). */
+const scriptPlaces = [
+  "scripts/lint-sample.mjs",
+  "scripts/live/lint-sample.mjs",
+  ".agents/scripts/lint-sample.mjs",
+];
+
+// 이 시험이 바꾼 것: 예전에는 scripts의 recursive 지우기를 허용한다고 단언했다(위 시험의 scripts 두 자리). 스크립트의 지우기도
+// 상한 없이 매달리거나 끝을 확인하지 않은 폴더를 지우는 모양이 되므로(chaos-live·chaos-run·chaos-server·boot-check), 스크립트에도
+// 같은 규칙을 걸고 그 단언을 이 시험으로 옮겼다.
+for (const [shape, code] of Object.entries(folderRemovals))
+  test(`a script may not remove a folder by ${shape}`, async () => {
+    for (const place of scriptPlaces) {
+      const [message, ...rest] = await lint(code, place, removalRules);
+      assert.ok(message, `${place}: not reported`);
+      assert.deepEqual(rest, [], place);
+      assert.match(
+        message.message,
+        /removeFolderWithin\(@babojubot\/process\/test-cleanup\)/
+      );
+      assert.match(message.message, /CODING_STANDARDS\.md#정리/);
+    }
+  });
+
+test("a script may not import a remover from fs under another name", async () => {
+  for (const place of scriptPlaces) {
+    const messages = await lint(
+      `import { rm as remove } from "node:fs/promises";\nawait remove("dir", { recursive: true });\n`,
+      place,
+      removalRules
+    );
+    assert.equal(messages.length, 1, place);
+    assert.match(messages[0].message, /이름 그대로 가져오세요/);
+  }
+});
+
+test("a script may remove files and call removeFolderWithin", async () => {
+  for (const place of scriptPlaces)
     assert.deepEqual(
-      await lint(folderRemovals["rm with recursive"], place, removalRules),
+      await lint(
+        `import { rm } from "node:fs/promises";\nimport { removeFolderWithin } from "@babojubot/process/test-cleanup";\nawait rm("file", { force: true });\nawait removeFolderWithin("dir", { retries: 5 });\n`,
+        place,
+        removalRules
+      ),
       [],
       place
     );

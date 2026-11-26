@@ -2,14 +2,19 @@
 // 실행 중 취소·서버 강제 종료 후 복구·재시작 전후 같은 호출 키·조직 간 동시 실행 제한·실행 중 메시지 전달·세션 재개와 설정 변경을
 // 장면마다 새 임시 제품 홈·서버로 확인한다. 결과는 메타데이터만 `.scratch/chaos/<시각>/results.json`에 남긴다.
 // 사용법: docs/providers.md "실모델 장애 검사".
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { failureCode } from "@babojubot/contracts";
+import {
+  createOpenCodeProvider,
+  processRecordPids,
+  recoverProviderProcesses,
+} from "@babojubot/runtime";
 import { LaunchRefused, limits, parseLaunch } from "./live/chaos-budget.mjs";
 import { exitCodeOf, runChaos, writeEvidence } from "./live/chaos-run.mjs";
-import { scrubEnvironment } from "./live/chaos-server.mjs";
+import { removeEndedFolder, scrubEnvironment } from "./live/chaos-server.mjs";
 import { scenes } from "./live/chaos-scenes.mjs";
 import { afterOutput } from "./exit-after-output.ts";
 import { installUserInterrupt } from "./live/chaos-interrupt.ts";
@@ -45,24 +50,98 @@ scrubEnvironment(process.env);
 const stop = new AbortController();
 installUserInterrupt(stop);
 
-/** 실제 호출 전 확인: 프로그램·로그인 상태와 무료 모델. 임시 홈에서 하고 지운다. 사용자 OpenCode 설정·자격 증명은 읽지 않는다. */
+/**
+ * 준비 확인 결과에서 두 가지를 읽는다. `probe`: 확인 명령(`runProbe`)의 끝을 확인했는가. `runProbe`는 트리의 끝을 확인하지 못하면
+ * `killed`로 던지고 준비 확인은 그것을 `check_failed`로 돌려주므로, 그 밖의 이유로 돌아왔으면 확인 명령은 시작하지 못했거나 끝났다.
+ * `check_failed`에는 끝을 확인한 실패도 접혀 있지만 가를 수 없어 확인 못 함으로 센다. OpenCode 준비 확인이 내지 않는 이유도 확인 못
+ * 함이다. `free`: 무료 모델이 있다(준비됨).
+ * @param {import("@babojubot/contracts").ProviderReadinessCheck} readiness
+ * @returns {{ probe: "ended" | "unconfirmed", free: boolean }}
+ */
+function readinessOf(readiness) {
+  const reason = readiness.reason;
+  switch (reason) {
+    case null:
+      return { probe: "ended", free: true };
+    case "credentials_unverified":
+    case "program_missing":
+      return { probe: "ended", free: false };
+    case "check_failed":
+    case "check_timeout":
+    case "not_checked":
+    case "product_login_missing":
+    case "credentials_invalid":
+    case "isolation_unavailable":
+    case "isolation_unsafe":
+    case "credential_relay_unverified":
+    case "credential_relay_failed":
+      return { probe: "unconfirmed", free: false };
+    default: {
+      /** @type {never} */
+      const unknown = reason;
+      throw new Error(`unknown readiness reason ${String(unknown)}`);
+    }
+  }
+}
+
+/**
+ * 임시 홈에서 준비 확인을 하고, 그 확인이 띄운 프로그램이 끝났는지 본다. 서버의 끝은 제품 복구 뒤 남은 복구 기록이 없는 것으로 본다
+ * (제품은 트리가 멈춘 것을 확인했을 때만 기록을 지운다). 한계: 제품이 기록을 저장하지 못한 길과, 트리는 멈췄지만 출력을 쥔 자손이
+ * 남은 길은 이 판정이 보지 못한다(#286 PR 3b-3b-1 「한계」, #301).
+ */
+async function checkIn(home) {
+  const connection = createOpenCodeProvider({ dataDir: home });
+  const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(60_000)]);
+  const readiness = await connection.adapter.checkReadiness(signal);
+  await recoverProviderProcesses(home);
+  return {
+    readiness,
+    ...readinessOf(readiness),
+    recordsLeft: processRecordPids(home).length,
+  };
+}
+
+/**
+ * 실제 호출 전 확인: 프로그램·로그인 상태와 무료 모델. 임시 홈에서 하고, 그 확인이 띄운 프로그램의 끝을 확인했을 때만 지운다. 사용자
+ * OpenCode 설정·자격 증명은 읽지 않는다. 끝을 확인하지 못하면 홈을 남기고(지우기를 시작하지 않음), 지우기를 확인하지 못하면(실패·상한
+ * 초과, 그 뒤에 지워질 수 있다) 그 까닭을 알리며, 어느 쪽이든 위치와 함께 문제로 돌려줘 실제 호출로 넘어가지 않는다. 확인 자체가
+ * 던지면 남긴 위치를 알린 뒤 그대로 던진다.
+ */
 async function preflight() {
-  const { createOpenCodeProvider } = await import("@babojubot/runtime");
-  // 임시 홈은 만든 직후 지우기를 등록한다. 지우기 실패는 확인의 원래 실패를 가리지 않고 함께 알린다.
-  return withCleanup(async (defer) => {
-    const home = await mkdtemp(
-      path.join(tmpdir(), "babojubot-chaos-preflight-")
+  const home = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-preflight-"));
+  let checked;
+  try {
+    checked = await checkIn(home);
+  } catch (error) {
+    console.error(
+      `[chaos] the preflight failed (${failureCode(error)}); kept ${home}`
     );
-    defer(() => rm(home, { recursive: true, force: true }));
-    const connection = createOpenCodeProvider({ dataDir: home });
-    const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(60_000)]);
-    const readiness = await connection.adapter.checkReadiness(signal);
-    if (readiness.status !== "ready")
-      return {
-        problem: `무료 모델을 확인하지 못함(${readiness.status}, ${readiness.reason})`,
-      };
-    return { readiness: readiness.status };
-  });
+    throw error;
+  }
+  const { readiness } = checked;
+  const problems = [];
+  if (!checked.free)
+    problems.push(
+      `무료 모델을 확인하지 못함(${readiness.status}, ${readiness.reason})`
+    );
+  if (checked.probe !== "ended" || checked.recordsLeft !== 0) {
+    console.error(
+      `[chaos] the preflight could not confirm that the programs it started ended (readiness ${readiness.status}/${readiness.reason}, process records left ${checked.recordsLeft}); kept ${home}`
+    );
+    problems.push(
+      `확인이 띄운 프로그램의 끝을 확인하지 못함, 임시 홈을 남김(${home})`
+    );
+  } else {
+    // 지우기를 확인하지 못하면 확인 결과를 버리지 않고 문제로 더한다(증거 파일에 남는다). 남긴 것이 아니다: 지우기는 그 뒤에도 돌 수 있다.
+    const removal = await removeEndedFolder(home);
+    if (removal.end === "unconfirmed")
+      problems.push(
+        `임시 홈 지우기를 확인하지 못함(${failureCode(removal.failure)}): ${home}`
+      );
+  }
+  return problems.length > 0
+    ? { problem: problems.join("; ") }
+    : { readiness: readiness.status };
 }
 
 const evidenceDir = path.join(

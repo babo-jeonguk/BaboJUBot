@@ -34,8 +34,10 @@ import {
 import {
   chaosEnvironment,
   chaosServer,
+  folderOutcome,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
+import { attemptAll } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { runCommand } from "@babojubot/process";
 import { openLifelines } from "@babojubot/process/lifelines";
@@ -69,6 +71,87 @@ const postgresAlive = async (home) => {
     `pgrep could not tell whether Postgres of ${home} is left (code ${result.code}, signal ${result.signal}, killed ${result.killed}): ${result.stderr.trim()}`
   );
 };
+
+/**
+ * 장면 서버의 정리를 `defer`에 독립인 두 단계로 맡기고, 서버의 정리(`dispose`)를 맡기는 함수를 돌려준다. 등록 역순으로 1 → 2가 돈다.
+ * 1. 폴더 정리(`folderCleanup`): 맡긴 dispose의 끝(서버의 끝, dispose가 확인)만 기다린 뒤 harness 폴더를 지운다. 홈의 결과로 막지
+ *    않는다: dispose는 홈 지우기를 확인하지 못해도 거절하지 않고 그 끝(`home`)을 돌려주므로, 그것을 이 단계의 실패로 하면 서버가
+ *    끝났는데도 harness 폴더를 남긴다.
+ * 2. 홈 결과 확인(`sceneHomeEnded`): dispose가 돌려준 홈의 끝과 남은 Postgres를 본다. 본문이나 1이 실패한 길에서도 돈다(그 확인을
+ *    `withCleanup` 뒤 본문에 두면 그 길에서 돌지 않았다, #286 PR #300 외부 리뷰 2회차 STD-3).
+ * @param {(step: () => unknown) => void} defer
+ * @param {() => Promise<unknown>} removeHarness
+ * @returns {(home: string, dispose: () => Promise<{ home: FolderEnd }>) => void}
+ */
+function sceneServerCleanup(defer, removeHarness) {
+  /** @type {SceneDisposal} */
+  let disposal = { state: "unowned" };
+  defer(() => sceneHomeEnded(disposal));
+  const folder = folderCleanup(removeHarness);
+  defer(folder.cleanUp);
+  return (home, dispose) =>
+    folder.own(async () => {
+      disposal = { state: "disposing" };
+      try {
+        const { home: end } = await dispose();
+        disposal = { state: "ended", home, end };
+      } catch (error) {
+        disposal = { state: "rejected" };
+        throw error;
+      }
+    });
+}
+
+/**
+ * @typedef {import("../../../scripts/live/chaos-server.mjs").FolderEnd} FolderEnd
+ * @typedef {{ state: "unowned" } | { state: "disposing" } | { state: "rejected" } | { state: "ended", home: string, end: FolderEnd }} SceneDisposal
+ */
+
+/**
+ * 장면 서버 정리가 끝난 뒤의 홈 확인. dispose가 이행했으면 서로 기대지 않는 두 확인을 모두 한다(`attemptAll`): 홈의 끝이 지움이고
+ * 실제로 없는가, 그 홈의 Postgres가 남지 않았는가. dispose를 맡기지 않았으면(서버를 만들기 전에 본문이 실패) 볼 것이 없고, dispose
+ * 자체가 거절했으면 그 실패는 폴더 정리가 이미 알렸으므로 새 실패를 만들지 않는다. dispose가 끝나지 않은 채 여기 닿으면(폴더 정리가
+ * dispose를 상한 안에서 기다리므로 닿을 길이 없다) 끝을 모르는 것으로 실패한다.
+ * @param {SceneDisposal} disposal
+ */
+async function sceneHomeEnded(disposal) {
+  switch (disposal.state) {
+    case "unowned":
+    case "rejected":
+      return;
+    case "disposing":
+      throw new Error(
+        "the scene server's dispose had not ended when its home was checked"
+      );
+    case "ended": {
+      const { home, end } = disposal;
+      await attemptAll([
+        () => {
+          if (!folderOutcome(end).removed)
+            throw new Error(
+              `the scene server did not remove its home ${home} (${end})`
+            );
+          if (existsSync(home))
+            throw new Error(
+              `the scene home ${home} is still there although the scene server removed it`
+            );
+        },
+        async () => {
+          if (await postgresAlive(home))
+            throw new Error(
+              `Postgres of ${home} is left after the scene server was disposed`
+            );
+        },
+      ]);
+      return;
+    }
+    default: {
+      /** @type {never} */
+      const unknown = disposal;
+      throw new Error(`unknown scene disposal ${JSON.stringify(unknown)}`);
+    }
+  }
+}
 
 describe("chaos harness launch", () => {
   it("refuses live calls without --allow-live, in CI, with --record, and with a bad budget or scene", () => {
@@ -599,8 +682,7 @@ describe("chaos harness on a fake connection", () => {
       );
       expect(scene.cleanup).toMatchObject({
         serverStopped: true,
-        homeRemoved: true,
-        homeKept: false,
+        home: "removed",
         providerRecordsLeft: 0,
         commandPidsLeft: 0,
         problems: 0,
@@ -670,7 +752,7 @@ describe("chaos harness on a fake connection", () => {
     });
     expect(scene.cleanup).toMatchObject({
       serverStopped: true,
-      homeRemoved: true,
+      home: "removed",
       postgresLeft: true,
       problems: 0,
     });
@@ -712,7 +794,7 @@ describe("chaos harness on a fake connection", () => {
     expect(summary.outcome).toBe("incomplete");
     expect(first.cleanup).toMatchObject({
       serverStopped: true,
-      homeRemoved: true,
+      home: "removed",
     });
   }, 120_000);
 
@@ -742,7 +824,7 @@ describe("chaos harness on a fake connection", () => {
     ]);
     expect(summary.scenes[0].cleanup).toMatchObject({
       serverStopped: true,
-      homeRemoved: true,
+      home: "removed",
       problems: 0,
     });
   }, 120_000);
@@ -855,8 +937,7 @@ describe("chaos harness on a fake connection", () => {
     const [scene] = summary.scenes;
     expect(scene.outcome).toBe("failed");
     expect(scene.cleanup).toMatchObject({
-      homeKept: true,
-      homeRemoved: false,
+      home: "kept",
       providerRecordsLeft: 1,
     });
     // 사람이 정리할 수 있게 기록을 지우지 않는다.
@@ -873,7 +954,7 @@ describe("chaos harness on a fake connection", () => {
    * (`packages/db/src/embedded.ts`, `packages/process/src/supervised.ts`): 남은 Postgres 멈추기 10초 + 시작 60초 + 닫기 30초에 `pg_ctl`마다
    * 여유 15초씩(`leftoverStopSeconds`·`startSeconds`·`stopSeconds`·`pgCtlMarginMs`), 그리고 트리 정지(유예 2초 + 감독 실행기 정지 20초
    * `supervisorStopLimitMs` + 끝 확인 10초 `endLimitMs`). 모든 단계의 보장은 아니다: 여러 번 도는 상태 확인(`pg_ctl status` 15초씩),
-   * 남은 프로바이더 기록 정리, 상한이 없는 단계(마이그레이션, 홈 지우기)는 더하지 않았다. 넘기면 끝을 확인하지 못한 것으로 실패하고
+   * 남은 프로바이더 기록 정리, 상한이 없는 단계(마이그레이션)와 홈 지우기(`removeFolderWithin` 10초)는 더하지 않았다. 넘기면 끝을 확인하지 못한 것으로 실패하고
    * 폴더를 남긴다(fail closed).
    */
   const disposeMs =
@@ -889,10 +970,11 @@ describe("chaos harness on a fake connection", () => {
     async () => {
       // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 폴더는 만든 직후 정리에 맡기고, 서버를 끈 뒤에 지운다. 홈은 서버 정리(`dispose`)가
       // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
-      const home = await withCleanup(async (defer) => {
+      await withCleanup(async (defer) => {
         const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
-        const folder = folderCleanup(() => removeFolderWithin(harnessDir));
-        defer(folder.cleanUp);
+        const ownServer = sceneServerCleanup(defer, () =>
+          removeFolderWithin(harnessDir)
+        );
         const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
         const server = chaosServer({
           home,
@@ -900,7 +982,8 @@ describe("chaos harness on a fake connection", () => {
           connection: "fake-live",
           database: "persistent",
         });
-        folder.own(() =>
+        // 홈의 끝과 남은 Postgres는 정리 단계(`sceneServerCleanup`)가 본다. 본문이나 harness 정리가 실패해도 돈다.
+        ownServer(home, () =>
           within(server.dispose(), disposeMs, "disposing the scene server")
         );
         // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
@@ -915,12 +998,100 @@ describe("chaos harness on a fake connection", () => {
         scene.abort(reason);
         await expect(starting).rejects.toBe(reason);
         expect(server.running).toBe(false);
-        return home;
       });
-      expect(await postgresAlive(home)).toBe(false);
       // 시험 시한은 본문과 정리의 상한을 더한 값이다: 시작 대기 확인 30초(위 `waitUntil`) + 중단된 시작의 끝 확인 30초(`chaos-server.mjs`
       // `kill`) + 정리 `disposeMs` + Postgres 확인 10초(`postgresAlive`의 `limitMs`).
     },
     30_000 + 30_000 + disposeMs + 10_000
   );
+});
+
+// 장면 서버 정리가 돌려준 홈의 끝은 정리 단계가 확인한다(#286 PR #300 외부 리뷰 2회차 STD-3). dispose는 홈 지우기를 확인하지 못해도
+// 거절하지 않고 `home: "unconfirmed"`를 돌려주므로, 그 확인을 `withCleanup` 뒤 본문에 두면 본문이나 다른 정리가 실패한 길에서 돌지
+// 않았다. 실제 서버 없이 가짜 dispose·harness 지우기로 본다. 홈은 이 시험이 소유한 임시 폴더다(이 시험은 `withCleanup`의 거절을
+// 단언하므로 그 정리는 바깥 `onTestFinished`에 둔다).
+describe("scene server cleanup", () => {
+  const ownedHome = async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "chaos-cleanup-home-"));
+    onTestFinished(() => removeFolderWithin(home));
+    return home;
+  };
+  /** 정리가 홈을 지우지 않았다고 알리는 실패. */
+  const homeNotRemoved = (home, end) =>
+    new Error(`the scene server did not remove its home ${home} (${end})`);
+  /** `withCleanup`의 거절(이행하면 `undefined`). */
+  const failureOf = (cleaning) =>
+    cleaning.then(
+      () => undefined,
+      (error) => error
+    );
+
+  it("reports both the body's failure and a home whose removal was not confirmed", async () => {
+    const home = await ownedHome();
+    const removeHarness = vi.fn(async () => {});
+    const bodyFailure = new Error("the scene failed");
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => ({ home: "unconfirmed" }));
+        throw bodyFailure;
+      })
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toEqual([
+      bodyFailure,
+      homeNotRemoved(home, "unconfirmed"),
+    ]);
+    expect(failure.errors[0]).toBe(bodyFailure);
+    expect(removeHarness).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports both a failed harness removal and a home whose removal was not confirmed", async () => {
+    const home = await ownedHome();
+    const harnessFailure = new Error("the harness folder was not removed");
+    const removeHarness = vi.fn(async () => {
+      throw harnessFailure;
+    });
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => ({ home: "unconfirmed" }));
+      })
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toEqual([
+      harnessFailure,
+      homeNotRemoved(home, "unconfirmed"),
+    ]);
+    expect(failure.errors[0]).toBe(harnessFailure);
+  });
+
+  it("removes the harness folder once the server's end is confirmed, even when the home's removal was not", async () => {
+    const home = await ownedHome();
+    const removeHarness = vi.fn(async () => {});
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => ({ home: "unconfirmed" }));
+      })
+    );
+    expect(failure).toEqual(homeNotRemoved(home, "unconfirmed"));
+    expect(removeHarness).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the harness folder and adds no failure of its own when dispose itself fails", async () => {
+    const home = await ownedHome();
+    const removeHarness = vi.fn(async () => {});
+    const disposeFailure = new Error("the scene server did not stop");
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => {
+          throw disposeFailure;
+        });
+      })
+    );
+    expect(failure).toBe(disposeFailure);
+    expect(removeHarness).not.toHaveBeenCalled();
+  });
 });

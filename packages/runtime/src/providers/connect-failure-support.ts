@@ -26,7 +26,9 @@ import { resetOsFaults } from "./os-failure-support.ts";
 // 하나나 정한 파일 소켓 경로에서 듣는 서버의 닫기가 그 오류로 실패한다(객체·prototype의 메서드를 바꾸지 않고, 대역이 만든 서버만 다르게 답한다).
 // 정한 것이 없으면 진짜 서버와 같다. 시험이 끝나면 `resetRefusing()`이 함께 푼다.
 //
-// 시험이 붙잡는 순간(닫기, 조회)은 `gate()`로 건다. 대역의 붙잡기(`serverFaults.holdClose`)는 `gate()`가 만든 것만 받는다.
+// 시험이 붙잡는 순간(닫기, 조회)과 콜백 안 기다림은 그 시험의 소유자(`openTestHolds`·`testHolds`)에 건다(`holds.gate()`·`holds.until`).
+// 대역의 붙잡기(`serverFaults.holdClose`)는 `holds.gate()`가 만든 것만 받는다. 대역의 기록 가운데 설정을 읽은 뒤 비동기 콜백에서
+// 남기는 것(실패시킨 닫기)은 그 결함을 정한 시험이 소유한다. 부르는 순간 같은 동기 구간에서 남기는 기록만 모듈 칸(`vi.fn`)에 둔다.
 
 const gateBrand: unique symbol = Symbol("gate");
 /** 시험이 붙잡은 일을 놓는 gate. 본문이 `open()`으로 열면 `until`이 `"opened"`로 풀린다. */
@@ -36,24 +38,166 @@ export type Gate = {
   readonly [gateBrand]: true;
 };
 
-/** 아직 열리지 않은 gate를 여는 함수들. `resetRefusing()`이 모두 `"reset"`으로 연다. */
-const openAtReset = new Set<(outcome: "opened" | "reset") => void>();
+/** 대역의 reset이 붙잡힌 기다림을 포기시킬 때의 거절. 무엇을 포기했는지(`what`)를 밝힌다. 포기하는 자리는 모두 이 문구를 쓴다. */
+export function givenUpAtReset(what: string) {
+  return new Error(`${what} was given up at the double's reset`);
+}
+
+/** 시험이 대역·콜백에서 붙잡는 것: gate와 콜백 안 기다림. 얻는 자리에서 그 소유자에 등록한다. */
+export type Holds = {
+  gate(): Gate;
+  until<T>(event: Promise<T>, what: string): Promise<T>;
+};
 
 /**
- * gate 하나를 만든다. 만드는 순간 그 해제를 대역의 reset에 맡긴다: 본문이 열지 못한 채 시험이 끝나도(본문 실패) afterEach의
- * `resetRefusing()`이 `"reset"`으로 연다. vitest는 afterEach를 그 시험의 모든 onTestFinished보다 먼저 부르므로(5.0.5 러너:
- * `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인) gate에 걸린 hub·중계 닫기(onTestFinished)보다 먼저
- * 풀린다(등록 순서에 기대지 않는다). 본문의 `open()`과 reset 가운데 먼저 부른 것 하나만 효과가 있다. 붙잡힌 일의 해제일 뿐 그 일의
- * 끝(닫힘) 확인은 그 일의 정리가 따로 한다.
+ * 붙잡는 것의 소유자 하나(#286 PR #300 외부 리뷰 2회차 STD-1). 상태는 `"open"` → `"givenUp"`(대역의 reset) → `"ended"`(시험 수명의
+ * 끝)로만 간다. 등록은 `"open"`일 때만 한다. 그 뒤의 시도는 등록하지 않고 곧바로 답하며(기다림은 `givenUpAtReset(what)`으로 거절, gate는 `"reset"`으로 풀림) 늦은 등록 목록에 남는다.
+ * - `giveUp()`: 첫 동기 단계에서 등록을 닫고, 등록된 기다림을 `givenUpAtReset(what)`으로 풀고(사건이 오지 않은 채 닿은 것으로 기억),
+ *   gate를 `"reset"`으로 연다. 던지지 않고, 여러 번 불러도 된다.
+ * - `end()`: 첫 동기 단계에서 `"ended"`로. 아직 등록된 것이 있으면(reset을 거치지 않음) giveUp처럼 푼 뒤, 사건이 오지 않은 기다림과 늦은
+ *   등록이 있으면 그 목록으로 던진다. 그 뒤의 시도는 거절만 되고 어디에도 알리지 않는다(알릴 시험이 끝났다).
  */
-export function gate(): Gate {
-  const { promise, resolve } = Promise.withResolvers<"opened" | "reset">();
-  const settle = (outcome: "opened" | "reset") => {
-    openAtReset.delete(settle);
-    resolve(outcome);
+export function holdsOwner() {
+  let state: "open" | "givenUp" | "ended" = "open";
+  const gates = new Set<(outcome: "opened" | "reset") => void>();
+  const waiting = new Set<{ what: string; giveUp: (reason: Error) => void }>();
+  const unended: string[] = [];
+  const late: string[] = [];
+  const release = () => {
+    for (const { what, giveUp } of waiting) {
+      unended.push(what);
+      giveUp(givenUpAtReset(what));
+    }
+    waiting.clear();
+    for (const open of gates) open("reset");
+    gates.clear();
   };
-  openAtReset.add(settle);
-  return { until: promise, open: () => settle("opened"), [gateBrand]: true };
+  /** 지금 등록을 받는가. 받지 않으면 그 시도를 늦은 등록으로 남긴다. */
+  const admits = (what: string) => {
+    switch (state) {
+      case "open":
+        return true;
+      case "givenUp":
+      case "ended":
+        late.push(what);
+        return false;
+      default:
+        return state satisfies never;
+    }
+  };
+  const holds: Holds = {
+    /**
+     * gate 하나를 만든다. 만드는 순간 그 해제를 소유자에 맡긴다: 본문이 열지 못한 채 시험이 끝나도(본문 실패) afterEach의
+     * `resetRefusing()`이 `"reset"`으로 연다. vitest는 afterEach를 그 시험의 모든 onTestFinished보다 먼저 부르므로(5.0.5 러너:
+     * `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인) gate에 걸린 hub·중계 닫기(onTestFinished)보다 먼저
+     * 풀린다. 본문의 `open()`과 reset 가운데 먼저 부른 것 하나만 효과가 있다. 붙잡힌 일의 해제일 뿐 그 일의 끝(닫힘) 확인은 그 일의
+     * 정리가 따로 한다. 등록이 닫힌 뒤에 만들면 이미 `"reset"`으로 풀린 gate다.
+     */
+    gate() {
+      const { promise, resolve } = Promise.withResolvers<"opened" | "reset">();
+      const settle = (outcome: "opened" | "reset") => {
+        gates.delete(settle);
+        resolve(outcome);
+      };
+      if (admits("a gate")) gates.add(settle);
+      else settle("reset");
+      return {
+        until: promise,
+        open: () => settle("opened"),
+        [gateBrand]: true,
+      };
+    },
+    /**
+     * 콜백(정책 hook, 대역 구현) 안에서 사건 `event`를 기다리는 길. 사건의 결과를 그대로 돌려주고(이행·거절 모두), 사건이 오기 전에
+     * 소유자의 reset(`resetRefusing()`, afterEach)이 오면 `givenUpAtReset(what)`으로 거절한다. reset은 그 시험의 hub·중계 닫기
+     * (onTestFinished)보다 먼저 돌므로 본문이 실패해 사건이 오지 않아도 콜백의 기다림은 시험 뒤에 남지 않는다. reset 뒤에 시작한
+     * 기다림은 등록하지 않고 곧바로 거절한다(사건이 이미 왔어도: 거절이 race의 첫 원소다). 사건에는 늘 처리기를 단다(race).
+     * 바깥 기다림의 상한은 바깥 기다림만 끝내므로 이 해제를 대신하지 못한다. 콜백은 이것을 시험이 소유한 칸에 `awaitedLater`로 담고 그
+     * 칸을 기다린다. 본문은 답을 받은 뒤 답 내용을 단언하기 전에 그 칸을 상한 안에서 받아, 사건으로 풀렸는지(이행) 단언하고 사건의
+     * 실패는 그 거절로 받는다. 콜백 안에 상한(`within`)을 두지 않는다: 그 거절이 제품의 정책 읽기 실패(`policy_unavailable`)로 접혀
+     * 까닭이 사라진다. 사건이 오지 않은 채 reset에 닿은 기다림과 reset 뒤의 시도는 소유자의 끝(`end`)이 그 이름으로 알린다.
+     */
+    until<T>(event: Promise<T>, what: string) {
+      if (!admits(what))
+        return Promise.race([Promise.reject(givenUpAtReset(what)), event]);
+      const given = Promise.withResolvers<never>();
+      const entry = { what, giveUp: given.reject };
+      waiting.add(entry);
+      return Promise.race([
+        event.finally(() => waiting.delete(entry)),
+        given.promise,
+      ]);
+    },
+  };
+  return {
+    holds,
+    giveUp() {
+      switch (state) {
+        case "open":
+          state = "givenUp";
+          release();
+          return;
+        case "givenUp":
+        case "ended":
+          return;
+        default:
+          state satisfies never;
+      }
+    },
+    end() {
+      switch (state) {
+        case "open":
+        case "givenUp":
+          state = "ended";
+          release();
+          break;
+        case "ended":
+          return;
+        default:
+          state satisfies never;
+      }
+      const problems = [
+        ...(unended.length > 0
+          ? [
+              `the test ended while hook waits had not ended: ${unended.join(", ")}`,
+            ]
+          : []),
+        ...(late.length > 0
+          ? [`holds began after the double's reset: ${late.join(", ")}`]
+          : []),
+      ];
+      if (problems.length > 0) throw new Error(problems.join("; "));
+    },
+  };
+}
+
+/** 이 시험의 소유자(`openTestHolds`가 열고 그 끝이 비운다). 열린 동안만 있다. */
+let thisTest: ReturnType<typeof holdsOwner> | undefined;
+
+/**
+ * 시험마다 소유자 하나를 연다(`beforeEach(({ onTestFinished }) => openTestHolds(onTestFinished))`). 그 끝을 그 시험의 첫
+ * `onTestFinished`로 등록한다: vitest는 `onTestFinished`를 등록 역순으로 부르므로(5.0.5 러너 `callTestHooks(…, "stack")`) 본문이
+ * 등록한 hub·중계·listener 닫기 뒤, 맨 나중에 돈다. 그 끝이 사건이 오지 않은 기다림과 reset 뒤의 시도를 그 시험의 실패로 알린다.
+ * 앞 시험의 소유자가 아직 열려 있으면(그 끝이 돌지 않음) 던진다.
+ */
+export function openTestHolds(onTestFinished: (end: () => void) => void) {
+  if (thisTest)
+    throw new Error("the previous test's holds did not end before this test");
+  const owner = holdsOwner();
+  thisTest = owner;
+  onTestFinished(() => {
+    thisTest = undefined;
+    owner.end();
+  });
+}
+
+/**
+ * 이 시험의 소유자에 붙잡는 길(`openTestHolds`가 연 것). 본문이 첫 줄에서 한 번 잡아 콜백·도움에 넘긴다. 등록은 그 잡은 소유자로만
+ * 한다: 콜백이 불릴 때 찾으면 앞 시험의 늦은 콜백이 다음 시험의 소유자에 등록된다. 열린 소유자가 없으면 던진다.
+ */
+export function testHolds(): Holds {
+  if (!thisTest) throw new Error("no test opened its holds (openTestHolds)");
+  return thisTest.holds;
 }
 
 /** 대역이 붙잡고 있는 연결(`refusing.holdConnect`). `resetRefusing()`이 포기시킨다. */
@@ -89,18 +233,16 @@ export const serverFaults = {
   /**
    * 파일 소켓 경로로 들은 서버 가운데 그 경로가 `at`에 맞는 서버의 닫기가 실제로 닫은 뒤 이 코드로 실패를 알린다(닫기 콜백의 오류).
    * 포트로 들은 서버는 대상이 아니다. 닫을 것이 없던 서버의 원래 오류(ERR_SERVER_NOT_RUNNING)는 그대로 넘긴다. 결함이 실제로 걸렸는지는
-   * `failedClose`로 확인한다.
+   * 그 결함의 `failedAt`(실패를 알린 닫기의 서버가 들은 주소)으로 확인한다. 기록은 닫기를 부를 때 잡은 결함에 남으므로, 닫기가 reset
+   * 뒤에 끝나도 그 결함을 정한 시험의 것으로 남고 다음 시험의 기록에 섞이지 않는다(#286 PR #300 외부 리뷰 2회차 STD-1).
    */
   close: undefined as
     | {
         code: string;
         at: (address: string) => boolean;
-        /** 실패를 알린 직후(서버는 이미 닫힘) 그 주소로 부른다. 시험마다 비우는 `failedClose`보다 오래 남길 기록에 쓴다. */
-        failed?: (address: string) => void;
+        failedAt: string[];
       }
     | undefined,
-  /** 실패를 알린 닫기의 서버가 들은 주소. */
-  failedClose: vi.fn<(address: string) => void>(),
   /**
    * 대역이 만든 서버가 실패시키지 않은 듣기를 시작한 직후(진짜 `listen`을 부른 같은 동기 구간) 그 첫 인수(주소·포트)와 서버로 부른다.
    * 시험이 듣기 시도가 끝나기 전의 순간을 상태로 잡거나, 제품이 만든 서버를 시험의 정리에 맡길 때 쓴다. 제품의 `listen` 호출 안에서
@@ -117,15 +259,15 @@ export const serverFaults = {
   heldClose: vi.fn<(address: string) => void>(),
 };
 
+/**
+ * 대역을 시험 시작 전 모양으로 되돌리고 붙잡은 것을 모두 푼다(afterEach). 이 시험의 소유자는 등록을 닫고 붙잡은 것을 푼다(`giveUp`).
+ * 던지지 않는다: 사건이 오지 않은 기다림과 reset 뒤의 시도는 그 시험 수명의 끝(`openTestHolds`가 등록한 것)이 알린다.
+ */
 export function resetRefusing() {
-  for (const open of openAtReset) open("reset");
-  openAtReset.clear();
+  thisTest?.giveUp();
   for (const socket of heldSockets)
     socket.destroy(
-      codeError(
-        "a held connect was given up at the double's reset",
-        "ECONNABORTED"
-      )
+      Object.assign(givenUpAtReset("a held connect"), { code: "ECONNABORTED" })
     );
   heldSockets.clear();
   refusing.refuse = undefined;
@@ -137,7 +279,6 @@ export function resetRefusing() {
   serverFaults.listen = undefined;
   serverFaults.refusedListen.mockReset();
   serverFaults.close = undefined;
-  serverFaults.failedClose.mockReset();
   serverFaults.listening = undefined;
   serverFaults.holdClose = undefined;
   serverFaults.heldClose.mockReset();
@@ -191,10 +332,7 @@ function faultyServer(Base: typeof netModule.Server) {
       if (!fault || at === undefined || !fault.at(at))
         return super.close(callback);
       return super.close((error?: Error) => {
-        if (!error) {
-          serverFaults.failedClose(at);
-          fault.failed?.(at);
-        }
+        if (!error) fault.failedAt.push(at);
         callback?.(error ?? codeError("close failed", fault.code));
       });
     }
@@ -348,8 +486,8 @@ function keptByDouble(failure: unknown, code: string): boolean {
  * 중계의 `close`는 한 번이라 다시 불러도 같은 결과지만, hub의 `close`는 남은 중계만 닫으므로 시험이 부른 것을 넘긴다).
  * 정리는 그 닫기가 끝나기를 상한 안에서 기다린다. 상한을 넘기면 서버가 남았을 수 있으므로 지우지 않고 그 이유로 실패한다. 닫기가
  * 대역이 실패시킨 닫기만으로 거절했을 때만(`keptByDouble`) 대역이 실패를 알린 주소의 폴더를 지운다. 대역과 무관한 거절은 던지고
- * 지우지 않는다. 대역이 실패를 알렸는데 닫기가 이행했다면 맞지 않으므로 던진다. 대역이 실패를 알린 주소(`failedAt`)를 돌려준다.
- * 시험마다 비우는 `failedClose`와 달리 정리 때까지 남는다.
+ * 지우지 않는다. 대역이 실패를 알렸는데 닫기가 이행했다면 맞지 않으므로 던진다. 대역이 실패를 알린 주소(`failedAt`, 이 결함이
+ * 소유한 기록)를 돌려준다.
  */
 export function failingRelayCloses(
   own: (step: () => Promise<void>) => void,
@@ -358,11 +496,7 @@ export function failingRelayCloses(
   code = "EBUSY"
 ) {
   const failedAt: string[] = [];
-  serverFaults.close = {
-    code,
-    at,
-    failed: (address) => failedAt.push(address),
-  };
+  serverFaults.close = { code, at, failedAt };
   own(async () => {
     const ended = await within(
       closing().then(
