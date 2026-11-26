@@ -1081,7 +1081,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
 
   // 정책 hook이 기다리는 사건이 오지 않아도 그 기다림은 시험 끝의 해제(대역의 reset)로 풀리고, 풀린 까닭이 본문에 닿는다(#286 PR #300
   // 외부 리뷰 1회차 STD-1). 바깥 답 기다림의 상한은 hook 안 기다림을 끝내지 못한다. 본문은 시험 끝과 같은 해제(`resetRefusing()`)를
-  // 부른다. 풀린 hook은 던지고, 제품은 연결 없이 정책 읽기 실패로 거부한다.
+  // 부른다. reset은 모두 푼 뒤, 사건이 오지 않은 hook 기다림을 그 이름과 함께 실패로 알린다(시험 끝이면 afterEach의 실패로 남아, 본문이
+  // 바깥 답 기다림의 상한으로 먼저 실패해도 어느 기다림이 멈췄는지 결과에 남는다, 감독 사전 점검). 풀린 hook은 던지고, 제품은 연결 없이
+  // 정책 읽기 실패로 거부한다.
   it("releases a policy hook's wait at the double's reset when its event never comes, and gives the body why", async () => {
     const target = await fixture("echo");
     const asked = Promise.withResolvers<void>();
@@ -1102,7 +1104,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       answerVia(relay.directory, `localhost:${target.port}`)
     );
     await within(asked.promise, 5_000, "the relay did not look up its policy");
-    resetRefusing();
+    expect(() => resetRefusing()).toThrow(
+      new Error(
+        "the test ended while hook waits had not ended: the event that never comes"
+      )
+    );
     await expect(
       fromHook(hooked.wait, "the wait for the event that never comes")
     ).rejects.toMatchObject({
