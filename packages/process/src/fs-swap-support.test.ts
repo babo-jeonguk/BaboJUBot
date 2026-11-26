@@ -21,20 +21,19 @@ async function scene() {
   return { root, file, replacement };
 }
 
+// 바꾸는 호출은 handle을 남기지 않는 `readFile`로 본다. 연 handle을 쥔 채 그 경로에 다른 파일을 옮겨 넣는 것은 Windows가 거절한다(EPERM:
+// 열린 파일은 지우기 공유 없이 바꿀 수 없다). 그 장면을 쓰는 시험(regular-file 둘, workspace-identity-swap)은 이유와 함께 Windows에서
+// 건너뛴다.
 it("swaps the armed path right after the first call on it, once", async () => {
   const { file, replacement } = await scene();
-  const swapped = swapAfter(fsPromises, ["open"]);
+  const swapped = swapAfter(fsPromises, ["readFile"]);
   const arming = armSwap({ path: file, replacement });
-  const handle = await swapped.open(file);
-  folders.own(() => handle.close(), "the opened mark");
-  // 연 것은 바꾸기 전의 파일이고, 경로에는 바꾼 파일이 있다.
-  expect(await handle.readFile("utf8")).toBe("opened");
+  // 읽은 것은 바꾸기 전의 파일이고, 경로에는 바꾼 파일이 있다.
+  expect(await swapped.readFile(file, "utf8")).toBe("opened");
   expect(arming.used).toBe(true);
   expect(await readFile(file, "utf8")).toBe("replaced");
   // 두 번째 호출은 바꾸지 않는다(옮길 파일이 이미 없지만 실패하지 않는다).
-  const again = await swapped.open(file);
-  folders.own(() => again.close(), "the mark opened again");
-  expect(await readFile(file, "utf8")).toBe("replaced");
+  expect(await swapped.readFile(file, "utf8")).toBe("replaced");
 });
 
 it("leaves a path that is not armed as the real call does", async () => {
