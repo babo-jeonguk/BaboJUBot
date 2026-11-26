@@ -26,6 +26,7 @@ import {
   gate,
   givenUpAtReset,
   heldUntil,
+  holdsOwner,
   nameFaults,
   resetRefusing,
   serverFaults,
@@ -1116,6 +1117,55 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
     expect(await answer).toBe(refusal("policy_unavailable"));
     expect(target.accepted.length).toBe(0);
+  });
+
+  // 소유자의 reset(`giveUp`) 뒤에 시작한 기다림·gate는 등록되지 않고 곧바로 거절되며, 그 소유자의 끝(`end`)이 그 시도를 그 시험의
+  // 실패로 알린다(#286 PR #300 외부 리뷰 2회차 STD-1). 고치기 전에는 reset 뒤의 기다림이 등록되어 다음 reset까지 남았고, 그 이름은
+  // 다음 시험의 reset이 알렸다. 이 시험의 소유자가 아닌 따로 만든 소유자로 본다(이 시험의 끝이 실패하지 않게).
+  it("refuses a hold begun after its owner's reset at once and reports it as that owner's failure when it ends", async () => {
+    const owner = holdsOwner();
+    onTestFinished(() => void owner.giveUp());
+    owner.giveUp();
+    await expect(
+      within(
+        owner.holds.until(
+          new Promise<never>(() => {}),
+          "a wait begun after the reset"
+        ),
+        5_000,
+        "the wait begun after the reset was not refused"
+      )
+    ).rejects.toMatchObject({
+      message:
+        "a wait begun after the reset was given up at the double's reset",
+    });
+    // 사건이 이미 왔어도 reset 뒤의 기다림은 거절한다(사건이 이기면 끝난 시험의 hook이 이어 돈다).
+    await expect(
+      within(
+        owner.holds.until(
+          Promise.resolve("came"),
+          "a wait whose event already came"
+        ),
+        5_000,
+        "the wait whose event already came did not end"
+      )
+    ).rejects.toMatchObject({
+      message:
+        "a wait whose event already came was given up at the double's reset",
+    });
+    const lateGate = owner.holds.gate();
+    expect(
+      await within(
+        lateGate.until,
+        5_000,
+        "the gate made after the reset was not released"
+      )
+    ).toBe("reset");
+    expect(() => owner.end()).toThrow(
+      new Error(
+        "holds began after the double's reset: a wait begun after the reset, a wait whose event already came, a gate"
+      )
+    );
   });
 
   it("refuses requests that are not an HTTP proxy request", async () => {

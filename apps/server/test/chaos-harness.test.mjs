@@ -950,3 +950,93 @@ describe("chaos harness on a fake connection", () => {
     30_000 + 30_000 + disposeMs + 10_000
   );
 });
+
+// 장면 서버 정리가 돌려준 홈의 끝은 정리 단계가 확인한다(#286 PR #300 외부 리뷰 2회차 STD-3). dispose는 홈 지우기를 확인하지 못해도
+// 거절하지 않고 `home: "unconfirmed"`를 돌려주므로, 그 확인을 `withCleanup` 뒤 본문에 두면 본문이나 다른 정리가 실패한 길에서 돌지
+// 않았다. 실제 서버 없이 가짜 dispose·harness 지우기로 본다. 홈은 이 시험이 소유한 임시 폴더다(이 시험은 `withCleanup`의 거절을
+// 단언하므로 그 정리는 바깥 `onTestFinished`에 둔다).
+describe("scene server cleanup", () => {
+  const ownedHome = async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "chaos-cleanup-home-"));
+    onTestFinished(() => removeFolderWithin(home));
+    return home;
+  };
+  /** 정리가 홈을 지우지 않았다고 알리는 실패. */
+  const homeNotRemoved = (home, end) =>
+    new Error(`the scene server did not remove its home ${home} (${end})`);
+  /** `withCleanup`의 거절(이행하면 `undefined`). */
+  const failureOf = (cleaning) =>
+    cleaning.then(
+      () => undefined,
+      (error) => error
+    );
+
+  it("reports both the body's failure and a home whose removal was not confirmed", async () => {
+    const home = await ownedHome();
+    const removeHarness = vi.fn(async () => {});
+    const bodyFailure = new Error("the scene failed");
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => ({ home: "unconfirmed" }));
+        throw bodyFailure;
+      })
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toEqual([
+      bodyFailure,
+      homeNotRemoved(home, "unconfirmed"),
+    ]);
+    expect(failure.errors[0]).toBe(bodyFailure);
+    expect(removeHarness).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports both a failed harness removal and a home whose removal was not confirmed", async () => {
+    const home = await ownedHome();
+    const harnessFailure = new Error("the harness folder was not removed");
+    const removeHarness = vi.fn(async () => {
+      throw harnessFailure;
+    });
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => ({ home: "unconfirmed" }));
+      })
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure.errors).toEqual([
+      harnessFailure,
+      homeNotRemoved(home, "unconfirmed"),
+    ]);
+    expect(failure.errors[0]).toBe(harnessFailure);
+  });
+
+  it("removes the harness folder once the server's end is confirmed, even when the home's removal was not", async () => {
+    const home = await ownedHome();
+    const removeHarness = vi.fn(async () => {});
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => ({ home: "unconfirmed" }));
+      })
+    );
+    expect(failure).toEqual(homeNotRemoved(home, "unconfirmed"));
+    expect(removeHarness).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the harness folder and adds no failure of its own when dispose itself fails", async () => {
+    const home = await ownedHome();
+    const removeHarness = vi.fn(async () => {});
+    const disposeFailure = new Error("the scene server did not stop");
+    const failure = await failureOf(
+      withCleanup(async (defer) => {
+        const ownServer = sceneServerCleanup(defer, removeHarness);
+        ownServer(home, async () => {
+          throw disposeFailure;
+        });
+      })
+    );
+    expect(failure).toBe(disposeFailure);
+    expect(removeHarness).not.toHaveBeenCalled();
+  });
+});
