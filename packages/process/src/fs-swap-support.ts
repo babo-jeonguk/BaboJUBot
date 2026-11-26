@@ -48,35 +48,49 @@ export function resetSwap() {
 
 type Swappable = "open" | "lstat" | "stat" | "readFile" | "access";
 
-/** 진짜 호출이 돌려준 것 가운데 자원인 것과 그 놓기. 바꾸기가 실패하면 부른 쪽이 결과를 받지 못하므로 대역이 놓는다. */
-const releases: Partial<Record<Swappable, (result: unknown) => Promise<void>>> =
-  { open: (handle) => (handle as fsPromises.FileHandle).close() };
+/**
+ * 진짜 호출이 돌려준 자원을 놓는다. 바꾸기가 실패하면 부른 쪽이 결과를 받지 못하므로 대역이 놓는다. 자원을 돌려주는 것은 `open`(handle)
+ * 하나다. `open`이 닫을 수 없는 값을 돌려주면 놓지 못한 것으로 던진다(남긴 것을 조용히 넘기지 않는다).
+ */
+async function release(name: Swappable, result: unknown) {
+  if (name !== "open") return;
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    !("close" in result) ||
+    typeof result.close !== "function"
+  )
+    throw new Error("open returned no handle to close after the failed swap");
+  await result.close();
+}
+
+/** 대역이 쓰는 진짜 함수: 감쌀 함수들과 바꾸기의 `rename`. 시험 factory는 진짜 모듈(`importOriginal()`)을 넘긴다. */
+type Real<N extends Swappable> = Pick<typeof fsPromises, "rename"> &
+  Record<N, (...args: never[]) => Promise<unknown>>;
 
 /**
  * `names`의 함수를 감싼 대역 묶음. 불린 순간 첫 인수의 경로로 무장을 찾는다. 진짜 호출이 이행한 뒤 그 무장을 아직 쓰지 않았으면 쓴
  * 것으로 적고(같은 동기 구간) 바꾸기를 기다린 뒤 진짜 결과를 돌려준다. 거절한 호출은 무장을 쓰지 않는다. 바꾸기가 실패하면 진짜
  * 호출이 연 것(`open`의 handle)을 닫고 바꾸기의 실패를 첫 원인으로, 닫기의 실패를 그 뒤에 묶어 던진다.
  */
-export function swapAfter<N extends Swappable>(
-  real: typeof fsPromises,
+export function swapAfter<N extends Swappable, R extends Real<N>>(
+  real: R,
   names: readonly N[]
-): Pick<typeof fsPromises, N> {
+): Pick<R, N> {
   const doubles: Partial<Record<Swappable, unknown>> = {};
   for (const name of names) {
-    const call = real[name] as (...args: unknown[]) => Promise<unknown>;
+    const call = real[name];
     doubles[name] = async (...args: unknown[]) => {
       const path = String(args[0]);
       const arming = armings.get(path);
-      const result = await call(...args);
+      // 감싼 진짜 함수를 받은 인수 그대로 부른다(인수의 형은 그 함수의 것이고 대역은 보지 않는다).
+      const result: unknown = await Reflect.apply(call, real, args);
       if (arming && !arming.used) {
         arming.used = true;
         try {
           await real.rename(arming.replacement, path);
         } catch (failure) {
-          const release = releases[name];
-          const left = release
-            ? await attemptEach([() => release(result)])
-            : [];
+          const left = await attemptEach([() => release(name, result)]);
           throw combinedFailure(
             [failure, ...left],
             "the swap failed and what the call opened could not be released"
@@ -86,5 +100,5 @@ export function swapAfter<N extends Swappable>(
       return result;
     };
   }
-  return doubles as Pick<typeof fsPromises, N>;
+  return doubles as Pick<R, N>;
 }
