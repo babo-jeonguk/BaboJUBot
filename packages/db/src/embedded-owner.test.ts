@@ -383,10 +383,15 @@ describe.runIf(posix)(
     // 모든 후보에서 듣기가 실패하면 후보마다 그 원인을 함께 남기고 실패한다.
     it("names the failure of every folder when listening fails in all of them", async () => {
       const { base } = await ownTemporaryFolder();
+      // 실패는 제품의 두 후보 폴더에서만 낸다. 첫 후보는 이 시험의 폴더다. 둘째 후보 `/tmp`는 제품의 고정 후보라 시험끼리 같은 폴더여서,
+      // 이 시험만의 경로로 가를 수 없다(PR 본문 「한계」).
+      const candidates = [privateFolder(base), privateFolder("/tmp")];
       inject.listenFails = (handle) =>
-        Object.assign(new Error(`injected: cannot listen at ${handle}`), {
-          code: "EOPNOTSUPP",
-        });
+        candidates.includes(path.dirname(handle))
+          ? Object.assign(new Error(`injected: cannot listen at ${handle}`), {
+              code: "EOPNOTSUPP",
+            })
+          : undefined;
       onTestFinished(() => {
         inject.listenFails = undefined;
       });
@@ -398,10 +403,9 @@ describe.runIf(posix)(
         () => new Error("the cluster started although no folder could listen"),
         (error: unknown) => error
       );
-      expect(inject.listens.map(({ handle }) => path.dirname(handle))).toEqual([
-        privateFolder(base),
-        privateFolder("/tmp"),
-      ]);
+      expect(inject.listens.map(({ handle }) => path.dirname(handle))).toEqual(
+        candidates
+      );
       expect(refused).toMatchObject({ code: "EMBEDDED_NO_OWNER_FOLDER" });
       const cause = (refused as Error).cause;
       // 듣기 실패는 그 자리를 이름에 담는다(Node의 listen 오류도 그렇다). 후보마다 그 실패가 그대로 남는다.

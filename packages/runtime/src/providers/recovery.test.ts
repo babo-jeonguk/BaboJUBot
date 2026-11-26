@@ -60,10 +60,11 @@ function testStart(): string {
 
 // 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다. 기록 칸은 afterEach가 새로 연다(시험이 본문에서 바꿔 끼우기도
 // 한다). 대역은 불린 순간(첫 `await` 전)의 칸을 잡고 그 칸에만 쓴다: 그 뒤에 칸이 바뀌어도 그 호출의 늦은 기록은 잡아 둔 칸에 남는다
-// (#286 PR #300 외부 리뷰 2회차 종류 A', 감독 결정). `fails`도 불린 순간에 읽는다. 시험이 시한을 넘겨 본문이 afterEach 뒤에도 돌면,
-// 그 뒤에 불린 호출은 다음 시험의 칸을 잡는다(그 시험은 이미 실패했다).
+// (#286 PR #300 외부 리뷰 2회차 종류 A', 감독 결정). 시험이 시한을 넘겨 본문이 afterEach 뒤에도 돌면, 그 뒤에 불린 호출은 다음 시험의
+// 기록 칸을 잡는다(그 시험은 이미 실패했다). 정리 실패(`fails`)는 그 시험이 기록에 쓴 무작위 표식으로 고른다: 그 표식을 실은 요청만
+// 실패하므로 다른 시험의 늦은 요청은 걸리지 않는다.
 const lease = vi.hoisted(() => ({
-  fails: false,
+  fails: undefined as { lease: string } | undefined,
   stopped: [] as unknown[],
   /** 실제 실행기 정리가 성공한(남은 것 없음을 실행기가 확인한) 요청. */
   cleaned: [] as {
@@ -83,7 +84,8 @@ vi.mock("@babojubot/process/recovery", async (original) => {
       const { requests, stopped, cleaned, fails } = lease;
       requests.push(request);
       if (request.lease !== undefined) stopped.push(request.lease);
-      if (fails) throw new Error("the supervisor's cleanup failed");
+      if (fails !== undefined && request.lease === fails.lease)
+        throw new Error("the supervisor's cleanup failed");
       const result = await real.cleanThroughSupervisor(request);
       cleaned.push(request);
       return result;
@@ -98,7 +100,7 @@ const folders = testFolders();
 // 연결을 쥐고 돌며, 연결이 열려 있음을 본 직후에만 그 번호로 끈다(`leavingMember`). 거둔 대표의 번호(그룹 번호)로는 신호하지도
 // 판정하지도 않는다.
 afterEach(() => {
-  lease.fails = false;
+  lease.fails = undefined;
   lease.stopped = [];
   lease.cleaned = [];
   lease.requests = [];
@@ -543,8 +545,9 @@ it.skipIf(process.platform === "win32")(
   async () => {
     const { root, directory } = await records();
     const finished = spawnSync(process.execPath, ["-e", ""]).pid;
-    await recordFor(directory, finished, "lease");
-    lease.fails = true;
+    const marker = crypto.randomUUID();
+    await recordFor(directory, finished, marker);
+    lease.fails = { lease: marker };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await recoverProviderProcesses(root);
     expect(await readdir(directory)).toEqual([`${finished}.json`]);

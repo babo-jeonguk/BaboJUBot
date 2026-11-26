@@ -1,5 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { readdir, writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
@@ -15,11 +16,19 @@ vi.mock("@babojubot/process", async (original) =>
 );
 // 실행 시도가 쓰고 지우는 폴더(실행 시도 폴더, Antigravity 기록 폴더)를 지우다 실패하게 한다. 실패는 Windows에서 파일이
 // 잠깐 잠겼을 때와 같은 오류(EBUSY)로, 다시 시도해도 계속 실패한다. 설정 파일 쓰기 실패도 같은 방법으로 만든다.
+// 결함은 그 시험이 고른 폴더(`in`)에서 제품이 `mkdtemp`로 만든 정확한 경로에만 건다. 대역이 만든 순간 그 경로를 결함 객체에 적고,
+// 지우기·쓰기 대역은 불린 순간 잡은 결함의 그 경로만 본다(이름으로 고르지 않는다).
+type Fault = {
+  /** 제품이 이 폴더 바로 아래에 `mkdtemp`로 만든 폴더에 건다. */
+  in: string;
+  /** 그 폴더의 지우기가 실패하거나(`remove`), 그 폴더 안의 이 상대 경로 쓰기가 실패한다. */
+  fails: "remove" | { write: string };
+  /** 대역이 이 결함으로 만든 정확한 경로(만든 순간 적는다). */
+  made: string[];
+};
 const inject = vi.hoisted(() => ({
-  /** 이 이름이 경로에 든 폴더 지우기가 실패한다. */
-  removeFails: undefined as RegExp | undefined,
-  /** 이 이름으로 끝나는 파일 쓰기가 실패한다. */
-  writeFails: undefined as string | undefined,
+  /** 이 시험이 고른 결함. */
+  fault: undefined as Fault | undefined,
   /** 시험 중에 만들어진 임시 폴더. 지우지 못하게 한 폴더도 시험 정리가 지운다. */
   made: [] as string[],
   /** 끝난 파일 쓰기의 이름(실제 쓰기가 이행한 뒤 넣는다). */
@@ -30,8 +39,9 @@ const inject = vi.hoisted(() => ({
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
+    const { fault } = inject;
     inject.removed(String(target), [...inject.written]);
-    if (inject.removeFails?.test(String(target)))
+    if (fault?.fails === "remove" && fault.made.includes(String(target)))
       throw Object.assign(new Error(`EBUSY: resource busy or locked, rm`), {
         code: "EBUSY",
       });
@@ -39,8 +49,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
   const writeFile: typeof real.writeFile = async (target, ...rest) => {
     // 기록 칸은 불린 순간 잡는다. 쓰기가 끝난 뒤 칸을 다시 찾으면 그 사이 afterEach가 연 다음 시험의 칸에 남는다.
-    const { written } = inject;
-    if (inject.writeFails && String(target).endsWith(inject.writeFails))
+    const { written, fault } = inject;
+    const fails = fault?.fails;
+    if (
+      fault &&
+      typeof fails === "object" &&
+      fault.made.some(
+        (folder) => path.join(folder, fails.write) === String(target)
+      )
+    )
       throw Object.assign(new Error("ENOSPC: no space left on device"), {
         code: "ENOSPC",
       });
@@ -51,8 +68,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   // 기다린 뒤 칸에 남기면 그 사이 afterEach가 비운 칸에 남아 다음 시험의 기록에 섞였다. 시험이 끝난 뒤에 시작한 만들기는 그때의 칸(다음
   // 시험)에 기록된다(그 시험은 이미 실패했다). 제품이 보는 계약(유일한 새 폴더 경로로 이행)은 같다.
   const mkdtemp = (async (prefix: string) => {
+    const { fault } = inject;
     const made = mkdtempSync(prefix);
     inject.made.push(made);
+    if (fault && path.dirname(prefix) === fault.in) fault.made.push(made);
     return made;
   }) as typeof real.mkdtemp;
   return {
@@ -70,8 +89,7 @@ const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 
 afterEach(() => {
-  inject.removeFails = undefined;
-  inject.writeFails = undefined;
+  inject.fault = undefined;
   inject.written = [];
   inject.removed.mockReset();
   const { made } = inject;
@@ -136,13 +154,25 @@ describe("an attempt folder that cannot be removed", () => {
     });
     const input = request();
     const logged = diagnostics();
-    inject.removeFails = /[\\/]attempt-/;
+    // Claude Code의 실행 시도 폴더는 그 조직 폴더(이 시험의 `root` 아래) 바로 아래에 생긴다.
+    const fault: Fault = {
+      in: path.join(
+        root,
+        "providers",
+        "claude",
+        "organizations",
+        input.identity.organizationId
+      ),
+      fails: "remove",
+      made: [],
+    };
+    inject.fault = fault;
 
     const result = await provider.adapter.execute(input, control());
 
     expect(result.stopReason).toBe("completed");
+    expect(fault.made).toHaveLength(1);
     expectDiagnostic(logged(), "claude", input.identity.runId);
-    inject.removeFails = undefined;
   });
 
   it("keeps a finished OpenCode run's result and records the folder", async () => {
@@ -156,13 +186,26 @@ describe("an attempt folder that cannot be removed", () => {
     });
     const input = request();
     const logged = diagnostics();
-    inject.removeFails = /[\\/]attempt-/;
+    // 실행의 OpenCode 서버는 그 조직 폴더(이 시험의 `root` 아래) 바로 아래에 실행 시도 폴더를 만든다(연결 폴더의 서버는 로그인을
+    // 옮길 때만 쓴다).
+    const fault: Fault = {
+      in: path.join(
+        root,
+        "providers",
+        "opencode",
+        "organizations",
+        input.identity.organizationId
+      ),
+      fails: "remove",
+      made: [],
+    };
+    inject.fault = fault;
 
     const result = await provider.adapter.execute(input, control());
 
     expect(result.stopReason).toBe("completed");
+    expect(fault.made).toHaveLength(1);
     expectDiagnostic(logged(), "opencode", input.identity.runId);
-    inject.removeFails = undefined;
   }, 20_000);
 
   it("keeps a finished Antigravity run's result and records its log folder", async () => {
@@ -206,13 +249,16 @@ describe("an attempt folder that cannot be removed", () => {
       workspace: { cwd: root, organization: root, personal: root, peers: [] },
     };
     const logged = diagnostics();
-    inject.removeFails = /babojubot-agy-log-/;
+    // Antigravity의 기록 폴더는 이 컴퓨터의 임시 폴더 바로 아래에 생긴다. 그 폴더는 시험끼리 같아, 이 시험이 무장한 뒤 시작한 다른
+    // 시험의 늦은 만들기와 가를 경로가 없다(PR 본문 「한계」). 무장한 동안 제품이 만든 정확한 경로에만 건다.
+    const fault: Fault = { in: tmpdir(), fails: "remove", made: [] };
+    inject.fault = fault;
 
     const result = await provider.adapter.execute(input, control());
 
     expect(result.stopReason).toBe("completed");
+    expect(fault.made).toHaveLength(1);
     expectDiagnostic(logged(), "antigravity", input.identity.runId);
-    inject.removeFails = undefined;
   });
 });
 
@@ -227,11 +273,24 @@ describe("an OpenCode server that cannot be prepared", () => {
         path.resolve("test-fixtures/opencode-simulator.mjs"),
       ],
     });
-    inject.writeFails = "babojubot-organization-keys.js";
+    // 실행의 OpenCode 서버는 그 조직 폴더 바로 아래의 실행 시도 폴더 안 `plugins/` 아래에 설정을 쓴다.
+    const input = request();
+    const fault: Fault = {
+      in: path.join(
+        root,
+        "providers",
+        "opencode",
+        "organizations",
+        input.identity.organizationId
+      ),
+      fails: { write: path.join("plugins", "babojubot-organization-keys.js") },
+      made: [],
+    };
+    inject.fault = fault;
 
-    const result = await provider.adapter.execute(request(), control());
+    const result = await provider.adapter.execute(input, control());
 
-    inject.writeFails = undefined;
+    expect(fault.made).toHaveLength(1);
     expect(result.stopReason).toBe("failed");
     expect(await attemptFolders(root)).toEqual([]);
   }, 20_000);
