@@ -6,6 +6,7 @@ import {
   mkdir,
   readFile,
   readlink,
+  rename,
   stat,
   symlink,
   writeFile,
@@ -706,10 +707,15 @@ it("C17 refuses a Unix socket", async (context) => {
       "Windows의 Node는 경로 socket 대신 named pipe를 쓴다"
     );
   const { read, shared } = await world();
-  // socket 파일 서버는 그 폴더의 정리가 소유한다. 서버를 닫은 뒤에만 폴더를 지운다.
+  // socket 경로에는 운영체제의 바이트 한도가 있다(macOS 104). 깊은 조직 폴더에서 바로 들으면 macOS 기본 임시 폴더에서는 그 한도를
+  // 넘어 `EINVAL`로 듣지 못한다(#286 PR 3b-3b-1, CI run 45759203861). 그래서 같은 볼륨(`filesBase`)의 짧은 폴더에서 듣고, 그 socket
+  // 파일을 `rename`으로 조직 폴더에 옮긴다. 옮겨도 파일 종류는 socket 그대로다. 짧은 폴더와 서버는 이 시험의 폴더 정리가 소유한다:
+  // 서버를 닫은 뒤에만 폴더를 지운다(닫기가 원래 자리의 socket 파일을 지우려 해도 그 자리는 이미 비어 있다). 옮긴 파일은 조직 폴더의
+  // 정리가 지운다.
+  const short = await realScratch(folders, "bjs-");
   const listening = await ownedListener(
     createServer(),
-    { path: path.join(shared, "s") },
+    { path: path.join(short, "s") },
     folders.own,
     "the socket file server"
   ).then(
@@ -724,6 +730,8 @@ it("C17 refuses a Unix socket", async (context) => {
   );
   if (listening)
     without(context, "C17", "unverified", `socket을 만들지 못함: ${listening}`);
+  await rename(path.join(short, "s"), path.join(shared, "s"));
+  expect((await lstat(path.join(shared, "s"))).isSocket()).toBe(true);
   expect(await read("s")).toEqual(refusal("not_regular_file"));
   note(context, "C17", "pass");
 });
