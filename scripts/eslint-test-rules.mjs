@@ -2990,6 +2990,18 @@ function primitive(node) {
   return node?.type === "UnaryExpression" && node.argument.type === "Literal";
 }
 
+/** 식 `outer`가 안의 식 `inner`의 값을 그대로 낼 수 있는가: TS 단언, `??`·`||`·`&&`의 한쪽, 조건식의 갈래. */
+function passesValue(outer, inner) {
+  return (
+    ((outer.type === "TSAsExpression" ||
+      outer.type === "TSSatisfiesExpression" ||
+      outer.type === "TSNonNullExpression") &&
+      outer.expression === inner) ||
+    outer.type === "LogicalExpression" ||
+    (outer.type === "ConditionalExpression" && outer.test !== inner)
+  );
+}
+
 /** TS 단언으로 감싼 식이면 그 안의 식. */
 function unasserted(node) {
   let at = node;
@@ -3033,6 +3045,8 @@ function doubleFindings(source, program, factoriesFrom, exported) {
   const factories = new Set(factoriesFrom);
   /** 칸에 담긴 함수(도움). 대역이 아니고, 안의 칸 읽기는 모두 짚는다. */
   const called = new Set();
+  /** 같은 파일의 들머리가 제품에 건네는 내보낸 함수(대역). 들머리가 아니다. */
+  const handedExports = new Set();
   const originAt = (node) => originOf(source.getScope(node), node);
   const enclosingFunctions = (node) => {
     const found = [];
@@ -3281,7 +3295,8 @@ function doubleFindings(source, program, factoriesFrom, exported) {
    */
   const readAllowed = (identifier) => {
     const around = enclosingFunctions(identifier);
-    const entry = (fn) => factories.has(fn) && !called.has(fn);
+    const entry = (fn) =>
+      factories.has(fn) && !called.has(fn) && !handedExports.has(fn);
     if (around.length > 0 && entry(around[0])) return true;
     const [fn, outer] = around;
     return Boolean(
@@ -3303,17 +3318,21 @@ function doubleFindings(source, program, factoriesFrom, exported) {
   /** 이 이름의 값을 담은 별칭(선언·대입)을 그릇으로 따라간다. */
   const aliasesFrom = (variable) => {
     for (const { identifier } of variable.references) {
-      const parent = identifier.parent;
+      // 값을 그대로 넘기는 식(TS 단언, `??`·`||`·`&&`, 조건식의 갈래)을 거쳐도 같은 값을 담은 별칭이다.
+      let value = identifier;
+      while (value.parent && passesValue(value.parent, value))
+        value = value.parent;
+      const parent = value.parent;
       if (
         parent.type === "VariableDeclarator" &&
-        parent.init === identifier &&
+        parent.init === value &&
         parent.id.type === "Identifier"
       )
         for (const alias of source.getDeclaredVariables(parent))
           aliasesOf(alias);
       if (
         parent.type === "AssignmentExpression" &&
-        parent.right === identifier &&
+        parent.right === value &&
         parent.left.type === "Identifier"
       ) {
         const alias = bindingOf(source, parent.left);
@@ -3341,6 +3360,20 @@ function doubleFindings(source, program, factoriesFrom, exported) {
     for (const fn of exported) {
       if (called.has(fn)) continue;
       const variable = functionVariable(source, fn);
+      // 같은 파일의 들머리가 제품에 건네면 그 함수는 대역이다(몸의 첫 await 앞에서만 칸을 읽는다).
+      if (
+        !handedExports.has(fn) &&
+        variable?.references.some(
+          ({ identifier }) =>
+            inRegion(identifier) &&
+            !contains(fn, identifier) &&
+            handedOver(identifier)
+        )
+      ) {
+        handedExports.add(fn);
+        memo.clear();
+        grew = true;
+      }
       if (
         variable?.references.some(({ identifier }) => {
           const call = identifier.parent;
@@ -3499,8 +3532,10 @@ function doubleFindings(source, program, factoriesFrom, exported) {
  * 모듈 경계 대역(`vi.mock(…, factory)`·`vi.doMock`)이 시험이 바꿔 끼우는 칸을 대역이 불린 뒤에 다시 찾으면, 그 사이 afterEach·본문이
  * 칸을 바꿀 때 앞 시험의 늦은 호출이 다음 시험의 설정·기록에 닿는다(#286 PR #300 외부 리뷰 2회차 `lease`, PR 3b-3b-2). 아는 모양만
  * 통과시키고 그 밖은 모두 짚는다(판정할 수 없는 것도 짚는다).
- * 칸: 모듈 범위의 `vi.hoisted(…)` 값(구조 분해 선언 포함)·가짜 함수(`vi.fn(…)`)·객체·배열·`new`로 만든 값(TS 단언·`await`로 감싸도)과 그
- * 별칭, `let`·`var`, 그리고 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 그릇·`let`(콜백 몸 밖, 곧 그 안의 함수에서 읽으면 짚는다).
+ * 칸: 모듈 범위의 `vi.hoisted(…)` 값(구조 분해 선언 포함)·가짜 함수(`vi.fn(…)`), 타입이 바뀔 수 없음이 증명되지 않는 `const`와 그
+ * 별칭, `let`·`var`(값이 바뀔 수 있으면 그 별칭은 그릇), 그리고 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 `let`과 바뀔 수 있는 지역 값
+ * (콜백 몸 밖, 곧 그 안의 함수에서 읽으면 짚는다). 바뀔 수 없음은 타입 검사기로 증명하고(`unchangeableType`), 타입 정보가 없으면
+ * 선언만으로 증명되는 함수 리터럴·원시 값 리터럴만 칸이 아니다.
  * 판정은 그 파일 안에서만 한다. 다른 파일의 값(공용 대역이 내보낸 함수·칸)은 그 파일이 시험 코드 범위에서 자기 lint 차례에 같은
  * 규칙으로 판정받는다(그 파일의 들머리는 내보낸 함수다).
  * 대역 쪽 자리: 들머리(vi.mock의 인라인 factory, 그 파일이 내보낸 함수)와 만드는 함수(들머리·만드는 함수의 몸에서 부르고 결과를
@@ -3523,7 +3558,7 @@ const hoistedStateAtCall = {
     docs: {
       description:
         "allow a module double to read state the tests swap only in its own body before its first await, and report every other shape",
-      // 모듈 const가 칸인지 타입으로 정한다. 타입 정보가 없는 파일은 증명할 수 없어 칸으로 본다.
+      // 값이 칸인지 타입으로 정한다. 타입 정보가 없는 파일은 함수 리터럴·원시 값 리터럴 밖에는 증명할 수 없어 칸으로 본다.
       requiresTypeChecking: true,
     },
     schema: [],
@@ -3548,9 +3583,10 @@ const hoistedStateAtCall = {
           for (const specifier of node.specifiers)
             if (specifier.local.type === "Identifier")
               exportedNames.push(specifier.local.name);
-        if (declaration?.type === "FunctionDeclaration")
+        if (declaration?.type === "FunctionDeclaration") {
           factories.push(declaration);
-        exportedEntries.push(declaration);
+          exportedEntries.push(declaration);
+        }
         if (declaration?.type === "VariableDeclaration")
           for (const declarator of declaration.declarations) {
             const init = unwrapped(declarator.init);
@@ -3565,9 +3601,10 @@ const hoistedStateAtCall = {
         if (
           declaration?.type === "FunctionDeclaration" ||
           isFunction(declaration)
-        )
+        ) {
           factories.push(declaration);
-        exportedEntries.push(declaration);
+          exportedEntries.push(declaration);
+        }
       },
       CallExpression(node) {
         const origin = originOf(sourceCode.getScope(node.callee), node.callee);
