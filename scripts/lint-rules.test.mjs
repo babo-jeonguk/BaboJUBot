@@ -548,6 +548,15 @@ test("a module double may not look up state the tests swap after an await or in 
       `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ fails: undefined }));\nfunction closeWith(server, done) {\n  server.close((error) => done(state.fails ?? error));\n}\n${fs}  const createServer = (...args) => {\n    const server = real.createServer(...args);\n    return { close: (done) => closeWith(server, done) };\n  };\n  return { ...real, createServer };\n});\n`,
       1,
     ],
+    // 모듈 범위 도움 안의 이름 붙은 지역 함수도 도움 기준으로 본다(변경분 점검 2회차 [1]).
+    "a named callback inside a module helper": [
+      `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ fails: undefined }));\nfunction closeWith(server, done) {\n  const onClose = (error) => done(state.fails ?? error);\n  server.close(onClose);\n}\n${fs}  const createServer = (...args) => {\n    const server = real.createServer(...args);\n    return { close: (done) => closeWith(server, done) };\n  };\n  return { ...real, createServer };\n});\n`,
+      1,
+    ],
+    "a local function called after a module helper's await": [
+      `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ seen: [] }));\nasync function record(file) {\n  const push = () => state.seen.push(file);\n  await work();\n  push();\n}\n${fs}  const open = async (file) => {\n    await record(file);\n    return real.open(file);\n  };\n  return { ...real, open };\n});\n`,
+      1,
+    ],
     "vi.doMock": [
       `${hoistedHead}vi.doMock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const open = async (file) => {\n    const handle = await real.open(file);\n    state.seen.push(file);\n    return handle;\n  };\n  return { ...real, open };\n});\n`,
       1,

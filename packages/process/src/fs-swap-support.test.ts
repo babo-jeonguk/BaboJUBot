@@ -61,6 +61,8 @@ it("closes what open returned and throws the swap's failure when the swap fails"
     ...fsPromises,
     open: async (...args: Parameters<typeof open>) => {
       const handle = await open(...args);
+      // 대역이 닫지 못하거나 바꾸기가 뜻밖에 성공해도 시험이 끝날 때 닫는다(이미 닫힌 handle의 close는 이행한다).
+      folders.own(() => handle.close(), "the handle the swap should close");
       handles.push(handle);
       return handle;
     },
