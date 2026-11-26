@@ -766,6 +766,12 @@ test("a module double may not look up state the tests swap after an await or in 
         `${head}import { faults } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      if (faults.fails) throw faults.fails;\n      return handle;\n    },\n  };\n});\n`,
         2,
       ],
+      "a made double's method called after the double's await": [
+        factory(
+          `  const d = s.takingDouble(real);\n  return {\n    ...real,\n    open: async (file) => {\n      await real.access(file);\n      return d.open(file);\n    },\n  };`
+        ),
+        1,
+      ],
       "a shared helper that reads the state": [
         factory(
           `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      const failure = s.currentFailure();\n      if (failure) throw failure;\n      return handle;\n    },\n  };`
@@ -786,6 +792,9 @@ test("a module double may not look up state the tests swap after an await or in 
       "imported shared state taken before the await": `${head}import { faults } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const { fails } = faults;\n      const handle = await real.open(file);\n      if (fails) throw fails;\n      return handle;\n    },\n  };\n});\n`,
       "a shared helper that reads no state": factory(
         `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file).catch((error) => {\n        if (s.codeOf(error) === "EBUSY") return undefined;\n        throw error;\n      });\n      return handle;\n    },\n  };`
+      ),
+      "a made double's method called before the double's await": factory(
+        `  const d = s.takingDouble(real);\n  return {\n    ...real,\n    open: async (file) => {\n      if (file === "") throw new Error("no file");\n      return d.open(file);\n    },\n  };`
       ),
       "a call on the real module": factory(
         `  return { ...real, open: real.open.bind(real) };`

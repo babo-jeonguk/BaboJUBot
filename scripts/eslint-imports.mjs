@@ -40,7 +40,7 @@ const literalPath = (node) =>
   node?.type === "Literal" && typeof node.value === "string";
 
 /** 속성 이름. 계산한 이름이면 `undefined`, 문자열 그대로면 그 값. */
-function propertyName(member) {
+export function propertyName(member) {
   if (!member.computed) return member.property.name;
   return member.property.type === "Literal"
     ? String(member.property.value)
