@@ -320,6 +320,14 @@ export default defineConfig([
     },
   },
   {
+    // 시험 코드는 호출 문맥을 공용 도움 callArming으로만 쓴다(CODING_STANDARDS.md#정리). 가져오는 모든 모양을 공용 가져오기 판정으로 봐야
+    // 해서 규칙을 따로 둔다. 문맥을 담는 곳은 그 도움 파일 하나라 이 규칙에서 뺀다.
+    files: testFiles,
+    ignores: ["packages/process/src/call-arming-support.ts"],
+    plugins: { tests: testRules },
+    rules: { "tests/call-context-through-arming": "error" },
+  },
+  {
     // E2E는 대상을 그 조직·대화·영역 안에서 찾는다(CODING_STANDARDS.md#화면). 페이지인지 타입으로 가려야 해서 타입 정보를 쓴다.
     // 화면 상태는 다시 시도하는 web-first 단언으로 확인한다(CODING_STANDARDS.md#화면). Playwright locator인지 타입으로 가린다.
     files: [`apps/web/e2e/**/*.${codeFormats}`],

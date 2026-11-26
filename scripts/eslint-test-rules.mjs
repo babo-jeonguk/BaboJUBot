@@ -3,7 +3,12 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import tseslint from "typescript-eslint";
-import { originName, originOf, targetOf } from "./eslint-imports.mjs";
+import {
+  importSites,
+  originName,
+  originOf,
+  targetOf,
+} from "./eslint-imports.mjs";
 
 /**
  * 식의 출처(공용 판정 `originName`의 `global:Promise.race`·`module:vitest:expect` 꼴)가 `names` 중 하나인가. JS 기본 전역과 시험
@@ -3474,6 +3479,39 @@ const hoistedStateAtCall = {
   },
 };
 
+/** 호출 문맥을 이어 주는 Node 모듈(`AsyncLocalStorage`·`createHook` 등). */
+const callContextModules = new Set(["async_hooks", "node:async_hooks"]);
+
+/**
+ * 시험 코드는 호출 문맥을 공용 도움 `callArming`(@babojubot/process/call-arming)으로만 쓴다(CODING_STANDARDS.md#정리). 문맥을 따로
+ * 만들면 무장을 잡는 때(불린 순간)와 문맥이 없을 때의 답(결함 없음)이 파일마다 달라진다. 그 모듈을 가져오는 모든 자리를 공용 가져오기
+ * 판정(scripts/eslint-imports.mjs)으로 본다. 그 도움 파일은 eslint.config.js가 이 규칙에서 뺀다.
+ */
+const callContextThroughArming = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "test code takes a call's context only through the shared callArming helper",
+    },
+    schema: [],
+    messages: {
+      own: "{{source}}: 시험 코드는 호출 문맥을 callArming(@babojubot/process/call-arming)으로만 씁니다. 시험이 제품 호출을 `run(무장, () => 제품 호출)`로 감싸고, 대역은 불린 순간 `current()`로 무장을 잡으며 무장이 없으면 실패시키지 않습니다. CODING_STANDARDS.md#정리",
+    },
+  },
+  create(context) {
+    return importSites(context, (site) => {
+      if (site.typeOnly || !callContextModules.has(site.source)) return;
+      context.report({
+        node: site.node,
+        messageId: "own",
+        data: { source: site.source },
+      });
+    });
+  },
+};
+
 export default {
   meta: { name: "babojubot-tests" },
   rules: {
@@ -3484,6 +3522,7 @@ export default {
     "no-expected-failure": noExpectedFailure,
     "no-fixed-time-wait": noFixedTimeWait,
     "hoisted-state-at-call": hoistedStateAtCall,
+    "call-context-through-arming": callContextThroughArming,
     "no-ignored-close-error": noIgnoredCloseError,
     "no-ignored-kill-error": noIgnoredKillError,
     "no-one-shot-ui-read": noOneShotUiRead,
