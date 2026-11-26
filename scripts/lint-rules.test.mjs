@@ -700,6 +700,104 @@ test("a module double may not look up state the tests swap after an await or in 
     assert.deepEqual(rest, [], `${place}: a missing shared double`);
     assert.match(unresolved?.message ?? "", /판정할 수 없습니다/);
   }
+  // 공용 대역 파일의 값은 아는 모양만 통과한다(설계 점검 2회차 지적 1·2): 부르고 결과를 건네면 그 파일을 판정하고, 대역 쪽 자리 안에서
+  // 부르면 그 함수를 도움으로 판정하고, 값의 속성은 그 파일의 칸으로 판정한다. 그 밖(함수를 부르지 않고 넘김, 모듈째 돌려줌, 계산한
+  // 경로·이름, 출처를 모르는 부르기)은 판정할 수 없어 짚는다.
+  for (const place of testPlaces) {
+    const from = shared(place);
+    const head = `import { vi } from "vitest";\n`;
+    const factory = (body) =>
+      `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const s = await import("${from}");\n${body}\n});\n`;
+    const reported = {
+      "a property of a made double": [
+        factory(
+          `  const d = s.lateDouble(real);\n  return { ...real, open: d.open };`
+        ),
+        2,
+      ],
+      "a maker called inside a double": [
+        factory(
+          `  return { ...real, open: (file) => s.lateDouble(real).open(file) };`
+        ),
+        2,
+      ],
+      "a factory returning the module": [
+        `${head}vi.mock("node:fs/promises", async () => await import("${from}"));\n`,
+        1,
+      ],
+      "a factory returning the module's import": [
+        `${head}vi.mock("node:fs/promises", () => import("${from}"));\n`,
+        1,
+      ],
+      "a made double merged with Object.assign": [
+        factory(`  return Object.assign({}, real, s.lateDouble(real));`),
+        2,
+      ],
+      "a made double assigned later": [
+        factory(`  let d;\n  d = s.lateDouble(real);\n  return d;`),
+        2,
+      ],
+      "a maker handed over without a call": [
+        factory(`  return { ...real, make: s.lateDouble };`),
+        1,
+      ],
+      "a maker constructed": [factory(`  return new s.lateDouble(real);`), 1],
+      "a maker picked by a condition": [
+        factory(
+          `  const make = process.env.LATE ? s.lateDouble : s.takingDouble;\n  return make(real);`
+        ),
+        3,
+      ],
+      "a computed module path": [
+        `${head}const where = ${JSON.stringify(from)};\nvi.mock("node:fs/promises", async (importOriginal) => (await import(where)).lateDouble(await importOriginal()));\n`,
+        2,
+      ],
+      "a computed export name": [
+        factory(`  return s["late" + "Double"](real);`),
+        2,
+      ],
+      "shared state read after the await": [
+        factory(
+          `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      if (s.faults.fails) throw s.faults.fails;\n      return handle;\n    },\n  };`
+        ),
+        2,
+      ],
+      "imported shared state read after the await": [
+        `${head}import { faults } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      if (faults.fails) throw faults.fails;\n      return handle;\n    },\n  };\n});\n`,
+        2,
+      ],
+      "a shared helper that reads the state": [
+        factory(
+          `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      const failure = s.currentFailure();\n      if (failure) throw failure;\n      return handle;\n    },\n  };`
+        ),
+        1,
+      ],
+    };
+    for (const [shape, [code, count]] of Object.entries(reported))
+      assert.equal(
+        (await lint(code, place, hoistedRules)).length,
+        count,
+        `${place}: ${shape}`
+      );
+    const allowed = {
+      "shared state taken before the await": factory(
+        `  return {\n    ...real,\n    open: async (file) => {\n      const { fails } = s.faults;\n      const handle = await real.open(file);\n      if (fails) throw fails;\n      return handle;\n    },\n  };`
+      ),
+      "imported shared state taken before the await": `${head}import { faults } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const { fails } = faults;\n      const handle = await real.open(file);\n      if (fails) throw fails;\n      return handle;\n    },\n  };\n});\n`,
+      "a shared helper that reads no state": factory(
+        `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file).catch((error) => {\n        if (s.codeOf(error) === "EBUSY") return undefined;\n        throw error;\n      });\n      return handle;\n    },\n  };`
+      ),
+      "a call on the real module": factory(
+        `  return { ...real, open: real.open.bind(real) };`
+      ),
+    };
+    for (const [shape, code] of Object.entries(allowed))
+      assert.deepEqual(
+        await lint(code, place, hoistedRules),
+        [],
+        `${place}: ${shape}`
+      );
+  }
   // 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 칸: 콜백 안의 함수(대역이 부르는 도움)가 읽거나 쓰면 짚는다(감독 결정 2026-11-26).
   const hoistedLocal = `import { vi } from "vitest";\nconst queries = vi.hoisted(() => {\n  let held = false;\n  return {\n    hold: () => {\n      held = true;\n    },\n    query: async () => {\n      if (!held) return;\n      held = false;\n    },\n  };\n});\nvi.mock("m", async () => ({ run: async () => {\n  const { query } = queries;\n  await query();\n} }));\n`;
   for (const place of testPlaces)

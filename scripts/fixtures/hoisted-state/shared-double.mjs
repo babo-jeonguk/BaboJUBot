@@ -28,3 +28,13 @@ export function lateDouble(real) {
     },
   };
 }
+
+/** 칸을 읽지 않는 도움(대역이 언제 불러도 통과). */
+export function codeOf(error) {
+  return error?.code;
+}
+
+/** 칸을 읽는 도움(대역이 부르면 도움 안의 읽기라 걸림). */
+export function currentFailure() {
+  return faults.fails;
+}
