@@ -502,6 +502,63 @@ test("a module double may not look up state the tests swap after an await or in 
       `const record = vi.fn((handle) => state.seen.push(handle));\n  const double = (file) => real.open(file).then(record);`,
       1,
     ],
+    // 아는 모양만 통과한다(외부 리뷰 1회차, 설계 점검): 아래는 모두 짚는다.
+    "a read inside the awaited call": [
+      `const double = async (file) => {\n  const handle = await real.open(state.seen.at(-1) ?? file);\n  return handle;\n};`,
+      1,
+    ],
+    "a double returned by a double": [
+      `const double = (file) => {\n  const handle = { read: async () => {\n    state.seen.push(file);\n    return real.readFile(file);\n  } };\n  return handle;\n};`,
+      1,
+    ],
+    "a double wrapped in vi.fn": [
+      `const double = vi.fn(async (file) => {\n  const { seen } = state;\n  const handle = await real.open(file);\n  seen.push(file);\n  return handle;\n});`,
+      1,
+    ],
+    "a double given to mockImplementation": [
+      `const double = vi.fn().mockImplementation(async (file) => {\n  const { fails } = state;\n  await real.open(file);\n  if (fails) throw fails;\n});`,
+      1,
+    ],
+    "an inner function a maker returns": [
+      `const wrap = (call) => async (...args) => {\n  const { fails } = state;\n  const result = await call(...args);\n  if (fails) throw fails;\n  return result;\n};\n  const double = wrap(real.open);`,
+      1,
+    ],
+    "a method of an object passed as an argument": [
+      `const double = () => new Proxy({}, { get() {\n  const { fails } = state;\n  return fails;\n} });`,
+      1,
+    ],
+    "a method of a named object passed as an argument": [
+      `const sink = { write(chunk) {\n  state.seen.push(chunk);\n} };\n  const double = () => new Proxy({}, sink);`,
+      1,
+    ],
+    "a helper called before the first await": [
+      `const fault = () => state.fails;\n  const double = async (file) => {\n  const failure = fault();\n  const handle = await real.open(file);\n  if (failure) throw failure;\n  return handle;\n};`,
+      1,
+    ],
+    "an alias of a helper": [
+      `const fault = () => state.fails;\n  const later = fault;\n  const double = async (file) => {\n  await real.open(file);\n  return later();\n};`,
+      1,
+    ],
+    "a helper in an object property": [
+      `const helpers = { fault: () => state.fails };\n  const double = async (file) => {\n  await real.open(file);\n  return helpers.fault();\n};`,
+      1,
+    ],
+    "a class method another method calls": [
+      `class Server {\n  async close() {\n    await work();\n    return this.check();\n  }\n  check() {\n    return state.fails;\n  }\n}\n  const double = () => new Server();`,
+      1,
+    ],
+    "a helper wrapped in vi.fn": [
+      `const fault = vi.fn(() => state.fails);\n  const double = async (file) => {\n  await real.open(file);\n  return fault();\n};`,
+      1,
+    ],
+    "the state handed on as a value": [
+      `const pick = (source) => () => source.fails;\n  const double = async (file) => {\n  const fail = pick(state);\n  await real.open(file);\n  return fail();\n};`,
+      1,
+    ],
+    "a generator double": [
+      `const double = async function* (folder) {\n  const { seen } = state;\n  seen.push(folder);\n  yield folder;\n};`,
+      1,
+    ],
   };
   for (const [shape, [double, count]] of Object.entries(late))
     for (const place of testPlaces) {
@@ -557,6 +614,32 @@ test("a module double may not look up state the tests swap after an await or in 
       `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ seen: [] }));\nasync function record(file) {\n  const push = () => state.seen.push(file);\n  await work();\n  push();\n}\n${fs}  const open = async (file) => {\n    await record(file);\n    return real.open(file);\n  };\n  return { ...real, open };\n});\n`,
       1,
     ],
+    // 외부 리뷰 1회차가 든 놓친 모양: 모듈 함수를 factory가 바로 돌려줌·반환 객체에 넣음·다른 변수에 담아 돌려줌, 밖에서 선언한 factory.
+    "a module function the factory returns": [
+      `${hoistedHead}async function open(file) {\n  await work();\n  state.seen.push(file);\n}\nvi.mock("node:fs/promises", () => open);\n`,
+      1,
+    ],
+    "a module function in the returned object": [
+      `${hoistedHead}async function open(file) {\n  await work();\n  state.seen.push(file);\n}\nvi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal()), open }));\n`,
+      1,
+    ],
+    "a module function returned through another variable": [
+      `${hoistedHead}async function open(file) {\n  await work();\n  state.seen.push(file);\n}\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const doubled = open;\n  return { ...real, open: doubled };\n});\n`,
+      1,
+    ],
+    "a factory declared outside the call": [
+      `${hoistedHead}const factory = async (importOriginal) => {\n  const real = await importOriginal();\n  return { ...real, open: async (file) => {\n    await real.open(file);\n    state.seen.push(file);\n  } };\n};\nvi.mock("node:fs/promises", factory);\n`,
+      1,
+    ],
+    // 모듈 값이 다른 모듈 값을 거쳐도(간접·별칭) 대역 쪽 자리다.
+    "a module helper reached through a module function": [
+      `${hoistedHead}async function helper(file) {\n  await work();\n  state.seen.push(file);\n}\nasync function open(file) {\n  return helper(file);\n}\nvi.mock("node:fs/promises", () => ({ open }));\n`,
+      1,
+    ],
+    "a module alias of a module function": [
+      `${hoistedHead}async function open(file) {\n  await work();\n  state.seen.push(file);\n}\nconst impl = open;\nvi.mock("node:fs/promises", () => ({ open: impl }));\n`,
+      1,
+    ],
     "vi.doMock": [
       `${hoistedHead}vi.doMock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const open = async (file) => {\n    const handle = await real.open(file);\n    state.seen.push(file);\n    return handle;\n  };\n  return { ...real, open };\n});\n`,
       1,
@@ -586,23 +669,11 @@ test("a module double may not look up state the tests swap after an await or in 
 test("a module double may take the state the tests swap before its first await and use only what it took", async () => {
   const allowed = {
     "taking before the first await": `const double = async (file) => {\n  const { seen, fails } = state;\n  const handle = await real.open(file);\n  seen.push(file);\n  if (fails) throw fails;\n  return handle;\n};`,
-    "reading inside the awaited call": `const double = async (file) => {\n  const handle = await real.open(state.seen.at(-1) ?? file);\n  return handle;\n};`,
     "a synchronous double": `const double = (file) => {\n  state.seen.push(file);\n  if (state.fails) throw state.fails;\n  return real.open(file);\n};`,
-    // 대역이 값으로 두는 함수는 불리는 순간이 따로 있는 대역이다(제품이 부른다).
-    "a double made by a double": `const double = (file) => {\n  const handle = { read: async () => {\n    state.seen.push(file);\n    return real.readFile(file);\n  } };\n  return handle;\n};`,
     "a callback that uses what was taken": `const double = (server, done) => {\n  const failure = state.fails;\n  return server.close((error) => done(failure ?? error));\n};`,
     "Promise.withResolvers instead of an executor": `const double = (file) => {\n  const { promise, resolve } = Promise.withResolvers();\n  state.release = resolve;\n  return promise.then(() => real.open(file));\n};`,
-    // vitest의 가짜 함수로 감싼 구현은 대역 값 자체다(#286 PR 3b-3b-2 설계 점검 1회차 [3]).
-    "a double wrapped in vi.fn": `const double = vi.fn(async (file) => {\n  const { seen } = state;\n  const handle = await real.open(file);\n  seen.push(file);\n  return handle;\n});`,
-    "a double given to mockImplementation": `const double = vi.fn().mockImplementation(async (file) => {\n  const { fails } = state;\n  await real.open(file);\n  if (fails) throw fails;\n});`,
-    // 대역을 만드는 함수(maker)를 factory 몸에서 부르는 것은 가져올 때 한 번이다. 만든 대역이 첫 await 전에 잡으면 맞다(설계 점검
-    // 2회차 [1]: 공용 `swapAfter`와 같은 모양).
-    "a maker of doubles called in the factory": `const wrap = (call) => async (...args) => {\n  const { fails } = state;\n  const result = await call(...args);\n  if (fails) throw fails;\n  return result;\n};\n  const double = wrap(real.open);`,
-    // 인수로 넘긴 객체의 메서드는 받는 쪽이 따로 부르는 대역 값이다(설계 점검 2회차 [2]).
-    "a method of an object passed as an argument": `const double = () => new Proxy({}, { get() {\n  const { fails } = state;\n  return fails;\n} });`,
-    "a method of a named object passed as an argument": `const sink = { write(chunk) {\n  state.seen.push(chunk);\n} };\n  const double = () => new Proxy({}, sink);`,
-    // 칸을 읽는 도움을 첫 await 전에 부른다.
-    "a helper called before the first await": `const fault = () => state.fails;\n  const double = async (file) => {\n  const failure = fault();\n  const handle = await real.open(file);\n  if (failure) throw failure;\n  return handle;\n};`,
+    // 건네는 const 객체의 속성에 담은 대역, factory 안 클래스의 메서드(대역이 만든 서버처럼)도 대역이다.
+    "a method of a class the factory hands over": `class Server {\n  close(done) {\n    const failure = state.fails;\n    return done(failure);\n  }\n}\n  const double = () => new Server();`,
   };
   for (const [shape, double] of Object.entries(allowed))
     for (const place of testPlaces)
@@ -613,6 +684,18 @@ test("a module double may take the state the tests swap before its first await a
       );
   // 시험 본문·hook은 대역이 아니다(본문의 늦은 일은 본문이 기다린다).
   const outside = `${hoistedHead}afterEach(async () => {\n  await settle();\n  state.seen = [];\n});\nit("reads", async () => {\n  await work();\n  expect(state.seen).toEqual([]);\n});\n`;
+  // 건네는 const 객체의 속성에 담은 대역(`watched[name] = 대역`)과, 모듈 범위 함수를 factory가 돌려주는 객체에 넣은 대역.
+  const handedOverShapes = [
+    `${hoistedHead}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const watched = {};\n  for (const name of ["open", "stat"])\n    watched[name] = async (file) => {\n      const { seen } = state;\n      const result = await real[name](file);\n      seen.push(file);\n      return result;\n    };\n  return { ...real, ...watched };\n});\n`,
+    `${hoistedHead}async function open(file) {\n  const { seen } = state;\n  await work();\n  seen.push(file);\n}\nvi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal()), open }));\n`,
+  ];
+  for (const place of testPlaces)
+    for (const code of handedOverShapes)
+      assert.deepEqual(
+        await lint(code, place, hoistedRules),
+        [],
+        `${place}: ${code}`
+      );
   // 바인딩을 바꿔 끼우는 let 칸은 지역 값으로 담으면 그 값을 잡은 것이다. 그릇 칸을 지역 별칭으로 담는 것은 같은 그릇이라 걸린다.
   const takenLet = `import { vi } from "vitest";\nlet race;\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const rename = async (from, to) => {\n    const current = race;\n    await real.rename(from, to);\n    await current?.afterRename?.(from, to);\n  };\n  return { ...real, rename };\n});\n`;
   const aliasedContainer = mocked(
