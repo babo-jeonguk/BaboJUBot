@@ -3395,3 +3395,22 @@ test("state is judged the same whether it is declared with let, kept in a hoiste
         `${place}: ${shape}`
       );
 });
+
+test("an exported double the factory hands over and a let alias behind an assertion or a default are judged like the plain shapes", async () => {
+  const exportedDouble = `${hoistedHead}export async function open(file) {\n  await work();\n  state.seen.push(file);\n}\nvi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal()), open }));\n`;
+  for (const place of testPlaces)
+    assert.equal(
+      (await lint(exportedDouble, place, hoistedRules)).length,
+      1,
+      `${place}: an exported double the factory hands over`
+    );
+  const letAlias = (capture) =>
+    `import { vi } from "vitest";\nlet race: { afterRename?: () => Promise<void> } | undefined;\nexport function setRace(next: typeof race) {\n  race = next;\n}\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal<typeof import("node:fs/promises")>();\n  return {\n    ...real,\n    rename: async (from: string, to: string) => {\n      const current = ${capture};\n      await real.rename(from, to);\n      await current?.afterRename?.();\n    },\n  };\n});\n`;
+  for (const capture of ["race as typeof race", "race ?? undefined", "race!"])
+    for (const place of typedConstPlaces)
+      assert.equal(
+        (await lint(letAlias(capture), place, hoistedRules)).length,
+        1,
+        `${place}: a let alias through ${capture}`
+      );
+});
