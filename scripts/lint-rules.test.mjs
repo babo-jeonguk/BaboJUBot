@@ -519,8 +519,14 @@ test("a module double may not look up state the tests swap after an await or in 
       `const double = vi.fn().mockImplementation(async (file) => {\n  const { fails } = state;\n  await real.open(file);\n  if (fails) throw fails;\n});`,
       1,
     ],
-    "an inner function a maker returns": [
-      `const wrap = (call) => async (...args) => {\n  const { fails } = state;\n  const result = await call(...args);\n  if (fails) throw fails;\n  return result;\n};\n  const double = wrap(real.open);`,
+    // 만드는 함수(factory 몸에서 부르고 결과를 건넴)가 돌려준 안쪽 함수는 대역으로 판정받는다: await 뒤에 읽으면 짚는다.
+    "an inner function a maker returns, reading after its await": [
+      `const wrap = (call) => async (...args) => {\n  const result = await call(...args);\n  if (state.fails) throw state.fails;\n  return result;\n};\n  const double = wrap(real.open);`,
+      2,
+    ],
+    // 만드는 함수를 대역 안에서 부르면(결과를 건네지 않음) 그 안쪽 함수는 대역이 아니다.
+    "an inner function a maker returns inside a double": [
+      `const wrap = (call) => async (...args) => {\n  const { fails } = state;\n  const result = await call(...args);\n  if (fails) throw fails;\n  return result;\n};\n  const double = async (file) => wrap(real.open)(file);`,
       1,
     ],
     "a method of an object passed as an argument": [
@@ -652,6 +658,55 @@ test("a module double may not look up state the tests swap after an await or in 
         count,
         `${place}: ${shape}`
       );
+  // 공용 대역 파일: factory가 다른 저장소 파일의 내보낸 함수로 대역을 만들면 그 파일을 읽어 같은 판정을 하고, 부른 자리에 단다(감독 결정
+  // 2026-11-26). 저장소 모듈인데 찾지 못하면 판정할 수 없어 짚는다.
+  const shared = (place) => {
+    const relative = path
+      .relative(
+        path.dirname(path.join(repository, place)),
+        path.join(
+          repository,
+          "scripts/fixtures/hoisted-state/shared-double.mjs"
+        )
+      )
+      .replaceAll(path.sep, "/");
+    return relative.startsWith(".") ? relative : `./${relative}`;
+  };
+  for (const place of testPlaces) {
+    const from = shared(place);
+    const dynamic = (maker) =>
+      `import { vi } from "vitest";\nvi.mock("node:fs/promises", async (importOriginal) => (await import("${from}")).${maker}(await importOriginal()));\n`;
+    const late = await lint(dynamic("lateDouble"), place, hoistedRules);
+    assert.equal(
+      late.length,
+      2,
+      `${place}: a shared double reading after its await`
+    );
+    assert.match(late[0].message, /shared-double\.mjs:\d+/);
+    assert.deepEqual(
+      await lint(dynamic("takingDouble"), place, hoistedRules),
+      [],
+      `${place}: a shared double taking first`
+    );
+    const imported = `import { vi } from "vitest";\nimport { lateDouble } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => lateDouble(await importOriginal()));\n`;
+    assert.equal(
+      (await lint(imported, place, hoistedRules)).length,
+      2,
+      `${place}: a shared double imported by name`
+    );
+    const missing = `import { vi } from "vitest";\nvi.mock("node:fs/promises", async (importOriginal) => (await import("./no-such-support.ts")).makeDouble(await importOriginal()));\n`;
+    const [unresolved, ...rest] = await lint(missing, place, hoistedRules);
+    assert.deepEqual(rest, [], `${place}: a missing shared double`);
+    assert.match(unresolved?.message ?? "", /판정할 수 없습니다/);
+  }
+  // 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 칸: 콜백 안의 함수(대역이 부르는 도움)가 읽거나 쓰면 짚는다(감독 결정 2026-11-26).
+  const hoistedLocal = `import { vi } from "vitest";\nconst queries = vi.hoisted(() => {\n  let held = false;\n  return {\n    hold: () => {\n      held = true;\n    },\n    query: async () => {\n      if (!held) return;\n      held = false;\n    },\n  };\n});\nvi.mock("m", async () => ({ run: async () => {\n  const { query } = queries;\n  await query();\n} }));\n`;
+  for (const place of testPlaces)
+    assert.equal(
+      (await lint(hoistedLocal, place, hoistedRules)).length,
+      3,
+      `${place}: hoisted locals read in its functions`
+    );
   // TS로 감싼 그릇·비동기 hoisted도 칸이다(TS 자리만).
   const wrapped = {
     "a container under as": `import { vi } from "vitest";\nconst made = [] as string[];\n${fs}  const mkdtemp = async (prefix: string) => {\n    const folder = await real.mkdtemp(prefix);\n    made.push(folder);\n    return folder;\n  };\n  return { ...real, mkdtemp };\n});\n`,
@@ -673,6 +728,8 @@ test("a module double may take the state the tests swap before its first await a
     "a callback that uses what was taken": `const double = (server, done) => {\n  const failure = state.fails;\n  return server.close((error) => done(failure ?? error));\n};`,
     "Promise.withResolvers instead of an executor": `const double = (file) => {\n  const { promise, resolve } = Promise.withResolvers();\n  state.release = resolve;\n  return promise.then(() => real.open(file));\n};`,
     // 건네는 const 객체의 속성에 담은 대역, factory 안 클래스의 메서드(대역이 만든 서버처럼)도 대역이다.
+    // 만드는 함수가 돌려준 안쪽 함수가 첫 await 전에 잡으면 맞다(공용 `swapAfter`·`failingNet`과 같은 모양).
+    "an inner function a maker returns, taking first": `const wrap = (call) => async (...args) => {\n  const { fails } = state;\n  const result = await call(...args);\n  if (fails) throw fails;\n  return result;\n};\n  const double = wrap(real.open);`,
     "a method of a class the factory hands over": `class Server {\n  close(done) {\n    const failure = state.fails;\n    return done(failure);\n  }\n}\n  const double = () => new Server();`,
   };
   for (const [shape, double] of Object.entries(allowed))
@@ -696,6 +753,14 @@ test("a module double may take the state the tests swap before its first await a
         [],
         `${place}: ${code}`
       );
+  // hoisted 콜백의 지역 칸은 대역 쪽 자리가 그 hoisted 값을 쓸 때만 본다(시험만 쓰면 대역이 아니다). 콜백 몸에서 처음 한 번 쓰는 것은 받는다.
+  const hoistedForTests = `import { vi } from "vitest";\nconst counter = vi.hoisted(() => {\n  let count = 0;\n  count += 1;\n  return { next: () => ++count };\n});\nvi.mock("m", async () => ({ run: () => 1 }));\nit("counts", () => {\n  expect(counter.next()).toBe(2);\n});\n`;
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(hoistedForTests, place, hoistedRules),
+      [],
+      `${place}: hoisted locals used only by tests`
+    );
   // 바인딩을 바꿔 끼우는 let 칸은 지역 값으로 담으면 그 값을 잡은 것이다. 그릇 칸을 지역 별칭으로 담는 것은 같은 그릇이라 걸린다.
   const takenLet = `import { vi } from "vitest";\nlet race;\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const rename = async (from, to) => {\n    const current = race;\n    await real.rename(from, to);\n    await current?.afterRename?.(from, to);\n  };\n  return { ...real, rename };\n});\n`;
   const aliasedContainer = mocked(
