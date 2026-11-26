@@ -56,6 +56,31 @@ export function gate(): Gate {
   return { until: promise, open: () => settle("opened"), [gateBrand]: true };
 }
 
+/** 대역의 reset이 붙잡힌 기다림을 포기시킬 때의 거절. 무엇을 포기했는지(`what`)를 밝힌다. 포기하는 자리는 모두 이 문구를 쓴다. */
+export function givenUpAtReset(what: string) {
+  return new Error(`${what} was given up at the double's reset`);
+}
+
+/**
+ * 콜백(정책 hook, 대역 구현) 안에서 사건 `event`를 기다리는 길. 사건의 결과를 그대로 돌려주고(이행·거절 모두), 사건이 오기 전에 대역의
+ * reset(afterEach)이 오면 `givenUpAtReset(what)`으로 거절한다. 이 시험의 reset 전에 시작한 기다림은 그 reset이 그 시험의 hub·중계
+ * 닫기(onTestFinished)보다 먼저 푼다. 그래서 본문이 실패해 사건이 오지 않아도 콜백의 기다림은 시험 뒤에 남지 않는다(reset 뒤에 시작한
+ * 기다림은 다음 reset까지 남는다). 바깥 기다림의 상한은 바깥 기다림만 끝내므로 이 해제를 대신하지 못한다.
+ * 콜백은 이것을 시험이 소유한 칸에 `awaitedLater`로 담고 그 칸을 기다린다. 본문은 답을 받은 뒤 답 내용을 단언하기 전에 그 칸을 상한
+ * 안에서 받아, 사건으로 풀렸는지(이행) 단언하고 사건의 실패는 그 거절로 받는다. 콜백 안에 상한(`within`)을 두지 않는다: 그 거절이
+ * 제품의 정책 읽기 실패(`policy_unavailable`)로 접혀 까닭이 사라진다. 사건이 먼저 끝나면 이 기다림의 gate는 reset 때 풀리고, 그때 생기는
+ * 거절은 이미 끝난 `race`가 받는다.
+ */
+export function heldUntil<T>(event: Promise<T>, what: string): Promise<T> {
+  const reset = gate();
+  return Promise.race([
+    event,
+    reset.until.then(() => {
+      throw givenUpAtReset(what);
+    }),
+  ]);
+}
+
 /** 대역이 붙잡고 있는 연결(`refusing.holdConnect`). `resetRefusing()`이 포기시킨다. */
 const heldSockets = new Set<netModule.Socket>();
 
@@ -122,10 +147,7 @@ export function resetRefusing() {
   openAtReset.clear();
   for (const socket of heldSockets)
     socket.destroy(
-      codeError(
-        "a held connect was given up at the double's reset",
-        "ECONNABORTED"
-      )
+      Object.assign(givenUpAtReset("a held connect"), { code: "ECONNABORTED" })
     );
   heldSockets.clear();
   refusing.refuse = undefined;
