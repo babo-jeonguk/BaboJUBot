@@ -199,6 +199,76 @@ test("reads require, createRequire functions and getBuiltinModule with the names
   );
 });
 
+test("reads vitest's loaders: importActual and importMock with the names taken from them, and the module a mock factory gets as its original", () => {
+  assert.deepEqual(
+    sitesOf(
+      [
+        `import { vi } from "vitest";`,
+        `const { a } = await vi.importActual("m1");`,
+        `const whole = await vi.importMock("m2");`,
+        `vi.mock("m3", async (original) => ({ ...(await original()) }));`,
+        `vi.doMock("m4");`,
+        `vi.unmock("m5");`,
+        `const name = "m6";`,
+        `void vi.importActual(name);`,
+        `const notVi = { importActual: (m: string) => m };`,
+        `void notVi.importActual("m7");`,
+      ].join("\n")
+    )
+      .filter((site) => site.kind !== "import")
+      .map(({ kind, source, loader, names }) => ({
+        kind,
+        source,
+        loader,
+        names,
+      })),
+    [
+      {
+        kind: "require",
+        source: "m1",
+        loader: "vi.importActual",
+        names: ["a>a"],
+      },
+      {
+        kind: "require",
+        source: "m2",
+        loader: "vi.importMock",
+        names: ["*>whole"],
+      },
+      { kind: "require", source: "m3", loader: "vi.mock", names: ["*>"] },
+      { kind: "require", source: "m4", loader: "vi.doMock", names: ["*>"] },
+    ]
+  );
+});
+
+test("tells a value taken from vitest's importActual by the module it loads", () => {
+  const code = `import { vi } from "vitest";\nconst hooks = await vi.importActual("node:async_hooks");\nvoid hooks.AsyncLocalStorage;\n`;
+  const found = [];
+  const linter = new Linter({ configType: "flat" });
+  linter.verify(code, [
+    {
+      languageOptions: { parser: tseslint.parser, sourceType: "module" },
+      plugins: {
+        probe: {
+          rules: {
+            origin: {
+              create: (context) => ({
+                "MemberExpression[property.name='AsyncLocalStorage']"(node) {
+                  found.push(originOf(context.sourceCode.getScope(node), node));
+                },
+              }),
+            },
+          },
+        },
+      },
+      rules: { "probe/origin": "error" },
+    },
+  ]);
+  assert.deepEqual(found, [
+    { module: "async_hooks", path: ["AsyncLocalStorage"] },
+  ]);
+});
+
 test("reads TypeScript import-equals requires like import-x's module visitor", () => {
   assert.deepEqual(
     sitesOf(

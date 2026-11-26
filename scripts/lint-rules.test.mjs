@@ -3255,6 +3255,8 @@ const callContextShapes = {
   "a require": `const hooks = require("node:async_hooks");\nexport const calls = new hooks.AsyncLocalStorage();\n`,
   "a re-export": `export { AsyncLocalStorage } from "node:async_hooks";\n`,
   "a star re-export": `export * from "async_hooks";\n`,
+  "vitest's importActual": `import { vi } from "vitest";\nconst hooks = await vi.importActual("node:async_hooks");\nexport const calls = new hooks.AsyncLocalStorage();\n`,
+  "a mock factory's original": `import { vi } from "vitest";\nvi.mock("node:async_hooks", async (original) => ({ ...(await original()) }));\n`,
 };
 
 for (const [shape, code] of Object.entries(callContextShapes))
