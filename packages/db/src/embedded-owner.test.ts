@@ -26,7 +26,7 @@ import {
 // 파일·경로 한도가 없어 이 파일의 시험은 POSIX에서만 돈다.
 /**
  * 시험끼리 같은 자리(제품의 고정 후보 `/tmp`)의 듣기 실패는 경로로 그 시험의 것을 가를 수 없다. 시험은 제품 호출을
- * `listenCalls.run({ fails }, () => 제품 호출)`로 감싸고, 대역은 불린 순간 그 호출의 무장을 잡는다. 다른 시험의 호출이나 문맥 밖
+ * `listenCalls.run({ fails }, () => 제품 호출, onTestFinished)`로 감싸고(끝은 그 시험의 정리가 정함), 대역은 불린 순간 그 호출의 무장을 잡는다. 다른 시험의 호출이나 문맥 밖
  * 호출은 무장이 없어 실패하지 않는다(#286).
  */
 const listenCalls = callArming<{
@@ -407,8 +407,10 @@ describe.runIf(posix)(
           : undefined;
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
       const refused: unknown = await listenCalls
-        .run({ fails }, () =>
-          startEmbeddedCluster({ dataDir, persistent: true })
+        .run(
+          { fails },
+          () => startEmbeddedCluster({ dataDir, persistent: true }),
+          onTestFinished
         )
         .then(
           () =>

@@ -1,5 +1,5 @@
 import type { Readable } from "node:stream";
-import { callArming } from "@babojubot/process/call-arming";
+import { callAttribution } from "@babojubot/process/call-arming";
 
 // 계약 시험(runtime-contract.ts)이 실행 시도가 띄운 것을 그 실행 시도에 귀속해 보고, 돌아온 뒤를 판정한다. 판정·활동 기록·수집과
 // 귀속을 계약 시험 밖의 작은 단위로 떼어 program-watch-support.test.ts가 결함 사례로 시험한다(#294 외부 리뷰 1회차 SPEC-2,
@@ -14,7 +14,7 @@ import { callArming } from "@babojubot/process/call-arming";
 //
 // 띄운 것은 세 가지로 센다. `tree`(공용 실행 `launchTree`)와 `command`(`runTree`)는 프로그램이고, 실제로 시작했는지(`started`)와
 // 끝(`state`)을 따로 본다. `run`(`startProcess`)은 프로그램이 아니라 그 아래 `tree` 하나의 출력 처리 경계라 프로그램 수에 넣지 않고
-// 끝만 본다. 띄우는 순간 지금의 실행 시도 문맥(공용 `callArming`)에 귀속한다. 타이머·promise 이어짐·입출력 콜백은 그것을
+// 끝만 본다. 띄우는 순간 지금의 실행 시도 문맥(공용 `callAttribution`)에 귀속한다. 타이머·promise 이어짐·입출력 콜백은 그것을
 // 일으킨 실행 시도의 문맥에서 돈다.
 
 /** 띄운 것 하나. */
@@ -81,7 +81,7 @@ export function newOwner(name: string): Owner {
   return owner;
 }
 
-const owners = callArming<Owner>();
+const owners = callAttribution<Owner>();
 /** 어느 실행 시도에도 귀속되지 않고 띄운 것. 계약 시험은 시험마다 이것이 비어 있는지 본다(꺼낼 때 새 목록으로 바꿔 끼운다). */
 const unowned = { list: [] as Launch[] };
 const watched = { processModule: false, processPackage: false };

@@ -3,7 +3,7 @@ import { readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { callArming } from "@babojubot/process/call-arming";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import { attemptFolder } from "./attempt-folder.ts";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
@@ -29,7 +29,7 @@ type Fault = {
 };
 /**
  * 그 시험만의 경로로 고를 수 없는 결함(공유 임시 폴더에 생기는 폴더)은 그 시험이 부른 제품 호출에 묶는다: 시험이
- * `faultCalls.run(결함, () => 제품 호출)`로 감싸고 대역은 불린 순간 `faultCalls.current()`로 그 호출의 결함을 잡는다.
+ * `faultCalls.run(결함, () => 제품 호출, onTestFinished)`로 감싸고(끝은 그 시험의 정리가 정함) 대역은 불린 순간 `faultCalls.current()`로 그 호출의 결함을 잡는다.
  */
 const faultCalls = callArming<Fault>();
 const inject = vi.hoisted(() => ({
@@ -260,12 +260,18 @@ describe("an attempt folder that cannot be removed", () => {
     // 시험이 부른 제품 호출에 묶는다(앞 시험의 늦은 만들기는 그 호출의 문맥이 아니라 걸리지 않는다).
     const fault: Fault = { in: tmpdir(), fails: "remove", made: [] };
 
-    const result = await faultCalls.run(fault, () =>
-      provider.adapter.execute(input, control())
+    const result = await faultCalls.run(
+      fault,
+      () => provider.adapter.execute(input, control()),
+      onTestFinished
     );
 
     expect(result.stopReason).toBe("completed");
     expect(fault.made).toHaveLength(1);
+    // 결함이 그 폴더의 지우기에 걸렸다: 지우지 못한 그 폴더와 결함의 원인 코드가 남는다.
+    expect(logged()).toContainEqual(
+      expect.stringContaining(`it is left at ${fault.made[0]} (EBUSY)`)
+    );
     expectDiagnostic(logged(), "antigravity", input.identity.runId);
   });
 });

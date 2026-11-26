@@ -3725,7 +3725,7 @@ const callContextThroughArming = {
     },
     schema: [],
     messages: {
-      own: "{{source}}: 시험 코드는 호출 문맥을 callArming(@babojubot/process/call-arming)으로만 씁니다. 시험이 제품 호출을 `run(무장, () => 제품 호출)`로 감싸고, 대역은 불린 순간 `current()`로 무장을 잡으며 무장이 없으면 실패시키지 않습니다. CODING_STANDARDS.md#정리",
+      own: "{{source}}: 시험 코드는 호출 문맥을 callArming(@babojubot/process/call-arming)으로만 씁니다. 시험이 제품 호출을 `run(무장, () => 제품 호출, onTestFinished)`로 감싸고, 대역은 불린 순간 `current()`로 무장을 잡으며 무장이 없거나 끝났으면 실패시키지 않습니다. 실행 시도 귀속은 callAttribution으로 씁니다. CODING_STANDARDS.md#정리",
     },
   },
   create(context) {

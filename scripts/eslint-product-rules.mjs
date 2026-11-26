@@ -693,6 +693,7 @@ export const processNonLaunchers = [
   "resetSwap",
   "swapAfter",
   "callArming",
+  "callAttribution",
 ];
 /** child_process·cross-spawn에서 프로그램을 띄우는 함수와 그 명령을 받는 자리(`line`은 명령줄 문자열 하나). */
 const nodeLaunchers = new Map([

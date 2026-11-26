@@ -18,7 +18,7 @@ const inject = vi.hoisted(() => ({
 }));
 /**
  * 제품이 안에서 만드는 임시 cluster 폴더는 시험이 그 경로를 미리 알 수 없다. 시험은 제품 호출을
- * `madeCalls.run(무장, () => 제품 호출)`로 감싸고, 대역은 불린 순간 그 호출의 무장을 잡는다. 그 호출이 만든 폴더를 `made`에 남기고,
+ * `madeCalls.run(무장, () => 제품 호출, onTestFinished)`로 감싸고(끝은 그 시험의 정리가 정함), 대역은 불린 순간 그 호출의 무장을 잡는다. 그 호출이 만든 폴더를 `made`에 남기고,
  * 그 폴더의 지우기·주인 기록 폴더 만들기만 실패시킨다. 다른 시험의 호출이나 문맥 밖 호출은 무장이 없어 실패하지 않는다(#286).
  */
 const madeCalls = callArming<{
@@ -139,9 +139,9 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       )
     );
     const logs = logged();
-    await expect(madeCalls.run(arming, () => ephemeralCluster())).rejects.toBe(
-      ownerError
-    );
+    await expect(
+      madeCalls.run(arming, () => ephemeralCluster(), onTestFinished)
+    ).rejects.toBe(ownerError);
     // 그 호출이 만든 폴더 하나에서 두 실패가 났다.
     expect(arming.made).toHaveLength(1);
     // 지우기 실패는 소유 오류와 다른 원인 코드로 남는다.
