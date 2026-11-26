@@ -659,176 +659,42 @@ test("a module double may not look up state the tests swap after an await or in 
         count,
         `${place}: ${shape}`
       );
-  // 공용 대역 파일: factory가 다른 저장소 파일의 내보낸 함수로 대역을 만들면 그 파일을 읽어 같은 판정을 하고, 부른 자리에 단다(감독 결정
-  // 2026-11-26). 저장소 모듈인데 찾지 못하면 판정할 수 없어 짚는다.
-  const shared = (place) => {
-    const relative = path
-      .relative(
-        path.dirname(path.join(repository, place)),
-        path.join(repository, "scripts/fixtures/hoisted-state/shared-double.ts")
-      )
-      .replaceAll(path.sep, "/");
-    return relative.startsWith(".") ? relative : `./${relative}`;
+  // 판정은 그 파일 안에서만 한다(감독 결정 2026-11-26). 공용 대역 파일은 시험 코드 범위에서 자기 차례에 같은 규칙으로 판정받고, 그
+  // 파일이 내보낸 함수가 들머리다: 그 몸은 부른 순간 돌고(시험이 부르는 도움도 같음), 건네는 함수가 대역이며, 콜백은 늦게 돈다. 시험
+  // 파일의 factory가 가져온 값에 일을 넘기는 것은 그 자리에서 판정하지 않는다(그 값을 내보낸 파일이 자기 차례에 판정받는다).
+  const supportHead = `export const faults = { fails: undefined };\n`;
+  const supportCases = {
+    "a double an exported maker hands over, reading after its await": [
+      `${supportHead}export function lateDouble(real) {\n  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      if (faults.fails) throw faults.fails;\n      return handle;\n    },\n  };\n}\n`,
+      2,
+    ],
+    "a double an exported maker hands over, taking first": [
+      `${supportHead}export function takingDouble(real) {\n  return {\n    ...real,\n    open: async (file) => {\n      const { fails } = faults;\n      const handle = await real.open(file);\n      if (fails) throw fails;\n      return handle;\n    },\n  };\n}\n`,
+      0,
+    ],
+    "a callback an exported function registers": [
+      `${supportHead}export function watching(emitter) {\n  emitter.on("close", () => {\n    if (faults.fails) throw faults.fails;\n  });\n}\n`,
+      2,
+    ],
+    "an exported helper the tests call": [
+      `${supportHead}export function failWith(error) {\n  faults.fails = error;\n}\n`,
+      0,
+    ],
+    "a factory handing its work to an imported maker": [
+      `import { vi } from "vitest";\nvi.mock("node:fs/promises", async (importOriginal) => (await import("./lint-sample-shared.ts")).lateDouble(await importOriginal()));\n`,
+      0,
+    ],
   };
-  for (const place of testPlaces) {
-    const from = shared(place);
-    const dynamic = (maker) =>
-      `import { vi } from "vitest";\nvi.mock("node:fs/promises", async (importOriginal) => (await import("${from}")).${maker}(await importOriginal()));\n`;
-    const late = await lint(dynamic("lateDouble"), place, hoistedRules);
-    assert.equal(
-      late.length,
-      2,
-      `${place}: a shared double reading after its await`
-    );
-    assert.match(late[0].message, /shared-double\.ts:\d+/);
-    assert.deepEqual(
-      await lint(dynamic("takingDouble"), place, hoistedRules),
-      [],
-      `${place}: a shared double taking first`
-    );
-    const imported = `import { vi } from "vitest";\nimport { lateDouble } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => lateDouble(await importOriginal()));\n`;
-    assert.equal(
-      (await lint(imported, place, hoistedRules)).length,
-      2,
-      `${place}: a shared double imported by name`
-    );
-    const missing = `import { vi } from "vitest";\nvi.mock("node:fs/promises", async (importOriginal) => (await import("./no-such-support.ts")).makeDouble(await importOriginal()));\n`;
-    const [unresolved, ...rest] = await lint(missing, place, hoistedRules);
-    assert.deepEqual(rest, [], `${place}: a missing shared double`);
-    assert.match(unresolved?.message ?? "", /판정할 수 없습니다/);
-  }
-  // 공용 대역 파일의 값은 아는 모양만 통과한다(설계 점검 2회차 지적 1·2): 부르고 결과를 건네면 그 파일을 판정하고, 대역 쪽 자리 안에서
-  // 부르면 그 함수를 도움으로 판정하고, 값의 속성은 그 파일의 칸으로 판정한다. 그 밖(함수를 부르지 않고 넘김, 모듈째 돌려줌, 계산한
-  // 경로·이름, 출처를 모르는 부르기)은 판정할 수 없어 짚는다.
-  for (const place of testPlaces) {
-    const from = shared(place);
-    const head = `import { vi } from "vitest";\n`;
-    const factory = (body) =>
-      `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const s = await import("${from}");\n${body}\n});\n`;
-    const reported = {
-      "a property of a made double": [
-        factory(
-          `  const d = s.lateDouble(real);\n  return { ...real, open: d.open };`
-        ),
-        2,
-      ],
-      "a maker called inside a double": [
-        factory(
-          `  return { ...real, open: (file) => s.lateDouble(real).open(file) };`
-        ),
-        2,
-      ],
-      "a factory returning the module": [
-        `${head}vi.mock("node:fs/promises", async () => await import("${from}"));\n`,
-        1,
-      ],
-      "a factory returning the module's import": [
-        `${head}vi.mock("node:fs/promises", () => import("${from}"));\n`,
-        1,
-      ],
-      "a made double merged with Object.assign": [
-        factory(`  return Object.assign({}, real, s.lateDouble(real));`),
-        2,
-      ],
-      "a made double assigned later": [
-        factory(`  let d;\n  d = s.lateDouble(real);\n  return d;`),
-        2,
-      ],
-      "a maker handed over without a call": [
-        factory(`  return { ...real, make: s.lateDouble };`),
-        1,
-      ],
-      "a maker constructed": [factory(`  return new s.lateDouble(real);`), 1],
-      "a maker picked by a condition": [
-        factory(
-          `  const make = process.env.LATE ? s.lateDouble : s.takingDouble;\n  return make(real);`
-        ),
-        3,
-      ],
-      "a computed module path": [
-        `${head}const where = ${JSON.stringify(from)};\nvi.mock("node:fs/promises", async (importOriginal) => (await import(where)).lateDouble(await importOriginal()));\n`,
-        2,
-      ],
-      "a computed export name": [
-        factory(`  return s["late" + "Double"](real);`),
-        2,
-      ],
-      "shared state read after the await": [
-        factory(
-          `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      if (s.faults.fails) throw s.faults.fails;\n      return handle;\n    },\n  };`
-        ),
-        2,
-      ],
-      "imported shared state read after the await": [
-        `${head}import { faults } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      if (faults.fails) throw faults.fails;\n      return handle;\n    },\n  };\n});\n`,
-        2,
-      ],
-      "a made double's method called after the double's await": [
-        factory(
-          `  const d = s.takingDouble(real);\n  return {\n    ...real,\n    open: async (file) => {\n      await real.access(file);\n      return d.open(file);\n    },\n  };`
-        ),
-        1,
-      ],
-      "a shared helper that reads the state": [
-        factory(
-          `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file);\n      const failure = s.currentFailure();\n      if (failure) throw failure;\n      return handle;\n    },\n  };`
-        ),
-        1,
-      ],
-    };
-    for (const [shape, [code, count]] of Object.entries(reported))
+  for (const place of testPlaces)
+    for (const [shape, [code, count]] of Object.entries(supportCases))
       assert.equal(
         (await lint(code, place, hoistedRules)).length,
         count,
         `${place}: ${shape}`
       );
-    const allowed = {
-      "shared state taken before the await": factory(
-        `  return {\n    ...real,\n    open: async (file) => {\n      const { fails } = s.faults;\n      const handle = await real.open(file);\n      if (fails) throw fails;\n      return handle;\n    },\n  };`
-      ),
-      "imported shared state taken before the await": `${head}import { faults } from "${from}";\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const { fails } = faults;\n      const handle = await real.open(file);\n      if (fails) throw fails;\n      return handle;\n    },\n  };\n});\n`,
-      "a shared helper that reads no state": factory(
-        `  return {\n    ...real,\n    open: async (file) => {\n      const handle = await real.open(file).catch((error) => {\n        if (s.codeOf(error) === "EBUSY") return undefined;\n        throw error;\n      });\n      return handle;\n    },\n  };`
-      ),
-      "a made double's method called before the double's await": factory(
-        `  const d = s.takingDouble(real);\n  return {\n    ...real,\n    open: async (file) => {\n      if (file === "") throw new Error("no file");\n      return d.open(file);\n    },\n  };`
-      ),
-      "a call on the real module": factory(
-        `  return { ...real, open: real.open.bind(real) };`
-      ),
-    };
-    for (const [shape, code] of Object.entries(allowed))
-      assert.deepEqual(
-        await lint(code, place, hoistedRules),
-        [],
-        `${place}: ${shape}`
-      );
-  }
-  // 판정은 lint한 시험 파일의 차례와 무관하고, 공용 대역이 다른 공용 파일의 도움을 쓰면 그 지적이 그대로 온다(변경분 점검 지적 1·3).
-  // 칸에 담긴 함수(같은 파일의 묶음, 내보낸 묶음)는 도움이라 꺼내 두었다가 await 뒤에 불러도 그 안의 칸 읽기가 걸린다(지적 2).
+  // 칸에 담긴 함수(같은 파일의 묶음)는 도움이라 꺼내 두었다가 await 뒤에 불러도 그 안의 칸 읽기가 걸린다.
   for (const place of testPlaces) {
-    const sibling = (name) => shared(place).replace("shared-double.ts", name);
     const head = `import { vi } from "vitest";\n`;
-    const both = `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const a = await import("${sibling("shared-double-a.ts")}");\n  const b = await import("${sibling("shared-double-b.ts")}");\n  return { ...a.makerA(real), ...b.makerB(real) };\n});\n`;
-    const onlyB = `${head}vi.mock("node:fs/promises", async (importOriginal) => (await import("${sibling("shared-double-b.ts")}")).makerB(await importOriginal()));\n`;
-    assert.equal(
-      (await lint(both, place, hoistedRules)).length,
-      2,
-      `${place}: two shared doubles using one helper`
-    );
-    const [late, ...rest] = await lint(onlyB, place, hoistedRules);
-    assert.deepEqual(rest, [], `${place}: one shared double after the other`);
-    assert.match(
-      late?.message ?? "",
-      /시험이 바꿔 끼우는 모듈 칸/,
-      `${place}: one shared double after the other`
-    );
-    const kitShared = `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const s = await import("${shared(place)}");\n  return {\n    ...real,\n    open: async (file) => {\n      const { current } = s.kit;\n      const handle = await real.open(file);\n      if (current()) throw current();\n      return handle;\n    },\n  };\n});\n`;
-    assert.equal(
-      (await lint(kitShared, place, hoistedRules)).length,
-      1,
-      `${place}: a shared kit's function taken before the await`
-    );
     const kitHere = (body) =>
       `${head}const faults = vi.hoisted(() => ({ fails: undefined }));\nconst kit = { ${body} };\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const { current } = kit;\n      const handle = await real.open(file);\n      if (current()) throw new Error("failed");\n      return handle;\n    },\n  };\n});\n`;
     assert.equal(
@@ -3416,4 +3282,86 @@ test("the shared call-arming helper is the one place that holds a call's context
   const code = await readFile(path.join(repository, helper), "utf8");
   assert.match(code, /AsyncLocalStorage/);
   assert.deepEqual(await callContextMessages(code, helper), []);
+});
+
+// ---------- 모듈 const가 칸인지: 타입으로 (#286 PR 3b-3b-2 외부 리뷰 1회차, 현행 기준 1절) ----------
+
+/** 모듈 const 하나(`declaration`)를 대역이 await 뒤에 읽는(`use`) 파일. */
+const constRead = (declaration, use) =>
+  `import { vi } from "vitest";\n${declaration}\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal<typeof import("node:fs/promises")>();\n  return {\n    ...real,\n    readFile: async (file: string) => {\n      const text = await real.readFile(file, "utf8");\n      return ${use};\n    },\n  };\n});\n`;
+/** 타입 정보가 붙는 자리(디스크에 있는 TypeScript 시험 코드 파일을 빌린다)와 붙지 않는 자리(없는 파일). */
+const typedConstPlaces = [
+  "apps/web/e2e/support/organization.ts",
+  "packages/db/src/client.test.ts",
+];
+const untypedConstPlace = "apps/server/test/lint-sample.test.ts";
+
+test("a module const whose type cannot change is not state the tests swap", async () => {
+  const unchangeable = {
+    "a string a call made": [
+      `const label = String(process.pid);`,
+      `text + label`,
+    ],
+    "an as-const object with a readonly array": [
+      `const settings = { name: "a", list: ["b"] } as const;`,
+      `settings.list.includes(text) ? settings.name : text`,
+    ],
+    "a function": [
+      `const pick = (value: string) => value.trim();`,
+      `pick(text)`,
+    ],
+    "a symbol": [
+      `const marker: unique symbol = Symbol("m");`,
+      `marker.description ?? text`,
+    ],
+  };
+  for (const [shape, [declaration, use]] of Object.entries(unchangeable))
+    for (const place of typedConstPlaces)
+      assert.deepEqual(
+        await lint(constRead(declaration, use), place, hoistedRules),
+        [],
+        `${place}: ${shape}`
+      );
+});
+
+test("a module const whose type can change, or whose type is unknown, is state the tests swap", async () => {
+  const changeable = {
+    "a mutable object": [
+      `const settings = { name: "a" };`,
+      `settings.name + text`,
+    ],
+    "a map": [
+      `const cache = new Map<string, string>();`,
+      `cache.get(text) ?? text`,
+    ],
+    "an any value": [
+      `const loose: any = JSON.parse("{}");`,
+      `String(loose.name ?? text)`,
+    ],
+  };
+  for (const [shape, [declaration, use]] of Object.entries(changeable))
+    for (const place of typedConstPlaces)
+      assert.equal(
+        (await lint(constRead(declaration, use), place, hoistedRules)).length,
+        1,
+        `${place}: ${shape}`
+      );
+  // 타입 정보가 없으면 바뀔 수 없음을 증명할 수 없어 칸이다.
+  const withoutTypes = {
+    "an as-const object": [
+      `const settings = { name: "a" } as const;`,
+      `settings.name + text`,
+    ],
+    "a string a call made": [
+      `const label = String(process.pid);`,
+      `text + label`,
+    ],
+  };
+  for (const [shape, [declaration, use]] of Object.entries(withoutTypes))
+    assert.equal(
+      (await lint(constRead(declaration, use), untypedConstPlace, hoistedRules))
+        .length,
+      1,
+      `${untypedConstPlace}: ${shape}`
+    );
 });
