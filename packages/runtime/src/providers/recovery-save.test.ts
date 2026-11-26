@@ -79,6 +79,8 @@ async function running() {
 it("saves the start time once the record stops being held", async () => {
   const { home, pid, file, directory } = await running();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  // 다시 쓰기 타이머를 시험이 돌린다(실제 시간 간격으로 기록을 다시 읽지 않는다). 막힌 세 번의 다시 시도가 그 자리에서 돌고 네 번째가 쓴다.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const start = startLater();
   recordProcess(
     home,
@@ -87,13 +89,8 @@ it("saves the start time once the record stops being held", async () => {
   );
   rename.blocked = 3;
   await start.tell("1700000000123456");
-  await vi.waitFor(
-    async () =>
-      expect(await readFile(file, "utf8")).toMatch(
-        /"start":"1700000000123456"/
-      ),
-    { timeout: 20_000, interval: 50 }
-  );
+  vi.runAllTimers();
+  expect(await readFile(file, "utf8")).toMatch(/"start":"1700000000123456"/);
   expect(rename.tried).toBe(3);
   expect(warn).not.toHaveBeenCalled();
   expect(await readdir(directory)).toEqual([path.basename(file)]);
@@ -136,6 +133,8 @@ it("does not save the start time when the supervisor reports it after the record
 it("warns and keeps the first record when the file stays held", async () => {
   const { home, pid, file, directory } = await running();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  // 다시 쓰기 타이머를 시험이 돌린다. 정해진 횟수를 모두 돈 뒤에 경고한다.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const start = startLater();
   recordProcess(
     home,
@@ -144,10 +143,8 @@ it("warns and keeps the first record when the file stays held", async () => {
   );
   rename.blocked = Number.POSITIVE_INFINITY;
   await start.tell("1700000000123456");
-  await vi.waitFor(() => expect(warn).toHaveBeenCalled(), {
-    timeout: 25_000,
-    interval: 50,
-  });
+  vi.runAllTimers();
+  expect(warn).toHaveBeenCalled();
   expect(rename.tried).toBeGreaterThan(1);
   expect(await readFile(file, "utf8")).not.toMatch(/"start"/);
   expect(await readdir(directory)).toEqual([path.basename(file)]);

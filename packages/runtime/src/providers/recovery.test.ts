@@ -338,11 +338,11 @@ it("stops a process it recorded itself", async () => {
     lease: tree.lease,
     supervisorStart: tree.supervisorStart,
   });
-  await vi.waitFor(
-    async () => expect(await readFile(file, "utf8")).toMatch(/"start"/),
-    { timeout: 20_000, interval: 50 }
-  );
+  // 기록의 시작 시각은 이미 쓰였다: Linux는 `recordProcess`가 그 자리에서 쓰고, 그 밖의 OS는 `recordProcess`가 먼저 건
+  // `tree.supervisorStart`의 이행 반응 안에서 동기로 다시 쓴다(같은 Promise의 반응은 건 차례로 돈다). 쓰기가 실패해 타이머로 미뤄졌으면
+  // 기록 내용과 함께 여기서 실패한다(시간 간격으로 다시 읽지 않는다).
   const supervisorStart = await tree.supervisorStart;
+  expect(await readFile(file, "utf8")).toMatch(/"start"/);
   await recoverProviderProcesses(root);
   recoveredBySupervisor = lease.cleaned.some(
     (request) =>
