@@ -3414,3 +3414,33 @@ test("an exported double the factory hands over and a let alias behind an assert
         `${place}: a let alias through ${capture}`
       );
 });
+
+test("an array is proven readonly only by the default library's ReadonlyArray, not by a declaration that shares its name", async () => {
+  // 저장소가 같은 이름으로 선언하거나 넓힌 ReadonlyArray는 바꿀 수 있는 멤버를 가질 수 있어 증명이 아니다(이름으로 구조를 판정하지 않음).
+  const augmented = `declare global {\n  interface ReadonlyArray<T> {\n    push(...items: T[]): number;\n  }\n}\nconst list: readonly string[] = ["a"];`;
+  for (const place of typedConstPlaces) {
+    assert.equal(
+      (
+        await lint(
+          constRead(augmented, `list.join(",") + text`),
+          place,
+          hoistedRules
+        )
+      ).length,
+      1,
+      `${place}: a ReadonlyArray widened by the repository`
+    );
+    assert.deepEqual(
+      await lint(
+        constRead(
+          `const list: readonly string[] = ["a"];`,
+          `list.join(",") + text`
+        ),
+        place,
+        hoistedRules
+      ),
+      [],
+      `${place}: the default library's ReadonlyArray`
+    );
+  }
+});
