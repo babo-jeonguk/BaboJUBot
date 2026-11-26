@@ -3587,8 +3587,10 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
   for (const scope of source.scopeManager.scopes)
     for (const reference of scope.references) {
       const { identifier } = reference;
+      // 형 자리의 참조(`R extends Real`, `typeof x`)는 값을 읽지 않는다.
       if (
         reference.init ||
+        reference.isValueReference === false ||
         judgedValues.has(identifier) ||
         !inRegion(identifier) ||
         inTypePosition(identifier) ||

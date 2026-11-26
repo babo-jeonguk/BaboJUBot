@@ -665,10 +665,7 @@ test("a module double may not look up state the tests swap after an await or in 
     const relative = path
       .relative(
         path.dirname(path.join(repository, place)),
-        path.join(
-          repository,
-          "scripts/fixtures/hoisted-state/shared-double.mjs"
-        )
+        path.join(repository, "scripts/fixtures/hoisted-state/shared-double.ts")
       )
       .replaceAll(path.sep, "/");
     return relative.startsWith(".") ? relative : `./${relative}`;
@@ -683,7 +680,7 @@ test("a module double may not look up state the tests swap after an await or in 
       2,
       `${place}: a shared double reading after its await`
     );
-    assert.match(late[0].message, /shared-double\.mjs:\d+/);
+    assert.match(late[0].message, /shared-double\.ts:\d+/);
     assert.deepEqual(
       await lint(dynamic("takingDouble"), place, hoistedRules),
       [],
@@ -810,10 +807,10 @@ test("a module double may not look up state the tests swap after an await or in 
   // 판정은 lint한 시험 파일의 차례와 무관하고, 공용 대역이 다른 공용 파일의 도움을 쓰면 그 지적이 그대로 온다(변경분 점검 지적 1·3).
   // 칸에 담긴 함수(같은 파일의 묶음, 내보낸 묶음)는 도움이라 꺼내 두었다가 await 뒤에 불러도 그 안의 칸 읽기가 걸린다(지적 2).
   for (const place of testPlaces) {
-    const sibling = (name) => shared(place).replace("shared-double.mjs", name);
+    const sibling = (name) => shared(place).replace("shared-double.ts", name);
     const head = `import { vi } from "vitest";\n`;
-    const both = `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const a = await import("${sibling("shared-double-a.mjs")}");\n  const b = await import("${sibling("shared-double-b.mjs")}");\n  return { ...a.makerA(real), ...b.makerB(real) };\n});\n`;
-    const onlyB = `${head}vi.mock("node:fs/promises", async (importOriginal) => (await import("${sibling("shared-double-b.mjs")}")).makerB(await importOriginal()));\n`;
+    const both = `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const a = await import("${sibling("shared-double-a.ts")}");\n  const b = await import("${sibling("shared-double-b.ts")}");\n  return { ...a.makerA(real), ...b.makerB(real) };\n});\n`;
+    const onlyB = `${head}vi.mock("node:fs/promises", async (importOriginal) => (await import("${sibling("shared-double-b.ts")}")).makerB(await importOriginal()));\n`;
     assert.equal(
       (await lint(both, place, hoistedRules)).length,
       2,
