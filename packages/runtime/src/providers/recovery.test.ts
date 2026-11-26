@@ -331,7 +331,12 @@ it("stops a process it recorded itself", async () => {
   folders.own(async () => {
     if (!recoveredBySupervisor) await tree.stop();
   }, "the recorded tree");
-  expect((await tree.started).kind).toBe("running");
+  // 감독 실행기가 뜨고 첫 메시지를 보내는 데 걸리는 시간을 담는 상한(느린 Windows 실행기). 앞서 기록을 다시 읽던 대기의 상한과 같다.
+  const startMs = 20_000;
+  expect(
+    (await within(tree.started, startMs, "the recorded tree did not start"))
+      .kind
+  ).toBe("running");
   const file = path.join(home, "processes", `${tree.pid}.json`);
   recordProcess(home, {
     pid: tree.pid!,
@@ -341,7 +346,11 @@ it("stops a process it recorded itself", async () => {
   // 기록의 시작 시각은 이미 쓰였다: Linux는 `recordProcess`가 그 자리에서 쓰고, 그 밖의 OS는 `recordProcess`가 먼저 건
   // `tree.supervisorStart`의 이행 반응 안에서 동기로 다시 쓴다(같은 Promise의 반응은 건 차례로 돈다). 쓰기가 실패해 타이머로 미뤄졌으면
   // 기록 내용과 함께 여기서 실패한다(시간 간격으로 다시 읽지 않는다).
-  const supervisorStart = await tree.supervisorStart;
+  const supervisorStart = await within(
+    tree.supervisorStart,
+    startMs,
+    "the supervisor did not report the tree's start"
+  );
   expect(await readFile(file, "utf8")).toMatch(/"start"/);
   await recoverProviderProcesses(root);
   recoveredBySupervisor = lease.cleaned.some(
