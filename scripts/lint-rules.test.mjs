@@ -539,6 +539,15 @@ test("a module double may not look up state the tests swap after an await or in 
       `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ fails: undefined }));\nfunction fault() {\n  return state.fails;\n}\n${fs}  const open = async (file) => {\n    const handle = await real.open(file);\n    if (fault()) throw new Error("x");\n    return handle;\n  };\n  return { ...real, open };\n});\n`,
       1,
     ],
+    // 모듈 범위 도움이 자기 안에서 await 뒤나 콜백에서 칸을 읽으면, 대역이 첫 await 전에 불러도 늦다(변경분 점검 1회차 [1]).
+    "a module helper reading after its own await": [
+      `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ seen: [] }));\nasync function record(file) {\n  await work();\n  state.seen.push(file);\n}\n${fs}  const open = async (file) => {\n    await record(file);\n    return real.open(file);\n  };\n  return { ...real, open };\n});\n`,
+      1,
+    ],
+    "a module helper reading in its own callback": [
+      `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ fails: undefined }));\nfunction closeWith(server, done) {\n  server.close((error) => done(state.fails ?? error));\n}\n${fs}  const createServer = (...args) => {\n    const server = real.createServer(...args);\n    return { close: (done) => closeWith(server, done) };\n  };\n  return { ...real, createServer };\n});\n`,
+      1,
+    ],
     "vi.doMock": [
       `${hoistedHead}vi.doMock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const open = async (file) => {\n    const handle = await real.open(file);\n    state.seen.push(file);\n    return handle;\n  };\n  return { ...real, open };\n});\n`,
       1,
@@ -612,6 +621,14 @@ test("a module double may take the state the tests swap before its first await a
       `${place}: a container aliased inside the double`
     );
   }
+  // 칸을 늦게 읽는 모듈 범위 도움이라도 시험 본문에서만 부르면 대역이 아니다.
+  const helperInBody = `import { vi } from "vitest";\nconst state = vi.hoisted(() => ({ seen: [] }));\nasync function record(file) {\n  await work();\n  state.seen.push(file);\n}\nvi.mock("node:fs/promises", async (importOriginal) => ({ ...(await importOriginal()) }));\nit("records", async () => {\n  await record("a");\n});\n`;
+  for (const place of testPlaces)
+    assert.deepEqual(
+      await lint(helperInBody, place, hoistedRules),
+      [],
+      `${place}: a late helper called only from a test body`
+    );
   // 모듈 범위의 const 값(그릇이 아닌 것: 글자·함수)은 시험이 바꿔 끼우지 않는다.
   const constants = `import { vi } from "vitest";\nconst prefix = "babojubot-";\nconst label = (file) => prefix + file;\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const open = async (file) => {\n    const handle = await real.open(file);\n    return label(prefix + file) ? handle : handle;\n  };\n  return { ...real, open };\n});\n`;
   for (const place of testPlaces)
