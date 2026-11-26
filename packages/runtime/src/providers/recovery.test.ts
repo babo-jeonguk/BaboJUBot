@@ -58,7 +58,10 @@ function testStart(): string {
   }
 }
 
-// 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다.
+// 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다. 기록 칸은 afterEach가 새로 연다(시험이 본문에서 바꿔 끼우기도
+// 한다). 대역은 불린 순간(첫 `await` 전)의 칸을 잡고 그 칸에만 쓴다: 그 뒤에 칸이 바뀌어도 그 호출의 늦은 기록은 잡아 둔 칸에 남는다
+// (#286 PR #300 외부 리뷰 2회차 종류 A', 감독 결정). `fails`도 불린 순간에 읽는다. 시험이 시한을 넘겨 본문이 afterEach 뒤에도 돌면,
+// 그 뒤에 불린 호출은 다음 시험의 칸을 잡는다(그 시험은 이미 실패했다).
 const lease = vi.hoisted(() => ({
   fails: false,
   stopped: [] as unknown[],
@@ -77,11 +80,12 @@ vi.mock("@babojubot/process/recovery", async (original) => {
     cleanThroughSupervisor: async (
       request: Parameters<typeof real.cleanThroughSupervisor>[0]
     ) => {
-      lease.requests.push(request);
-      if (request.lease !== undefined) lease.stopped.push(request.lease);
-      if (lease.fails) throw new Error("the supervisor's cleanup failed");
+      const { requests, stopped, cleaned, fails } = lease;
+      requests.push(request);
+      if (request.lease !== undefined) stopped.push(request.lease);
+      if (fails) throw new Error("the supervisor's cleanup failed");
       const result = await real.cleanThroughSupervisor(request);
-      lease.cleaned.push(request);
+      cleaned.push(request);
       return result;
     },
   };
