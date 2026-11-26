@@ -36,12 +36,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       throw arming.removeFails;
     return real.rm(target, options);
   };
-  const mkdtemp = (async (prefix: string) => {
-    const arming = madeCalls.current();
-    const made = await real.mkdtemp(prefix);
-    arming?.made.push(made);
-    return made;
-  }) as typeof real.mkdtemp;
+  // 무장의 문맥에서 만드는 폴더는 시작 순간 무장에 등록한다(끝난 무장이면 던진다). 무장의 끝이 그 만들기의 끝을 기다린 뒤 정리가
+  // `made`를 읽는다.
+  const mkdtemp = (async (prefix: string) =>
+    madeCalls.acquire(async (arming) => {
+      const made = await real.mkdtemp(prefix);
+      arming.made.push(made);
+      return made;
+    }) ?? real.mkdtemp(prefix)) as typeof real.mkdtemp;
   return {
     ...real,
     rm,

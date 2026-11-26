@@ -618,17 +618,10 @@ export function failingRelayClosesDuring<T>(
   code = "EBUSY"
 ) {
   const fault: CloseFault = { code, at, failedAt: [], closing: [] };
-  // 무장의 끝은 남긴 폴더 정리보다 나중에 등록한다(시험의 정리는 등록의 거꾸로 돈다). 그래서 무장이 먼저 끝나 그 뒤에 시작한 닫기는
-  // 결함에 걸리지 않고, 끝 전에 시작한 닫기는 정리가 그 끝을 기다린 뒤 기록을 읽는다(`closing`).
-  const ends: (() => void)[] = [];
-  const result = awaitedLater(
-    closeCalls.run(fault, call, (end) => {
-      ends.push(end);
-    })
-  );
+  // 정리는 제품 호출 전에 등록한다(획득 즉시 등록). 남긴 폴더 정리를 먼저, 무장의 끝(`run`이 호출 전에 `own`에 맡김)을 그 뒤에
+  // 등록해 무장이 먼저 끝난다(시험의 정리는 등록의 거꾸로 돈다). 그 뒤에 시작한 닫기는 결함에 걸리지 않고, 끝 전에 시작한 닫기는
+  // 정리가 그 끝을 기다린 뒤 기록을 읽는다(`closing`). 정리는 시험이 끝난 뒤에 돌아 그때는 호출의 결과가 있다.
   ownKeptRelays(own, fault, () => result);
-  own(async () => {
-    for (const end of ends) end();
-  });
+  const result = awaitedLater(closeCalls.run(fault, call, own));
   return { failedAt: fault.failedAt as readonly string[], result };
 }
