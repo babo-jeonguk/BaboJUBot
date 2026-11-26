@@ -38,3 +38,6 @@ export function codeOf(error) {
 export function currentFailure() {
   return faults.fails;
 }
+
+/** 칸을 읽는 함수를 담은 묶음(내보낸 값). 그 함수는 도움이라 어디서 불러도 그 안의 칸 읽기는 걸림. */
+export const kit = { current: () => faults.fails };

@@ -807,6 +807,45 @@ test("a module double may not look up state the tests swap after an await or in 
         `${place}: ${shape}`
       );
   }
+  // 판정은 lint한 시험 파일의 차례와 무관하고, 공용 대역이 다른 공용 파일의 도움을 쓰면 그 지적이 그대로 온다(변경분 점검 지적 1·3).
+  // 칸에 담긴 함수(같은 파일의 묶음, 내보낸 묶음)는 도움이라 꺼내 두었다가 await 뒤에 불러도 그 안의 칸 읽기가 걸린다(지적 2).
+  for (const place of testPlaces) {
+    const sibling = (name) => shared(place).replace("shared-double.mjs", name);
+    const head = `import { vi } from "vitest";\n`;
+    const both = `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const a = await import("${sibling("shared-double-a.mjs")}");\n  const b = await import("${sibling("shared-double-b.mjs")}");\n  return { ...a.makerA(real), ...b.makerB(real) };\n});\n`;
+    const onlyB = `${head}vi.mock("node:fs/promises", async (importOriginal) => (await import("${sibling("shared-double-b.mjs")}")).makerB(await importOriginal()));\n`;
+    assert.equal(
+      (await lint(both, place, hoistedRules)).length,
+      2,
+      `${place}: two shared doubles using one helper`
+    );
+    const [late, ...rest] = await lint(onlyB, place, hoistedRules);
+    assert.deepEqual(rest, [], `${place}: one shared double after the other`);
+    assert.match(
+      late?.message ?? "",
+      /시험이 바꿔 끼우는 모듈 칸/,
+      `${place}: one shared double after the other`
+    );
+    const kitShared = `${head}vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const s = await import("${shared(place)}");\n  return {\n    ...real,\n    open: async (file) => {\n      const { current } = s.kit;\n      const handle = await real.open(file);\n      if (current()) throw current();\n      return handle;\n    },\n  };\n});\n`;
+    assert.equal(
+      (await lint(kitShared, place, hoistedRules)).length,
+      1,
+      `${place}: a shared kit's function taken before the await`
+    );
+    const kitHere = (body) =>
+      `${head}const faults = vi.hoisted(() => ({ fails: undefined }));\nconst kit = { ${body} };\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  return {\n    ...real,\n    open: async (file) => {\n      const { current } = kit;\n      const handle = await real.open(file);\n      if (current()) throw new Error("failed");\n      return handle;\n    },\n  };\n});\n`;
+    assert.equal(
+      (await lint(kitHere("current: () => faults.fails"), place, hoistedRules))
+        .length,
+      1,
+      `${place}: a kit's function in the same file`
+    );
+    assert.deepEqual(
+      await lint(kitHere("current: () => undefined"), place, hoistedRules),
+      [],
+      `${place}: a kit's function that reads no state`
+    );
+  }
   // 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 칸: 콜백 안의 함수(대역이 부르는 도움)가 읽거나 쓰면 짚는다(감독 결정 2026-11-26).
   const hoistedLocal = `import { vi } from "vitest";\nconst queries = vi.hoisted(() => {\n  let held = false;\n  return {\n    hold: () => {\n      held = true;\n    },\n    query: async () => {\n      if (!held) return;\n      held = false;\n    },\n  };\n});\nvi.mock("m", async () => ({ run: async () => {\n  const { query } = queries;\n  await query();\n} }));\n`;
   for (const place of testPlaces)
