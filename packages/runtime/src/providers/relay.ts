@@ -111,8 +111,9 @@ export const relaySockets = {
 } as const;
 
 /**
- * 목적지 판정 재료 가운데 요청과 무관한 것: 지금 붙은 정책(연구 목록·보호 포트)과 이 컴퓨터의 주소(OS). 떼어졌거나 읽지 못한 칸은
- * "unreadable"(판정은 읽은 쪽이 아니라 쓰는 쪽이 한다). 이 컴퓨터의 주소는 읽지 못함을 그대로 판정에 넘긴다(`EgressRules`).
+ * 목적지 판정 재료 가운데 요청과 무관하게 읽어 오는 것: 지금 붙은 정책(연구 목록·보호 포트)과 이 컴퓨터의 주소(OS). 필수 목적지는
+ * 중계가 든 값이라 여기 없다. 떼어졌거나 읽지 못한 칸은 "unreadable"(판정은 읽은 쪽이 아니라 쓰는 쪽이 한다). 이 컴퓨터의 주소는
+ * 읽지 못함을 그대로 판정에 넘긴다(`EgressRules`).
  */
 type Policy = {
   research: readonly Destination[] | "unreadable";

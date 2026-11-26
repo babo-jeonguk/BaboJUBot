@@ -150,17 +150,16 @@ const tunnelClosed = (tunnel: Awaited<ReturnType<typeof openTunnel>>) =>
   within(tunnel.closed, 5_000, "the tunnel did not close");
 
 /**
- * 중계를 거친 요청 하나의 답 본문. 답은 200이어야 하고, 본문은 끝까지 읽는다. 읽기는 정상 끝·오류·중간 닫힘을 함께 받아, 답이
- * 중간에 끊기면 그 까닭으로 거절한다. 요청·답·본문은 각각 상한 안에 와야 한다. 요청은 만든 직후 정리에 맡겨, 상한으로 실패해도
- * 정리가 끊고 닫힘을 확인한다.
+ * 중계를 거친 요청 하나를 보내고 답(머리)을 상한 안에서 받는다. 요청은 만든 직후 정리에 맡겨, 상한으로 실패해도 정리가 끊고 닫힘을
+ * 확인한다. 본문은 부르는 쪽이 읽거나 버린다.
  */
-async function answerBody(options: http.RequestOptions) {
+function answerTo(options: http.RequestOptions) {
   const request = ownedClosable(
     onTestFinished,
     http.request(options),
     "the request through the relay"
   );
-  const answer = await within(
+  return within(
     new Promise<http.IncomingMessage>((resolve, reject) => {
       request.once("response", resolve);
       request.once("error", reject);
@@ -169,6 +168,14 @@ async function answerBody(options: http.RequestOptions) {
     5_000,
     "the relay did not answer"
   );
+}
+
+/**
+ * 중계를 거친 요청 하나의 답 본문(`answerTo`). 답은 200이어야 하고, 본문은 끝까지 읽는다. 읽기는 정상 끝·오류·중간 닫힘을 함께
+ * 받아, 답이 중간에 끊기면 그 까닭으로 거절한다. 본문도 상한 안에 와야 한다.
+ */
+async function answerBody(options: http.RequestOptions) {
+  const answer = await answerTo(options);
   expect(answer.statusCode).toBe(200);
   return within(text(answer), 5_000, "the relay's answer did not end");
 }
@@ -1785,30 +1792,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 다시 보기는 던져 연결을 회수하지 못했다. 실패는 실제 OS 조회 경계(`node:os` 모듈 대역)에 넣는다.
   const addressesUnreadable =
     "[provider] this computer's addresses could not be read (ERR_SYSTEM_ERROR)";
-  /** egress.sock을 거친 HTTP 절대 주소 요청 하나의 답 상태와 거부 이유(node:http 파서가 읽은 것). 요청은 만든 직후 정리에 맡긴다. */
+  /** egress.sock을 거친 HTTP 절대 주소 요청 하나의 답 상태와 거부 이유(node:http 파서가 읽은 것, `answerTo`). 본문은 버린다. */
   const httpAnswer = async (
     relay: { directory: string },
     authority: string
   ) => {
-    const request = ownedClosable(
-      onTestFinished,
-      http.request({
-        socketPath: socketOf(relay, relaySockets.egress),
-        path: `http://${authority}/`,
-        headers: { host: authority },
-        agent: false,
-      }),
-      "the HTTP request through the relay"
-    );
-    const answer = await within(
-      new Promise<http.IncomingMessage>((resolve, reject) => {
-        request.once("response", resolve);
-        request.once("error", reject);
-        request.end();
-      }),
-      5_000,
-      `the relay did not answer the HTTP request to ${authority}`
-    );
+    const answer = await answerTo({
+      socketPath: socketOf(relay, relaySockets.egress),
+      path: `http://${authority}/`,
+      headers: { host: authority },
+      agent: false,
+    });
     answer.resume();
     return {
       status: answer.statusCode,
@@ -1867,7 +1861,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expectEstablished(tunnel);
     osFaults.interfaces = { cause: "ENOMEM" };
     setResearch([]);
-    await relays.revalidate(identity.organizationId);
+    await within(
+      relays.revalidate(identity.organizationId),
+      5_000,
+      "the revalidation did not end"
+    );
     await tunnelClosed(tunnel);
     expect(refused).toEqual([
       { host: "localhost", port: target.port, reason: "policy_unavailable" },
