@@ -34,8 +34,10 @@ import {
 import {
   chaosEnvironment,
   chaosServer,
+  folderOutcome,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
+import { attemptAll } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { runCommand } from "@babojubot/process";
 import { openLifelines } from "@babojubot/process/lifelines";
@@ -71,16 +73,83 @@ const postgresAlive = async (home) => {
 };
 
 /**
- * 장면 서버와 그 harness 폴더의 정리를 `defer`에 맡기고, 서버의 정리(`dispose`)를 맡기는 함수를 돌려준다. 폴더 정리(`folderCleanup`)는
- * 맡긴 dispose의 끝(서버의 끝, dispose가 확인)을 기다린 뒤 harness 폴더를 지운다. `home`은 그 서버의 홈이다.
+ * 장면 서버의 정리를 `defer`에 독립인 두 단계로 맡기고, 서버의 정리(`dispose`)를 맡기는 함수를 돌려준다. 등록 역순으로 1 → 2가 돈다.
+ * 1. 폴더 정리(`folderCleanup`): 맡긴 dispose의 끝(서버의 끝, dispose가 확인)만 기다린 뒤 harness 폴더를 지운다. 홈의 결과로 막지
+ *    않는다: dispose는 홈 지우기를 확인하지 못해도 거절하지 않고 그 끝(`home`)을 돌려주므로, 그것을 이 단계의 실패로 하면 서버가
+ *    끝났는데도 harness 폴더를 남긴다.
+ * 2. 홈 결과 확인(`sceneHomeEnded`): dispose가 돌려준 홈의 끝과 남은 Postgres를 본다. 본문이나 1이 실패한 길에서도 돈다(그 확인을
+ *    `withCleanup` 뒤 본문에 두면 그 길에서 돌지 않았다, #286 PR #300 외부 리뷰 2회차 STD-3).
  * @param {(step: () => unknown) => void} defer
  * @param {() => Promise<unknown>} removeHarness
- * @returns {(home: string, dispose: () => Promise<{ home: import("../../../scripts/live/chaos-server.mjs").FolderEnd }>) => void}
+ * @returns {(home: string, dispose: () => Promise<{ home: FolderEnd }>) => void}
  */
 function sceneServerCleanup(defer, removeHarness) {
+  /** @type {SceneDisposal} */
+  let disposal = { state: "unowned" };
+  defer(() => sceneHomeEnded(disposal));
   const folder = folderCleanup(removeHarness);
   defer(folder.cleanUp);
-  return (_home, dispose) => folder.own(dispose);
+  return (home, dispose) =>
+    folder.own(async () => {
+      disposal = { state: "disposing" };
+      try {
+        const { home: end } = await dispose();
+        disposal = { state: "ended", home, end };
+      } catch (error) {
+        disposal = { state: "rejected" };
+        throw error;
+      }
+    });
+}
+
+/**
+ * @typedef {import("../../../scripts/live/chaos-server.mjs").FolderEnd} FolderEnd
+ * @typedef {{ state: "unowned" } | { state: "disposing" } | { state: "rejected" } | { state: "ended", home: string, end: FolderEnd }} SceneDisposal
+ */
+
+/**
+ * 장면 서버 정리가 끝난 뒤의 홈 확인. dispose가 이행했으면 서로 기대지 않는 두 확인을 모두 한다(`attemptAll`): 홈의 끝이 지움이고
+ * 실제로 없는가, 그 홈의 Postgres가 남지 않았는가. dispose를 맡기지 않았으면(서버를 만들기 전에 본문이 실패) 볼 것이 없고, dispose
+ * 자체가 거절했으면 그 실패는 폴더 정리가 이미 알렸으므로 새 실패를 만들지 않는다. dispose가 끝나지 않은 채 여기 닿으면(폴더 정리가
+ * dispose를 상한 안에서 기다리므로 닿을 길이 없다) 끝을 모르는 것으로 실패한다.
+ * @param {SceneDisposal} disposal
+ */
+async function sceneHomeEnded(disposal) {
+  switch (disposal.state) {
+    case "unowned":
+    case "rejected":
+      return;
+    case "disposing":
+      throw new Error(
+        "the scene server's dispose had not ended when its home was checked"
+      );
+    case "ended": {
+      const { home, end } = disposal;
+      await attemptAll([
+        () => {
+          if (!folderOutcome(end).removed)
+            throw new Error(
+              `the scene server did not remove its home ${home} (${end})`
+            );
+          if (existsSync(home))
+            throw new Error(
+              `the scene home ${home} is still there although the scene server removed it`
+            );
+        },
+        async () => {
+          if (await postgresAlive(home))
+            throw new Error(
+              `Postgres of ${home} is left after the scene server was disposed`
+            );
+        },
+      ]);
+      return;
+    }
+    default:
+      throw new Error(
+        `unknown scene disposal state: ${/** @type {{ state: unknown }} */ (disposal).state}`
+      );
+  }
 }
 
 describe("chaos harness launch", () => {
@@ -900,7 +969,7 @@ describe("chaos harness on a fake connection", () => {
     async () => {
       // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 폴더는 만든 직후 정리에 맡기고, 서버를 끈 뒤에 지운다. 홈은 서버 정리(`dispose`)가
       // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
-      const { home, disposed } = await withCleanup(async (defer) => {
+      await withCleanup(async (defer) => {
         const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
         const ownServer = sceneServerCleanup(defer, () =>
           removeFolderWithin(harnessDir)
@@ -912,21 +981,10 @@ describe("chaos harness on a fake connection", () => {
           connection: "fake-live",
           database: "persistent",
         });
-        /**
-         * 서버 정리(`dispose`)가 돌려준 결과. 정리 단계는 dispose의 끝만 기다리고(서버의 끝은 dispose가 확인한다), 홈의 끝은 정리 뒤
-         * 본문이 단언한다. dispose는 홈 지우기를 확인하지 못해도 거절하지 않고 그 끝(`home`)을 돌려주므로, 그 단언을 이 단계 안에 두면
-         * 서버가 끝났는데도 harness 폴더를 남긴다.
-         * @type {{ result?: Awaited<ReturnType<ReturnType<typeof chaosServer>["dispose"]>> }}
-         */
-        const disposed = {};
-        ownServer(home, async () => {
-          disposed.result = await within(
-            server.dispose(),
-            disposeMs,
-            "disposing the scene server"
-          );
-          return disposed.result;
-        });
+        // 홈의 끝과 남은 Postgres는 정리 단계(`sceneServerCleanup`)가 본다. 본문이나 harness 정리가 실패해도 돈다.
+        ownServer(home, () =>
+          within(server.dispose(), disposeMs, "disposing the scene server")
+        );
         // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
         // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
         const scene = new AbortController();
@@ -939,11 +997,7 @@ describe("chaos harness on a fake connection", () => {
         scene.abort(reason);
         await expect(starting).rejects.toBe(reason);
         expect(server.running).toBe(false);
-        return { home, disposed };
       });
-      expect(disposed.result?.home).toBe("removed");
-      expect(await postgresAlive(home)).toBe(false);
-      expect(existsSync(home)).toBe(false);
       // 시험 시한은 본문과 정리의 상한을 더한 값이다: 시작 대기 확인 30초(위 `waitUntil`) + 중단된 시작의 끝 확인 30초(`chaos-server.mjs`
       // `kill`) + 정리 `disposeMs` + Postgres 확인 10초(`postgresAlive`의 `limitMs`).
     },
