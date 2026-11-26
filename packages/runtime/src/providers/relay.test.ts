@@ -3,7 +3,15 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { finished } from "node:stream/promises";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   attemptAll,
   destinationSchema,
@@ -23,13 +31,14 @@ import { within } from "@babojubot/process/test-support";
 import {
   refusing,
   failingRelayCloses,
-  gate,
   givenUpAtReset,
-  heldUntil,
   holdsOwner,
   nameFaults,
+  openTestHolds,
   resetRefusing,
   serverFaults,
+  testHolds,
+  type Holds,
 } from "./connect-failure-support.ts";
 import { osFaults } from "./os-failure-support.ts";
 import { createRelayHub, relaySockets, type RelayHooks } from "./relay.ts";
@@ -60,6 +69,9 @@ vi.mock("node:dns/promises", async (importOriginal) =>
 vi.mock("node:os", async (importOriginal) =>
   (await import("./os-failure-support.ts")).failingOs(await importOriginal())
 );
+// 시험마다 대역이 붙잡는 것(gate·콜백 안 기다림)의 소유자를 연다. 그 끝은 이 시험의 첫 onTestFinished라 hub·중계·listener 닫기 뒤에
+// 돌고, 사건이 오지 않은 기다림과 reset 뒤의 시도를 이 시험의 실패로 알린다(connect-failure-support.ts `openTestHolds`).
+beforeEach(({ onTestFinished }) => openTestHolds(onTestFinished));
 afterEach(() => {
   resetRefusing();
 });
@@ -70,7 +82,7 @@ const destination = (value: unknown): Destination =>
 /**
  * 연결 수를 세는 loopback listener. echo하거나 HTTP로 답한다. 서버는 만든 직후 이 시험의 정리에 맡긴다(`ownedListener`: 듣기·닫기
  * 상한, 받은 연결을 끊고 닫힘 확인, 닫기 오류는 실패). `connected()`는 첫 연결 신호다(받으면 이행, 거절하지 않음). 그 신호를 콜백
- * 안에서 기다리면 기다림의 해제는 부르는 쪽이 `heldUntil`로 맡는다.
+ * 안에서 기다리면 기다림의 해제는 부르는 쪽이 이 시험의 소유자(`holds.until`)로 맡는다.
  */
 async function fixture(kind: "echo" | "http") {
   const accepted: net.Socket[] = [];
@@ -544,6 +556,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   });
 
   it("closes a connection admitted under the old policy when the user narrowed it while that connection was opening", async () => {
+    const holds = testHolds();
     const target = await fixture("echo");
     const entry = destination({
       host: "localhost",
@@ -552,7 +565,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
     let current: Destination[] = [entry];
     let narrowing = true;
-    /** hook이 시작한 재검사. hook 안에서는 담고 기다리기만 하고, 그 결과는 답을 받은 뒤 본문이 받는다(`heldUntil`). */
+    /** hook이 시작한 재검사. hook 안에서는 담고 기다리기만 하고, 그 결과는 답을 받은 뒤 본문이 받는다(`holds.until`). */
     const started: { revalidation?: Promise<void> } = {};
     const env = hub({
       // 첫 판정이 옛 목록을 읽은 직후 사용자가 목록을 비우고, 그 재검사가 끝난 뒤에야 연결이 열린다.
@@ -562,7 +575,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
           narrowing = false;
           current = [];
           started.revalidation = awaitedLater(
-            heldUntil(
+            holds.until(
               env.relays.revalidate(identity.organizationId),
               "the revalidation the policy hook started"
             )
@@ -587,6 +600,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   });
 
   it("answers 502 and keeps serving when a plain HTTP destination resets while the changed policy is rechecked", async () => {
+    const holds = testHolds();
     const target = await fixture("http");
     const entry = destination({
       host: "localhost",
@@ -597,7 +611,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     // 중계가 목적지와 연 소켓을 잡아, 목적지가 끊은 것을 중계가 받았는지 본다.
     const dialed = watchDials();
     /**
-     * hook이 담는 것: 첫 판정 중의 재검사, 목적지의 첫 연결, 중계가 목적지로 연 소켓의 닫힘(각 `heldUntil`), 재검사 때 살아 있던 그
+     * hook이 담는 것: 첫 판정 중의 재검사, 목적지의 첫 연결, 중계가 목적지로 연 소켓의 닫힘(각 `holds.until`), 재검사 때 살아 있던 그
      * 소켓들. hook 안에서는 담고 기다리기만 하고, 결과와 단언은 답을 받은 뒤 본문에서 한다.
      */
     const recheck: {
@@ -612,7 +626,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         // 첫 판정 중에 정책이 바뀐 것처럼 재검사를 돌려, 연결 뒤 한 번 더 보게 한다.
         if (calls === 1) {
           recheck.revalidation = awaitedLater(
-            heldUntil(
+            holds.until(
               env.relays.revalidate(identity.organizationId),
               "the revalidation the policy hook started"
             )
@@ -621,11 +635,14 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         }
         // 연결 뒤 재검사(세 번째)를 기다리는 동안 목적지가 연결을 RST로 끊고, 중계의 소켓이 그 끊김으로 닫힌 뒤에 답한다.
         // 재검사는 중계가 목적지에 붙은(`dial`이 이행한) 뒤에 불리므로, 목적지가 그 연결을 받았다는 사건만 기다리면 중계의 소켓은 이미
-        // 있다. hook 안 기다림은 `heldUntil`로 시험 칸에 담는다: 이 시험의 reset 전에 시작한 기다림은 그 reset(시험 끝, hub·중계 닫기보다
+        // 있다. hook 안 기다림은 `holds.until`로 시험 칸에 담는다: 이 시험의 reset 전에 시작한 기다림은 그 reset(시험 끝, hub·중계 닫기보다
         // 먼저)이 풀고, 결과는 본문이 답을 받은 뒤 `fromHook`으로 먼저 받는다. hook 안에 상한을 두면 그 거절이 정책 읽기 실패로 접힌다.
         if (calls === 3) {
           recheck.reached = awaitedLater(
-            heldUntil(target.connected(), "the destination's first connection")
+            holds.until(
+              target.connected(),
+              "the destination's first connection"
+            )
           );
           await recheck.reached;
           const carrying = dialed(target.port).filter(
@@ -640,7 +657,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
             );
             target.accepted.at(-1)!.resetAndDestroy();
             recheck.closed = awaitedLater(
-              heldUntil(
+              holds.until(
                 closed,
                 "the close of the relay's socket to the destination"
               )
@@ -1080,21 +1097,27 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(target.accepted.length).toBe(0);
   });
 
-  // 정책 hook이 기다리는 사건이 오지 않아도 그 기다림은 시험 끝의 해제(대역의 reset)로 풀리고, 풀린 까닭이 본문에 닿는다(#286 PR #300
-  // 외부 리뷰 1회차 STD-1). 바깥 답 기다림의 상한은 hook 안 기다림을 끝내지 못한다. 본문은 시험 끝과 같은 해제(`resetRefusing()`)를
-  // 부른다. reset은 모두 푼 뒤, `heldUntil`로 기다렸고 사건이 오지 않은 채 이 reset에 닿은 기다림을 그 이름과 함께 실패로 알린다(시험
-  // 끝이면 afterEach의 실패로 남아, 본문이 바깥 답 기다림의 상한으로 먼저 실패해도 어느 기다림이 멈췄는지 결과에 남는다). 풀린 hook은
-  // 던지고, 제품은 연결 없이 정책 읽기 실패로 거부한다.
+  // 정책 hook이 기다리는 사건이 오지 않아도 그 기다림은 시험 끝의 해제(소유자의 reset)로 풀리고, 풀린 까닭이 본문에 닿는다(#286 PR
+  // #300 외부 리뷰 1회차 STD-1). 바깥 답 기다림의 상한은 hook 안 기다림을 끝내지 못한다. 사건이 오지 않은 채 reset에 닿은 기다림은
+  // 소유자의 끝(`end`, 시험 수명의 끝)이 그 이름과 함께 실패로 알린다(본문이 바깥 답 기다림의 상한으로 먼저 실패해도 어느 기다림이
+  // 멈췄는지 결과에 남는다, 2회차). 풀린 hook은 던지고, 제품은 연결 없이 정책 읽기 실패로 거부한다. 이 시험의 소유자가 아닌 따로 만든
+  // 소유자로 reset과 끝을 본문에서 부른다(이 시험의 끝이 실패하지 않게). 1회차의 `expect(() => resetRefusing()).toThrow(…)`는 reset이
+  // 보고하던 동작을 고정한 줄이라 끝이 보고하는 단언으로 바꿨다.
   it("releases a policy hook's wait at the double's reset when its event never comes, and gives the body why", async () => {
     const target = await fixture("echo");
     const asked = Promise.withResolvers<void>();
+    const owner = holdsOwner();
+    onTestFinished(() => void owner.giveUp());
     /** hook이 담은 기다림. 본문이 해제 뒤 받는다. */
     const hooked: { wait?: Promise<never> } = {};
     const { relays } = hub({
       research: () => {
         asked.resolve();
         hooked.wait = awaitedLater(
-          heldUntil(new Promise<never>(() => {}), "the event that never comes")
+          owner.holds.until(
+            new Promise<never>(() => {}),
+            "the event that never comes"
+          )
         );
         return hooked.wait;
       },
@@ -1105,16 +1128,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       answerVia(relay.directory, `localhost:${target.port}`)
     );
     await within(asked.promise, 5_000, "the relay did not look up its policy");
-    expect(() => resetRefusing()).toThrow(
-      new Error(
-        "the test ended while hook waits had not ended: the event that never comes"
-      )
-    );
+    owner.giveUp();
     await expect(
       fromHook(hooked.wait, "the wait for the event that never comes")
     ).rejects.toMatchObject({
       message: "the event that never comes was given up at the double's reset",
     });
+    expect(() => owner.end()).toThrow(
+      new Error(
+        "the test ended while hook waits had not ended: the event that never comes"
+      )
+    );
     expect(await answer).toBe(refusal("policy_unavailable"));
     expect(target.accepted.length).toBe(0);
   });
@@ -1212,13 +1236,14 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     onTestFinished(() => warned.mockRestore());
     const relay = relays.open({ identity, required: [] });
     await ready(relay);
-    failCloses(() => relay.close(), socketOf(relay, relaySockets.egress));
+    const { failedAt } = failCloses(
+      () => relay.close(),
+      socketOf(relay, relaySockets.egress)
+    );
     await expect(
       within(relay.close(), 5_000, "the relay did not close")
     ).rejects.toMatchObject(keptFolder(relay, "EBUSY"));
-    expect(serverFaults.failedClose.mock.calls).toEqual([
-      [socketOf(relay, relaySockets.egress)],
-    ]);
+    expect(failedAt).toEqual([socketOf(relay, relaySockets.egress)]);
     expect(existsSync(relay.directory)).toBe(true);
     expect(warned.mock.calls).toEqual([[keptWarning(relay, "EBUSY")]]);
   });
@@ -1235,7 +1260,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     onTestFinished(() => warned.mockRestore());
     serverFaults.listen = { code: "EACCES" };
     const relay = relays.open({ identity, required: [] });
-    failCloses(() => relay.close(), socketOf(relay, relaySockets.tools));
+    const { failedAt } = failCloses(
+      () => relay.close(),
+      socketOf(relay, relaySockets.tools)
+    );
     await expect(ready(relay)).rejects.toMatchObject({
       message: "listen failed",
       code: "EACCES",
@@ -1246,9 +1274,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await expect(
       within(relay.close(), 5_000, "the relay did not close")
     ).rejects.toMatchObject(keptFolder(relay, "EBUSY"));
-    expect(serverFaults.failedClose.mock.calls).toEqual([
-      [socketOf(relay, relaySockets.tools)],
-    ]);
+    expect(failedAt).toEqual([socketOf(relay, relaySockets.tools)]);
     expect(warned.mock.calls).toEqual([
       ["[provider] the isolated run relay could not open; closing it (EACCES)"],
       [keptWarning(relay, "EBUSY")],
@@ -1266,7 +1292,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await ready(first, second);
     // hub의 닫기는 남은 중계만 닫으므로, 정리에는 시험이 부른 그 닫기를 넘긴다(부르기 전에 실패했으면 정리가 처음 부른다).
     let hubClosing: Promise<void> | undefined;
-    failCloses(
+    const { failedAt } = failCloses(
       () => (hubClosing ??= relays.close()),
       socketOf(first, relaySockets.egress),
       socketOf(second, relaySockets.egress)
@@ -1288,9 +1314,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       [keptWarning(first, "EBUSY")],
       [keptWarning(second, "EBUSY")],
     ]);
-    expect(serverFaults.failedClose.mock.calls).toEqual([
-      [socketOf(first, relaySockets.egress)],
-      [socketOf(second, relaySockets.egress)],
+    expect(failedAt).toEqual([
+      socketOf(first, relaySockets.egress),
+      socketOf(second, relaySockets.egress),
     ]);
     expect(existsSync(first.directory)).toBe(true);
     expect(existsSync(second.directory)).toBe(true);
@@ -1475,6 +1501,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 닫기가 시작된 뒤 받은 연결도 끊는다(#286 PR #299 외부 리뷰 1회차 대응 점검). 서버는 차례로 닫히므로 앞 서버를 닫는 동안 뒤 서버가
   // 연결을 받을 수 있고, net 서버(inbound)의 닫기는 받은 연결이 모두 끝나야 끝난다. 앞 서버의 닫기를 붙잡아 그 순간을 상태로 만든다.
   it("drops a connection it accepts after its close began, so its close ends", async () => {
+    const holds = testHolds();
     const { relays } = hub();
     const accepted = Promise.withResolvers<void>();
     serverFaults.listening = (address, server) => {
@@ -1483,7 +1510,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         server.on("connection", () => accepted.resolve());
     };
     const relay = relays.open({ identity, required: [], inbound: true });
-    const release = gate();
+    const release = holds.gate();
     serverFaults.holdClose = {
       at: (address) => address === socketOf(relay, relaySockets.egress),
       held: release,
@@ -1505,13 +1532,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(existsSync(relay.directory)).toBe(false);
   });
 
-  // 대역이 붙잡은 닫기는 본문이 풀지 못한 채 끝나도 대역의 reset(afterEach)이 푼다(#286 PR #299 외부 리뷰 2회차 STD-1). 본문이
-  // 실패하면 아무도 풀지 않아 hub·중계 닫기(onTestFinished)가 그 닫기에 걸렸다. vitest는 afterEach를 모든 onTestFinished보다 먼저
-  // 부른다(5.0.5 러너 `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인).
+  // 대역이 붙잡은 닫기는 본문이 풀지 못한 채 끝나도 대역의 reset(afterEach)이 이 시험의 소유자를 통해 푼다(#286 PR #299 외부 리뷰
+  // 2회차 STD-1). 본문이 실패하면 아무도 풀지 않아 hub·중계 닫기(onTestFinished)가 그 닫기에 걸렸다. vitest는 afterEach를 모든
+  // onTestFinished보다 먼저 부른다(5.0.5 러너 `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인). 이 시험의
+  // 소유자의 끝은 본문이 등록한 정리 뒤에 돈다(beforeEach가 그 시험의 첫 onTestFinished로 등록): 본문이 등록한 정리가 돌 때 소유자가
+  // 아직 이 시험의 것이다(#286 PR #300 외부 리뷰 2회차).
   it("lets the double's reset release a held relay close the body never released", async () => {
+    const holds = testHolds();
+    onTestFinished(() => expect(testHolds()).toBe(holds));
     const { relays } = hub();
     const relay = relays.open({ identity, required: [] });
-    const held = gate();
+    const held = holds.gate();
     const caught = Promise.withResolvers<void>();
     serverFaults.heldClose.mockImplementation(() => caught.resolve());
     serverFaults.holdClose = {
@@ -1566,14 +1597,15 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     return { socket, closed };
   };
   /**
-   * 정책 조회를 gate로 붙잡는 hub. 대역의 reset으로 풀리면 조회 실패로 던진다(중계는 연결 없이 거부한다). 조회가 풀리면 `allowed`를
+   * 정책 조회를 이 시험의 소유자(`holds`, 본문이 첫 줄에서 잡아 넘김)의 gate로 붙잡는 hub. 대역의 reset으로 풀리면 조회 실패로 던진다(중계는 연결 없이 거부한다). 조회가 풀리면 `allowed`를
    * 돌려주고, 보호 포트는 `protectedPorts`가 답한다(기본: 없음, `hub`의 기본과 같다).
    */
   const heldLookupHub = (
+    holds: Holds,
     allowed: Destination[],
     protectedPorts: () => number[] = () => []
   ) => {
-    const lookup = gate();
+    const lookup = holds.gate();
     const asked = Promise.withResolvers<void>();
     const { relays } = hub({
       research: async () => {
@@ -1613,8 +1645,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it.each(kinds)(
     "starts no destination connection from a policy lookup that ends after its close began (%s)",
     async (kind) => {
+      const holds = testHolds();
       const port = await heldDestination();
-      const { relays, lookup, asked } = heldLookupHub([
+      const { relays, lookup, asked } = heldLookupHub(holds, [
         destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
       ]);
       const relay = relays.open({ identity, required: [] });
@@ -1631,8 +1664,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 닫기는 서버의 정책 조회를 기다리지 않는다(조회는 서버의 일이라 결과만 버린다). 조회는 열지 않는다: 대역의 reset이 풀어 조회
   // 실패로 끝난다.
   it("ends its close while a policy lookup is still held", async () => {
+    const holds = testHolds();
     const port = await heldDestination();
-    const { relays, asked } = heldLookupHub([
+    const { relays, asked } = heldLookupHub(holds, [
       destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
     ]);
     const relay = relays.open({ identity, required: [] });
@@ -1705,9 +1739,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 닫기 시작 뒤에 끝난 정책 조회는 목적지 이름 풀이를 새로 시작하지 않는다. 고치기 전에는 조회 뒤 풀이 호출까지 microtask라 서버
   // 닫기 콜백보다 먼저 풀이를 시작했다.
   it("starts no name lookup from a policy lookup that ends after its close began", async () => {
+    const holds = testHolds();
     const port = await heldDestination();
     nameFaults.lookup = { host: "relay-late.test", addresses: ["127.0.0.1"] };
-    const { relays, lookup, asked } = heldLookupHub([
+    const { relays, lookup, asked } = heldLookupHub(holds, [
       destination({ host: "relay-late.test", port, addresses: ["127.0.0.1"] }),
     ]);
     const relay = relays.open({ identity, required: [] });
@@ -1723,9 +1758,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // hub 닫기는 모든 중계의 닫기를 같은 동기 구간에서 먼저 시작한 뒤 정책을 뗀다(#286 PR #299 외부 리뷰 2회차 대응, 감독 결정).
   // 고치기 전에는 정책을 먼저 떼고 중계를 하나씩 닫아, 앞 중계를 닫는 사이 뒤 중계가 받은 요청이 떼어진 정책을 만났다. 앞 중계의
   // 닫기를 붙잡아 그 순간을 상태로 만든다.
-  /** 먼저 연 중계의 egress 서버 닫기를 붙잡는다. 붙잡힌 것을 알리는 `caught`와 놓는 gate를 돌려준다. */
-  const holdFirstClose = (first: { directory: string }) => {
-    const held = gate();
+  /** 먼저 연 중계의 egress 서버 닫기를 이 시험의 소유자(`holds`)의 gate로 붙잡는다. 붙잡힌 것을 알리는 `caught`와 놓는 gate를 돌려준다. */
+  const holdFirstClose = (holds: Holds, first: { directory: string }) => {
+    const held = holds.gate();
     const caught = Promise.withResolvers<void>();
     serverFaults.heldClose.mockImplementation(() => caught.resolve());
     serverFaults.holdClose = {
@@ -1740,6 +1775,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   };
 
   it("starts every relay's close before it detaches the policy, so a tools request meets no detached policy", async () => {
+    const holds = testHolds();
     const { relays } = hub();
     const first = relays.open({ identity, required: [] });
     const second = relays.open({ identity, required: [] });
@@ -1760,7 +1796,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       5_000,
       "the tools connection did not connect"
     );
-    const { held, caught } = holdFirstClose(first);
+    const { held, caught } = holdFirstClose(holds, first);
     const closing = relays.close();
     await caught();
     tools.write("GET /api/tools/mcp HTTP/1.1\r\nHost: tools\r\n\r\n");
@@ -1777,8 +1813,10 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 같은 창에서 정책 조회가 끝난 연결이 떼어진 정책의 보호 포트(빈 목록)로 판정되어 이 컴퓨터의 보호 포트에 붙었다. 고친 뒤에는 hub
   // 닫기가 시작될 때 그 중계가 끊겨 연결이 닫힌다(연결 시작보다 먼저).
   it("starts no connection to a protected port from a policy lookup that ends while the hub closes", async () => {
+    const holds = testHolds();
     const port = await heldDestination();
     const { relays, lookup, asked } = heldLookupHub(
+      holds,
       [destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] })],
       () => [port]
     );
@@ -1791,7 +1829,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const received = vi.fn();
     socket.on("data", received);
     await asked();
-    const { held, caught } = holdFirstClose(first);
+    const { held, caught } = holdFirstClose(holds, first);
     const closing = relays.close();
     await caught();
     lookup.open();
