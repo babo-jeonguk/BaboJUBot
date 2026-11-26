@@ -70,6 +70,19 @@ const postgresAlive = async (home) => {
   );
 };
 
+/**
+ * 장면 서버와 그 harness 폴더의 정리를 `defer`에 맡기고, 서버의 정리(`dispose`)를 맡기는 함수를 돌려준다. 폴더 정리(`folderCleanup`)는
+ * 맡긴 dispose의 끝(서버의 끝, dispose가 확인)을 기다린 뒤 harness 폴더를 지운다. `home`은 그 서버의 홈이다.
+ * @param {(step: () => unknown) => void} defer
+ * @param {() => Promise<unknown>} removeHarness
+ * @returns {(home: string, dispose: () => Promise<{ home: import("../../../scripts/live/chaos-server.mjs").FolderEnd }>) => void}
+ */
+function sceneServerCleanup(defer, removeHarness) {
+  const folder = folderCleanup(removeHarness);
+  defer(folder.cleanUp);
+  return (_home, dispose) => folder.own(dispose);
+}
+
 describe("chaos harness launch", () => {
   it("refuses live calls without --allow-live, in CI, with --record, and with a bad budget or scene", () => {
     const refused = (argv, env = {}) => {
@@ -889,8 +902,9 @@ describe("chaos harness on a fake connection", () => {
       // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
       const { home, disposed } = await withCleanup(async (defer) => {
         const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
-        const folder = folderCleanup(() => removeFolderWithin(harnessDir));
-        defer(folder.cleanUp);
+        const ownServer = sceneServerCleanup(defer, () =>
+          removeFolderWithin(harnessDir)
+        );
         const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
         const server = chaosServer({
           home,
@@ -905,12 +919,13 @@ describe("chaos harness on a fake connection", () => {
          * @type {{ result?: Awaited<ReturnType<ReturnType<typeof chaosServer>["dispose"]>> }}
          */
         const disposed = {};
-        folder.own(async () => {
+        ownServer(home, async () => {
           disposed.result = await within(
             server.dispose(),
             disposeMs,
             "disposing the scene server"
           );
+          return disposed.result;
         });
         // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
         // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
