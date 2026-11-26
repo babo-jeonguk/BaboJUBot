@@ -224,14 +224,22 @@ async function answerBody(options: http.RequestOptions) {
 const revalidated = (revalidation: Promise<void>) =>
   within(revalidation, 5_000, "the revalidation did not end");
 
-/** egress.sock에 보낸 평문 HTTP 요청(절대 주소 `target`) 하나의 답 상태(`answerTo`). 본문은 버린다. */
-async function statusVia(directory: string, target: string) {
+/**
+ * egress.sock에 보낸 평문 HTTP 요청 하나의 답 상태와 머리(node:http 파서가 읽은 것, `answerTo`). `target`은 요청 줄의 대상(보통
+ * 절대 주소, 프록시 요청이 아닌 요청을 보는 시험은 상대 경로)이다. 본문은 버린다.
+ */
+async function headVia(
+  directory: string,
+  target: string,
+  headers?: http.OutgoingHttpHeaders
+) {
   const answer = await answerTo({
     socketPath: path.join(directory, "egress.sock"),
     path: target,
+    ...(headers && { headers }),
   });
   answer.resume();
-  return answer.statusCode;
+  return { status: answer.statusCode, headers: answer.headers };
 }
 
 /**
@@ -451,12 +459,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     });
     await ready(relay);
     const viaProxy = async (target: string) => {
-      const answer = await answerTo({
-        socketPath: path.join(relay.directory, "egress.sock"),
-        path: target,
-      });
-      answer.resume();
-      return { status: answer.statusCode, location: answer.headers.location };
+      const { status, headers } = await headVia(relay.directory, target);
+      return { status, location: headers.location };
     };
     const first = await viaProxy(`http://localhost:${port}/start`);
     expect(first).toEqual({
@@ -603,8 +607,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     onTestFinished(() => void process.off("uncaughtException", onUncaught));
     const relay = env.relays.open({ identity, required: [] });
     await ready(relay);
-    const viaProxy = () =>
-      statusVia(relay.directory, `http://localhost:${target.port}/page`);
+    const viaProxy = async () =>
+      (await headVia(relay.directory, `http://localhost:${target.port}/page`))
+        .status;
     const first = await viaProxy();
     // 재검사 때 중계가 목적지로 연 소켓은 정확히 하나였다(그것을 목적지가 끊었다).
     expect(recheck.carrying).toHaveLength(1);
@@ -638,7 +643,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ],
     });
     await ready(relay);
-    const status = await statusVia(
+    const { status } = await headVia(
       relay.directory,
       `http://localhost:${port}/page`
     );
@@ -751,10 +756,8 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   it("answers 502, leaves why and lets go of the connection when a plain HTTP destination closes the request without an answer", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
-    const answering: net.Socket[] = [];
     const { server } = await ownedListener(
       net.createServer((socket) => {
-        answering.push(socket);
         socket.once("data", () =>
           socket.write(
             "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\n\r\n"
@@ -776,7 +779,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     ]);
     const relay = relays.open({ identity, required: [] });
     await ready(relay);
-    const status = await statusVia(
+    const { status } = await headVia(
       relay.directory,
       `http://localhost:${port}/page`
     );
@@ -1023,7 +1026,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const { relays } = hub();
     const relay = relays.open({ identity, required: [] });
     await ready(relay);
-    expect(await statusVia(relay.directory, "/relative")).toBe(400);
+    expect((await headVia(relay.directory, "/relative")).status).toBe(400);
   });
 
   /** 중계 폴더 안의 파일 소켓 `name`의 주소. */
@@ -1772,22 +1775,17 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 다시 보기는 던져 연결을 회수하지 못했다. 실패는 실제 OS 조회 경계(`node:os` 모듈 대역)에 넣는다.
   const addressesUnreadable =
     "[provider] this computer's addresses could not be read (ERR_SYSTEM_ERROR)";
-  /** egress.sock을 거친 HTTP 절대 주소 요청 하나의 답 상태와 거부 이유(node:http 파서가 읽은 것, `answerTo`). 본문은 버린다. */
+  /** egress.sock을 거친 HTTP 절대 주소 요청 하나의 답 상태와 거부 이유(`headVia`). */
   const httpAnswer = async (
     relay: { directory: string },
     authority: string
   ) => {
-    const answer = await answerTo({
-      socketPath: socketOf(relay, relaySockets.egress),
-      path: `http://${authority}/`,
-      headers: { host: authority },
-      agent: false,
-    });
-    answer.resume();
-    return {
-      status: answer.statusCode,
-      refusal: answer.headers["x-babojubot-refusal"],
-    };
+    const { status, headers } = await headVia(
+      relay.directory,
+      `http://${authority}/`,
+      { host: authority }
+    );
+    return { status, refusal: headers["x-babojubot-refusal"] };
   };
 
   it.each(kinds)(
