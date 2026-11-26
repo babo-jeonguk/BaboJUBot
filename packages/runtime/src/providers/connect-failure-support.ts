@@ -70,16 +70,23 @@ export function givenUpAtReset(what: string) {
  * 안에서 받아, 사건으로 풀렸는지(이행) 단언하고 사건의 실패는 그 거절로 받는다. 콜백 안에 상한(`within`)을 두지 않는다: 그 거절이
  * 제품의 정책 읽기 실패(`policy_unavailable`)로 접혀 까닭이 사라진다. 사건이 먼저 끝나면 이 기다림의 gate는 reset 때 풀리고, 그때 생기는
  * 거절은 이미 끝난 `race`가 받는다.
+ * 사건이 오지 않은 채 reset에 닿은 기다림은 reset이 모두 푼 뒤 그 `what` 목록으로 실패한다(`resetRefusing`). 본문이 바깥 답 기다림의
+ * 상한으로 먼저 실패해 칸의 거절을 받지 못해도, 어느 hook 기다림이 멈췄는지가 그 시험의 afterEach 실패로 남는다.
  */
 export function heldUntil<T>(event: Promise<T>, what: string): Promise<T> {
+  const waiting = { what };
+  unendedHolds.add(waiting);
   const reset = gate();
   return Promise.race([
-    event,
+    event.finally(() => unendedHolds.delete(waiting)),
     reset.until.then(() => {
       throw givenUpAtReset(what);
     }),
   ]);
 }
+
+/** `heldUntil`이 시작했고 아직 사건이 오지 않은 기다림. `resetRefusing()`이 풀고 실패로 알린 뒤 비운다. */
+const unendedHolds = new Set<{ what: string }>();
 
 /** 대역이 붙잡고 있는 연결(`refusing.holdConnect`). `resetRefusing()`이 포기시킨다. */
 const heldSockets = new Set<netModule.Socket>();
@@ -142,7 +149,13 @@ export const serverFaults = {
   heldClose: vi.fn<(address: string) => void>(),
 };
 
+/**
+ * 대역을 시험 시작 전 모양으로 되돌리고 붙잡은 것을 모두 푼다(afterEach). 모두 푼 뒤, 사건이 오지 않은 채 reset에 닿은 `heldUntil`
+ * 기다림이 있으면 그 `what` 목록으로 던진다(푸는 일은 그 전에 모두 하므로 실패가 해제를 건너뛰지 않는다).
+ */
 export function resetRefusing() {
+  const unended = [...unendedHolds].map(({ what }) => what);
+  unendedHolds.clear();
   for (const open of openAtReset) open("reset");
   openAtReset.clear();
   for (const socket of heldSockets)
@@ -164,6 +177,10 @@ export function resetRefusing() {
   serverFaults.holdClose = undefined;
   serverFaults.heldClose.mockReset();
   resetOsFaults();
+  if (unended.length > 0)
+    throw new Error(
+      `the test ended while hook waits had not ended: ${unended.join(", ")}`
+    );
 }
 
 function codeError(message: string, code: string) {
