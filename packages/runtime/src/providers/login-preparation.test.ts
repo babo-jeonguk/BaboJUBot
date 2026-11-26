@@ -45,12 +45,13 @@ vi.mock("@babojubot/process", async (importOriginal) => {
   return { ...actual, launchTree };
 });
 
-/** 붙잡아 둘 파일 작업 하나. 그 작업에 들어오면 알리고, 풀어 줄 때까지 기다린 뒤 실제로 한다. */
+type Operation = "symlink" | "writeFile" | "rename";
+/**
+ * 붙잡아 둘 파일 작업 하나. 그 작업에 들어오면 알리고, 풀어 줄 때까지 기다린 뒤 실제로 한다. 한 번만 붙잡는다: 그 표시는 이 객체가
+ * 가진다(`claim`이 맞으면 표시하고 기다릴 것을 돌려준다). 대역은 불린 순간 지금의 gate를 잡고 그 객체에만 묻는다.
+ */
 type Gate = {
-  operation: "symlink" | "writeFile" | "rename";
-  matches: (file: string) => boolean;
-  entered: (file: string) => void;
-  held: Promise<void>;
+  claim: (operation: Operation, file: string) => Promise<void> | undefined;
 };
 let gate: Gate | undefined;
 /**
@@ -67,30 +68,24 @@ let race:
 let refusal: string | null = null;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const hold = (operation: Gate["operation"], file: unknown) => {
-    const current = gate;
-    if (current?.operation !== operation || !current.matches(String(file)))
-      return undefined;
-    gate = undefined;
-    current.entered(String(file));
-    return current.held;
-  };
   return {
     ...actual,
     symlink: (...args: Parameters<typeof actual.symlink>) => {
+      const current = gate;
       if (refusal)
         return Promise.reject(
           Object.assign(new Error(`${refusal}: cannot link`), { code: refusal })
         );
-      const held = hold("symlink", args[1]);
+      const held = current?.claim("symlink", String(args[1]));
       return held
         ? held.then(() => actual.symlink(...args))
         : actual.symlink(...args);
     },
     rename: async (...args: Parameters<typeof actual.rename>) => {
-      // 끼움은 불린 순간 잡는다. 기다린 뒤 칸을 다시 찾으면 그 사이 afterEach·다음 시험이 바꾼 끼움을 부른다.
+      // 끼움·gate는 불린 순간 잡는다. 기다린 뒤 칸을 다시 찾으면 그 사이 afterEach·다음 시험이 바꾼 것을 부른다.
       const current = race;
-      await hold("rename", args[0]);
+      const held = gate?.claim("rename", String(args[0]));
+      await held;
       await actual.rename(...args);
       await current?.afterRename?.(String(args[0]), String(args[1]));
     },
@@ -99,7 +94,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       return actual.readFile(...args);
     }) as typeof actual.readFile,
     writeFile: (...args: Parameters<typeof actual.writeFile>) => {
-      const held = hold("writeFile", args[0]);
+      const held = gate?.claim("writeFile", String(args[0]));
       return held
         ? held.then(() => actual.writeFile(...args))
         : actual.writeFile(...args);
@@ -375,10 +370,7 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
 }
 
 /** 그 파일 작업에 들어올 때까지 기다리게 붙잡는다. `release`를 부르면 그 작업을 실제로 한다. */
-function holdAt(
-  operation: Gate["operation"],
-  matches: (file: string) => boolean
-) {
+function holdAt(operation: Operation, matches: (file: string) => boolean) {
   const { held, release } = hold();
   let entered!: (file: string) => void;
   // 준비가 그 작업에 끝내 들어오지 않으면 시험 시한까지 기다리지 않고 바로 실패한다.
@@ -392,11 +384,14 @@ function holdAt(
       resolve(file);
     };
   });
+  let claimed = false;
   gate = {
-    operation,
-    matches,
-    entered,
-    held,
+    claim(asked, file) {
+      if (claimed || asked !== operation || !matches(file)) return undefined;
+      claimed = true;
+      entered(file);
+      return held;
+    },
   };
   return { reached, release };
 }

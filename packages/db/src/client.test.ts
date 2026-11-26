@@ -51,12 +51,13 @@ const holds = vi.hoisted(() => ({
 vi.mock("@babojubot/process", async (original) => {
   const real = await original<typeof import("@babojubot/process")>();
   const runCommand = (async (...args: Parameters<typeof real.runCommand>) => {
-    const hold = holds.stop;
-    if (hold && args[1][0] === "stop") {
+    // 칸은 불린 순간(첫 await를 담은 문장 앞) 읽고 비운다. 기다림은 잡아 둔 것만 본다(tests/hoisted-state-at-call).
+    const hold = holds.stop && args[1][0] === "stop" ? holds.stop : undefined;
+    if (hold) {
       holds.stop = undefined;
       hold.reached();
-      await hold.released;
     }
+    await hold?.released;
     return real.runCommand(...args);
   }) as typeof real.runCommand;
   return { ...real, runCommand };
@@ -64,12 +65,16 @@ vi.mock("@babojubot/process", async (original) => {
 vi.mock("node:fs/promises", async (original) => {
   const real = await original<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
-    const hold = holds.remove;
-    if (hold && String(target) === hold.target) {
+    // 칸은 불린 순간(첫 await를 담은 문장 앞) 읽고 비운다. 기다림은 잡아 둔 것만 본다(tests/hoisted-state-at-call).
+    const hold =
+      holds.remove && String(target) === holds.remove.target
+        ? holds.remove
+        : undefined;
+    if (hold) {
       holds.remove = undefined;
       hold.reached();
-      await hold.released;
     }
+    await hold?.released;
     return real.rm(target, options);
   };
   return { ...real, rm, default: { ...real, rm } };

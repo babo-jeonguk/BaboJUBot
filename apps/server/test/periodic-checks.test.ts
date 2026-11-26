@@ -30,11 +30,14 @@ const queries = vi.hoisted(() => {
 vi.mock("@babojubot/db", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@babojubot/db")>()),
   runDueHeartbeats: async () => {
-    await queries.query("heartbeats");
+    // 칸은 불린 순간(첫 await를 담은 문장 앞) 잡는다(tests/hoisted-state-at-call).
+    const { query } = queries;
+    await query("heartbeats");
     return { events: [] };
   },
   listCompactionCandidates: async () => {
-    await queries.query("compactions");
+    const { query } = queries;
+    await query("compactions");
     return [];
   },
 }));
