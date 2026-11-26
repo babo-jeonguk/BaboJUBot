@@ -1,5 +1,10 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { destinationSchema, type Destination } from "@babojubot/contracts";
+import {
+  destinationSchema,
+  parseIp,
+  type Destination,
+  type IpAddress,
+} from "@babojubot/contracts";
 import {
   allowsConnection,
   decideDestination,
@@ -10,13 +15,19 @@ import {
 
 const destination = (value: unknown): Destination =>
   destinationSchema.parse(value);
+/** 시험이 적은 이 컴퓨터의 주소(판정은 해석된 주소를 받는다). */
+const ip = (text: string): IpAddress => {
+  const parsed = parseIp(text);
+  if (!parsed) throw new Error(`not an IP: ${text}`);
+  return parsed;
+};
 const rules = (
   destinations: unknown[],
   extra: Partial<EgressRules> = {}
 ): EgressRules => ({
   destinations: destinations.map(destination),
   protectedPorts: [3100, 54329],
-  hostAddresses: ["93.184.216.40"],
+  hostAddresses: [ip("93.184.216.40")],
   ...extra,
 });
 const resolver =

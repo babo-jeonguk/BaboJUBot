@@ -15,9 +15,11 @@ import {
   isDisconnect,
   orIfProbeFailed,
   orIfUnreadable,
+  parseIp,
   settled,
   type Destination,
   type EgressRefusal,
+  type IpAddress,
 } from "@babojubot/contracts";
 import { listenAttempt } from "@babojubot/process";
 import {
@@ -108,10 +110,14 @@ export const relaySockets = {
   inbound: "inbound.sock",
 } as const;
 
-/** 이 중계가 지금 붙은 정책에서 읽은 것. 떼어졌거나 읽지 못한 칸은 "unreadable"(판정은 읽은 쪽이 아니라 쓰는 쪽이 한다). */
+/**
+ * 목적지 판정 재료 가운데 요청과 무관한 것: 지금 붙은 정책(연구 목록·보호 포트)과 이 컴퓨터의 주소(OS). 떼어졌거나 읽지 못한 칸은
+ * "unreadable"(판정은 읽은 쪽이 아니라 쓰는 쪽이 한다). 이 컴퓨터의 주소는 읽지 못함을 그대로 판정에 넘긴다(`EgressRules`).
+ */
 type Policy = {
   research: readonly Destination[] | "unreadable";
   protectedPorts: readonly number[] | "unreadable";
+  hostAddresses: EgressRules["hostAddresses"];
 };
 
 type Tunnel = {
@@ -148,10 +154,20 @@ type Relay = {
   closedBy(error: unknown): boolean;
 };
 
-function hostAddresses() {
+/** 이 컴퓨터의 모든 주소(장치 주소, 범위 표시 `%…` 앞까지). 조회가 실패하거나 해석하지 못한 주소가 하나라도 있으면 던진다. */
+function ownAddresses(): IpAddress[] {
   return Object.values(os.networkInterfaces())
     .flatMap((list) => list ?? [])
-    .map((entry) => entry.address.split("%")[0]!);
+    .map((entry) => {
+      const text = entry.address.split("%")[0]!;
+      const parsed = parseIp(text);
+      if (!parsed)
+        throw Object.assign(
+          new Error(`a network interface address is not an IP: ${text}`),
+          { code: "interface_address_unreadable" }
+        );
+      return parsed;
+    });
 }
 
 async function resolveAll(host: string) {
@@ -285,14 +301,27 @@ export function createRelayHub(): RelayHub {
   };
 
   /**
-   * 지금 붙은 정책을 읽는다(정책 읽기 한 자리). 정책을 한 번 잡아 보호 포트와 연구 목록을 같은 정책에서 읽는다. 떼어졌거나 읽지 못한
-   * 칸은 "unreadable"이고, 그 판정(새 연결은 거부, 다시 보기는 좁힘)은 쓰는 쪽이 한다. 경고는 무엇을 못 읽었는지만 남긴다.
+   * 요청과 무관한 판정 재료를 읽는다(읽기 한 자리): 이 컴퓨터의 주소와, 정책을 한 번 잡아 같은 정책의 보호 포트·연구 목록. 떼어졌거나
+   * 읽지 못한 칸은 "unreadable"이고, 그 판정(새 연결은 거부, 다시 보기는 좁힘)은 쓰는 쪽이 한다. 경고는 무엇을 못 읽었는지만 남긴다.
+   * 이 컴퓨터의 주소는 정책과 무관해 정책이 떼어져도 읽는다.
    */
   const policyOf = async (relay: Relay): Promise<Policy> => {
+    const hostAddresses =
+      continueAfterFailure(
+        () => ownAddresses(),
+        (error) =>
+          console.warn(
+            `[provider] this computer's addresses could not be read (${failureCode(error)})`
+          )
+      ) ?? "unreadable";
     const current = hooks;
     if (!current) {
       console.warn("[provider] the relay's policy is detached");
-      return { research: "unreadable", protectedPorts: "unreadable" };
+      return {
+        research: "unreadable",
+        protectedPorts: "unreadable",
+        hostAddresses,
+      };
     }
     const protectedPorts =
       continueAfterFailure(
@@ -310,33 +339,39 @@ export function createRelayHub(): RelayHub {
             `[provider] the research destinations could not be read (${failureCode(error)})`
           )
       )) ?? "unreadable";
-    return { research, protectedPorts };
+    return { research, protectedPorts, hostAddresses };
   };
 
   /**
-   * 정책의 모든 칸을 읽었는가(판정 한 자리). 아니면 새 연결은 거부하고, 다시 보기는 닫는 이유가 `policy_unavailable`이다.
+   * 판정 재료의 모든 칸을 읽었는가(판정 한 자리). 아니면 새 연결은 거부하고, 다시 보기는 닫는 이유가 `policy_unavailable`이다.
    */
   const readable = (
     policy: Policy
   ): policy is {
     research: readonly Destination[];
     protectedPorts: readonly number[];
+    hostAddresses: Exclude<EgressRules["hostAddresses"], "unreadable">;
   } =>
-    policy.research !== "unreadable" && policy.protectedPorts !== "unreadable";
+    policy.research !== "unreadable" &&
+    policy.protectedPorts !== "unreadable" &&
+    policy.hostAddresses !== "unreadable";
 
+  /** 판정 규칙. 읽은 재료만 받는다(OS·정책을 여기서 읽지 않는다). */
   const rulesFor = (
     relay: Relay,
     research: readonly Destination[],
-    protectedPorts: EgressRules["protectedPorts"]
+    protectedPorts: EgressRules["protectedPorts"],
+    hostAddresses: EgressRules["hostAddresses"]
   ): EgressRules => ({
     destinations: [...relay.required, ...research],
     protectedPorts,
-    hostAddresses: hostAddresses(),
+    hostAddresses,
   });
 
   /**
    * 다시 볼 때의 지금 규칙과, 그 규칙으로 닫는 연결을 알릴 이유. 모름을 허용으로 바꾸지 않는다: 연구 목록을 읽지 못하면 필수 목적지만,
-   * 보호 포트를 읽지 못하면 이 컴퓨터의 모든 포트를 보호한다("all"). 한 칸이라도 읽지 못했으면 닫는 이유는 정책을 확인하지 못함
+   * 보호 포트를 읽지 못하면 이 컴퓨터의 모든 포트를 보호하는 규칙("all")으로 바꾼다. 이 컴퓨터의 주소는 읽지 못함을 그대로 넘겨
+   * 판정이 모든 주소를 이 컴퓨터의 주소로 본다(`addressAllowed`). 한 칸이라도 읽지 못했으면 닫는 이유는 정책을 확인하지 못함
    * (`policy_unavailable`), 다 읽었으면 정책이 바뀜(`policy_changed`)이다.
    */
   const currentRules = async (
@@ -347,7 +382,8 @@ export function createRelayHub(): RelayHub {
       rules: rulesFor(
         relay,
         policy.research === "unreadable" ? [] : policy.research,
-        policy.protectedPorts === "unreadable" ? "all" : policy.protectedPorts
+        policy.protectedPorts === "unreadable" ? "all" : policy.protectedPorts,
+        policy.hostAddresses
       ),
       closing: readable(policy) ? "policy_changed" : "policy_unavailable",
     };
@@ -369,12 +405,17 @@ export function createRelayHub(): RelayHub {
    */
   const destination = (relay: Relay, host: string, port: number) =>
     relay.acquire(async (signal) => {
-      // 정책의 한 칸이라도 읽지 못하면 열지 않는다(모름을 허용으로 바꾸지 않음).
+      // 판정 재료(정책·이 컴퓨터의 주소)의 한 칸이라도 읽지 못하면 열지 않는다(모름을 허용으로 바꾸지 않음).
       const policy = await relay.whileOpen(() => policyOf(relay));
       const decision: EgressDecision = readable(policy)
         ? await relay.whileOpen(() =>
             decideDestination(
-              rulesFor(relay, policy.research, policy.protectedPorts),
+              rulesFor(
+                relay,
+                policy.research,
+                policy.protectedPorts,
+                policy.hostAddresses
+              ),
               host,
               port,
               resolveAll
