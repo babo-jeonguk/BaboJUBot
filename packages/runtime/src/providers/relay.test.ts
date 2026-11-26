@@ -25,6 +25,7 @@ import {
   refusing,
   failingRelayCloses,
   gate,
+  heldUntil,
   nameFaults,
   resetRefusing,
   serverFaults,
@@ -223,6 +224,17 @@ async function answerBody(options: http.RequestOptions) {
 /** 시작한 다시 보기가 상한 안에 끝나기를 기다린다. */
 const revalidated = (revalidation: Promise<void>) =>
   within(revalidation, 5_000, "the revalidation did not end");
+
+/**
+ * 콜백(정책 hook·대역 구현)이 시험 칸에 담은 기다림을 본문이 상한 안에서 받는다. 콜백이 그 기다림을 시작하지 않았으면 그 이유로
+ * 실패한다. 본문은 답 내용을 단언하기 전에 칸부터 받아, 콜백 안 사건의 실패가 그 까닭으로 본문에 닿게 한다.
+ */
+const fromHook = <T>(held: Promise<T> | undefined, what: string) =>
+  within(
+    held ?? Promise.reject(new Error(`the hook did not start ${what}`)),
+    5_000,
+    `${what} in the hook did not end`
+  );
 
 /**
  * egress.sock에 보낸 평문 HTTP 요청 하나의 답 상태와 머리(node:http 파서가 읽은 것, `answerTo`). `target`은 요청 줄의 대상(보통
@@ -1019,6 +1031,39 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     expect(await answerVia(relay.directory, `localhost:${target.port}`)).toBe(
       refusal("policy_unavailable")
     );
+    expect(target.accepted.length).toBe(0);
+  });
+
+  // 정책 hook이 기다리는 사건이 오지 않아도 그 기다림은 시험 끝의 해제(대역의 reset)로 풀리고, 풀린 까닭이 본문에 닿는다(#286 PR #300
+  // 외부 리뷰 1회차 STD-1). 바깥 답 기다림의 상한은 hook 안 기다림을 끝내지 못한다. 본문은 시험 끝과 같은 해제(`resetRefusing()`)를
+  // 부른다. 풀린 hook은 던지고, 제품은 연결 없이 정책 읽기 실패로 거부한다.
+  it("releases a policy hook's wait at the double's reset when its event never comes, and gives the body why", async () => {
+    const target = await fixture("echo");
+    const asked = Promise.withResolvers<void>();
+    /** hook이 담은 기다림. 본문이 해제 뒤 받는다. */
+    const hooked: { wait?: Promise<never> } = {};
+    const { relays } = hub({
+      research: () => {
+        asked.resolve();
+        hooked.wait = awaitedLater(
+          heldUntil(new Promise<never>(() => {}), "the event that never comes")
+        );
+        return hooked.wait;
+      },
+    });
+    const relay = relays.open({ identity, required: [] });
+    await ready(relay);
+    const answer = awaitedLater(
+      answerVia(relay.directory, `localhost:${target.port}`)
+    );
+    await within(asked.promise, 5_000, "the relay did not look up its policy");
+    resetRefusing();
+    await expect(
+      fromHook(hooked.wait, "the wait for the event that never comes")
+    ).rejects.toMatchObject({
+      message: "the event that never comes was given up at the double's reset",
+    });
+    expect(await answer).toBe(refusal("policy_unavailable"));
     expect(target.accepted.length).toBe(0);
   });
 
