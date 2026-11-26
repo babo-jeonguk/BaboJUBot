@@ -1,6 +1,7 @@
 // 저장소 lint 설정(eslint.config.js)이 시험 코드 규칙과 예외 주석 규칙을 실제로 거는지 본다. 규칙의 조건에 오타가 나면
 // 아무것도 잡지 않은 채 lint가 통과하므로, 잡아야 할 모양과 잡지 말아야 할 모양을 짧은 코드로 넣어 확인한다.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import { ESLint } from "eslint";
@@ -3239,4 +3240,35 @@ test("awaitedLater is told by the file it comes from, not by how the path is spe
         [],
         `${place}: ${code}`
       );
+});
+
+// ---------- 호출 문맥 (#286 PR 3b-3b-2 외부 리뷰 1회차) ----------
+
+/** 호출 문맥 규칙의 메시지만. */
+const callContextMessages = async (code, place) =>
+  await lint(code, place, ["tests/call-context-through-arming"]);
+
+const callContextShapes = {
+  "a named import": `import { AsyncLocalStorage } from "node:async_hooks";\nexport const calls = new AsyncLocalStorage();\n`,
+  "a default import without the node: prefix": `import hooks from "async_hooks";\nexport const calls = new hooks.AsyncLocalStorage();\n`,
+  "a dynamic import": `const hooks = await import("node:async_hooks");\nexport const calls = new hooks.AsyncLocalStorage();\n`,
+  "a require": `const hooks = require("node:async_hooks");\nexport const calls = new hooks.AsyncLocalStorage();\n`,
+  "a re-export": `export { AsyncLocalStorage } from "node:async_hooks";\n`,
+  "a star re-export": `export * from "async_hooks";\n`,
+};
+
+for (const [shape, code] of Object.entries(callContextShapes))
+  test(`test code takes a call's context only through callArming, not with ${shape}`, async () => {
+    for (const place of testPlaces) {
+      const messages = await callContextMessages(code, place);
+      assert.equal(messages.length, 1, `${place}: ${code}`);
+      assert.match(messages[0].message, /@babojubot\/process\/call-arming/);
+    }
+  });
+
+test("the shared call-arming helper is the one place that holds a call's context", async () => {
+  const helper = "packages/process/src/call-arming-support.ts";
+  const code = await readFile(path.join(repository, helper), "utf8");
+  assert.match(code, /AsyncLocalStorage/);
+  assert.deepEqual(await callContextMessages(code, helper), []);
 });
