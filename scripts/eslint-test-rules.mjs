@@ -2,8 +2,9 @@
 // 설정은 eslint.config.js의 `testFiles` 범위에 걸고, 회귀 시험은 scripts/lint-rules.test.mjs가 맡는다.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { Linter } from "eslint";
 import tseslint from "typescript-eslint";
-import { codeFormatNames } from "./test-files.mjs";
+import { codeFormatNames, codeFormats } from "./test-files.mjs";
 import {
   importSites,
   originName,
@@ -2906,42 +2907,36 @@ function unasserted(node) {
   return at;
 }
 
-/** 다른 파일을 읽을 때 쓰는 SourceCode의 면(getScope·getDeclaredVariables). ESLint의 SourceCode와 같은 규칙으로 범위를 찾는다. */
-function parsedSource(scopeManager) {
-  return {
-    getScope(node) {
-      const inner = node.type !== "Program";
-      for (let at = node; at; at = at.parent) {
-        const scope = scopeManager.acquire(at, inner);
-        if (scope)
-          return scope.type === "function-expression-name"
-            ? scope.childScopes[0]
-            : scope;
-      }
-      return scopeManager.globalScope;
-    },
-    getDeclaredVariables: (node) => scopeManager.getDeclaredVariables(node),
-    scopeManager,
-  };
-}
-
-/** 저장소 파일 하나를 읽어 AST(부모 연결)와 범위를 만든다. 파일과 수정 시각이 같으면 다시 읽지 않는다. */
+/**
+ * 저장소 파일 하나를 읽어 ESLint의 SourceCode(AST·범위)를 만든다. 시험 파일을 lint할 때와 같은 파서·같은 범위 규칙을 쓴다. 파일과 수정
+ * 시각이 같으면 다시 읽지 않는다. 읽지 못하는 파일은 판정할 수 없어 던진다.
+ */
 const parsedFiles = new Map();
 function parseRepositoryFile(file) {
   const stamp = statSync(file).mtimeMs;
   const cached = parsedFiles.get(file);
   if (cached?.stamp === stamp) return cached;
-  const { ast, scopeManager } = tseslint.parser.parseForESLint(
+  const linter = new Linter({ configType: "flat", cwd: repositoryRootPath });
+  const messages = linter.verify(
     readFileSync(file, "utf8"),
-    {
-      filePath: file,
-      range: true,
-      loc: true,
-      sourceType: "module",
-      ecmaVersion: "latest",
-    }
+    [
+      {
+        files: [`**/*.${codeFormats}`],
+        languageOptions: {
+          parser: tseslint.parser,
+          sourceType: "module",
+          ecmaVersion: "latest",
+        },
+      },
+    ],
+    { filename: file }
   );
-  walkAll(ast, (node) => {
+  const source = linter.getSourceCode();
+  if (!source)
+    throw new Error(
+      `${file}: ${messages.map((message) => message.message).join("; ")}`
+    );
+  walkAll(source.ast, (node) => {
     for (const key of Object.keys(node)) {
       if (key === "parent") continue;
       const value = node[key];
@@ -2949,12 +2944,7 @@ function parseRepositoryFile(file) {
         if (child && typeof child.type === "string") child.parent = node;
     }
   });
-  const parsed = {
-    stamp,
-    ast,
-    source: parsedSource(scopeManager),
-    findings: new Map(),
-  };
+  const parsed = { stamp, ast: source.ast, source, findings: new Map() };
   parsedFiles.set(file, parsed);
   return parsed;
 }
@@ -3065,6 +3055,7 @@ const callResult = (origin) => origin.path.some((name) => name.endsWith("()"));
  * 돌려주는 것: `{ node, messageId, data? }` 목록.
  */
 function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
+  /** @type {{ node: import("eslint").Rule.Node | undefined, messageId: string, data?: Record<string, string> }[]} */
   const findings = [];
   const factories = new Set(factoriesFrom);
   const called = new Set(helpers);

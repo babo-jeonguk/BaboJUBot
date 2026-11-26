@@ -252,6 +252,7 @@ test("tells a value taken from vitest's importActual by the module it loads", ()
         probe: {
           rules: {
             origin: {
+              /** @param {import("eslint").Rule.RuleContext} context */
               create: (context) => ({
                 "MemberExpression[property.name='AsyncLocalStorage']"(node) {
                   found.push(originOf(context.sourceCode.getScope(node), node));
