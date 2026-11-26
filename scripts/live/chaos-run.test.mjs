@@ -104,6 +104,30 @@ test("a scene whose server cleanup failed keeps its folders and counts the failu
   });
 });
 
+// 서버 정리가 실패하면 남은 DB·프로세스 기록을 알 수 없다. 그 칸을 "남은 것 없음"(false·0)으로 적지 않고 모름(null)으로 적고,
+// 장면은 정리되지 않은 것으로 센다(#286 PR 3b-3b-1 감독 판정: 모름을 없음으로 접던 `?? false`·`?? 0`).
+test("a scene whose server cleanup failed records its leftovers as unknown, not none", async (t) => {
+  await withCleanup(async (defer) => {
+    const { cleanup } = await cleanedUpWith(t, defer, async () => {
+      throw Object.assign(new Error("server did not stop"), {
+        code: "EBUSY",
+      });
+    });
+    assert.deepEqual(
+      {
+        postgresLeft: cleanup.postgresLeft,
+        providerRecordsFound: cleanup.providerRecordsFound,
+        providerRecordsLeft: cleanup.providerRecordsLeft,
+      },
+      {
+        postgresLeft: null,
+        providerRecordsFound: null,
+        providerRecordsLeft: null,
+      }
+    );
+  });
+});
+
 // 서버 정리가 끝났어도 되살리지 못한 프로세스 기록이 남으면 사람이 볼 수 있게 홈을 남긴다(`dispose`가 지우지 않았다고 알림).
 test("a scene whose server cleanup kept its home for left provider records does not report it removed", async (t) => {
   await withCleanup(async (defer) => {
