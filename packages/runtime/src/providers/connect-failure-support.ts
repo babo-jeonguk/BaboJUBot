@@ -253,6 +253,8 @@ export const serverFaults = {
         code: string;
         at: (address: string) => boolean;
         failedAt: string[];
+        /** 이 결함이 잡은 닫기마다 그 닫기가 끝나면 이행하는 것(닫기를 부른 순간 넣는다). 정리는 이것이 모두 끝난 뒤 `failedAt`을 읽는다. */
+        closing: Promise<void>[];
       }
     | undefined,
   /**
@@ -328,28 +330,41 @@ function faultyServer(Base: typeof netModule.Server) {
       const hold = serverFaults.holdClose;
       const fault = serverFaults.close ?? closeCalls.current();
       const held = this.listenedAt;
+      // 이 결함이 잡은 닫기는 부른 순간 센다(붙잡힌 닫기도). 정리가 그 끝을 기다린 뒤 기록을 읽는다.
+      const caught =
+        fault && held !== undefined && fault.at(held)
+          ? Promise.withResolvers<void>()
+          : undefined;
+      if (fault && caught) fault.closing.push(caught.promise);
       if (hold && held !== undefined && hold.at(held)) {
         serverFaults.heldClose(held);
         // gate는 풀리기만 한다(거절하지 않음). 거절이 오면 그 원인을 닫기의 실패로 넘긴다.
         hold.held.until.then(
-          () => void this.closeNow(fault, callback),
-          (error: unknown) =>
-            callback?.(new Error("the held close failed", { cause: error }))
+          () => void this.closeNow(fault, callback, caught?.resolve),
+          (error: unknown) => {
+            caught?.resolve();
+            callback?.(new Error("the held close failed", { cause: error }));
+          }
         );
         return this;
       }
-      return this.closeNow(fault, callback);
+      return this.closeNow(fault, callback, caught?.resolve);
     }
-    /** 닫기: 부른 순간 잡은 결함(`fault`)이 정한 서버만 실제로 닫은 뒤 그 오류로 실패를 알린다. */
+    /**
+     * 닫기: 부른 순간 잡은 결함(`fault`)이 정한 서버만 실제로 닫은 뒤 그 오류로 실패를 알린다. `ended`는 그 결함이 센 닫기의 끝을
+     * 알린다(기록을 남긴 뒤).
+     */
     closeNow(
       fault: (typeof serverFaults)["close"],
-      callback?: (error?: Error) => void
+      callback?: (error?: Error) => void,
+      ended?: () => void
     ) {
       const at = this.listenedAt;
       if (!fault || at === undefined || !fault.at(at))
         return super.close(callback);
       return super.close((error?: Error) => {
         if (!error) fault.failedAt.push(at);
+        ended?.();
         callback?.(error ?? codeError("close failed", fault.code));
       });
     }
@@ -544,6 +559,16 @@ function ownKeptRelays(
       10_000,
       "the relays did not close"
     );
+    // 결함이 잡은 닫기가 모두 끝난 뒤 기록을 읽는다(호출이 기다리지 않은 닫기도 기록 밖에 남지 않게). 기다리는 사이 새로 잡힌 것도 본다.
+    for (let waited = 0; waited < fault.closing.length;) {
+      const pending = fault.closing.slice(waited);
+      waited = fault.closing.length;
+      await within(
+        Promise.all(pending),
+        10_000,
+        "a relay close the double failed did not end"
+      );
+    }
     if (ended.failure === undefined) {
       if (fault.failedAt.length > 0)
         throw new Error(
@@ -574,7 +599,7 @@ export function failingRelayCloses(
   closing: () => Promise<unknown>,
   code = "EBUSY"
 ) {
-  const fault: CloseFault = { code, at, failedAt: [] };
+  const fault: CloseFault = { code, at, failedAt: [], closing: [] };
   serverFaults.close = fault;
   ownKeptRelays(own, fault, closing);
   return { failedAt: fault.failedAt as readonly string[] };
@@ -592,9 +617,9 @@ export function failingRelayClosesDuring<T>(
   call: () => Promise<T>,
   code = "EBUSY"
 ) {
-  const fault: CloseFault = { code, at, failedAt: [] };
-  // 무장의 끝은 남긴 폴더 정리보다 나중에 등록한다(시험의 정리는 등록의 거꾸로 돈다). 그래서 무장이 먼저 끝나, 정리가 결함의 기록을
-  // 읽은 뒤에 그 호출의 늦은 닫기가 결함에 걸려 기록 밖의 폴더를 남기는 일이 없다.
+  const fault: CloseFault = { code, at, failedAt: [], closing: [] };
+  // 무장의 끝은 남긴 폴더 정리보다 나중에 등록한다(시험의 정리는 등록의 거꾸로 돈다). 그래서 무장이 먼저 끝나 그 뒤에 시작한 닫기는
+  // 결함에 걸리지 않고, 끝 전에 시작한 닫기는 정리가 그 끝을 기다린 뒤 기록을 읽는다(`closing`).
   const ends: (() => void)[] = [];
   const result = awaitedLater(
     closeCalls.run(fault, call, (end) => {
