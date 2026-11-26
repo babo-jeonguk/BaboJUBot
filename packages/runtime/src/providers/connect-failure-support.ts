@@ -1,7 +1,9 @@
 // 이 파일은 `vi.mock("node:net")`·`vi.mock("node:http")`·`vi.mock("node:dns/promises")` 대역의 factory가 불러온다. 그래서 이 파일과 이
-// 파일이 불러오는 모듈 전체(@babojubot/process의 `test-cleanup.ts`·`test-support.ts`·`remove-folder.ts`, @babojubot/contracts)는 그
-// builtin들을 형으로만 불러온다. 값으로 불러오면 대역이 만들어지기 전에 자기 자신을 기다려 시험이 불러오는 단계에서 멈춘다. 그
-// builtin을 값으로 쓰는 시험 도움은 이 경로 밖(`@babojubot/process/testing`의 `test-connect.ts` 등)에 둔다.
+// 파일이 불러오는 모듈 전체(@babojubot/process의 `test-cleanup.ts`·`test-support.ts`·`remove-folder.ts`, @babojubot/contracts,
+// `os-failure-support.ts`)는 그 builtin들을 형으로만 불러온다. 값으로 불러오면 대역이 만들어지기 전에 자기 자신을 기다려 시험이
+// 불러오는 단계에서 멈춘다. 그 builtin을 값으로 쓰는 시험 도움은 이 경로 밖(`@babojubot/process/testing`의 `test-connect.ts` 등)에
+// 둔다. (`node:os` 대역의 factory는 이 파일이 아니라 `os-failure-support.ts`만 불러온다: 이 파일이 불러오는 `test-support.ts`가
+// `node:os`를 값으로 불러오기 때문이다.)
 import type * as dnsModule from "node:dns/promises";
 import type * as httpModule from "node:http";
 import type * as netModule from "node:net";
@@ -10,6 +12,7 @@ import { vi } from "vitest";
 import { attemptAll, hasErrorCode, parseIp } from "@babojubot/contracts";
 import { within } from "@babojubot/process/test-support";
 import { removeFolderWithin } from "@babojubot/process/test-cleanup";
+import { resetOsFaults } from "./os-failure-support.ts";
 
 // 시험이 정한 포트로 가는 연결 하나를 정한 오류로 실패시킨다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 그
 // 번호를 잡으면 제품 결함 없이 실패한다(#294 외부 리뷰 2회차 STD-2). 저장소가 OS 호출 실패를 넣는 방식(`vi.mock`의 모듈 대역)으로
@@ -138,6 +141,7 @@ export function resetRefusing() {
   serverFaults.listening = undefined;
   serverFaults.holdClose = undefined;
   serverFaults.heldClose.mockReset();
+  resetOsFaults();
 }
 
 function codeError(message: string, code: string) {

@@ -1,6 +1,10 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { destinationSchema, type Destination } from "@babojubot/contracts";
-import { decideDestination, type EgressRules } from "./egress-policy.ts";
+import {
+  allowsConnection,
+  decideDestination,
+  type EgressRules,
+} from "./egress-policy.ts";
 
 // 격리 실행의 외부 통신 판정(#149). 이름·포트가 허용 목록에 있고, 실제로 연결할 주소가 모두 금지 주소가 아닐 때만 연다.
 
@@ -12,7 +16,7 @@ const rules = (
 ): EgressRules => ({
   destinations: destinations.map(destination),
   protectedPorts: [3100, 54329],
-  hostAddresses: ["203.0.113.7"],
+  hostAddresses: ["93.184.216.40"],
   ...extra,
 });
 const resolver =
@@ -77,7 +81,7 @@ describe("egress destination decision", () => {
       "0.0.0.0",
       "224.0.0.1",
       "255.255.255.255",
-      "203.0.113.7", // 이 컴퓨터의 공인 주소
+      "203.0.113.7", // 문서용 대역(TEST-NET-3). 이 컴퓨터의 공인 주소는 아래 시험이 본다
       "::1",
       "::",
       "fe80::1",
@@ -98,6 +102,32 @@ describe("egress destination decision", () => {
         ),
         address
       ).toEqual({ allowed: false, reason: "address_not_allowed" });
+  });
+
+  // 이 컴퓨터의 공인 주소(금지 대역 밖)를 막는 것은 이 컴퓨터의 주소 목록뿐이다. 그 주소는 목적지 예외에 적었을 때만 열리고, 적어도
+  // 보호 포트는 열리지 않는다(#286 PR #299 외부 리뷰 3회차 SPEC-4 설계 점검: 이 비교를 지키는 시험이 없었다).
+  it("closes this computer's public address only because it is on this computer's address list", async () => {
+    const resolve = resolver({ "self.example.com": ["93.184.216.40"] });
+    const listed = [{ host: "self.example.com", port: 443 }];
+    expect(
+      await decideDestination(rules(listed), "self.example.com", 443, resolve)
+    ).toEqual({ allowed: false, reason: "address_not_allowed" });
+    expect(
+      await decideDestination(
+        rules(listed, { hostAddresses: [] }),
+        "self.example.com",
+        443,
+        resolve
+      )
+    ).toEqual({ allowed: true, addresses: ["93.184.216.40"] });
+    const excepted = (port: number) =>
+      rules([{ host: "self.example.com", port, addresses: ["93.184.216.40"] }]);
+    expect(
+      await decideDestination(excepted(443), "self.example.com", 443, resolve)
+    ).toEqual({ allowed: true, addresses: ["93.184.216.40"] });
+    expect(
+      await decideDestination(excepted(3100), "self.example.com", 3100, resolve)
+    ).toEqual({ allowed: false, reason: "address_not_allowed" });
   });
 
   it("refuses the whole name when any of its addresses is forbidden (mixed A/AAAA)", async () => {
@@ -198,6 +228,55 @@ describe("egress destination decision", () => {
     expect(
       await decideDestination(policy, "api.example.com", 443, resolve)
     ).toEqual({ allowed: true, addresses: ["93.184.216.34"] });
+  });
+
+  // 이 컴퓨터의 주소를 읽지 못하면 어느 주소가 이 컴퓨터인지 모르므로 모든 주소를 이 컴퓨터의 주소로 본다(빈 목록으로 접지 않음,
+  // #286 PR #299 외부 리뷰 3회차 SPEC-4). 목적지에 적은 주소만 열리고, 보호 포트는 적은 주소로도 열리지 않는다. 다시 보기
+  // (`allowsConnection`)도 같은 규칙이다.
+  it("treats every address as this computer's when its addresses are unknown", async () => {
+    const policy = rules(
+      [
+        { host: "api.example.com", port: 443 },
+        { host: "pinned.example.com", port: 443, addresses: ["93.184.216.35"] },
+        {
+          host: "pinned.example.com",
+          port: 3100,
+          addresses: ["93.184.216.35"],
+        },
+      ],
+      { hostAddresses: "unreadable" }
+    );
+    const resolve = resolver({
+      "api.example.com": ["93.184.216.34"],
+      "pinned.example.com": ["93.184.216.35"],
+    });
+    // 대조: 같은 목록에서 이 컴퓨터의 주소가 없다고 읽었으면 적지 않은 공인 주소도 열린다.
+    expect(
+      await decideDestination(
+        { ...policy, hostAddresses: [] },
+        "api.example.com",
+        443,
+        resolve
+      )
+    ).toEqual({ allowed: true, addresses: ["93.184.216.34"] });
+    expect(
+      await decideDestination(policy, "api.example.com", 443, resolve)
+    ).toEqual({ allowed: false, reason: "address_not_allowed" });
+    expect(
+      allowsConnection(policy, "api.example.com", 443, "93.184.216.34")
+    ).toBe(false);
+    expect(
+      await decideDestination(policy, "pinned.example.com", 443, resolve)
+    ).toEqual({ allowed: true, addresses: ["93.184.216.35"] });
+    expect(
+      allowsConnection(policy, "pinned.example.com", 443, "93.184.216.35")
+    ).toBe(true);
+    expect(
+      await decideDestination(policy, "pinned.example.com", 3100, resolve)
+    ).toEqual({ allowed: false, reason: "address_not_allowed" });
+    expect(
+      allowsConnection(policy, "pinned.example.com", 3100, "93.184.216.35")
+    ).toBe(false);
   });
 
   it("reports a name it cannot resolve", async () => {

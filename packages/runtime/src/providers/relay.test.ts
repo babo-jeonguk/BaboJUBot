@@ -27,6 +27,7 @@ import {
   resetRefusing,
   serverFaults,
 } from "./connect-failure-support.ts";
+import { osFaults } from "./os-failure-support.ts";
 import { createRelayHub, relaySockets, type RelayHooks } from "./relay.ts";
 
 // 격리 실행의 중계(#149). 컨테이너에는 네트워크가 없고, 실행 시도마다 연 파일 소켓으로만 바깥과 조직 도구에 닿는다.
@@ -50,6 +51,10 @@ vi.mock("node:dns/promises", async (importOriginal) =>
   (await import("./connect-failure-support.ts")).failingDns(
     await importOriginal()
   )
+);
+// 이 컴퓨터의 주소 조회(`relay.ts`의 `os.networkInterfaces`)를 시험이 정한 동안 실패시킨다(`osFaults`, os-failure-support.ts).
+vi.mock("node:os", async (importOriginal) =>
+  (await import("./os-failure-support.ts")).failingOs(await importOriginal())
 );
 afterEach(() => {
   resetRefusing();
@@ -1525,15 +1530,16 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     }
   );
 
-  // 이름이 주소 둘로 풀린다. 첫 주소는 연결 실패, 둘째 주소를 붙잡은 사이 닫기가 시작된다. 닫기 뒤에는 다음 주소로 넘어가지 않고
-  // (주소가 다 떨어진 502 경고도 없음) 붙잡힌 연결을 끊는다.
+  // 이름이 주소 셋으로 풀린다. 첫 주소는 연결 실패, 둘째 주소를 붙잡은 사이 닫기가 시작된다. 닫기 뒤에는 남은 셋째 주소로 넘어가지
+  // 않고(연결은 두 번뿐, 502 경고도 없음) 붙잡힌 연결을 끊는다. 주소가 둘이면 남은 주소가 없어 "더 시도하지 않음"을 지키지 못했다
+  // (#286 PR #299 외부 리뷰 3회차 STD-R3).
   it("tries no further address of a destination once its close began", async () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
     const port = await heldDestination();
     nameFaults.lookup = {
       host: "relay-retry.test",
-      addresses: ["127.0.0.1", "127.0.0.1"],
+      addresses: ["127.0.0.1", "127.0.0.1", "127.0.0.1"],
     };
     const { relays, setResearch } = hub();
     setResearch([
@@ -1772,6 +1778,161 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ["[provider] the research destinations could not be read (Error)"],
     ]);
   });
+
+  // 목적지 판정의 입력은 정책(연구 목록·보호 포트)만이 아니라 이 컴퓨터의 주소(OS 조회)도다. 그 조회가 실패하면 판정 재료를 모르는
+  // 것이므로 정책을 못 읽을 때와 같이 새 연결은 열지 않고, 다시 보기는 좁혀 `policy_unavailable`로 닫는다(#286 PR #299 외부 리뷰
+  // 3회차 SPEC-4). 고치기 전에는 판정 도중 OS를 직접 읽어 그 실패가 판정의 예외로 새어, 새 연결은 답이 없고(처리되지 않은 거절)
+  // 다시 보기는 던져 연결을 회수하지 못했다. 실패는 실제 OS 조회 경계(`node:os` 모듈 대역)에 넣는다.
+  const addressesUnreadable =
+    "[provider] this computer's addresses could not be read (ERR_SYSTEM_ERROR)";
+  /** egress.sock을 거친 HTTP 절대 주소 요청 하나의 답 상태와 거부 이유(node:http 파서가 읽은 것). 요청은 만든 직후 정리에 맡긴다. */
+  const httpAnswer = async (
+    relay: { directory: string },
+    authority: string
+  ) => {
+    const request = ownedClosable(
+      onTestFinished,
+      http.request({
+        socketPath: socketOf(relay, relaySockets.egress),
+        path: `http://${authority}/`,
+        headers: { host: authority },
+        agent: false,
+      }),
+      "the HTTP request through the relay"
+    );
+    const answer = await within(
+      new Promise<http.IncomingMessage>((resolve, reject) => {
+        request.once("response", resolve);
+        request.once("error", reject);
+        request.end();
+      }),
+      5_000,
+      `the relay did not answer the HTTP request to ${authority}`
+    );
+    answer.resume();
+    return {
+      status: answer.statusCode,
+      refusal: answer.headers["x-babojubot-refusal"],
+    };
+  };
+
+  it.each(kinds)(
+    "refuses a new connection while this computer's addresses cannot be read (%s)",
+    async (kind) => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const port = await heldDestination();
+      const { relays, refused, setResearch } = hub();
+      setResearch([
+        destination({ host: "127.0.0.1", port, addresses: ["127.0.0.1"] }),
+      ]);
+      const relay = relays.open({ identity, required: [] });
+      await relay.ready;
+      osFaults.interfaces = { cause: "ENOMEM" };
+      if (kind === "CONNECT")
+        expect(await answerVia(relay.directory, `127.0.0.1:${port}`)).toBe(
+          refusal("policy_unavailable")
+        );
+      else
+        expect(await httpAnswer(relay, `127.0.0.1:${port}`)).toEqual({
+          status: 403,
+          refusal: "policy_unavailable",
+        });
+      expect(refusing.heldConnect).not.toHaveBeenCalled();
+      expect(refused).toEqual([
+        { host: "127.0.0.1", port, reason: "policy_unavailable" },
+      ]);
+      expect(warned.mock.calls).toEqual([[addressesUnreadable]]);
+    }
+  );
+
+  it("closes a connection as policy_unavailable when a revalidation cannot read this computer's addresses", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const target = await fixture("echo");
+    const { relays, refused, setResearch } = hub();
+    setResearch([
+      destination({
+        host: "localhost",
+        port: target.port,
+        addresses: ["127.0.0.1", "::1"],
+      }),
+    ]);
+    const relay = relays.open({ identity, required: [] });
+    await relay.ready;
+    const tunnel = await openTunnel(
+      relay.directory,
+      `localhost:${target.port}`
+    );
+    expectEstablished(tunnel);
+    osFaults.interfaces = { cause: "ENOMEM" };
+    setResearch([]);
+    await relays.revalidate(identity.organizationId);
+    await tunnelClosed(tunnel);
+    expect(refused).toEqual([
+      { host: "localhost", port: target.port, reason: "policy_unavailable" },
+    ]);
+    expect(warned.mock.calls).toEqual([[addressesUnreadable]]);
+  });
+
+  // 판정 도중(이름 풀이) 사용자가 목록을 비우고 그때부터 이 컴퓨터의 주소를 읽지 못한다. 판정은 앞서 읽은 재료로 허용해 연결하고,
+  // 판정 뒤 다시 보기가 주소를 읽지 못해 그 연결을 열지 않고 `policy_unavailable`로 거부한다.
+  it.each(kinds)(
+    "refuses a connection whose recheck after its decision cannot read this computer's addresses (%s)",
+    async (kind) => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      onTestFinished(() => warned.mockRestore());
+      const target = await fixture(kind === "CONNECT" ? "echo" : "http");
+      nameFaults.lookup = {
+        host: "relay-recheck.test",
+        addresses: ["127.0.0.1"],
+      };
+      const { relays, refused, setResearch } = hub();
+      setResearch([
+        destination({
+          host: "relay-recheck.test",
+          port: target.port,
+          addresses: ["127.0.0.1"],
+        }),
+      ]);
+      const relay = relays.open({ identity, required: [] });
+      await relay.ready;
+      const revalidating: Promise<void>[] = [];
+      nameFaults.looked.mockImplementation(() => {
+        osFaults.interfaces = { cause: "ENOMEM" };
+        setResearch([]);
+        revalidating.push(relays.revalidate(identity.organizationId));
+      });
+      const authority = `relay-recheck.test:${target.port}`;
+      if (kind === "CONNECT")
+        expect(await answerVia(relay.directory, authority)).toBe(
+          refusal("policy_unavailable")
+        );
+      else
+        expect(await httpAnswer(relay, authority)).toEqual({
+          status: 403,
+          refusal: "policy_unavailable",
+        });
+      expect(revalidating).toHaveLength(1);
+      await within(
+        Promise.all(revalidating),
+        5_000,
+        "the revalidation did not end"
+      );
+      expect(refused).toEqual([
+        {
+          host: "relay-recheck.test",
+          port: target.port,
+          reason: "policy_unavailable",
+        },
+      ]);
+      // 판정 도중의 다시 보기와 판정 뒤 다시 보기가 각각 한 번 읽지 못했다.
+      expect(warned.mock.calls).toEqual([
+        [addressesUnreadable],
+        [addressesUnreadable],
+      ]);
+    }
+  );
 
   it("does not open a relay before the server attached its policy", () => {
     const relays = createRelayHub();
