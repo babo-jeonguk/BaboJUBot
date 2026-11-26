@@ -164,37 +164,63 @@ function recordedWithoutProc(
       : "The recorded start is too coarse to identify a remaining process"
   );
 }
+/**
+ * 데이터 폴더의 연결마다 복구 기록 폴더(`providers/<연결>/processes`). `providers`가 없으면 빈 목록이고, 그 밖의 읽기 실패는 던진다.
+ * 복구(`recoverProviderProcesses`)와 기록 목록(`processRecordPids`)이 같은 자리를 읽는다.
+ */
+function recordFolders(dataDir: string) {
+  const providers = path.join(dataDir, "providers");
+  return orIfMissing(
+    () => readdirSync(providers),
+    hasErrorCode("ENOENT"),
+    []
+  ).map((provider) => ({
+    provider,
+    directory: path.join(providers, provider, "processes"),
+  }));
+}
+/** 기록 폴더 안의 기록 이름(`<번호>.json`). 쓰다 만 임시 파일 등 다른 이름은 기록이 아니다. 폴더가 없으면 빈 목록, 그 밖은 던진다. */
+function recordNames(directory: string) {
+  return orIfMissing(
+    () => readdirSync(directory),
+    hasErrorCode("ENOENT"),
+    []
+  ).filter((name) => /^\d+\.json$/.test(name));
+}
+/**
+ * 데이터 폴더에 남은 복구 기록의 프로세스 번호(순서는 정하지 않음). 판정은 하지 않고 목록만 돌려준다. 제품은 그 트리가 멈춘 것을
+ * 확인했을 때만 기록을 지우므로(`startProcess`), 복구 뒤에도 남은 기록은 끝을 확인하지 못한 프로세스다. 복구와 달리 읽지 못한 자리를
+ * 넘기지 않고 던진다: 부르는 쪽은 빈 목록을 "남은 기록 없음"으로 쓰므로, 읽지 못함을 빈 목록으로 접으면 확인하지 못한 것을 없는
+ * 것으로 센다.
+ */
+export function processRecordPids(dataDir: string): number[] {
+  return recordFolders(dataDir).flatMap(({ directory }) =>
+    recordNames(directory).map((name) => Number.parseInt(name, 10))
+  );
+}
 export async function recoverProviderProcesses(
   dataDir: string,
   { platform = process.platform }: { platform?: NodeJS.Platform } = {}
 ) {
-  const connections =
+  // 기록 폴더를 읽지 못해도 서버는 뜬다. 읽지 못한 자리는 경고하고 넘기며, 그 기록은 다음 시작 때 다시 본다.
+  const folders =
     continueAfterFailure(
-      () =>
-        orIfMissing(
-          () => readdirSync(path.join(dataDir, "providers")),
-          hasErrorCode("ENOENT"),
-          []
-        ),
+      () => recordFolders(dataDir),
       (error) =>
         console.warn(
           `[provider] the provider process records could not be listed; leftover processes are not recovered at this start (${failureCode(error)})`
         )
     ) ?? [];
-  for (const provider of connections) {
-    const directory = path.join(dataDir, "providers", provider, "processes");
-    let files: string[];
-    try {
-      files = readdirSync(directory);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT")
+  for (const { provider, directory } of folders) {
+    const files = continueAfterFailure(
+      () => recordNames(directory),
+      (error) =>
         console.warn(
-          `[provider] could not read ${provider} process records; they are not recovered at this start (${failureCode(e)})`
-        );
-      continue;
-    }
+          `[provider] could not read ${provider} process records; they are not recovered at this start (${failureCode(error)})`
+        )
+    );
+    if (files === undefined) continue;
     for (const name of files) {
-      if (!/^\d+\.json$/.test(name)) continue;
       const file = path.join(directory, name);
       // 기록 하나 때문에 서버가 뜨지 못하면 안 된다. 끝났음을 확인하지 못한 기록은 남겨 다음 시작 때 다시 본다.
       try {
