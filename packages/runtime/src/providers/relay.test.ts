@@ -1107,7 +1107,6 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     const target = await fixture("echo");
     const asked = Promise.withResolvers<void>();
     const owner = holdsOwner();
-    onTestFinished(() => void owner.giveUp());
     /** hook이 담은 기다림. 본문이 해제 뒤 받는다. */
     const hooked: { wait?: Promise<never> } = {};
     const { relays } = hub({
@@ -1122,6 +1121,9 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         return hooked.wait;
       },
     });
+    // 이 소유자는 대역의 reset이 풀지 않는다. 본문이 먼저 실패해도 hub 닫기보다 먼저 풀리게 hub 뒤에 등록한다(onTestFinished는
+    // 등록 역순으로 돈다).
+    onTestFinished(() => owner.giveUp());
     const relay = relays.open({ identity, required: [] });
     await ready(relay);
     const answer = awaitedLater(
@@ -1148,7 +1150,6 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
   // 다음 시험의 reset이 알렸다. 이 시험의 소유자가 아닌 따로 만든 소유자로 본다(이 시험의 끝이 실패하지 않게).
   it("refuses a hold begun after its owner's reset at once and reports it as that owner's failure when it ends", async () => {
     const owner = holdsOwner();
-    onTestFinished(() => void owner.giveUp());
     owner.giveUp();
     await expect(
       within(

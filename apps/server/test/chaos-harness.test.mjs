@@ -145,10 +145,11 @@ async function sceneHomeEnded(disposal) {
       ]);
       return;
     }
-    default:
-      throw new Error(
-        `unknown scene disposal state: ${/** @type {{ state: unknown }} */ (disposal).state}`
-      );
+    default: {
+      /** @type {never} */
+      const unknown = disposal;
+      throw new Error(`unknown scene disposal ${JSON.stringify(unknown)}`);
+    }
   }
 }
 
