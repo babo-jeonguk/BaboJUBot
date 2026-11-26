@@ -2,6 +2,9 @@
 // factory가 받은 것(`importOriginal()`)을 넘겨받는다. 값으로 불러오면 대역이 만들어지기 전에 자기 자신을 기다려 시험이 불러오는
 // 단계에서 멈춘다(`packages/runtime/src/providers/connect-failure-support.ts` 머리 주석과 같은 까닭).
 import type * as fsPromises from "node:fs/promises";
+// 실패 묶기는 builtin을 값으로 불러오지 않는 입구(`/failure`)에서 가져온다. 같은 까닭으로 `withCleanup`(`test-cleanup.ts`는
+// `node:fs/promises`를 값으로 불러옴)을 쓰지 않는다.
+import { attemptEach, combinedFailure } from "@babojubot/contracts/failure";
 
 // 경로를 한 번 보고(열기·조회) 다시 보는 제품 코드가 그 사이 바뀐 파일을 앞서 본 것으로 믿지 않는지 시험한다. 시험이 무장한
 // 경로에 대역 함수가 처음 닿으면, 그 호출이 끝난 직후 그 경로를 다른 파일(`replacement`)로 바꾼다.
@@ -45,9 +48,14 @@ export function resetSwap() {
 
 type Swappable = "open" | "lstat" | "stat" | "readFile" | "access";
 
+/** 진짜 호출이 돌려준 것 가운데 자원인 것과 그 놓기. 바꾸기가 실패하면 부른 쪽이 결과를 받지 못하므로 대역이 놓는다. */
+const releases: Partial<Record<Swappable, (result: unknown) => Promise<void>>> =
+  { open: (handle) => (handle as fsPromises.FileHandle).close() };
+
 /**
  * `names`의 함수를 감싼 대역 묶음. 불린 순간 첫 인수의 경로로 무장을 찾는다. 진짜 호출이 이행한 뒤 그 무장을 아직 쓰지 않았으면 쓴
- * 것으로 적고(같은 동기 구간) 바꾸기를 기다린 뒤 진짜 결과를 돌려준다. 거절한 호출은 무장을 쓰지 않는다.
+ * 것으로 적고(같은 동기 구간) 바꾸기를 기다린 뒤 진짜 결과를 돌려준다. 거절한 호출은 무장을 쓰지 않는다. 바꾸기가 실패하면 진짜
+ * 호출이 연 것(`open`의 handle)을 닫고 바꾸기의 실패를 첫 원인으로, 닫기의 실패를 그 뒤에 묶어 던진다.
  */
 export function swapAfter<N extends Swappable>(
   real: typeof fsPromises,
@@ -62,7 +70,18 @@ export function swapAfter<N extends Swappable>(
       const result = await call(...args);
       if (arming && !arming.used) {
         arming.used = true;
-        await real.rename(arming.replacement, path);
+        try {
+          await real.rename(arming.replacement, path);
+        } catch (failure) {
+          const release = releases[name];
+          const left = release
+            ? await attemptEach([() => release(result)])
+            : [];
+          throw combinedFailure(
+            [failure, ...left],
+            "the swap failed and what the call opened could not be released"
+          );
+        }
       }
       return result;
     };

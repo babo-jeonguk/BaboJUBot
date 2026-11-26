@@ -811,7 +811,6 @@ function bindingOf(sourceCode, identifier) {
 const contains = (outer, inner) =>
   outer.range[0] <= inner.range[0] && inner.range[1] <= outer.range[1];
 
-/** 함수 몸(안에 정의한 함수는 빼고)의 노드를 `found`에 넘긴다. */
 /** 함수의 이름 변수(`function f`·`const f = …`). 이름 없이 넘긴 함수면 undefined. 이름 따라가기를 쓰는 규칙이 함께 쓴다. */
 function functionVariable(sourceCode, fn) {
   if (fn?.type === "FunctionDeclaration" && fn.id)
@@ -828,6 +827,7 @@ function functionVariable(sourceCode, fn) {
   return undefined;
 }
 
+/** 함수 몸(안에 정의한 함수는 빼고)의 노드를 `found`에 넘긴다. */
 function walkBody(fn, found) {
   const visit = (node) => {
     if (!node || typeof node.type !== "string") return;
@@ -1184,8 +1184,7 @@ function firstSkipped(fn, awaits, context) {
   return undefined;
 }
 
-/** `fn` 안(안에 정의한 함수는 빼고)의 기다림, 순서대로. */
-/** `fn` 몸 안의 await(안쪽 함수의 것은 뺌). `forAwait`면 `for await` 반복문도 넣는다(그 반복도 매번 기다린다). */
+/** `fn` 몸 안의 await(안쪽 함수의 것은 뺌), 순서대로. `forAwait`면 `for await` 반복문도 넣는다(그 반복도 매번 기다린다). */
 function awaitsIn(fn, { forAwait = false } = {}) {
   const awaits = [];
   walkBody(fn, (node) => {
@@ -2908,7 +2907,8 @@ const containerInit = new Set([
  * - factory와 그 참조 사이의 함수 가운데 하나가 콜백이다: 호출의 인수로 바로 넘긴 함수 식(`.then`·`close(cb)`·`new Promise` 실행기 —
  *   실행기는 동기로 돌지만 모양으로 가르지 않고 `Promise.withResolvers()`를 쓴다), 또는 이름으로 넘긴 지역 함수. 가짜 함수 호출
  *   (`vi.fn(구현)`·`mockImplementation(구현)`)은 투명하게 본다: 그 호출이 인수 자리에 있으면 구현은 콜백이고, 값 자리면 대역 값이다.
- * - 칸을 읽는 이름 붙은 함수(factory 안의 도움, 모듈 범위의 도움)를 위 자리에서 부르면, 부른 자리를 같은 기준으로 본다.
+ * - 칸을 읽는 이름 붙은 함수(factory 안의 도움, 모듈 범위의 도움)를 위 자리에서 부르면, 부른 자리를 같은 기준으로 본다. 모듈 범위의
+ *   도움이 자기 몸 안에서 늦게 읽으면(await 뒤, 콜백) factory 안 어디서 쓰든 늦다(시험 본문에서만 쓰면 대역이 아니다).
  * 늦지 않은 것: factory 몸(가져올 때 한 번 돈다), 대역이 값으로 두는 함수(변수·속성·돌려주는 값·인수로 넘긴 객체의 메서드 — 받는 쪽이
  * 따로 부르는 대역), 그 함수의 첫 await 전.
  * 따라가지 않는 것(지침과 리뷰가 봄): 칸을 다른 함수의 인수로 넘겨 그 안에서 읽기, 이름 없이 만든 factory, 잡은 하위 칸을 제자리에서
@@ -3003,26 +3003,52 @@ const hoistedStateAtCall = {
     const insideFactory = (node) =>
       enclosingFunctions(node).some((fn) => factories.has(fn));
     /** `node`(칸 참조나 도움을 부른 자리)가 대역이 불린 뒤 늦게 도는 자리인가. 이름 붙은 도움은 부른 자리마다 다시 본다. */
+    /**
+     * `node`가 `inner`(안에서 밖으로, 맨 바깥이 대역이나 도움의 몸) 안에서 그 몸이 불린 뒤 늦게 도는 자리인가: 사이 함수 가운데 콜백이
+     * 있거나, 가장 안쪽 함수에서 `node`보다 앞에 await가 있다. factory 안의 대역과 모듈 범위의 도움이 같은 판정을 쓴다.
+     */
+    const lateInside = (node, inner) =>
+      inner.slice(0, -1).some((fn) => siteOfFunction(fn) === "argument") ||
+      afterAwait(inner[0], node);
+    /** 이름 붙은 함수를 쓰는 자리마다 `atUse(쓴 자리)`를 본다. 한 번 본 이름은 다시 보지 않는다. */
+    const usedLate = (site, seen, atUse) => {
+      if (typeof site === "string" || seen.has(site)) return false;
+      seen.add(site);
+      return site.references.some(
+        ({ identifier, init }) => !init && atUse(identifier)
+      );
+    };
+    /**
+     * `node`(칸 참조나 도움을 부른 자리)가 대역이 불린 뒤 늦게 도는 자리인가. factory 몸은 늦지 않다. factory 안이면 대역 몸 안에서
+     * 늦은지 보고, 아니면 가장 안쪽 이름 붙은 함수(도움)를 부른 자리마다 다시 본다. 모듈 범위의 도움은 자기 몸 안에서 늦게 읽으면
+     * factory 안 어디서 쓰든(부르기·넘기기) 늦고, 아니면 부른 자리마다 다시 본다.
+     */
     const late = (node, seen) => {
       const around = enclosingFunctions(node);
       if (around.length === 0) return false;
       const factoryAt = around.findIndex((fn) => factories.has(fn));
       if (factoryAt === 0) return false;
-      const inner = factoryAt < 0 ? around : around.slice(0, factoryAt);
-      if (factoryAt > 0) {
-        if (inner.some((fn) => siteOfFunction(fn) === "argument")) return true;
-        if (afterAwait(inner[0], node)) return true;
-      }
-      const site = siteOfFunction(inner[0]);
-      if (typeof site === "string" || seen.has(site)) return false;
-      seen.add(site);
-      return site.references.some(({ identifier, init }) => {
-        if (init) return false;
+      const calledLate = (identifier) => {
         const parent = identifier.parent;
         if (parent.type === "CallExpression" && parent.callee === identifier)
           return late(parent, seen);
         return siteOf(identifier) === "argument" && insideFactory(identifier);
-      });
+      };
+      if (factoryAt > 0) {
+        const inner = around.slice(0, factoryAt);
+        if (
+          lateInside(node, inner) ||
+          siteOfFunction(inner.at(-1)) === "argument"
+        )
+          return true;
+        return usedLate(siteOfFunction(inner[0]), seen, calledLate);
+      }
+      const helper = siteOfFunction(around.at(-1));
+      if (lateInside(node, around))
+        return usedLate(helper, seen, (identifier) =>
+          insideFactory(identifier)
+        );
+      return usedLate(helper, seen, calledLate);
     };
     /** 그릇 칸 변수와 그 값을 그대로 담은 별칭 변수. */
     const aliasesOf = (variable, found) => {
