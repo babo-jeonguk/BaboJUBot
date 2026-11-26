@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import tseslint from "typescript-eslint";
+import { codeFormatNames } from "./test-files.mjs";
 import {
   importSites,
   originName,
@@ -2960,11 +2961,8 @@ function parseRepositoryFile(file) {
 /** 저장소 기준 경로(확장자 없음)에 붙는 실제 파일. 없으면 undefined. */
 const repositoryRootPath = path.resolve(import.meta.dirname, "..");
 function existingFile(withoutExtension) {
-  for (const extension of [".ts", ".tsx", ".mts", ".mjs", ".js", ".cjs"]) {
-    const file = path.join(
-      repositoryRootPath,
-      `${withoutExtension}${extension}`
-    );
+  for (const format of codeFormatNames) {
+    const file = path.join(repositoryRootPath, `${withoutExtension}.${format}`);
     if (existsSync(file)) return file;
   }
   return undefined;
