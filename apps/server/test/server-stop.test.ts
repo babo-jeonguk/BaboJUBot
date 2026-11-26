@@ -22,6 +22,8 @@ type Deferred<T> = {
   reject: (error: unknown) => void;
 };
 type Held = {
+  /** 붙잡을 호출의 DB(그 시험 서버의 것). 다른 DB로 온 호출(앞 시험 서버의 늦은 처리기)은 붙잡지 않는다(#286). */
+  db: unknown;
   entered: Deferred<void>;
   release: Deferred<void>;
   done: Deferred<unknown>;
@@ -40,21 +42,21 @@ vi.mock("@babojubot/db", async (original) => {
     // 조직 도구 처리기가 읽기 도구의 요약을 실행 활동에 남기는 저장(CI에서 닫힌 DB를 쓴 곳).
     appendRunActivity: (...args: Parameters<typeof real.appendRunActivity>) =>
       args[2].activity.type === "org_tool"
-        ? passHeld(held.armed.get("tool_read"), () =>
+        ? passHeld(held.armed.get("tool_read"), args[0], () =>
             real.appendRunActivity(...args)
           )
         : real.appendRunActivity(...args),
     listOrganizations: (...args: Parameters<typeof real.listOrganizations>) =>
-      passHeld(held.armed.get("organizations"), () =>
+      passHeld(held.armed.get("organizations"), args[0], () =>
         real.listOrganizations(...args)
       ),
     listInbox: (...args: Parameters<typeof real.listInbox>) =>
-      passHeld(held.armed.get("inbox"), () => real.listInbox(...args)),
+      passHeld(held.armed.get("inbox"), args[0], () => real.listInbox(...args)),
     // 가짜 채널의 경로는 서버가 시작한 뒤(`channel.listen`) 등록된다.
     listFakeChannelMessages: (
       ...args: Parameters<typeof real.listFakeChannelMessages>
     ) =>
-      passHeld(held.armed.get("channel_messages"), () =>
+      passHeld(held.armed.get("channel_messages"), args[0], () =>
         real.listFakeChannelMessages(...args)
       ),
   };
@@ -64,13 +66,17 @@ const deferred = <T>(): Deferred<T> => {
   const { promise, resolve, reject } = Promise.withResolvers<T>();
   return { promise, resolve, reject };
 };
-/** 대역이 잡은 걸어 둔 것(`hold`)이 있으면 그것으로, 없으면 그대로 돌린다. 칸은 대역이 불린 순간 잡아 넘긴다. */
-const passHeld = <T>(hold: Held | undefined, call: () => Promise<T>) =>
-  hold ? hold.pass(call) : call();
-/** `at`의 첫 호출을 멈춰 둔다. */
-function arm(at: At): Held {
+/** 대역이 잡은 걸어 둔 것(`hold`)이 그 DB(`db`)의 것이면 그것으로, 아니면 그대로 돌린다. 칸은 대역이 불린 순간 잡아 넘긴다. */
+const passHeld = <T>(
+  hold: Held | undefined,
+  db: unknown,
+  call: () => Promise<T>
+) => (hold && hold.db === db ? hold.pass(call) : call());
+/** 그 시험 서버(`server`)의 `at` 첫 호출을 멈춰 둔다. */
+function arm(at: At, server: TestServer): Held {
   let used = false;
   const hold: Held = {
+    db: server.db,
     entered: deferred<void>(),
     release: deferred<void>(),
     done: deferred<unknown>(),
@@ -204,8 +210,8 @@ describe("stopping the server", () => {
   });
 
   it("waits for a tool request the stopped run left behind before closing", async () => {
-    const read = arm("tool_read");
     t = await startTestServer({ runtime: quietCreation() });
+    const read = arm("tool_read", t);
     const created = await t.request("POST", "/api/organizations", {
       name: "종료 대기 조직",
       ...goal,
@@ -222,14 +228,14 @@ describe("stopping the server", () => {
 
   it("waits for a user request whose client left before closing", async () => {
     t = await startTestServer();
-    const list = arm("organizations");
+    const list = arm("organizations", t);
     await abandon(t.baseUrl, "/api/organizations", list);
     await stopWhileHeld(t, list, "GET /api/organizations");
   });
 
   it("waits for a channel request registered after the server started", async () => {
     t = await startTestServer();
-    const messages = arm("channel_messages");
+    const messages = arm("channel_messages", t);
     await abandon(t.baseUrl, "/api/channels/fake/messages", messages);
     await stopWhileHeld(t, messages, "GET /api/channels/fake/messages");
   });
@@ -241,7 +247,7 @@ describe("stopping the server", () => {
     const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
     // 끝나지 않은 요청까지 이 agent의 연결을 모두 끊는다.
     onTestFinished(() => agent.destroy());
-    const inbox = arm("inbox");
+    const inbox = arm("inbox", t);
     // 처리기를 붙잡은 동안 기다리는 요청이다. 시험이 먼저 실패해 agent가 끊어도 처리하지 않은 거절로 남지 않는다.
     const first = awaitedLater(getOver(agent, t.baseUrl + "/api/inbox"));
     await within(
@@ -250,7 +256,7 @@ describe("stopping the server", () => {
       "the Inbox handler did not finish"
     );
     // 다른 처리기 하나를 더 멈춰 두어 끄기가 처리기를 기다리는 동안 이 연결로 다음 요청을 보낸다.
-    const list = arm("organizations");
+    const list = arm("organizations", t);
     await abandon(t.baseUrl, "/api/organizations", list);
     const stream = await openEventStream(t.baseUrl);
     const stopping = t.stopServer();
