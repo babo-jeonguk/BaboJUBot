@@ -3368,3 +3368,29 @@ test("a module const whose type can change, or whose type is unknown, is state t
       `${untypedConstPlace}: ${shape}`
     );
 });
+
+test("state is judged the same whether it is declared with let, kept in a hoisted callback or reached through an exported helper", async () => {
+  const head = `import { vi } from "vitest";\n`;
+  const double = (body) =>
+    `vi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal<typeof import("node:fs/promises")>();\n${body}\n});\n`;
+  const lateRead = (use, before = "") =>
+    double(
+      `${before}  return {\n    ...real,\n    readFile: async (file: string) => {\n      const text = await real.readFile(file, "utf8");\n      return ${use};\n    },\n  };`
+    );
+  const reported = {
+    "an exported helper a double calls after its await": `${head}const state = { x: "a" };\nexport function current() {\n  return state.x;\n}\n${lateRead("current() + text")}`,
+    "a property written onto a function const": `${head}const pick = (value: string) => value;\npick.mode = "a";\n${lateRead("pick.mode + text")}`,
+    "a global regular expression": `${head}const pattern = /x/g;\n${lateRead("String(pattern.test(text))")}`,
+    "a let whose value a call made": `${head}const makeFaults = () => ({ x: "a" });\nlet faults = makeFaults();\nexport function reset() {\n  faults = makeFaults();\n}\n${lateRead("caught.x + text", "  const caught = faults;\n")}`,
+    "an object behind a wide type": `${head}const settings: object = { name: "a" };\n${lateRead("String(settings) + text")}`,
+    "a function exported by name": `${head}const state = { x: "a" };\nfunction make(real: { readFile: (file: string) => Promise<string> }) {\n  return {\n    readFile: async (file: string) => {\n      const text = await real.readFile(file);\n      return state.x + text;\n    },\n  };\n}\nexport { make };\n`,
+    "a hoisted local a call made": `${head}const kept = vi.hoisted(() => {\n  const seen = new Array<string>().concat([]);\n  return { record: (file: string) => void seen.push(file) };\n});\n${double(`  return { ...real, readFile: async (file: string) => {\n    const { record } = kept;\n    record(file);\n    return real.readFile(file, "utf8");\n  } };`)}`,
+  };
+  for (const [shape, code] of Object.entries(reported))
+    for (const place of typedConstPlaces)
+      assert.equal(
+        (await lint(code, place, hoistedRules)).length,
+        1,
+        `${place}: ${shape}`
+      );
+});
