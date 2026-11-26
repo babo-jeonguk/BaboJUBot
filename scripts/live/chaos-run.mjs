@@ -478,7 +478,8 @@ export async function cleanupScene({ server, harnessDir, marker }) {
     // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
     commandPidsLeft: left?.length ?? null,
     harness,
-    // 남긴 폴더는 그 원인(서버·명령의 정리 실패, 남은 기록)으로 이미 센다. 지우기를 확인하지 못한 폴더는 하나씩 센다.
+    // 남긴 폴더는 여기서 다시 세지 않는다: 서버·명령의 끝 확인 실패는 `notEnded`로 세고, 기록을 지키려 남긴 홈은 `providerRecordsLeft`가
+    // 장면을 정리되지 않은 것으로 만든다(`sceneCleanedUp`). 지우기를 확인하지 못한 폴더는 하나씩 센다.
     problems:
       notEnded + folderOutcome(home).problem + folderOutcome(harness).problem,
   };

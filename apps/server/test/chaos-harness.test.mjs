@@ -34,7 +34,6 @@ import {
 import {
   chaosEnvironment,
   chaosServer,
-  folderOutcome,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
 import { removeFolder } from "@babojubot/process/remove-folder";
@@ -888,7 +887,7 @@ describe("chaos harness on a fake connection", () => {
     async () => {
       // 실패해도 띄운 서버·DB·홈을 남기지 않는다. 폴더는 만든 직후 정리에 맡기고, 서버를 끈 뒤에 지운다. 홈은 서버 정리(`dispose`)가
       // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
-      const home = await withCleanup(async (defer) => {
+      const { home, disposed } = await withCleanup(async (defer) => {
         const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
         const folder = folderCleanup(() => removeFolderWithin(harnessDir));
         defer(folder.cleanUp);
@@ -899,17 +898,19 @@ describe("chaos harness on a fake connection", () => {
           connection: "fake-live",
           database: "persistent",
         });
-        // 정리는 홈 지우기까지 확인한다: dispose는 지우기를 확인하지 못해도 거절하지 않고 그 끝(`home`)을 돌려준다.
+        /**
+         * 서버 정리(`dispose`)가 돌려준 결과. 정리 단계는 dispose의 끝만 기다리고(서버의 끝은 dispose가 확인한다), 홈의 끝은 정리 뒤
+         * 본문이 단언한다. dispose는 홈 지우기를 확인하지 못해도 거절하지 않고 그 끝(`home`)을 돌려주므로, 그 단언을 이 단계 안에 두면
+         * 서버가 끝났는데도 harness 폴더를 남긴다.
+         * @type {{ result?: Awaited<ReturnType<ReturnType<typeof chaosServer>["dispose"]>> }}
+         */
+        const disposed = {};
         folder.own(async () => {
-          const left = await within(
+          disposed.result = await within(
             server.dispose(),
             disposeMs,
             "disposing the scene server"
           );
-          if (!folderOutcome(left.home).removed)
-            throw new Error(
-              `the scene server cleanup reported the scene home as ${left.home} (expected removed)`
-            );
         });
         // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
         // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
@@ -923,8 +924,9 @@ describe("chaos harness on a fake connection", () => {
         scene.abort(reason);
         await expect(starting).rejects.toBe(reason);
         expect(server.running).toBe(false);
-        return home;
+        return { home, disposed };
       });
+      expect(disposed.result?.home).toBe("removed");
       expect(await postgresAlive(home)).toBe(false);
       expect(existsSync(home)).toBe(false);
       // 시험 시한은 본문과 정리의 상한을 더한 값이다: 시작 대기 확인 30초(위 `waitUntil`) + 중단된 시작의 끝 확인 30초(`chaos-server.mjs`

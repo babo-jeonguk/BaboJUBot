@@ -1399,7 +1399,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     await ready(relay);
     // 듣기가 불린 신호와 그때 시작한 닫기를 따로 기다린다(닫기 promise를 그대로 넘기면 신호가 닫기 끝을 따라간다).
     const began = Promise.withResolvers<void>();
-    /** 콜백이 시작한 닫기. 만드는 자리에서 시험 칸에 담아, 본문이 신호를 놓쳐도 그 거절은 처리되지 않은 거절이 아니다(같은 닫기를 hub 정리가 받는다). */
+    /** 콜백이 시작한 닫기. 만드는 자리에서 시험 칸에 담는다. 본문이 신호를 놓치면(그때 시험은 이미 실패했다) 그 거절은 처리되지 않은 거절로 새지 않고 버려진다. */
     const started: { closing?: Promise<void> } = {};
     // loopback 서버의 듣기는 주소 조회를 거쳐 다음 차례에 시작된다. 그 사이에 닫기를 시작한다.
     const loopbacks = watchLoopback(() => {
@@ -1959,18 +1959,18 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
         );
       });
       const authority = `relay-recheck.test:${target.port}`;
-      if (kind === "CONNECT")
-        expect(await answerVia(relay.directory, authority)).toBe(
-          refusal("policy_unavailable")
-        );
-      else
-        expect(await httpAnswer(relay, authority)).toEqual({
-          status: 403,
-          refusal: "policy_unavailable",
-        });
-      // 판정 도중의 이름 풀이는 한 번이고, 그 안에서 다시 보기를 한 번 시작했다.
-      expect(nameFaults.looked).toHaveBeenCalledTimes(1);
+      const answer =
+        kind === "CONNECT"
+          ? await answerVia(relay.directory, authority)
+          : await httpAnswer(relay, authority);
+      // 답 내용보다 먼저 콜백이 시작한 다시 보기를 받는다. 판정 도중의 이름 풀이는 한 번이고, 그 안에서 다시 보기를 한 번 시작했다.
       await fromHook(started.revalidation, "the revalidation");
+      expect(nameFaults.looked).toHaveBeenCalledTimes(1);
+      expect(answer).toEqual(
+        kind === "CONNECT"
+          ? refusal("policy_unavailable")
+          : { status: 403, refusal: "policy_unavailable" }
+      );
       expect(refused).toEqual([
         {
           host: "relay-recheck.test",

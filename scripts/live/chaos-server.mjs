@@ -292,8 +292,8 @@ export async function removeEndedFolder(folder, options) {
 }
 
 /**
- * 폴더 끝 하나를 읽는다: 지웠는가, 정리 문제로 세는가. 남김(`kept`)은 그 까닭(서버·명령의 끝 확인 실패, 남은 기록)으로 따로 세므로
- * 문제로 다시 세지 않는다. 확인 못 함(`unconfirmed`)은 문제 하나다.
+ * 폴더 끝 하나를 읽는다: 지웠는가, 정리 문제로 세는가. 남김(`kept`)은 그 까닭(서버·명령의 끝 확인 실패, 남은 기록)을 부르는 쪽이 따로
+ * 판정하므로 여기서 문제로 세지 않는다. 확인 못 함(`unconfirmed`)은 문제 하나다.
  * @param {FolderEnd} end
  * @returns {{ removed: boolean, problem: 0 | 1 }}
  */
