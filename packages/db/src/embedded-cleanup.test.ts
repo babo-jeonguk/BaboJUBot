@@ -1,36 +1,45 @@
 import { randomUUID } from "node:crypto";
-import fs, { mkdtempSync } from "node:fs";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { callArming } from "@babojubot/process/call-arming";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ephemeralCluster, startEmbeddedCluster } from "./embedded.ts";
 import { attemptAll } from "@babojubot/contracts";
 
-// 임시 cluster를 만들다 실패한 뒤 그 폴더를 지우는 정리까지 실패하게 한다. 지우기·주인 기록 폴더 만들기를 시험이 고른
-// 경로에서만 실패시킨다.
+// 임시 cluster를 만들다 실패한 뒤 그 폴더를 지우는 정리까지 실패하게 한다. 지우기·주인 기록 폴더 만들기·주인 기록 읽기를 그 시험의
+// 경로에서만 실패시킨다(#286).
 const inject = vi.hoisted(() => ({
-  removeFails: undefined as Error | undefined,
-  ownerFolderFails: undefined as Error | undefined,
-  /** 주인 기록 파일(`<dataDir>.owner/<번호>`)을 읽으면 이 오류로 실패한다. */
-  ownerReadFails: undefined as Error | undefined,
-  /** 정하면 이 폴더 안의 주인 기록만 실패한다. */
-  ownerReadFailsIn: undefined as string | undefined,
-  /** 이 시험이 만든 임시 폴더. 지우기를 실패시킨 폴더를 시험 끝에 치운다. */
-  made: [] as string[],
+  /** 정확히 이 경로(`at`, 그 시험의 임시 cluster 폴더)를 지우면 이 오류로 실패한다. */
+  removeFails: undefined as { at: string; error: Error } | undefined,
+  /** 이 폴더(`in`, 그 시험의 `<dataDir>.owner`) 안의 주인 기록 파일을 읽으면 이 오류로 실패한다. */
+  ownerReadFails: undefined as { in: string; error: Error } | undefined,
 }));
+/**
+ * 제품이 안에서 만드는 임시 cluster 폴더는 시험이 그 경로를 미리 알 수 없다. 시험은 제품 호출을
+ * `madeCalls.run(무장, () => 제품 호출)`로 감싸고, 대역은 불린 순간 그 호출의 무장을 잡는다. 그 호출이 만든 폴더를 `made`에 남기고,
+ * 그 폴더의 지우기·주인 기록 폴더 만들기만 실패시킨다. 다른 시험의 호출이나 문맥 밖 호출은 무장이 없어 실패하지 않는다(#286).
+ */
+const madeCalls = callArming<{
+  made: string[];
+  removeFails?: Error;
+  ownerFolderFails?: Error;
+}>();
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
-    if (inject.removeFails && String(target).includes("babojubot-pg-"))
-      throw inject.removeFails;
+    const fault = inject.removeFails;
+    if (fault?.at === String(target)) throw fault.error;
+    const arming = madeCalls.current();
+    if (arming?.removeFails && arming.made.includes(String(target)))
+      throw arming.removeFails;
     return real.rm(target, options);
   };
-  // 만들기와 기록을 불린 순간 한 동기 구간에서 한다(기다리지 않으므로 만든 뒤에 칸을 다시 찾지 않는다). 시험이 끝난 뒤에 시작한
-  // 만들기는 그때의 칸(다음 시험)에 기록된다(그 시험은 이미 실패했다). 제품이 보는 계약(유일한 새 폴더 경로로 이행)은 같다.
   const mkdtemp = (async (prefix: string) => {
-    const made = mkdtempSync(prefix);
-    inject.made.push(made);
+    const arming = madeCalls.current();
+    const made = await real.mkdtemp(prefix);
+    arming?.made.push(made);
     return made;
   }) as typeof real.mkdtemp;
   return {
@@ -43,18 +52,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
   const mkdirSync = ((target, options) => {
-    if (inject.ownerFolderFails && String(target).endsWith(".owner"))
-      throw inject.ownerFolderFails;
+    const arming = madeCalls.current();
+    if (
+      arming?.ownerFolderFails &&
+      arming.made.some((made) => `${made}.owner` === String(target))
+    )
+      throw arming.ownerFolderFails;
     return real.mkdirSync(target, options);
   }) as typeof real.mkdirSync;
   const readFileSync = ((...args: Parameters<typeof real.readFileSync>) => {
-    const file = String(args[0]);
-    if (
-      inject.ownerReadFails &&
-      /\.owner[\\/]\d+$/.test(file) &&
-      (!inject.ownerReadFailsIn || file.startsWith(inject.ownerReadFailsIn))
-    )
-      throw inject.ownerReadFails;
+    const fault = inject.ownerReadFails;
+    if (fault?.in === path.dirname(String(args[0]))) throw fault.error;
     return real.readFileSync(...args);
   }) as typeof real.readFileSync;
   return {
@@ -80,12 +88,7 @@ function expectLoggedCode(values: unknown[], code: string) {
 
 afterEach(() => {
   inject.removeFails = undefined;
-  inject.ownerFolderFails = undefined;
   inject.ownerReadFails = undefined;
-  inject.ownerReadFailsIn = undefined;
-  // 시험마다 새 칸을 연다. 시험은 정리를 등록할 때 자기 칸을 잡아 그 칸의 폴더를 치운다(onTestFinished는 afterEach 뒤에 돌므로, 끝날 때
-  // 칸을 찾으면 새 빈 칸을 읽는다).
-  inject.made = [];
   vi.restoreAllMocks();
 });
 
@@ -106,7 +109,7 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       ])
     );
     const logs = logged();
-    inject.removeFails = removeError;
+    inject.removeFails = { at: options.dataDir, error: removeError };
     await expect(startEmbeddedCluster(options)).rejects.toThrow(
       "could not create embedded Postgres"
     );
@@ -120,24 +123,29 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
     );
     const removeError = Object.assign(
       new Error("injected: removing the folder failed"),
-      { code: "EACCES" }
+      { code: "EBUSY" }
     );
-    const { made: madeHere } = inject;
+    const arming = {
+      made: [] as string[],
+      ownerFolderFails: ownerError,
+      removeFails: removeError,
+    };
     onTestFinished(() =>
       attemptAll(
-        madeHere
-          .splice(0)
-          .flatMap((made) => [
-            () => removeFolder(made),
-            () => removeFolder(`${made}.owner`),
-          ])
+        arming.made.flatMap((made) => [
+          () => removeFolder(made),
+          () => removeFolder(`${made}.owner`),
+        ])
       )
     );
     const logs = logged();
-    inject.ownerFolderFails = ownerError;
-    inject.removeFails = removeError;
-    await expect(ephemeralCluster()).rejects.toBe(ownerError);
-    expectLoggedCode(logs(), "EACCES");
+    await expect(madeCalls.run(arming, () => ephemeralCluster())).rejects.toBe(
+      ownerError
+    );
+    // 그 호출이 만든 폴더 하나에서 두 실패가 났다.
+    expect(arming.made).toHaveLength(1);
+    // 지우기 실패는 소유 오류와 다른 원인 코드로 남는다.
+    expectLoggedCode(logs(), "EBUSY");
   });
 });
 
@@ -159,7 +167,7 @@ describe("an owner record that cannot be read", () => {
       new Error("injected: the owner record could not be read"),
       { code: "EACCES" }
     );
-    inject.ownerReadFails = denied;
+    inject.ownerReadFails = { in: owners, error: denied };
     logged();
 
     await expect(
@@ -182,11 +190,13 @@ describe("a leftover temporary cluster whose owner record cannot be read", () =>
       path.join(owners, "1"),
       JSON.stringify({ pid: process.pid, persistent: false })
     );
-    inject.ownerReadFails = Object.assign(
-      new Error("injected: the leftover owner record could not be read"),
-      { code: "EACCES" }
-    );
-    inject.ownerReadFailsIn = owners;
+    inject.ownerReadFails = {
+      in: owners,
+      error: Object.assign(
+        new Error("injected: the leftover owner record could not be read"),
+        { code: "EACCES" }
+      ),
+    };
     const logs = logged();
 
     const options = await ephemeralCluster();

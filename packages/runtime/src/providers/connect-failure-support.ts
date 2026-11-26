@@ -11,7 +11,11 @@ import path from "node:path";
 import { test, vi } from "vitest";
 import { attemptAll, hasErrorCode, parseIp } from "@babojubot/contracts";
 import { within } from "@babojubot/process/test-support";
-import { removeFolderWithin } from "@babojubot/process/test-cleanup";
+import { callArming } from "@babojubot/process/call-arming";
+import {
+  awaitedLater,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 import { resetOsFaults } from "./os-failure-support.ts";
 
 // 시험이 정한 포트로 가는 연결 하나를 정한 오류로 실패시킨다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 그
@@ -322,7 +326,7 @@ function faultyServer(Base: typeof netModule.Server) {
     override close(callback?: (error?: Error) => void) {
       // 결함은 닫기를 부른 순간 잡는다. 붙잡힌 닫기는 gate가 풀린 뒤에 닫으므로, 그때 칸을 다시 찾으면 그 사이 reset이 바꾼 칸을 본다.
       const hold = serverFaults.holdClose;
-      const fault = serverFaults.close;
+      const fault = serverFaults.close ?? closeCalls.current();
       const held = this.listenedAt;
       if (hold && held !== undefined && hold.at(held)) {
         serverFaults.heldClose(held);
@@ -513,23 +517,24 @@ function keptByDouble(failure: unknown, code: string): boolean {
   return servers.length > 0 && servers.every(hasErrorCode(code));
 }
 
+type CloseFault = NonNullable<(typeof serverFaults)["close"]>;
 /**
- * `at`에 맞는 중계 서버의 닫기가 실패를 알리게 하고(`serverFaults.close`, 서버는 실제로 닫힌다), 그 실패로 중계가 남긴 폴더를
- * 정리(`own`)에 맡긴다. `closing`은 그 중계들의 닫기 전부가 끝나는 promise를 돌려준다(시험이 이미 시작한 닫기면 그 promise를 그대로:
- * 중계의 `close`는 한 번이라 다시 불러도 같은 결과지만, hub의 `close`는 남은 중계만 닫으므로 시험이 부른 것을 넘긴다).
+ * 그 시험만의 경로로 고를 수 없는 닫기 결함(공유 임시 폴더에 무작위 이름으로 생기는 중계 폴더)은 그 시험이 부른 제품 호출에 묶는다
+ * (`failingRelayClosesDuring`). 닫기 대역은 불린 순간 `serverFaults.close`(경로로 고른 결함)가 없으면 이 문맥의 결함을 잡는다.
+ */
+const closeCalls = callArming<CloseFault>();
+
+/**
+ * 결함 `fault`가 실패시킨 닫기로 중계가 남긴 폴더를 정리(`own`)에 맡긴다. `closing`은 그 중계들의 닫기 전부가 끝나는 promise를 돌려준다.
  * 정리는 그 닫기가 끝나기를 상한 안에서 기다린다. 상한을 넘기면 서버가 남았을 수 있으므로 지우지 않고 그 이유로 실패한다. 닫기가
  * 대역이 실패시킨 닫기만으로 거절했을 때만(`keptByDouble`) 대역이 실패를 알린 주소의 폴더를 지운다. 대역과 무관한 거절은 던지고
- * 지우지 않는다. 대역이 실패를 알렸는데 닫기가 이행했다면 맞지 않으므로 던진다. 대역이 실패를 알린 주소(`failedAt`, 이 결함이
- * 소유한 기록)를 돌려준다.
+ * 지우지 않는다. 대역이 실패를 알렸는데 닫기가 이행했다면 맞지 않으므로 던진다.
  */
-export function failingRelayCloses(
+function ownKeptRelays(
   own: (step: () => Promise<void>) => void,
-  at: (address: string) => boolean,
-  closing: () => Promise<unknown>,
-  code = "EBUSY"
+  fault: CloseFault,
+  closing: () => Promise<unknown>
 ) {
-  const failedAt: string[] = [];
-  serverFaults.close = { code, at, failedAt };
   own(async () => {
     const ended = await within(
       closing().then(
@@ -540,17 +545,55 @@ export function failingRelayCloses(
       "the relays did not close"
     );
     if (ended.failure === undefined) {
-      if (failedAt.length > 0)
+      if (fault.failedAt.length > 0)
         throw new Error(
-          `the relay close succeeded although the double failed ${failedAt.join(", ")}`
+          `the relay close succeeded although the double failed ${fault.failedAt.join(", ")}`
         );
       return;
     }
-    if (failedAt.length === 0 || !keptByDouble(ended.failure, code))
+    if (fault.failedAt.length === 0 || !keptByDouble(ended.failure, fault.code))
       throw ended.failure;
     await attemptAll(
-      failedAt.map((address) => () => removeFolderWithin(path.dirname(address)))
+      fault.failedAt.map(
+        (address) => () => removeFolderWithin(path.dirname(address))
+      )
     );
   });
-  return { failedAt: failedAt as readonly string[] };
+}
+
+/**
+ * `at`에 맞는 중계 서버의 닫기가 실패를 알리게 하고(`serverFaults.close`, 서버는 실제로 닫힌다), 그 실패로 중계가 남긴 폴더를
+ * 정리(`own`, `ownKeptRelays`)에 맡긴다. `at`은 그 시험만의 경로(그 시험이 연 중계의 소켓)를 골라야 한다. `closing`은 그 중계들의
+ * 닫기 전부가 끝나는 promise를 돌려준다(시험이 이미 시작한 닫기면 그 promise를 그대로: 중계의 `close`는 한 번이라 다시 불러도 같은
+ * 결과지만, hub의 `close`는 남은 중계만 닫으므로 시험이 부른 것을 넘긴다). 대역이 실패를 알린 주소(`failedAt`, 이 결함이 소유한
+ * 기록)를 돌려준다.
+ */
+export function failingRelayCloses(
+  own: (step: () => Promise<void>) => void,
+  at: (address: string) => boolean,
+  closing: () => Promise<unknown>,
+  code = "EBUSY"
+) {
+  const fault: CloseFault = { code, at, failedAt: [] };
+  serverFaults.close = fault;
+  ownKeptRelays(own, fault, closing);
+  return { failedAt: fault.failedAt as readonly string[] };
+}
+
+/**
+ * 제품 호출 `call`(그 시험이 부른 것)이 연 중계 가운데 `at`에 맞는 서버의 닫기만 실패를 알리게 한다(`closeCalls`의 문맥). 중계 폴더가
+ * 공유 임시 폴더에 무작위 이름으로 생겨 그 시험만의 경로로 고를 수 없을 때 쓴다: 앞 시험의 늦은 닫기는 이 호출의 문맥이 아니라 걸리지
+ * 않는다. 그 호출의 결과(`result`, 정리가 끝을 기다림)와 대역이 실패를 알린 주소(`failedAt`)를 돌려준다. 시험은 `failedAt`이 비지
+ * 않았음을 단언해 문맥이 끊긴 채 통과하지 않게 한다.
+ */
+export function failingRelayClosesDuring<T>(
+  own: (step: () => Promise<void>) => void,
+  at: (address: string) => boolean,
+  call: () => Promise<T>,
+  code = "EBUSY"
+) {
+  const fault: CloseFault = { code, at, failedAt: [] };
+  const result = awaitedLater(closeCalls.run(fault, call));
+  ownKeptRelays(own, fault, () => result);
+  return { failedAt: fault.failedAt as readonly string[], result };
 }

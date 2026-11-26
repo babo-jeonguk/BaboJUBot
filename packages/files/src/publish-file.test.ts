@@ -9,8 +9,10 @@ import { publishFile } from "./index.ts";
 const failing = vi.hoisted(() => ({
   /** 이 폴더(`in`)에 쓰는 쓰기가 파일을 만든 뒤 이 오류로 실패한다. 그 시험이 만든 폴더로 고른다. */
   writeAfterCreate: undefined as { in: string; error: Error } | undefined,
-  rename: undefined as Error | undefined,
-  rm: undefined as Error | undefined,
+  /** 이 폴더(`in`)의 파일을 옮기는 이름 바꾸기가 이 오류로 실패한다. 그 시험이 만든 폴더로 고른다. */
+  rename: undefined as { in: string; error: Error } | undefined,
+  /** 이 폴더(`in`)의 파일 지우기가 이 오류로 실패한다. 그 시험이 만든 폴더로 고른다. */
+  rm: undefined as { in: string; error: Error } | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
@@ -24,11 +26,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     return real.writeFile(file, data, options);
   };
   const rename: typeof real.rename = async (...args) => {
-    if (failing.rename) throw failing.rename;
+    const failure = failing.rename;
+    if (failure?.in === path.dirname(String(args[0]))) throw failure.error;
     return real.rename(...args);
   };
   const rm: typeof real.rm = async (...args) => {
-    if (failing.rm) throw failing.rm;
+    const failure = failing.rm;
+    if (failure?.in === path.dirname(String(args[0]))) throw failure.error;
     return real.rm(...args);
   };
   const patched = { writeFile, rename, rm };
@@ -85,8 +89,8 @@ describe("publishing a file in one step", () => {
     const root = await folders.make("babojubot-publish-");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const busy = code("EBUSY");
-    failing.rename = busy;
-    failing.rm = code("EIO");
+    failing.rename = { in: root, error: busy };
+    failing.rm = { in: root, error: code("EIO") };
     await expect(
       publishFile(path.join(root, "token"), "placed", { mode: 0o600 })
     ).rejects.toBe(busy);

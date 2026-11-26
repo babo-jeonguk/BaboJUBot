@@ -64,18 +64,26 @@ let race:
       onRead?: (file: string) => void;
     }
   | undefined;
-/** 링크 만들기를 거절하는 오류 코드(권한 없는 Windows·링크를 모르는 파일 시스템). */
-let refusal: string | null = null;
+/**
+ * 이 폴더(`in`, 그 시험의 연결 폴더) 안의 링크 만들기를 이 오류 코드로 거절한다(권한 없는 Windows·링크를 모르는 파일 시스템).
+ * 그 시험의 폴더로 고르고, 거절한 링크 자리를 `refused`에 남긴다(시험이 거절이 실제로 일어났는지 본다, #286).
+ */
+let refusal: { in: string; code: string; refused: string[] } | undefined;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
     symlink: (...args: Parameters<typeof actual.symlink>) => {
       const current = gate;
-      if (refusal)
+      const refused = refusal;
+      if (refused && inside(refused.in, String(args[1]))) {
+        refused.refused.push(String(args[1]));
         return Promise.reject(
-          Object.assign(new Error(`${refusal}: cannot link`), { code: refusal })
+          Object.assign(new Error(`${refused.code}: cannot link`), {
+            code: refused.code,
+          })
         );
+      }
       const held = current?.claim("symlink", String(args[1]));
       return held
         ? held.then(() => actual.symlink(...args))
@@ -128,7 +136,7 @@ afterEach(async () => {
       )
     );
     defer(() => {
-      refusal = null;
+      refusal = undefined;
       spawned.length = 0;
       race = undefined;
     });
@@ -501,12 +509,14 @@ describe.each(connections)("$name", (connection) => {
     "runs an isolated attempt in the organization's product folder on a machine that cannot create links, with no connection folder, login folder or login in any mount",
     async () => {
       const env = await setup(connection);
-      refusal = "EPERM";
+      const refuse = { in: env.folder, code: "EPERM", refused: [] as string[] };
+      refusal = refuse;
       const a = crypto.randomUUID();
       await env.provider.adapter.execute(
         await env.requestFor(a, "container"),
         control()
       );
+      expect(refuse.refused).not.toEqual([]);
       const [mounts] = await env.runMounts();
       const sources = (mounts ?? []).map(
         (mount) => /source=([^,]+)/.exec(mount)![1]!
@@ -616,7 +626,8 @@ describe.each(connections)("$name", (connection) => {
     await writeFile(env.original, connection.login("moving-access"), {
       mode: 0o600,
     });
-    refusal = "ENOTSUP";
+    const refuse = { in: env.folder, code: "ENOTSUP", refused: [] as string[] };
+    refusal = refuse;
     const held = holdAt("rename", (file) => file === env.original);
     const events: string[] = [];
     race = {
@@ -643,6 +654,7 @@ describe.each(connections)("$name", (connection) => {
     expect(env.upstreamSeen).toEqual(["Bearer moving-access"]);
     expect(env.relay.failed()).toBe(false);
     await running;
+    expect(refuse.refused).not.toEqual([]);
     expect((await lstat(env.connectionPlace)).isFile()).toBe(true);
     await expect(stat(env.original)).rejects.toThrow();
   });

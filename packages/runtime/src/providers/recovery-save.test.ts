@@ -9,25 +9,32 @@ import { testFolders } from "./test-folders.ts";
 // 기록의 시작 시각은 감독 실행기가 첫 메시지로 알린 값이다(#283 외부 리뷰 2회차 SPEC-3). Windows에서는 다른 프로그램이 기록을 읽는
 // 동안 덮어쓰기가 EPERM으로 잠깐 실패한다. 그 순간을 그대로 만든다.
 const rename = vi.hoisted(() => ({
-  blocked: 0,
+  /** 이 폴더(`in`, 그 시험의 기록 폴더)의 기록 옮기기가 `times`번 막힌다(#286). */
+  blocked: undefined as { in: string; times: number } | undefined,
   tried: 0,
-  /** 임시 기록 지우기가 이 오류로 실패한다. */
-  removal: undefined as Error | undefined,
+  /** 이 폴더(`in`, 그 시험의 기록 폴더)의 임시 기록 지우기가 이 오류로 실패한다(#286). */
+  removal: undefined as { in: string; error: Error } | undefined,
 }));
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
   return {
     ...actual,
     renameSync: (...args: Parameters<typeof actual.renameSync>) => {
-      if (rename.blocked > 0) {
-        rename.blocked--;
+      const { blocked } = rename;
+      if (
+        blocked &&
+        blocked.times > 0 &&
+        blocked.in === path.dirname(String(args[0]))
+      ) {
+        blocked.times--;
         rename.tried++;
         throw Object.assign(new Error("in use"), { code: "EPERM" });
       }
       return actual.renameSync(...args);
     },
     rmSync: (...args: Parameters<typeof actual.rmSync>) => {
-      if (rename.removal) throw rename.removal;
+      const { removal } = rename;
+      if (removal?.in === path.dirname(String(args[0]))) throw removal.error;
       return actual.rmSync(...args);
     },
   };
@@ -52,7 +59,7 @@ const withoutProc = process.platform === "linux" ? "darwin" : process.platform;
 const folders = testFolders();
 afterEach(async () => {
   vi.useRealTimers();
-  rename.blocked = 0;
+  rename.blocked = undefined;
   rename.tried = 0;
   rename.removal = undefined;
   vi.restoreAllMocks();
@@ -87,7 +94,7 @@ it("saves the start time once the record stops being held", async () => {
     { pid, lease: "lease", supervisorStart: start.supervisorStart },
     { platform: withoutProc }
   );
-  rename.blocked = 3;
+  rename.blocked = { in: directory, times: 3 };
   await start.tell("1700000000123456");
   vi.runAllTimers();
   expect(await readFile(file, "utf8")).toMatch(/"start":"1700000000123456"/);
@@ -106,7 +113,7 @@ it("does not save the start time after forgetting a held record", async () => {
     { pid, lease: "lease", supervisorStart: start.supervisorStart },
     { platform: withoutProc }
   );
-  rename.blocked = 1;
+  rename.blocked = { in: directory, times: 1 };
   await start.tell("1700000000123456");
   expect(rename.tried).toBe(1);
   forget();
@@ -141,7 +148,7 @@ it("warns and keeps the first record when the file stays held", async () => {
     { pid, lease: "lease", supervisorStart: start.supervisorStart },
     { platform: withoutProc }
   );
-  rename.blocked = Number.POSITIVE_INFINITY;
+  rename.blocked = { in: directory, times: Number.POSITIVE_INFINITY };
   await start.tell("1700000000123456");
   vi.runAllTimers();
   expect(warn).toHaveBeenCalled();
@@ -152,10 +159,13 @@ it("warns and keeps the first record when the file stays held", async () => {
 
 // 기록을 제자리에 두지 못하고 임시 기록도 지우지 못하면, 지우기 실패가 원래 실패를 덮지 않는다(#280 리뷰 2회차 STD-2와 같은 모양).
 it("throws the failure to place the record, not the failure to remove its temporary file", async () => {
-  const { home, pid } = await running();
+  const { home, pid, directory } = await running();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  rename.blocked = Number.POSITIVE_INFINITY;
-  rename.removal = Object.assign(new Error("io"), { code: "EIO" });
+  rename.blocked = { in: directory, times: Number.POSITIVE_INFINITY };
+  rename.removal = {
+    in: directory,
+    error: Object.assign(new Error("io"), { code: "EIO" }),
+  };
   expect(() =>
     recordProcess(
       home,

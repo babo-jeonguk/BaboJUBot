@@ -6,6 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { isDisconnect } from "@babojubot/contracts";
+import { callArming } from "@babojubot/process/call-arming";
 import {
   awaitedLater,
   folderCleanup,
@@ -23,12 +24,23 @@ import {
 // 내장 DB 폴더 주인의 연결(#268, #275 외부 리뷰 1·2회차). 주인 연결은 이 사용자 전용 폴더에만 두고, 다른 프로세스는 기록의 자리로
 // 연결만 해 볼 뿐 지우지 않는다. 연 연결은 실패한 길에서도 닫는다. 소켓 경로 한도는 바이트로 잰다. Windows는 named pipe라
 // 파일·경로 한도가 없어 이 파일의 시험은 POSIX에서만 돈다.
+/**
+ * 시험끼리 같은 자리(제품의 고정 후보 `/tmp`)의 듣기 실패는 경로로 그 시험의 것을 가를 수 없다. 시험은 제품 호출을
+ * `listenCalls.run({ fails }, () => 제품 호출)`로 감싸고, 대역은 불린 순간 그 호출의 무장을 잡는다. 다른 시험의 호출이나 문맥 밖
+ * 호출은 무장이 없어 실패하지 않는다(#286).
+ */
+const listenCalls = callArming<{
+  fails: (handle: string) => Error | undefined;
+}>();
 const inject = vi.hoisted(() => ({
-  /** 주인 기록(`<dataDir>.owner/<번호>`)을 붙이는 hard link가 이 오류로 실패한다. */
-  recordFails: undefined as Error | undefined,
-  /** 임시 cluster 폴더(`babojubot-pg-…`)를 지우면 이 오류로 실패한다. */
-  removeFails: undefined as Error | undefined,
-  /** 주인 연결을 그 자리(경로)에서 듣지 못하게 한다. 오류를 돌려주면 듣기가 그 오류로 실패한다. */
+  /** 이 폴더(`in`, 그 시험의 `<dataDir>.owner`) 안의 주인 기록을 붙이는 hard link가 이 오류로 실패한다(#286). */
+  recordFails: undefined as { in: string; error: Error } | undefined,
+  /** 정확히 이 경로(`at`, 그 시험의 임시 cluster 폴더)를 지우면 이 오류로 실패한다(#286). */
+  removeFails: undefined as { at: string; error: Error } | undefined,
+  /**
+   * 주인 연결을 그 자리(경로)에서 듣지 못하게 한다. 오류를 돌려주면 듣기가 그 오류로 실패한다. 그 시험의 폴더 안 자리만 고른다.
+   * 시험끼리 같은 자리(제품의 고정 후보 `/tmp`)는 `listenCalls`로 그 시험의 호출에만 건다.
+   */
   listenFails: undefined as ((handle: string) => Error | undefined) | undefined,
   /** 제품이 경로에서 듣기를 시도한 자리와 그 결과. 주입한 실패도 여기 남는다. */
   listens: [] as { handle: string; failure?: Error }[],
@@ -54,7 +66,8 @@ vi.mock("node:net", async (importOriginal) => {
         );
       // 기록 칸은 불린 순간 잡는다. 듣기 콜백은 나중에 돌므로 그 안에서 칸을 다시 찾지 않는다(그 사이 beforeEach가 새 칸을 연다).
       const { listened } = inject;
-      const failure = inject.listenFails?.(handle);
+      const failure =
+        inject.listenFails?.(handle) ?? listenCalls.current()?.fails(handle);
       inject.listens.push({ handle, ...(failure && { failure }) });
       if (failure) {
         process.nextTick(() => this.emit("error", failure));
@@ -83,8 +96,8 @@ vi.mock("node:net", async (importOriginal) => {
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
-    if (inject.removeFails && String(target).includes("babojubot-pg-"))
-      throw inject.removeFails;
+    const fault = inject.removeFails;
+    if (fault?.at === String(target)) throw fault.error;
     return real.rm(target, options);
   };
   return { ...real, rm, default: { ...real, rm } };
@@ -92,8 +105,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
   const linkSync = ((existing, target) => {
-    if (inject.recordFails && /\.owner[\\/]\d+$/.test(String(target)))
-      throw inject.recordFails;
+    const fault = inject.recordFails;
+    if (fault?.in === path.dirname(String(target))) throw fault.error;
     return real.linkSync(existing, target);
   }) as typeof real.linkSync;
   return { ...real, linkSync, default: { ...real, linkSync } };
@@ -178,11 +191,11 @@ describe.runIf(posix)(
         new Error("injected: the owner record could not be written"),
         { code: "EIO" }
       );
-      inject.recordFails = failure;
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      inject.recordFails = { in: `${dataDir}.owner`, error: failure };
       onTestFinished(() => {
         inject.recordFails = undefined;
       });
-      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
       await expect(
         startEmbeddedCluster({ dataDir, persistent: true })
       ).rejects.toBe(failure);
@@ -233,7 +246,7 @@ describe.runIf(posix)(
       cleanup.own(() => (stopping ??= cluster.stop()));
       // 실패를 주입하기 전에 주인 연결이 실제로 열려 있음을 본다.
       expect(await listenedStates()).toEqual(["open"]);
-      inject.removeFails = failure;
+      inject.removeFails = { at: options.dataDir, error: failure };
       onTestFinished(() => {
         inject.removeFails = undefined;
       });
@@ -327,7 +340,8 @@ describe.runIf(posix)(
         new Error("injected: the owner record could not be written"),
         { code: "EIO" }
       );
-      inject.recordFails = failure;
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      inject.recordFails = { in: `${dataDir}.owner`, error: failure };
       inject.closeFails = {
         in: privateFolder(base),
         error: Object.assign(
@@ -340,7 +354,6 @@ describe.runIf(posix)(
       });
       const logged = vi.spyOn(console, "error").mockImplementation(() => {});
       onTestFinished(() => logged.mockRestore());
-      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
       await expect(
         startEmbeddedCluster({ dataDir, persistent: true })
       ).rejects.toBe(failure);
@@ -383,26 +396,25 @@ describe.runIf(posix)(
     // 모든 후보에서 듣기가 실패하면 후보마다 그 원인을 함께 남기고 실패한다.
     it("names the failure of every folder when listening fails in all of them", async () => {
       const { base } = await ownTemporaryFolder();
-      // 실패는 제품의 두 후보 폴더에서만 낸다. 첫 후보는 이 시험의 폴더다. 둘째 후보 `/tmp`는 제품의 고정 후보라 시험끼리 같은 폴더여서,
-      // 이 시험만의 경로로 가를 수 없다(PR 본문 「한계」).
+      // 실패는 제품의 두 후보 폴더에서만 낸다. 둘째 후보 `/tmp`는 제품의 고정 후보라 시험끼리 같은 폴더여서 경로로 이 시험의 것을
+      // 가를 수 없으므로, 이 시험의 제품 호출에만 건다.
       const candidates = [privateFolder(base), privateFolder("/tmp")];
-      inject.listenFails = (handle) =>
+      const fails = (handle: string) =>
         candidates.includes(path.dirname(handle))
           ? Object.assign(new Error(`injected: cannot listen at ${handle}`), {
               code: "EOPNOTSUPP",
             })
           : undefined;
-      onTestFinished(() => {
-        inject.listenFails = undefined;
-      });
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
-      const refused: unknown = await startEmbeddedCluster({
-        dataDir,
-        persistent: true,
-      }).then(
-        () => new Error("the cluster started although no folder could listen"),
-        (error: unknown) => error
-      );
+      const refused: unknown = await listenCalls
+        .run({ fails }, () =>
+          startEmbeddedCluster({ dataDir, persistent: true })
+        )
+        .then(
+          () =>
+            new Error("the cluster started although no folder could listen"),
+          (error: unknown) => error
+        );
       expect(inject.listens.map(({ handle }) => path.dirname(handle))).toEqual(
         candidates
       );

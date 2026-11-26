@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { callArming } from "@babojubot/process/call-arming";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import { attemptFolder } from "./attempt-folder.ts";
@@ -26,6 +27,11 @@ type Fault = {
   /** 대역이 이 결함으로 만든 정확한 경로(만든 순간 적는다). */
   made: string[];
 };
+/**
+ * 그 시험만의 경로로 고를 수 없는 결함(공유 임시 폴더에 생기는 폴더)은 그 시험이 부른 제품 호출에 묶는다: 시험이
+ * `faultCalls.run(결함, () => 제품 호출)`로 감싸고 대역은 불린 순간 `faultCalls.current()`로 그 호출의 결함을 잡는다.
+ */
+const faultCalls = callArming<Fault>();
 const inject = vi.hoisted(() => ({
   /** 이 시험이 고른 결함. */
   fault: undefined as Fault | undefined,
@@ -39,7 +45,7 @@ const inject = vi.hoisted(() => ({
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
-    const { fault } = inject;
+    const fault = inject.fault ?? faultCalls.current();
     inject.removed(String(target), [...inject.written]);
     if (fault?.fails === "remove" && fault.made.includes(String(target)))
       throw Object.assign(new Error(`EBUSY: resource busy or locked, rm`), {
@@ -49,7 +55,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
   const writeFile: typeof real.writeFile = async (target, ...rest) => {
     // 기록 칸은 불린 순간 잡는다. 쓰기가 끝난 뒤 칸을 다시 찾으면 그 사이 afterEach가 연 다음 시험의 칸에 남는다.
-    const { written, fault } = inject;
+    const { written } = inject;
+    const fault = inject.fault ?? faultCalls.current();
     const fails = fault?.fails;
     if (
       fault &&
@@ -68,7 +75,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   // 기다린 뒤 칸에 남기면 그 사이 afterEach가 비운 칸에 남아 다음 시험의 기록에 섞였다. 시험이 끝난 뒤에 시작한 만들기는 그때의 칸(다음
   // 시험)에 기록된다(그 시험은 이미 실패했다). 제품이 보는 계약(유일한 새 폴더 경로로 이행)은 같다.
   const mkdtemp = (async (prefix: string) => {
-    const { fault } = inject;
+    const fault = inject.fault ?? faultCalls.current();
     const made = mkdtempSync(prefix);
     inject.made.push(made);
     if (fault && path.dirname(prefix) === fault.in) fault.made.push(made);
@@ -249,12 +256,13 @@ describe("an attempt folder that cannot be removed", () => {
       workspace: { cwd: root, organization: root, personal: root, peers: [] },
     };
     const logged = diagnostics();
-    // Antigravity의 기록 폴더는 이 컴퓨터의 임시 폴더 바로 아래에 생긴다. 그 폴더는 시험끼리 같아, 이 시험이 무장한 뒤 시작한 다른
-    // 시험의 늦은 만들기와 가를 경로가 없다(PR 본문 「한계」). 무장한 동안 제품이 만든 정확한 경로에만 건다.
+    // Antigravity의 기록 폴더는 이 컴퓨터의 임시 폴더 바로 아래에 생긴다. 그 폴더는 시험끼리 같아 경로로 가를 수 없으므로, 결함을 이
+    // 시험이 부른 제품 호출에 묶는다(앞 시험의 늦은 만들기는 그 호출의 문맥이 아니라 걸리지 않는다).
     const fault: Fault = { in: tmpdir(), fails: "remove", made: [] };
-    inject.fault = fault;
 
-    const result = await provider.adapter.execute(input, control());
+    const result = await faultCalls.run(fault, () =>
+      provider.adapter.execute(input, control())
+    );
 
     expect(result.stopReason).toBe("completed");
     expect(fault.made).toHaveLength(1);

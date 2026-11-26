@@ -65,7 +65,7 @@ import {
 import { relaySockets } from "./relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
 import {
-  failingRelayCloses,
+  failingRelayClosesDuring,
   refusing,
   resetRefusing,
 } from "./connect-failure-support.ts";
@@ -3261,16 +3261,17 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
   // (#264 외부 리뷰 5회차 STD-4). 확인이 실패하면 관문은 격리 환경 없음으로 본다.
   it("still removes its container when the relay does not close, and fails the check", async () => {
     const { environment, removals } = await cleanProbe();
-    // 확인이 연 중계의 egress 서버 닫기가 실패를 알린다(서버는 실제로 닫힌다). 닫힘을 확인하지 못한 중계는 폴더를 남기므로, 그
-    // 폴더는 확인(그 중계 닫기 전부)이 끝난 뒤 정리가 지운다(`failingRelayCloses`). 확인을 시작한 직후(사이에 기다림 없이) 맡긴다.
-    const probing = environment.probe(
-      { blocked: [], forbidden: [] },
-      AbortSignal.timeout(10_000)
-    );
-    const { failedAt } = failingRelayCloses(
+    // 확인이 연 중계의 egress 서버 닫기가 실패를 알린다(서버는 실제로 닫힌다). 중계 폴더는 공유 임시 폴더에 무작위 이름으로 생겨 이
+    // 시험만의 경로로 고를 수 없으므로, 결함을 이 시험이 부른 확인 호출에 묶는다(`failingRelayClosesDuring`). 닫힘을 확인하지 못한
+    // 중계는 폴더를 남기므로, 그 폴더는 확인(그 중계 닫기 전부)이 끝난 뒤 정리가 지운다.
+    const { failedAt, result: probing } = failingRelayClosesDuring(
       onTestFinished,
       (address) => path.basename(address) === relaySockets.egress,
-      () => probing
+      () =>
+        environment.probe(
+          { blocked: [], forbidden: [] },
+          AbortSignal.timeout(10_000)
+        )
     );
     // 거절을 먼저 받는다. 남긴 폴더의 위치는 대역이 실패시킨 닫기 뒤에야 안다.
     const failure = await probing.then(

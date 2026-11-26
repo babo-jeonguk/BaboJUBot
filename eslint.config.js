@@ -154,7 +154,8 @@ const processEntries = {
     "@babojubot/process/remove-folder",
     "@babojubot/process/test-cleanup",
   ],
-  // 시험 코드: 그 위에 시험 정리 도움(node:test에서도 쓰는 것과 vitest 전용), 바깥 환경 확인·시험 시계, 시험 준비.
+  // 시험 코드: 그 위에 시험 정리 도움(node:test에서도 쓰는 것과 vitest 전용), 바깥 환경 확인·시험 시계, 시험 준비, 그 시험의
+  // 호출에만 거는 결함(호출 문맥·경로별 파일 작업 바꾸기).
   tests: [
     "@babojubot/process",
     "@babojubot/process/remove-folder",
@@ -163,6 +164,8 @@ const processEntries = {
     "@babojubot/process/testing",
     "@babojubot/process/test-support",
     "@babojubot/process/launcher-setup",
+    "@babojubot/process/call-arming",
+    "@babojubot/process/fs-swap",
   ],
 };
 
