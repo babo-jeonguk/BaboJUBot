@@ -172,6 +172,29 @@ const removers = "/^(rm|rmSync|rmdir|rmdirSync)$/";
 const recursiveRemovers = "/^(rm|rmSync)$/";
 const folderRemovers = "/^(rmdir|rmdirSync)$/";
 const removeFolderMessage = `시험의 폴더 지우기는 removeFolder(@babojubot/process/remove-folder)로 합니다. 폴더 안에서 돈 프로그램의 종료와 stdio 닫힘을 먼저 기다린 뒤 부르세요. Windows의 일시적인 잠김만 정해진 횟수 다시 시도합니다. ${standards}`;
+const scriptRemoveFolderMessage = `스크립트의 폴더 지우기는 removeFolderWithin(@babojubot/process/test-cleanup)으로 합니다. 상한 안에서 지우고 Windows의 일시적인 잠김만 정해진 횟수 다시 시도합니다. 폴더 안에서 돈 프로그램의 끝을 확인한 뒤에만 부르세요. ${standards}`;
+/**
+ * 폴더 지우기를 막는 선택자들(시험과 스크립트가 함께 쓴다. 문구만 다르다): recursive `rm`·`rmSync`, `rmdir`·`rmdirSync`, fs에서 지우기
+ * 함수를 다른 이름으로 가져오기.
+ */
+const folderRemovalRules = (message) => [
+  {
+    selector: `CallExpression[callee.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
+    message,
+  },
+  {
+    selector: `CallExpression[callee.property.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
+    message,
+  },
+  {
+    selector: `CallExpression[callee.name=${folderRemovers}], CallExpression[callee.property.name=${folderRemovers}]`,
+    message,
+  },
+  {
+    selector: `ImportDeclaration[source.value=/^(node:)?fs(\\/promises)?$/] > ImportSpecifier[imported.name=${removers}][local.name!=${removers}]`,
+    message: `fs의 지우기 함수 이름을 바꿔 가져오면 폴더 지우기 검사를 피합니다. 이름 그대로 가져오세요. ${message}`,
+  },
+];
 
 // 시험 데이터는 그 타입을 만족한다(CODING_STANDARDS.md#시험-데이터). 단언이 타입 검사를 끄는 두 모양을 막는다.
 const assertions = ":matches(TSAsExpression, TSTypeAssertion)";
@@ -272,22 +295,7 @@ export default defineConfig([
       "tests/no-state-between-tests": "error",
       "no-restricted-syntax": [
         "error",
-        {
-          selector: `CallExpression[callee.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
-          message: removeFolderMessage,
-        },
-        {
-          selector: `CallExpression[callee.property.name=${recursiveRemovers}] > ObjectExpression.arguments > Property[key.name='recursive']`,
-          message: removeFolderMessage,
-        },
-        {
-          selector: `CallExpression[callee.name=${folderRemovers}], CallExpression[callee.property.name=${folderRemovers}]`,
-          message: removeFolderMessage,
-        },
-        {
-          selector: `ImportDeclaration[source.value=/^(node:)?fs(\\/promises)?$/] > ImportSpecifier[imported.name=${removers}][local.name!=${removers}]`,
-          message: `fs의 지우기 함수 이름을 바꿔 가져오면 폴더 지우기 검사를 피합니다. 이름 그대로 가져오세요. ${removeFolderMessage}`,
-        },
+        ...folderRemovalRules(removeFolderMessage),
         {
           // `x as unknown as T`·`x as any as T`(꺾쇠 단언 포함).
           selector: `${assertions}[expression.type=/^(TSAsExpression|TSTypeAssertion)$/][expression.typeAnnotation.type=/^TS(Unknown|Any)Keyword$/]`,
@@ -447,6 +455,19 @@ export default defineConfig([
         { assertionStyle: "as", objectLiteralTypeAssertions: "never" },
       ],
       eqeqeq: ["error", "always", { null: "ignore" }],
+    },
+  },
+  {
+    // 개발 스크립트도 폴더를 상한 안에서, 그 안에서 돈 프로그램의 끝을 확인한 뒤에만 지운다(CODING_STANDARDS.md#정리). 상한 없는
+    // recursive rm이 매달리거나 끝을 확인하지 않은 폴더를 지우던 자리(chaos-live·chaos-run·chaos-server·boot-check, #286 PR 3b-3b-1)를
+    // 고치고 막는다. 시험 파일은 위 시험 규칙이 removeFolder로 막는다.
+    files: scriptFiles,
+    ignores: scriptIgnores,
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        ...folderRemovalRules(scriptRemoveFolderMessage),
+      ],
     },
   },
   {

@@ -2,20 +2,23 @@
 // 이 파일을 설정 파일 경로와 함께 직접 실행하면 그 자식 프로세스가 된다(`node chaos-server.mjs <설정 파일>`).
 // 자식은 제품 서버(startServer)를 루프백·자동 배정 포트로 띄우고, 실행 관문(chaos-budget.mjs gateConnection)으로 연결을 감싼다.
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   attemptAll,
   continueAfterFailure,
   failureCode,
-  hasErrorCode,
-  orIfMissing,
 } from "@babojubot/contracts";
 import { launchTree, prepareSupervisor } from "@babojubot/process";
+import { removeFolderWithin } from "@babojubot/process/test-cleanup";
 import { gateConnection, writeSecretFile } from "./chaos-budget.mjs";
-import { sharedVariables } from "@babojubot/runtime";
+import {
+  processRecordPids,
+  recoverProviderProcesses,
+  sharedVariables,
+} from "@babojubot/runtime";
 import { afterOutput } from "../exit-after-output.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -181,7 +184,6 @@ export function chaosServer({
     };
     const { openDatabase, openEphemeralDatabase } =
       await import("@babojubot/db");
-    const { recoverProviderProcesses } = await import("@babojubot/runtime");
     const pgDir = path.join(home, "postgres");
     // 서버 멈춤, 남은 DB·기록의 제품 정리, 띄운 모든 서버 트리 끄기. 앞 단계가 실패해도 트리는 끄고, 실패를 모아 알린다(홈은 남긴다).
     await cleanUpScene({
@@ -225,7 +227,7 @@ export function chaosServer({
         `[chaos] ${leftovers.providerRecordsLeft} provider process record(s) could not be recovered; kept ${home} for manual cleanup`
       );
     } else {
-      await rm(home, { recursive: true, force: true });
+      await removeFolderWithin(home);
       leftovers.homeRemoved = true;
     }
     return leftovers;
@@ -285,20 +287,6 @@ function startFailure(message, tail) {
     console.error(`[chaos-server] ${message}; last server output:\n${tail}`);
   return new Error(message);
 }
-
-/** 이 홈에 남은 프로바이더 프로세스 기록의 PID(기록 파일 이름). 서버가 정리를 마치면 그 기록은 없어진다. */
-export function processRecordPids(home) {
-  const root = path.join(home, "providers");
-  return readdir(root).flatMap((provider) =>
-    readdir(path.join(root, provider, "processes"))
-      .filter((n) => /^\d+\.json$/.test(n))
-      .map((n) => Number.parseInt(n, 10))
-  );
-}
-
-/** 폴더의 이름 목록. 폴더가 없으면 빈 목록이고, 권한·디스크 오류는 드러낸다. */
-const readdir = (dir) =>
-  orIfMissing(() => readdirSync(dir), hasErrorCode("ENOENT"), []);
 
 // ---------- 자식 프로세스 ----------
 

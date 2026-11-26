@@ -1,6 +1,6 @@
 // 실모델 장애 검사의 실행기. 장면마다 새 임시 홈·서버를 만들고, 예산·시한 안에서 장면을 돌린 뒤 성공·실패·시간 초과·중단 모두에서 정리한다.
 // 결과는 메타데이터만 담은 JSON이다. 쓰기 전에 모델 원문·메시지 본문·토큰 같은 등록된 비밀값이 섞였는지 검사한다.
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -10,7 +10,12 @@ import {
   failureCode,
   settled,
 } from "@babojubot/contracts";
-import { killUnlessGone, withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  killUnlessGone,
+  removeFolderWithin,
+  withCleanup,
+} from "@babojubot/process/test-cleanup";
+import { processRecordPids } from "@babojubot/runtime";
 import {
   createLedger,
   limits,
@@ -18,7 +23,7 @@ import {
   writeBudget,
   writeSecretFile,
 } from "./chaos-budget.mjs";
-import { chaosServer, processRecordPids } from "./chaos-server.mjs";
+import { chaosServer } from "./chaos-server.mjs";
 import { stillRunning } from "./processes.mjs";
 import {
   brief,
@@ -69,7 +74,7 @@ export async function runChaos({
         );
         return;
       }
-      await rm(runDir, { recursive: true, force: true });
+      await removeFolderWithin(runDir);
     });
     await chmod(runDir, 0o700);
     const ledger = createLedger(path.join(runDir, "ledger.jsonl"));
@@ -363,10 +368,7 @@ export async function prepareScene(ready, root = tmpdir()) {
     return { home, harnessDir };
   } catch (error) {
     await continueAfterFailure(
-      () =>
-        attemptAll(
-          made.map((dir) => () => rm(dir, { recursive: true, force: true }))
-        ),
+      () => attemptAll(made.map((dir) => () => removeFolderWithin(dir))),
       (cleanupError) =>
         console.error(
           `[chaos] scene folders were not removed after a failed start (${failureCode(cleanupError)})`
@@ -446,7 +448,7 @@ export async function cleanupScene({ server, harnessDir, marker }) {
         step(
           (error) =>
             `could not remove the scene harness folder (${code(error)})`,
-          () => rm(harnessDir, { recursive: true, force: true })
+          () => removeFolderWithin(harnessDir)
         ),
       ]);
   if (unconfirmed)
@@ -461,9 +463,10 @@ export async function cleanupScene({ server, harnessDir, marker }) {
     serverStopped: !server.running,
     homeRemoved,
     homeKept: !homeRemoved,
-    postgresLeft: leftovers?.postgres ?? false,
-    providerRecordsFound: leftovers?.providerRecordsFound ?? 0,
-    providerRecordsLeft: leftovers?.providerRecordsLeft ?? 0,
+    // 서버 정리(`dispose`)가 결과를 주지 못했으면 남은 DB·기록을 모른다. "남은 것 없음"(false·0)으로 적지 않고 모름(null)으로 적는다.
+    postgresLeft: leftovers?.postgres ?? null,
+    providerRecordsFound: leftovers?.providerRecordsFound ?? null,
+    providerRecordsLeft: leftovers?.providerRecordsLeft ?? null,
     // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
     commandPidsLeft: left?.length ?? null,
     harnessKept: !harnessRemoved,

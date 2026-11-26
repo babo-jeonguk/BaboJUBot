@@ -3,12 +3,15 @@
 // CI의 macOS·Windows 작업이 부른다. 상속 환경과 상관없이 임시 폴더·빈 port만 쓰고, 끝나면 DB가 실제로 멈춘 것을 기다린 뒤 폴더를 지운다.
 // 멈춤(자기 시한·SIGTERM·SIGINT)은 진행 중인 단계를 끊지 않고 다음 단계 경계에서 받아 한 곳의 정리로 끝낸다(boot-check-flow.mjs).
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { launchTree, prepareSupervisor } from "@babojubot/process";
-import { processAlive } from "@babojubot/process/test-cleanup";
+import {
+  processAlive,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 import {
   attemptAll,
   continueAfterFailure,
@@ -377,12 +380,8 @@ const { code } = await runBootCheckFlow({
   // 서로 독립인 끄기: 남은 DB를 pg_ctl로 멈추고, 띄운 서버 트리마다 끝난 것을 확인한다. 하나가 실패해도 나머지는 한다.
   stops: () => [stopLeftPostgres, ...servers.map((tree) => () => tree.stop())],
   // 끄기가 모두 성공한 뒤에만 부른다.
-  removeFolder: () =>
-    rmSync(home, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 100,
-    }),
+  // 상한 안에서 지운다. 내장 Postgres를 멈춘 직후 Windows가 잠깐 쥐는 파일을 기다리려고 다시 시도를 5번으로 둔다(예전 지우기와 같은 수).
+  // 이 서버는 실제 프로바이더 연결 없이 뜨므로(BABOJUBOT_PROVIDERS 빈 값) 프로바이더 프로그램과 그 복구 기록은 생기지 않는다.
+  removeFolder: () => removeFolderWithin(home, { retries: 5 }),
 });
 process.exitCode = code;
