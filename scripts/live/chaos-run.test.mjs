@@ -128,6 +128,29 @@ test("a scene whose server cleanup failed records its leftovers as unknown, not 
   });
 });
 
+// 서버 정리가 홈 지우기를 시작했지만 그 끝을 확인하지 못했으면(실패·상한 초과, 그 뒤에 지워질 수 있다) 그 홈은 남긴 것이 아니라
+// 지우기를 확인하지 못한 것이다. 결과 칸에 그대로 적고 정리 문제로 센다. 서버의 끝은 확인됐으므로 harness 폴더는 지운다
+// (#286 PR #300 외부 리뷰 1회차 SPEC-1).
+test("a scene whose home removal was not confirmed records it as unconfirmed, not kept, and counts it", async (t) => {
+  await withCleanup(async (defer) => {
+    const { cleanup, harnessDir } = await cleanedUpWith(t, defer, async () => ({
+      postgres: false,
+      providerRecordsFound: 0,
+      providerRecordsLeft: 0,
+      home: "unconfirmed",
+    }));
+    assert.deepEqual(
+      {
+        home: cleanup.home,
+        harness: cleanup.harness,
+        problems: cleanup.problems,
+      },
+      { home: "unconfirmed", harness: "removed", problems: 1 }
+    );
+    assert.equal(existsSync(harnessDir), false);
+  });
+});
+
 // 서버 정리가 끝났어도 되살리지 못한 프로세스 기록이 남으면 사람이 볼 수 있게 홈을 남긴다(`dispose`가 지우지 않았다고 알림).
 test("a scene whose server cleanup kept its home for left provider records does not report it removed", async (t) => {
   await withCleanup(async (defer) => {
