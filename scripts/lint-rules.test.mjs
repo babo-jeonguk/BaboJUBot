@@ -771,8 +771,9 @@ test("a module double may take the state the tests swap before its first await a
       [],
       `${place}: hoisted locals used only by tests`
     );
-  // 바인딩을 바꿔 끼우는 let 칸은 지역 값으로 담으면 그 값을 잡은 것이다. 그릇 칸을 지역 별칭으로 담는 것은 같은 그릇이라 걸린다.
-  const takenLet = `import { vi } from "vitest";\nlet race;\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const rename = async (from, to) => {\n    const current = race;\n    await real.rename(from, to);\n    await current?.afterRename?.(from, to);\n  };\n  return { ...real, rename };\n});\n`;
+  // 바인딩을 바꿔 끼우는 let 칸은 쓸 멤버를 지역 값으로 잡으면 그것을 잡은 것이다. 바뀔 수 있는 값을 통째로 지역 별칭으로 담는 것은
+  // 같은 값이라(제자리에서 바뀌면 늦은 읽기가 다음 시험 값을 본다) 걸린다.
+  const takenLet = `import { vi } from "vitest";\nlet race;\nvi.mock("node:fs/promises", async (importOriginal) => {\n  const real = await importOriginal();\n  const rename = async (from, to) => {\n    const afterRename = race?.afterRename;\n    await real.rename(from, to);\n    await afterRename?.(from, to);\n  };\n  return { ...real, rename };\n});\n`;
   const aliasedContainer = mocked(
     `const double = async (file) => {\n  const kept = state;\n  const handle = await real.open(file);\n  kept.seen.push(file);\n  return handle;\n};`
   );

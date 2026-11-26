@@ -2960,36 +2960,35 @@ function unchangeableType(checker, type, visiting = new Set()) {
       type.getSymbol()?.getName() === "ReadonlyArray" &&
       elements(/** @type {ts.TypeReference} */ (type))
     );
+  const properties = checker.getPropertiesOfType(type);
+  const indexes = checker.getIndexInfosOfType(type);
+  // 속성·색인·서명이 하나도 없는 객체 타입(`object`·`{}`)은 넓은 타입이 속성을 가린 것이라 증명이 아니다.
+  if (
+    properties.length === 0 &&
+    indexes.length === 0 &&
+    type.getCallSignatures().length === 0 &&
+    type.getConstructSignatures().length === 0
+  )
+    return false;
   return (
-    checker
-      .getIndexInfosOfType(type)
-      .every(
-        (info) =>
-          info.isReadonly && unchangeableType(checker, info.type, visiting)
-      ) &&
-    checker
-      .getPropertiesOfType(type)
-      .every(
-        (property) =>
-          readonlyProperty(property) &&
-          unchangeableType(checker, checker.getTypeOfSymbol(property), visiting)
-      )
+    indexes.every(
+      (info) =>
+        info.isReadonly && unchangeableType(checker, info.type, visiting)
+    ) &&
+    properties.every(
+      (property) =>
+        readonlyProperty(property) &&
+        unchangeableType(checker, checker.getTypeOfSymbol(property), visiting)
+    )
   );
 }
 
-/** 원시 값(숫자·문자열·정규식, 식 없는 template, 부호 붙인 숫자)인가. */
+/** 원시 값 리터럴(숫자·문자열·불리언·null, 식 없는 template, 부호 붙인 숫자)인가. 정규식은 쓸 수 있는 `lastIndex`를 가진 객체다. */
 function primitive(node) {
-  if (node?.type === "Literal") return true;
+  if (node?.type === "Literal") return !("regex" in node);
   if (node?.type === "TemplateLiteral") return node.expressions.length === 0;
   return node?.type === "UnaryExpression" && node.argument.type === "Literal";
 }
-
-/** 모듈 범위 값이 시험 사이에 속성을 바꿔 끼우는 그릇일 수 있는 초기값: 객체·배열·`new`로 만든 값. */
-const containerInit = new Set([
-  "ObjectExpression",
-  "ArrayExpression",
-  "NewExpression",
-]);
 
 /** TS 단언으로 감싼 식이면 그 안의 식. */
 function unasserted(node) {
@@ -3028,7 +3027,7 @@ function keptFunctions(source, init) {
  * 파일이 자기 lint 차례에 같은 규칙으로 판정받는다. `factories`는 그 파일에서 대역을 만드는 들머리(vi.mock의 인라인 factory, 그 파일이
  * 내보낸 함수)다. 돌려주는 것: `{ node, messageId }` 목록.
  */
-function doubleFindings(source, program, factoriesFrom) {
+function doubleFindings(source, program, factoriesFrom, exported) {
   /** @type {{ node: import("eslint").Rule.Node, messageId: string }[]} */
   const findings = [];
   const factories = new Set(factoriesFrom);
@@ -3051,46 +3050,37 @@ function doubleFindings(source, program, factoriesFrom) {
       if (at.type === "TSTypeQuery") return true;
     return false;
   };
-  // 칸: 모듈 범위 선언과 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 선언.
+  // 칸: 모듈 범위 선언과 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 선언. 값이 칸인지는 타입이 정한다(#286 현행 기준
+  // 1절): 바뀔 수 없음이 증명되는 값만 칸이 아니다. 타입 정보가 없으면 선언만으로 증명되는 함수 리터럴·원시 값 리터럴만 칸이 아니다.
+  const typed = source.parserServices;
+  const checker = typed?.program ? typed.program.getTypeChecker() : undefined;
+  /** 이 이름(`identifier`, 초기값 `init`)의 값이 바뀔 수 없음이 증명되는가. */
+  const provenUnchangeable = (identifier, init) =>
+    checker
+      ? unchangeableType(checker, typed.getTypeAtLocation(identifier))
+      : isFunction(unwrapped(init)) || primitive(unwrapped(init));
   const containers = [];
   const bindings = [];
+  const changeableBindings = [];
   const classify = (declarator) => {
-    if (!declarator.init) {
-      bindings.push(declarator);
-      return;
-    }
-    const origin = originAt(declarator.init);
-    const init = unwrapped(declarator.init);
+    const origin = declarator.init && originAt(declarator.init);
     const testDouble =
       origin?.module === "vitest" &&
       origin.path[0] === "vi" &&
       (origin.path[1] === "hoisted()" || origin.path[1] === "fn()");
-    if (declarator.parent.kind !== "const") {
-      (testDouble || containerInit.has(init?.type)
-        ? containers
-        : bindings
-      ).push(declarator);
-      return;
-    }
-    // const는 그 값의 타입이 바뀔 수 없음이 증명될 때만 칸이 아니다(#286 현행 기준 1절: 타입으로만 알 수 있는 것은 타입 정보로).
-    // 함수 리터럴과 원시 값 리터럴은 선언만으로 증명된다. 그 밖은 타입 검사기가 정하고, 타입 정보가 없으면 증명할 수 없어 칸이다.
-    if (testDouble) {
+    const unchangeable = source
+      .getDeclaredVariables(declarator)
+      .every((variable) =>
+        provenUnchangeable(variable.identifiers[0], declarator.init)
+      );
+    // const의 바뀔 수 있는 값은 그릇(별칭까지 따라감)이다. let·var는 다시 대입하는 칸이라 그 이름을 불린 순간 읽으면 되고, 값이 바뀔 수
+    // 있으면 그 값을 담은 별칭은 그릇으로 따라간다(제자리에서 바뀌면 별칭의 늦은 읽기가 다음 시험 값을 본다).
+    if (testDouble || (!unchangeable && declarator.parent.kind === "const"))
       containers.push(declarator);
-      return;
+    else if (declarator.parent.kind !== "const") {
+      bindings.push(declarator);
+      if (!unchangeable) changeableBindings.push(declarator);
     }
-    if (isFunction(init) || primitive(init)) return;
-    const typed = source.parserServices;
-    const unchangeable =
-      typed?.program != null &&
-      source
-        .getDeclaredVariables(declarator)
-        .every((variable) =>
-          unchangeableType(
-            typed.program.getTypeChecker(),
-            typed.getTypeAtLocation(variable.identifiers[0])
-          )
-        );
-    if (!unchangeable) containers.push(declarator);
   };
   const hoistedCallbacks = [];
   walkAll(program, (node) => {
@@ -3127,7 +3117,6 @@ function doubleFindings(source, program, factoriesFrom) {
     }
     return false;
   };
-  /** 이름 붙은 값의 쓰임(대역 쪽 자리 안의 것)이 모두 건네는 자리인가. */
   /** 판정 결과를 기억한다. 판정 중인 것은 거짓으로 두어 순환을 끊는다. 만드는 함수가 늘면 비운다. */
   const memo = new Map();
   const remembered = (key, judge) => {
@@ -3172,10 +3161,6 @@ function doubleFindings(source, program, factoriesFrom) {
         );
       return handedOver(identifier);
     });
-  /**
-   * 값(`node`)이 제품에 건네는 자리로만 가는가: factory(또는 만드는 함수)가 돌려주는 식 안(객체·배열·펼치기·TS 단언을 거쳐도 됨),
-   * 그런 자리로만 가는 const, 건네는 const 객체의 속성.
-   */
   /** 함수가 건네는 자리로만 가는 함수(대역)이거나 factory·만드는 함수인가: 그 함수가 돌려주는 값도 제품에 간다. */
   const returnsToProduct = (fn) =>
     factories.has(fn) ||
@@ -3184,6 +3169,10 @@ function doubleFindings(source, program, factoriesFrom) {
         ? usedOnlyAsValue(functionVariable(source, fn))
         : handedOver(fn)
     );
+  /**
+   * 값(`node`)이 제품에 건네는 자리로만 가는가: factory(또는 만드는 함수)가 돌려주는 식 안(객체·배열·펼치기·TS 단언을 거쳐도 됨),
+   * 그런 자리로만 가는 const, 건네는 const 객체의 속성.
+   */
   const handedOver = (node) => {
     let child = node;
     for (let at = node.parent; at; at = at.parent) {
@@ -3292,11 +3281,12 @@ function doubleFindings(source, program, factoriesFrom) {
    */
   const readAllowed = (identifier) => {
     const around = enclosingFunctions(identifier);
-    if (around.length > 0 && factories.has(around[0])) return true;
+    const entry = (fn) => factories.has(fn) && !called.has(fn);
+    if (around.length > 0 && entry(around[0])) return true;
     const [fn, outer] = around;
     return Boolean(
       fn &&
-      ((outer && factories.has(outer)) ||
+      ((outer && entry(outer)) ||
         (around.length === 1 && moduleFunction(fn))) &&
       isDouble(fn) &&
       beforeFirstAwait(fn, identifier)
@@ -3308,6 +3298,10 @@ function doubleFindings(source, program, factoriesFrom) {
     if (isState.has(variable)) return;
     isState.add(variable);
     containerVars.add(variable);
+    aliasesFrom(variable);
+  };
+  /** 이 이름의 값을 담은 별칭(선언·대입)을 그릇으로 따라간다. */
+  const aliasesFrom = (variable) => {
     for (const { identifier } of variable.references) {
       const parent = identifier.parent;
       if (
@@ -3333,12 +3327,39 @@ function doubleFindings(source, program, factoriesFrom) {
   for (const declarator of bindings)
     for (const variable of source.getDeclaredVariables(declarator))
       isState.add(variable);
+  for (const declarator of changeableBindings)
+    for (const variable of source.getDeclaredVariables(declarator))
+      aliasesFrom(variable);
   // 대역 쪽 자리와 만드는 함수: factory에서 시작해 더 생기지 않을 때까지 넓힌다. 만드는 함수는 factory(또는 만드는 함수)의 몸에서 부르고
   // 그 결과를 건네는 같은 파일의 함수다.
   const judgedCalls = new Set();
   let grew = true;
   while (grew) {
     grew = false;
+    // 내보낸 함수를 대역 쪽 자리가 부르면 그 함수는 그 자리의 도움이다(부른 순간이 늦을 수 있어 들머리가 아니다). 들머리의 몸에서
+    // 불러 결과를 건네는 것은 만드는 함수로 부르는 것이라 뺀다.
+    for (const fn of exported) {
+      if (called.has(fn)) continue;
+      const variable = functionVariable(source, fn);
+      if (
+        variable?.references.some(({ identifier }) => {
+          const call = identifier.parent;
+          if (
+            !inRegion(identifier) ||
+            contains(fn, identifier) ||
+            call.type !== "CallExpression" ||
+            call.callee !== identifier
+          )
+            return false;
+          const [around] = enclosingFunctions(call);
+          return !(around && factories.has(around) && handedOver(call));
+        })
+      ) {
+        called.add(fn);
+        memo.clear();
+        grew = true;
+      }
+    }
     for (const variable of moduleScope?.variables ?? []) {
       if (isState.has(variable)) {
         // 대역 쪽 자리가 쓰는 칸의 초기값에 담긴 함수는 도움이다(꺼내 두었다가 await 뒤에 불러도 그 안에서 칸을 그때 읽는다).
@@ -3420,9 +3441,10 @@ function doubleFindings(source, program, factoriesFrom) {
       const [def] = variable.defs;
       if (def?.type !== "Variable") continue;
       const local = def.node;
-      const container =
-        local.init && containerInit.has(unwrapped(local.init)?.type);
-      if (container || local.parent.kind !== "const")
+      if (
+        local.parent.kind !== "const" ||
+        !provenUnchangeable(variable.identifiers[0], local.init)
+      )
         hoistedLocals.add(variable);
     }
   }
@@ -3514,16 +3536,28 @@ const hoistedStateAtCall = {
   create(context) {
     const { sourceCode } = context;
     const factories = [];
+    /** 이름으로 내보낸 것(`export { make }`). 끝에서 그 이름의 함수를 들머리로 푼다. */
+    const exportedNames = [];
+    /** 그 파일이 내보낸 함수(들머리 가운데 vi.mock factory가 아닌 것). */
+    const exportedEntries = [];
     return {
       // 그 파일이 내보낸 함수도 들머리다(공용 대역 파일의 만드는 함수·시험이 부르는 도움). 그 몸은 부른 순간 돌고, 건네는 함수는 대역이다.
       ExportNamedDeclaration(node) {
         const { declaration } = node;
+        if (!node.source)
+          for (const specifier of node.specifiers)
+            if (specifier.local.type === "Identifier")
+              exportedNames.push(specifier.local.name);
         if (declaration?.type === "FunctionDeclaration")
           factories.push(declaration);
+        exportedEntries.push(declaration);
         if (declaration?.type === "VariableDeclaration")
           for (const declarator of declaration.declarations) {
             const init = unwrapped(declarator.init);
-            if (isFunction(init)) factories.push(init);
+            if (isFunction(init)) {
+              factories.push(init);
+              exportedEntries.push(init);
+            }
           }
       },
       ExportDefaultDeclaration(node) {
@@ -3533,6 +3567,7 @@ const hoistedStateAtCall = {
           isFunction(declaration)
         )
           factories.push(declaration);
+        exportedEntries.push(declaration);
       },
       CallExpression(node) {
         const origin = originOf(sourceCode.getScope(node.callee), node.callee);
@@ -3543,8 +3578,30 @@ const hoistedStateAtCall = {
           context.report({ node, messageId: "factory" });
       },
       "Program:exit"(program) {
+        // 이름으로 내보낸 함수(`export { make }`)도 들머리다.
+        const moduleScope = sourceCode.scopeManager.scopes.find(
+          (scope) => scope.type === "module"
+        );
+        for (const name of exportedNames) {
+          const [def] = moduleScope?.set.get(name)?.defs ?? [];
+          const fn =
+            def?.type === "FunctionName"
+              ? def.node
+              : def?.type === "Variable" && isFunction(unwrapped(def.node.init))
+                ? unwrapped(def.node.init)
+                : undefined;
+          if (fn && !factories.includes(fn)) {
+            factories.push(fn);
+            exportedEntries.push(fn);
+          }
+        }
         if (factories.length === 0) return;
-        const findings = doubleFindings(sourceCode, program, factories);
+        const findings = doubleFindings(
+          sourceCode,
+          program,
+          factories,
+          exportedEntries
+        );
         for (const finding of findings) context.report(finding);
       },
     };

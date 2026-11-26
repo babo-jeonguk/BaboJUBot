@@ -105,8 +105,8 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
       );
     treeOwner = ownTree;
   }
-  // 트리를 맡는지는 만들 때 정해진다: 맡는 정리는 위에서 자신을 걸고, 그 뒤 다른 정리가 걸려 하면 던진다(모듈 칸은 만들 때 잡는다).
-  const owning = treeOwner === ownTree;
+  // 트리를 맡는지는 만들 때 정해진다: 경계 대역을 건 파일의 정리는 위에서 자신을 걸고, 그 뒤 다른 정리가 걸려 하면 던진다.
+  const owning = boundary;
   /** 이 폴더 정리가 공용 실행 경계 대역의 트리를 맡는가. 아니면 트리 장면과 `ownBrokenRun`은 던진다. */
   const ownsTrees = () => {
     if (!owning)

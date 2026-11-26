@@ -74,13 +74,13 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return {
     ...actual,
     symlink: (...args: Parameters<typeof actual.symlink>) => {
+      // 결함과 gate는 불린 순간(기다리기 전) 읽는다.
       const current = gate;
-      const refused = refusal;
-      if (refused && inside(refused.in, String(args[1]))) {
-        refused.refused.push(String(args[1]));
+      if (refusal && inside(refusal.in, String(args[1]))) {
+        refusal.refused.push(String(args[1]));
         return Promise.reject(
-          Object.assign(new Error(`${refused.code}: cannot link`), {
-            code: refused.code,
+          Object.assign(new Error(`${refusal.code}: cannot link`), {
+            code: refusal.code,
           })
         );
       }
@@ -91,11 +91,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
     rename: async (...args: Parameters<typeof actual.rename>) => {
       // 끼움·gate는 불린 순간 잡는다. 기다린 뒤 칸을 다시 찾으면 그 사이 afterEach·다음 시험이 바꾼 것을 부른다.
-      const current = race;
+      const afterRename = race?.afterRename;
       const held = gate?.claim("rename", String(args[0]));
       await held;
       await actual.rename(...args);
-      await current?.afterRename?.(String(args[0]), String(args[1]));
+      await afterRename?.(String(args[0]), String(args[1]));
     },
     readFile: ((...args: Parameters<typeof actual.readFile>) => {
       race?.onRead?.(String(args[0]));

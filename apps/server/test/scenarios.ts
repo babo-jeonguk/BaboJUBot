@@ -152,9 +152,9 @@ export const calls = (
     allowRefusal: true,
   })),
 });
-/** 아무 도구도 부르지 않고 읽기만 하는 시나리오. */
 /** 맥락만 읽고 끝나는 단계. 바뀌지 않는 값이라 스크립트를 만들 때마다 새 목록으로 담는다. */
 const idleSteps = [{ do: "read_context" }] as const;
+/** 아무 도구도 부르지 않고 읽기만 하는 시나리오. */
 export const idle: Script = { steps: [...idleSteps] };
 
 export const reasons = (runs: { request: Pick<RunRequest, "wakeReasons"> }[]) =>
