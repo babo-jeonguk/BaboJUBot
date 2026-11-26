@@ -73,7 +73,7 @@ declare module "vitest" {
 }
 const templateName = "babojubot_template";
 // 서버 테스트 파일들이 동시에 연결을 연다. 임시 cluster라 디스크 확정 기록은 startEmbeddedCluster가 끈다.
-const testSettings = ["max_connections=500"];
+const testSettings: readonly string[] = ["max_connections=500"];
 
 /**
  * 테스트 실행 하나가 같이 쓰는 embedded Postgres를 띄우고, migration을 적용한 원본 DB를 만든다.
@@ -83,7 +83,7 @@ export async function startTestCluster(
   project: Pick<TestProject, "provide">
 ): Promise<() => Promise<void>> {
   const options = await ephemeralCluster();
-  const { port, stop } = await startEmbeddedCluster(options, testSettings);
+  const { port, stop } = await startEmbeddedCluster(options, [...testSettings]);
   try {
     await withClient(clusterUrl(port, "postgres"), (client) =>
       client.query(`create database ${templateName}`)

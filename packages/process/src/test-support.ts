@@ -7,7 +7,11 @@ import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
 
 // 모듈을 불러올 때의 진짜 타이머. 시험이 가짜 시계를 켜도(`vi.useFakeTimers`) `within`의 상한은 실제 시간으로 잰다.
-const realSetTimeout = setTimeout;
+// 쓰는 모양(콜백·시간)의 함수 타입으로만 받는다. Node의 `setTimeout`에 붙은 이름공간 값(`__promisify__`)은 바꿀 수 있는 속성이다.
+const realSetTimeout: (
+  callback: () => void,
+  ms: number
+) => ReturnType<typeof setTimeout> = setTimeout;
 const realClearTimeout = clearTimeout;
 
 /**

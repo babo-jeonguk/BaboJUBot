@@ -1,10 +1,6 @@
 // 시험 코드 전용 lint 규칙. 선택자만으로는 판단할 수 없는 규칙(값이 어디로 가는지, 타이머가 무엇을 하는지)을 둔다.
 // 설정은 eslint.config.js의 `testFiles` 범위에 걸고, 회귀 시험은 scripts/lint-rules.test.mjs가 맡는다.
-import { existsSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
-import { Linter } from "eslint";
-import tseslint from "typescript-eslint";
-import { codeFormatNames, codeFormats } from "./test-files.mjs";
+import ts from "typescript";
 import {
   importSites,
   originName,
@@ -2888,6 +2884,106 @@ function unwrapped(node) {
   return at;
 }
 
+/** 바꿀 수 없는 원시 타입(그 리터럴과 enum 값 포함)의 플래그. */
+const unchangeablePrimitives =
+  ts.TypeFlags.StringLike |
+  ts.TypeFlags.NumberLike |
+  ts.TypeFlags.BigIntLike |
+  ts.TypeFlags.BooleanLike |
+  ts.TypeFlags.ESSymbolLike |
+  ts.TypeFlags.Undefined |
+  ts.TypeFlags.Null |
+  ts.TypeFlags.Void |
+  ts.TypeFlags.Never;
+
+/** 그 선언이 `as const` 리터럴 안의 속성인가(객체·배열 리터럴, 괄호, satisfies만 거쳐 `as const`에 닿음). */
+function insideConstAssertion(declaration) {
+  for (let at = declaration.parent; at; at = at.parent) {
+    if (
+      (ts.isAsExpression(at) || ts.isTypeAssertionExpression(at)) &&
+      ts.isConstTypeReference(at.type)
+    )
+      return true;
+    if (
+      !ts.isObjectLiteralExpression(at) &&
+      !ts.isArrayLiteralExpression(at) &&
+      !ts.isPropertyAssignment(at) &&
+      !ts.isParenthesizedExpression(at) &&
+      !ts.isSatisfiesExpression(at)
+    )
+      return false;
+  }
+  return false;
+}
+
+/** 속성이 읽기 전용인가: 모든 선언이 `readonly`이거나, 쓰기 접근자 없는 읽기 접근자이거나, `as const` 리터럴의 속성. */
+function readonlyProperty(property) {
+  const declarations = property.getDeclarations() ?? [];
+  if (declarations.length === 0) return false;
+  const setter = declarations.some(ts.isSetAccessorDeclaration);
+  return declarations.every(
+    (declaration) =>
+      (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Readonly) !==
+        0 ||
+      (ts.isGetAccessorDeclaration(declaration) && !setter) ||
+      insideConstAssertion(declaration)
+  );
+}
+
+/**
+ * 값의 타입이 바뀔 수 없음이 증명되는가(시험 코드의 공용 타입 판정). 원시 타입, 함수 타입(속성 없음), 모든 속성이 읽기 전용이고 그
+ * 속성 타입도 바뀔 수 없는 객체(`as const` 리터럴), 원소도 바뀔 수 없는 ReadonlyArray·읽기 전용 튜플만 참이다. any·unknown, 쓸 수 있는
+ * 속성·색인, 바뀔 수 있는 배열·Map·Set·클래스 인스턴스(메서드는 쓸 수 있는 속성), 유니온의 한 갈래라도 바뀔 수 있으면 거짓이다. 순환하는
+ * 타입은 방문 표시로 끊는다(판정 중인 것은 다른 갈래가 정한다).
+ */
+function unchangeableType(checker, type, visiting = new Set()) {
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return false;
+  if (type.flags & unchangeablePrimitives) return true;
+  if (type.isUnion() || type.isIntersection())
+    return type.types.every((part) =>
+      unchangeableType(checker, part, visiting)
+    );
+  if (visiting.has(type)) return true;
+  visiting.add(type);
+  const elements = (reference) =>
+    checker
+      .getTypeArguments(reference)
+      .every((element) => unchangeableType(checker, element, visiting));
+  if (checker.isTupleType(type))
+    return (
+      /** @type {ts.TupleType} */ (
+        /** @type {ts.TypeReference} */ (type).target
+      ).readonly && elements(/** @type {ts.TypeReference} */ (type))
+    );
+  if (checker.isArrayType(type))
+    return (
+      type.getSymbol()?.getName() === "ReadonlyArray" &&
+      elements(/** @type {ts.TypeReference} */ (type))
+    );
+  return (
+    checker
+      .getIndexInfosOfType(type)
+      .every(
+        (info) =>
+          info.isReadonly && unchangeableType(checker, info.type, visiting)
+      ) &&
+    checker
+      .getPropertiesOfType(type)
+      .every(
+        (property) =>
+          readonlyProperty(property) &&
+          unchangeableType(checker, checker.getTypeOfSymbol(property), visiting)
+      )
+  );
+}
+
+/** 원시 값(숫자·문자열·정규식, 식 없는 template, 부호 붙인 숫자)인가. */
+function primitive(node) {
+  if (node?.type === "Literal") return true;
+  if (node?.type === "TemplateLiteral") return node.expressions.length === 0;
+  return node?.type === "UnaryExpression" && node.argument.type === "Literal";
+}
+
 /** 모듈 범위 값이 시험 사이에 속성을 바꿔 끼우는 그릇일 수 있는 초기값: 객체·배열·`new`로 만든 값. */
 const containerInit = new Set([
   "ObjectExpression",
@@ -2905,122 +3001,6 @@ function unasserted(node) {
   )
     at = at.expression;
   return at;
-}
-
-/**
- * 저장소 파일 하나를 읽어 ESLint의 SourceCode(AST·범위)를 만든다. 시험 파일을 lint할 때와 같은 파서·같은 범위 규칙을 쓴다. 파일과 수정
- * 시각이 같으면 다시 읽지 않는다. 읽지 못하는 파일은 판정할 수 없어 던진다.
- */
-const parsedFiles = new Map();
-function parseRepositoryFile(file) {
-  const stamp = statSync(file).mtimeMs;
-  const cached = parsedFiles.get(file);
-  if (cached?.stamp === stamp) return cached;
-  const linter = new Linter({ configType: "flat", cwd: repositoryRootPath });
-  const messages = linter.verify(
-    readFileSync(file, "utf8"),
-    [
-      {
-        files: [`**/*.${codeFormats}`],
-        languageOptions: {
-          parser: tseslint.parser,
-          sourceType: "module",
-          ecmaVersion: "latest",
-        },
-      },
-    ],
-    { filename: file }
-  );
-  const source = linter.getSourceCode();
-  if (!source)
-    throw new Error(
-      `${file}: ${messages.map((message) => message.message).join("; ")}`
-    );
-  walkAll(source.ast, (node) => {
-    for (const key of Object.keys(node)) {
-      if (key === "parent") continue;
-      const value = node[key];
-      for (const child of Array.isArray(value) ? value : [value])
-        if (child && typeof child.type === "string") child.parent = node;
-    }
-  });
-  const parsed = { stamp, ast: source.ast, source, findings: new Map() };
-  parsedFiles.set(file, parsed);
-  return parsed;
-}
-
-/** 저장소 기준 경로(확장자 없음)에 붙는 실제 파일. 없으면 undefined. */
-const repositoryRootPath = path.resolve(import.meta.dirname, "..");
-function existingFile(withoutExtension) {
-  for (const format of codeFormatNames) {
-    const file = path.join(repositoryRootPath, `${withoutExtension}.${format}`);
-    if (existsSync(file)) return file;
-  }
-  return undefined;
-}
-
-/** 모듈 범위 선언 가운데 이름 `name`을 짓는 것의 종류와 노드: 함수 리터럴이면 `function`, 그 밖의 값이면 `value`, 클래스면 `other`. */
-function moduleDeclaration(program, name) {
-  for (const statement of program.body) {
-    const declaration =
-      statement.type === "ExportNamedDeclaration"
-        ? statement.declaration
-        : statement;
-    if (
-      declaration?.type === "FunctionDeclaration" &&
-      declaration.id?.name === name
-    )
-      return { kind: "function", node: declaration };
-    if (
-      declaration?.type === "ClassDeclaration" &&
-      declaration.id?.name === name
-    )
-      return { kind: "other", node: declaration };
-    if (declaration?.type === "VariableDeclaration")
-      for (const declarator of declaration.declarations)
-        if (declarator.id.type === "Identifier" && declarator.id.name === name)
-          return isFunction(unwrapped(declarator.init))
-            ? { kind: "function", node: unwrapped(declarator.init) }
-            : { kind: "value", node: declarator };
-  }
-  return undefined;
-}
-
-/**
- * 저장소 파일 `file`이 이름 `name`으로 내보낸 것: `{ file, kind, node }`(kind는 moduleDeclaration과 같음). 다시 내보내기
- * (`export { a as name } from`·`export * from`·`export { local as name }`)를 따라간다. 찾지 못하면 undefined.
- */
-function exportedBinding(file, name, seen = new Set()) {
-  const key = `${file}#${name}`;
-  if (seen.has(key)) return undefined;
-  seen.add(key);
-  const { ast } = parseRepositoryFile(file);
-  const from = (source, imported) => {
-    const target = targetOf(file, source);
-    const next = target?.file && existingFile(target.file);
-    return next ? exportedBinding(next, imported, seen) : undefined;
-  };
-  for (const statement of ast.body) {
-    if (statement.type === "ExportNamedDeclaration") {
-      const declared = statement.declaration
-        ? moduleDeclaration({ body: [statement] }, name)
-        : undefined;
-      if (declared) return { file, ...declared };
-      for (const specifier of statement.specifiers ?? []) {
-        const exported = specifier.exported.name ?? specifier.exported.value;
-        if (exported !== name) continue;
-        const local = specifier.local.name ?? specifier.local.value;
-        if (statement.source) return from(statement.source.value, local);
-        const declaredLocally = moduleDeclaration(ast, local);
-        return declaredLocally ? { file, ...declaredLocally } : undefined;
-      }
-    }
-    if (statement.type === "ExportAllDeclaration" && !statement.exported) {
-      const found = from(statement.source.value, name);
-      if (found) return found;
-    }
-  }
-  return undefined;
 }
 
 /**
@@ -3043,22 +3023,17 @@ function keptFunctions(source, init) {
   return found;
 }
 
-/** 부른 자리의 결과(`f()`)를 담은 출처인가. 그 결과는 부른 자리에서 판정한다. */
-const callResult = (origin) => origin.path.some((name) => name.endsWith("()"));
-
 /**
- * 한 파일(시험 파일, 또는 시험 파일의 factory가 쓰는 공용 대역 파일)의 대역이 시험이 바꿔 끼우는 칸을 아는 모양 밖에서 찾는 자리.
- * `factories`는 그 파일에서 대역을 만드는 함수(vi.mock의 인라인 factory, 공용 대역 파일이면 factory가 부른 그 내보낸 함수)다.
- * `helpers`는 다른 파일의 대역 쪽 자리에서 부른 이 파일의 함수다(도움: 대역이 아니고, 안의 칸 읽기는 모두 짚는다).
- * `foreign`은 다른 저장소 파일을 판정한다(foreignJudge): `maker(call, origin)`은 만드는 함수로 부른 자리, `helper(call, origin)`은
- * 도움으로 부른 자리의 자리 목록, `kind(origin)`은 그 출처가 무엇인지(`outside`·`module`·`function`·`value`·`other`·`unresolved`).
- * 돌려주는 것: `{ node, messageId, data? }` 목록.
+ * 한 파일의 대역이 시험이 바꿔 끼우는 그 파일의 칸을 아는 모양 밖에서 찾는 자리. 판정은 그 파일 안에서만 한다: 다른 파일의 값은 그
+ * 파일이 자기 lint 차례에 같은 규칙으로 판정받는다. `factories`는 그 파일에서 대역을 만드는 들머리(vi.mock의 인라인 factory, 그 파일이
+ * 내보낸 함수)다. 돌려주는 것: `{ node, messageId }` 목록.
  */
-function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
-  /** @type {{ node: import("eslint").Rule.Node | undefined, messageId: string, data?: Record<string, string> }[]} */
+function doubleFindings(source, program, factoriesFrom) {
+  /** @type {{ node: import("eslint").Rule.Node, messageId: string }[]} */
   const findings = [];
   const factories = new Set(factoriesFrom);
-  const called = new Set(helpers);
+  /** 칸에 담긴 함수(도움). 대역이 아니고, 안의 칸 읽기는 모두 짚는다. */
+  const called = new Set();
   const originAt = (node) => originOf(source.getScope(node), node);
   const enclosingFunctions = (node) => {
     const found = [];
@@ -3070,6 +3045,12 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
     (scope) => scope.type === "module"
   );
   const atModule = (node) => source.getScope(node) === moduleScope;
+  /** 형 자리(`typeof state` 형 주석)의 참조인가. 값을 읽지 않는다. */
+  const inTypePosition = (node) => {
+    for (let at = node.parent; at; at = at.parent)
+      if (at.type === "TSTypeQuery") return true;
+    return false;
+  };
   // 칸: 모듈 범위 선언과 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 선언.
   const containers = [];
   const bindings = [];
@@ -3079,13 +3060,37 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
       return;
     }
     const origin = originAt(declarator.init);
-    const container =
-      (origin?.module === "vitest" &&
-        origin.path[0] === "vi" &&
-        (origin.path[1] === "hoisted()" || origin.path[1] === "fn()")) ||
-      containerInit.has(unwrapped(declarator.init)?.type);
-    if (container) containers.push(declarator);
-    else if (declarator.parent.kind !== "const") bindings.push(declarator);
+    const init = unwrapped(declarator.init);
+    const testDouble =
+      origin?.module === "vitest" &&
+      origin.path[0] === "vi" &&
+      (origin.path[1] === "hoisted()" || origin.path[1] === "fn()");
+    if (declarator.parent.kind !== "const") {
+      (testDouble || containerInit.has(init?.type)
+        ? containers
+        : bindings
+      ).push(declarator);
+      return;
+    }
+    // const는 그 값의 타입이 바뀔 수 없음이 증명될 때만 칸이 아니다(#286 현행 기준 1절: 타입으로만 알 수 있는 것은 타입 정보로).
+    // 함수 리터럴과 원시 값 리터럴은 선언만으로 증명된다. 그 밖은 타입 검사기가 정하고, 타입 정보가 없으면 증명할 수 없어 칸이다.
+    if (testDouble) {
+      containers.push(declarator);
+      return;
+    }
+    if (isFunction(init) || primitive(init)) return;
+    const typed = source.parserServices;
+    const unchangeable =
+      typed?.program != null &&
+      source
+        .getDeclaredVariables(declarator)
+        .every((variable) =>
+          unchangeableType(
+            typed.program.getTypeChecker(),
+            typed.getTypeAtLocation(variable.identifiers[0])
+          )
+        );
+    if (!unchangeable) containers.push(declarator);
   };
   const hoistedCallbacks = [];
   walkAll(program, (node) => {
@@ -3297,12 +3302,6 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
       beforeFirstAwait(fn, identifier)
     );
   };
-  /** 형 자리(`typeof state` 형 주석)의 참조인가. 값을 읽지 않는다. */
-  const inTypePosition = (node) => {
-    for (let at = node.parent; at; at = at.parent)
-      if (at.type === "TSTypeQuery") return true;
-    return false;
-  };
   const isState = new Set();
   const containerVars = new Set();
   const aliasesOf = (variable) => {
@@ -3335,25 +3334,8 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
     for (const variable of source.getDeclaredVariables(declarator))
       isState.add(variable);
   // 대역 쪽 자리와 만드는 함수: factory에서 시작해 더 생기지 않을 때까지 넓힌다. 만드는 함수는 factory(또는 만드는 함수)의 몸에서 부르고
-  // 그 결과를 건네는 함수다. 같은 파일이면 그 함수를, 다른 저장소 파일이면 그 파일을 판정한다.
+  // 그 결과를 건네는 같은 파일의 함수다.
   const judgedCalls = new Set();
-  /** 식이 factory가 받은 진짜 모듈(`importOriginal` 인수, 그것을 부른 결과와 그 속성)에서 왔는가. */
-  const rootedAtReal = (node, depth = 0) => {
-    let base = unwrapped(node);
-    while (base?.type === "MemberExpression" || base?.type === "CallExpression")
-      base = unwrapped(
-        base.type === "MemberExpression" ? base.object : base.callee
-      );
-    if (base?.type !== "Identifier" || depth > 10) return false;
-    const [def] = bindingOf(source, base)?.defs ?? [];
-    if (def?.type === "Parameter") return factories.has(def.node);
-    return (
-      def?.type === "Variable" &&
-      def.node.id.type === "Identifier" &&
-      def.node.init != null &&
-      rootedAtReal(def.node.init, depth + 1)
-    );
-  };
   let grew = true;
   while (grew) {
     grew = false;
@@ -3410,20 +3392,14 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
       )
         return;
       judgedCalls.add(node);
+      // 같은 파일의 함수면 만드는 함수다. 다른 파일의 함수는 그 파일이 자기 차례에 판정받는다.
       const local = definitionOf(node.callee);
-      const origin = originAt(node.callee);
-      if (local) {
-        if (!factories.has(local)) {
-          factories.add(local);
-          memo.clear();
-          roots.add(local);
-          grew = true;
-        }
-        return;
+      if (local && !factories.has(local)) {
+        factories.add(local);
+        memo.clear();
+        roots.add(local);
+        grew = true;
       }
-      // 출처를 모르는 부르기는 판정할 수 없다. factory가 받은 진짜 모듈에서 온 함수(`real.open.bind(real)`)만 진짜다.
-      if (!origin && rootedAtReal(node.callee)) return;
-      for (const finding of foreign.maker(node, origin)) findings.push(finding);
     });
   }
   // 대역 쪽 자리가 쓰는 hoisted 값이면 그 콜백의 지역 칸도 본다.
@@ -3494,207 +3470,7 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
       }
       if (!readAllowed(identifier)) report();
     }
-  // 대역 쪽 자리에서 쓰는 저장소 모듈의 값(가져온 이름, import()의 결과, 그 속성). 아는 모양만 통과한다: 내보낸 함수를 부르면(결과를
-  // 건네면 만드는 함수로, 아니면 도움으로) 그 파일을 판정하고, 내보낸 값의 속성은 그 파일의 칸으로 보아 칸과 같은 자리에서만 읽는다.
-  // 그 밖(함수를 부르지 않고 넘김, 모듈·칸을 통째로 넘김, 계산한 경로·이름)은 판정할 수 없어 짚는다.
-  const judgedValues = new Set();
-  const judgedExports = new Set();
-  const judgeModuleValue = (start, origin) => {
-    let at = start;
-    const path = [...origin.path];
-    if (at.parent?.type === "AwaitExpression" && at.parent.argument === at)
-      at = at.parent;
-    while (at.parent?.type === "MemberExpression" && at.parent.object === at) {
-      const name = propertyName(at.parent);
-      if (name === undefined) break;
-      at = at.parent;
-      path.push(name);
-    }
-    const parent = at.parent;
-    const unknown = () =>
-      findings.push({
-        node: at,
-        messageId: "foreignValue",
-        data: { source: origin.module },
-      });
-    const declarator =
-      parent?.type === "VariableDeclarator" && parent.init === at;
-    // 이름 하나에 담으면 별칭이다(그 쓰임을 따로 본다). 모듈을 구조 분해하면 내보낸 이름을 받는다(그 쓰임을 따로 본다).
-    if (declarator && (parent.id.type === "Identifier" || path.length === 0))
-      return;
-    const kind = foreign.kind({ ...origin, path: path.slice(0, 1) });
-    if (kind === "outside") return;
-    if (parent?.type === "CallExpression" && parent.callee === at) {
-      if (path.length === 1) {
-        if (judgedCalls.has(parent)) return;
-        for (const finding of foreign.helper(parent, { ...origin, path }))
-          findings.push(finding);
-        return;
-      }
-      // 내보낸 값의 메서드를 부르는 것은 칸 읽기다(`faults.list.push(…)`). 그 값에 담긴 함수는 도움으로 한 번 판정한다.
-      if (path.length >= 2 && kind === "value") {
-        const exportKey = `${origin.module}#${path[0]}`;
-        if (!judgedExports.has(exportKey)) {
-          judgedExports.add(exportKey);
-          for (const finding of foreign.value(start, {
-            ...origin,
-            path: [path[0]],
-          }))
-            findings.push(finding);
-        }
-        if (!readAllowed(start))
-          findings.push({ node: start, messageId: "late" });
-        return;
-      }
-      return unknown();
-    }
-    // 내보낸 값의 속성을 읽거나 구조 분해로 잡는 것은 칸 읽기다. 그 값에 담긴 함수는 도움으로 한 번 판정한다.
-    if (kind === "value" && (path.length >= 2 || declarator)) {
-      const exportKey = `${origin.module}#${path[0]}`;
-      if (!judgedExports.has(exportKey)) {
-        judgedExports.add(exportKey);
-        for (const finding of foreign.value(start, {
-          ...origin,
-          path: [path[0]],
-        }))
-          findings.push(finding);
-      }
-      if (!readAllowed(start))
-        findings.push({ node: start, messageId: "late" });
-      return;
-    }
-    unknown();
-  };
-  /** 내보낸 값의 속성을 구조 분해로 잡은 지역 이름(그 값의 그때 사본)인가. 잡는 자리에서 판정했다. */
-  const snapshot = (identifier) => {
-    const [def] = bindingOf(source, identifier)?.defs ?? [];
-    if (def?.type !== "Variable" || def.node.id.type !== "ObjectPattern")
-      return false;
-    const origin = def.node.init && originAt(def.node.init);
-    return Boolean(
-      origin && origin.module !== undefined && origin.path.length >= 1
-    );
-  };
-  for (const scope of source.scopeManager.scopes)
-    for (const reference of scope.references) {
-      const { identifier } = reference;
-      // 형 자리의 참조(`R extends Real`, `typeof x`)는 값을 읽지 않는다.
-      if (
-        reference.init ||
-        reference.isValueReference === false ||
-        judgedValues.has(identifier) ||
-        !inRegion(identifier) ||
-        inTypePosition(identifier) ||
-        snapshot(identifier)
-      )
-        continue;
-      judgedValues.add(identifier);
-      const origin = originAt(identifier);
-      if (!origin || origin.module === undefined || callResult(origin))
-        continue;
-      judgeModuleValue(identifier, origin);
-    }
-  for (const root of roots)
-    walkAll(root, (node) => {
-      if (node.type !== "ImportExpression" || judgedValues.has(node)) return;
-      judgedValues.add(node);
-      const origin = originAt(node);
-      if (origin) judgeModuleValue(node, origin);
-      else
-        findings.push({
-          node,
-          messageId: "foreignValue",
-          data: { source: "import()" },
-        });
-    });
   return findings;
-}
-
-/**
- * 파일 `filename`이 쓰는 다른 저장소 파일을 판정하는 것(doubleFindings의 `foreign`). 저장소 밖(Node 기본 모듈, 라이브러리)은 시험의
- * 칸을 갖지 않아 보지 않는다. 저장소 안인데 파일이나 그 내보낸 것을 찾지 못하면 판정할 수 없어 짚는다.
- * - `maker(call, origin)`: factory·만드는 함수가 그 내보낸 함수를 불러 결과를 건넨 자리. 그 함수를 factory로 놓고 같은 판정.
- * - `helper(call, origin)`: 대역 쪽 자리에서 그 내보낸 함수를 부른 자리. 그 함수를 도움으로 놓고 판정(안의 칸 읽기는 모두 짚음).
- * - `value(node, origin)`: 대역 쪽 자리에서 쓴 내보낸 값. 그 값의 초기값에 담긴 함수를 도움으로 놓고 판정.
- * - `kind(origin)`: 출처(`{ module, path: [이름] }`)가 저장소 밖(`outside`)인지, 내보낸 함수·값·그 밖인지, 찾지 못했는지.
- * 결과는 부른 자리(`call`)에 그 파일·줄과 함께 단다.
- */
-function foreignJudge(filename, seen = new Set()) {
-  const located = (origin) => {
-    const target = targetOf(filename, origin.module);
-    if (!target) return { outside: true };
-    const file =
-      target.file === undefined ? undefined : existingFile(target.file);
-    const name = origin.path.length === 1 ? origin.path[0] : undefined;
-    const found =
-      file && name !== undefined ? exportedBinding(file, name) : undefined;
-    return { file, found };
-  };
-  /** 안쪽 판정의 지적을 바깥 자리로 옮길 때의 종류: 늦은 읽기·판정할 수 없는 값은 그 종류 그대로, 그 밖은 찾지 못함. */
-  const carried = (messageId) =>
-    messageId === "late" || messageId === "lateIn"
-      ? "lateIn"
-      : messageId === "foreignValue" || messageId === "foreignValueIn"
-        ? "foreignValueIn"
-        : "unresolved";
-  const judged = (node, origin, mode) => {
-    if (!origin || origin.global !== undefined)
-      return origin
-        ? []
-        : [{ node, messageId: "unresolved", data: { source: "?" } }];
-    const { outside, found } = located(origin);
-    if (outside) return [];
-    const unresolved = [
-      { node, messageId: "unresolved", data: { source: origin.module } },
-    ];
-    if (found?.kind !== (mode === "value" ? "value" : "function"))
-      return unresolved;
-    const key = `${found.file}#${found.node.range[0]}#${mode}`;
-    const parsed = parseRepositoryFile(found.file);
-    if (!parsed.findings.has(key)) {
-      // 판정 중인 것을 다시 만나면(파일 사이의 순환) 판정할 수 없어 짚는다. 빈 결과로 넘기면 그 빈 판정이 캐시되어 다른 시험 파일이 통과한다.
-      if (seen.has(key)) return unresolved;
-      seen.add(key);
-      const inner = doubleFindings(
-        parsed.source,
-        parsed.ast,
-        mode === "maker" ? [found.node] : [],
-        foreignJudge(found.file, seen),
-        mode === "helper"
-          ? [found.node]
-          : mode === "value"
-            ? keptFunctions(parsed.source, found.node.init)
-            : []
-      );
-      seen.delete(key);
-      parsed.findings.set(
-        key,
-        inner.map((finding) => ({
-          where:
-            finding.data?.where ??
-            `${path.relative(repositoryRootPath, found.file)}:${finding.node?.loc?.start.line ?? "?"}`,
-          messageId: carried(finding.messageId),
-        }))
-      );
-    }
-    return parsed.findings.get(key).map((finding) => ({
-      node,
-      messageId: finding.messageId,
-      data: { where: finding.where, source: origin.module },
-    }));
-  };
-  return {
-    maker: (call, origin) => judged(call, origin, "maker"),
-    helper: (call, origin) => judged(call, origin, "helper"),
-    value: (node, origin) => judged(node, origin, "value"),
-    kind: (origin) => {
-      const { outside, file, found } = located(origin);
-      if (outside) return "outside";
-      if (!file) return "unresolved";
-      if (origin.path.length === 0) return "module";
-      return found?.kind ?? "unresolved";
-    },
-  };
 }
 
 /**
@@ -3703,14 +3479,13 @@ function foreignJudge(filename, seen = new Set()) {
  * 통과시키고 그 밖은 모두 짚는다(판정할 수 없는 것도 짚는다).
  * 칸: 모듈 범위의 `vi.hoisted(…)` 값(구조 분해 선언 포함)·가짜 함수(`vi.fn(…)`)·객체·배열·`new`로 만든 값(TS 단언·`await`로 감싸도)과 그
  * 별칭, `let`·`var`, 그리고 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 그릇·`let`(콜백 몸 밖, 곧 그 안의 함수에서 읽으면 짚는다).
- * 대역 쪽 자리: factory(인라인 함수 인자)와 만드는 함수(factory·만드는 함수의 몸에서 부르고 결과를 건네는 함수) 안, 그리고 그 안에서
- * 이름이 쓰인 모듈 범위 값의 정의 안(쓰인 값이 다시 쓰는 값까지). 대역 쪽 자리가 다른 저장소 파일의 값을 쓰면 아는 모양만 통과한다:
- * 내보낸 함수를 불러 결과를 건네면(공용 대역, 만든 묶음의 메서드를 대역 몸의 첫 await 전에 불러도) 그 함수를 factory로, 대역 쪽 자리
- * 안에서 부르면 도움으로 그 파일을 읽어 같은 판정을 하고 그 결과를 부른 자리에 단다. 내보낸 값(공용 결함 칸)의 속성은 칸과 같은
- * 자리에서만 읽는다. 그 밖(함수를 부르지 않고 넘김, 모듈·칸을 통째로 넘김, 계산한 경로·이름, 출처를 모르는 부르기)과 찾지 못한 것은
- * 짚는다.
+ * 판정은 그 파일 안에서만 한다. 다른 파일의 값(공용 대역이 내보낸 함수·칸)은 그 파일이 시험 코드 범위에서 자기 lint 차례에 같은
+ * 규칙으로 판정받는다(그 파일의 들머리는 내보낸 함수다).
+ * 대역 쪽 자리: 들머리(vi.mock의 인라인 factory, 그 파일이 내보낸 함수)와 만드는 함수(들머리·만드는 함수의 몸에서 부르고 결과를
+ * 건네는 같은 파일의 함수) 안, 그 안에서 이름이 쓰인 모듈 범위 값의 정의 안(쓰인 값이 다시 쓰는 값까지), 그리고 대역 쪽 자리가 쓰는
+ * 칸의 초기값에 담긴 함수(도움) 안.
  * 대역 쪽 자리의 칸 참조가 통과하는 것은 둘뿐이다.
- * - (a) factory·만드는 함수의 몸에 바로 있는 참조(대역을 만들 때 한 번 돈다).
+ * - (a) 들머리·만드는 함수의 몸에 바로 있는 참조(대역을 만들 때나 시험이 부를 때 한 번 돈다).
  * - (b) 참조를 감싼 가장 안쪽 함수가 대역이고(가장 가까운 바깥 함수가 factory·만드는 함수인 함수, 또는 모듈 범위에 함수 리터럴로 정의한
  *   이름 붙은 함수), 생성기가 아니고, 참조가 그 몸의 최상위 문장 가운데 첫 await(`for await` 포함, 안쪽 함수의 것은 빼고)를 담은 문장보다
  *   앞선 문장 안에 있다. 대역이란 제품에 건네는 값으로만 쓰이는 함수다: factory·만드는 함수가 돌려주는 식 안(객체·배열·펼치기·TS 단언·그
@@ -3726,18 +3501,12 @@ const hoistedStateAtCall = {
     docs: {
       description:
         "allow a module double to read state the tests swap only in its own body before its first await, and report every other shape",
+      // 모듈 const가 칸인지 타입으로 정한다. 타입 정보가 없는 파일은 증명할 수 없어 칸으로 본다.
+      requiresTypeChecking: true,
     },
     schema: [],
     messages: {
       late: "대역이 시험이 바꿔 끼우는 모듈 칸을 대역 몸의 첫 await 앞이 아닌 자리(await 뒤, 콜백·도움·안쪽 함수, 칸 값을 넘긴 너머)에서 찾습니다. 그 사이 afterEach·본문이 칸을 바꾸면 앞 시험의 늦은 호출이 다음 시험의 설정·기록에 닿습니다. 대역 함수의 첫 await 전에 칸을 지역 값으로 잡고(`const { x } = state`) 그 뒤에는 잡은 것만 쓰세요. CODING_STANDARDS.md#정리",
-      lateIn:
-        "이 factory가 쓰는 공용 대역({{where}})이 시험이 바꿔 끼우는 모듈 칸을 대역 몸의 첫 await 앞이 아닌 자리에서 찾습니다. 그 파일의 대역 함수가 첫 await 전에 칸을 지역 값으로 잡고 그 뒤에는 잡은 것만 쓰게 고치세요. CODING_STANDARDS.md#정리",
-      unresolved:
-        "이 factory가 쓰는 저장소 모듈({{source}})의 대역을 찾지 못해 칸을 언제 찾는지 판정할 수 없습니다. 그 모듈이 그 이름의 함수를 내보내게 하세요. CODING_STANDARDS.md#정리",
-      foreignValue:
-        "대역 쪽 자리가 저장소 모듈({{source}})의 값을 판정할 수 없는 모양으로 씁니다(내보낸 함수를 부르지 않고 넘김, 모듈이나 칸을 통째로 넘김, 계산한 경로·이름). 대역은 그 모듈의 내보낸 함수를 불러 결과를 건네거나, 칸은 대역 몸의 첫 await 전에 속성으로 잡으세요. CODING_STANDARDS.md#정리",
-      foreignValueIn:
-        "이 factory가 쓰는 공용 대역({{where}})이 저장소 모듈의 값을 판정할 수 없는 모양으로 씁니다(내보낸 함수를 부르지 않고 넘김, 모듈이나 칸을 통째로 넘김, 계산한 경로·이름). CODING_STANDARDS.md#정리",
       factory:
         "vi.mock의 factory를 인라인 함수로 두지 않아 대역이 칸을 언제 찾는지 판정할 수 없습니다. factory를 vi.mock 호출 안에 함수로 쓰세요. CODING_STANDARDS.md#정리",
     },
@@ -3746,6 +3515,25 @@ const hoistedStateAtCall = {
     const { sourceCode } = context;
     const factories = [];
     return {
+      // 그 파일이 내보낸 함수도 들머리다(공용 대역 파일의 만드는 함수·시험이 부르는 도움). 그 몸은 부른 순간 돌고, 건네는 함수는 대역이다.
+      ExportNamedDeclaration(node) {
+        const { declaration } = node;
+        if (declaration?.type === "FunctionDeclaration")
+          factories.push(declaration);
+        if (declaration?.type === "VariableDeclaration")
+          for (const declarator of declaration.declarations) {
+            const init = unwrapped(declarator.init);
+            if (isFunction(init)) factories.push(init);
+          }
+      },
+      ExportDefaultDeclaration(node) {
+        const declaration = unwrapped(node.declaration);
+        if (
+          declaration?.type === "FunctionDeclaration" ||
+          isFunction(declaration)
+        )
+          factories.push(declaration);
+      },
       CallExpression(node) {
         const origin = originOf(sourceCode.getScope(node.callee), node.callee);
         if (!isVi(origin, "mock") && !isVi(origin, "doMock")) return;
@@ -3756,12 +3544,7 @@ const hoistedStateAtCall = {
       },
       "Program:exit"(program) {
         if (factories.length === 0) return;
-        const findings = doubleFindings(
-          sourceCode,
-          program,
-          factories,
-          foreignJudge(context.filename)
-        );
+        const findings = doubleFindings(sourceCode, program, factories);
         for (const finding of findings) context.report(finding);
       },
     };

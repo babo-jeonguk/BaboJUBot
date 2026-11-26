@@ -2882,6 +2882,9 @@ const originCases = [
     rule: "tests/hoisted-state-at-call",
     value: { module: "vitest", path: ["vi", "hoisted"] },
     head: `import { vi as mocking } from "vitest";\n`,
+    local: false,
+    localSkipped:
+      "모듈 const는 타입으로 바뀔 수 없음이 증명될 때만 칸이 아니다. 지역 `vi`가 만든 값도 증명할 수 없어 칸이라 같은 판정이 옳다",
     use: (r) =>
       `const state = ${r}(() => ({ seen: [] }));\nmocking.mock("node:fs/promises", async () => ({ open: async (file) => {\n  await work();\n  state.seen.push(file);\n} }));\n`,
   },

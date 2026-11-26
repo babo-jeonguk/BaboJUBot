@@ -12,7 +12,7 @@ import {
 export const goalInput = {
   goal: "오류 유형을 정리한다",
   completionCriteria: "유형 목록",
-};
+} as const;
 
 // E2E 서버와 DB는 여러 spec과 반복 실행이 같이 쓰므로 같은 표시 이름의 조직이 여럿 있을 수 있다(제품도 이름 중복을 막지 않는다).
 // 아래 locator는 어느 조직인지를 링크가 가리키는 조직 ID로 가리고, 표시 이름은 화면이 보이는 내용으로만 확인한다.
@@ -85,7 +85,7 @@ export async function createSettledOrganization(
  * 동시 실행 칸(2)을 앞 spec의 조직이 쓰고 있으면 그 실행이 끝나기를 기다린다. 2 CPU에 부하를 건 기기에서 기본 5초를
  * 넘겼다. 이 대기는 실행 시도가 끝났는지만 보고, 화면 확인은 그 뒤에 기본 대기로 한다.
  */
-export const leadRun = { timeout: 30_000 };
+export const leadRun = { timeout: 30_000 } as const;
 
 /** 이 조직에 실행 시도가 생기고 모두 끝날 때까지 기다린다. 조직을 만든 뒤 생성으로 깨어난 Lead의 실행 시도를 기다릴 때 쓴다. */
 export async function runsSettled(

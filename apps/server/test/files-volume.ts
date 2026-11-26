@@ -54,7 +54,7 @@ export const removeRetries = {
   retryDelayMs: 200,
   // 폴더 하나 지우기를 기다리는 시한(`testFolders`). 다시 시도 사이 대기의 합(200ms × 1..10 = 11초, `removeFolder`)보다 길게 둔다.
   removeTimeoutMs: 30_000,
-};
+} as const;
 /** 지운다(`removeRetries`, 시한 안에서: `removeFolderWithin`). */
 export const remove = (folder: string) =>
   removeFolderWithin(folder, removeRetries);
