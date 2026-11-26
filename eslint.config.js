@@ -320,7 +320,7 @@ export default defineConfig([
     },
   },
   {
-    // 시험 코드는 호출 문맥을 공용 도움 callArming으로만 쓴다(CODING_STANDARDS.md#정리). 가져오는 모든 모양을 공용 가져오기 판정으로 봐야
+    // 시험 코드는 호출 문맥을 공용 도움(callArming: 결함, callAttribution: 실행 시도 귀속)으로만 쓴다(CODING_STANDARDS.md#정리). 가져오는 모든 모양을 공용 가져오기 판정으로 봐야
     // 해서 규칙을 따로 둔다. 문맥을 담는 곳은 그 도움 파일 하나라 이 규칙에서 뺀다.
     files: testFiles,
     ignores: ["packages/process/src/call-arming-support.ts"],

@@ -3033,6 +3033,26 @@ function exportedBinding(file, name, seen = new Set()) {
   return undefined;
 }
 
+/**
+ * 칸의 초기값에 담긴 함수 리터럴(묶음의 함수, `vi.hoisted` 콜백 안의 함수, `vi.fn`의 구현). 이 함수들은 대역이 부르는 도움이라 그 안의 칸
+ * 읽기는 어디서 불러도 짚는다(꺼내 두었다가 await 뒤에 불러도 칸을 그때 읽는다). `vi.hoisted`의 콜백 자신은 처음 한 번 도는 몸이라 뺀다.
+ */
+function keptFunctions(source, init) {
+  const found = [];
+  const value = unwrapped(init);
+  const hoisted =
+    value?.type === "CallExpression" &&
+    isFunction(value.arguments[0]) &&
+    isVi(originOf(source.getScope(value.callee), value.callee), "hoisted")
+      ? value.arguments[0]
+      : undefined;
+  walkAll(hoisted ? hoisted.body : value, (node) => {
+    if (isFunction(node) || node.type === "FunctionDeclaration")
+      found.push(node);
+  });
+  return found;
+}
+
 /** 부른 자리의 결과(`f()`)를 담은 출처인가. 그 결과는 부른 자리에서 판정한다. */
 const callResult = (origin) => origin.path.some((name) => name.endsWith("()"));
 
@@ -3347,7 +3367,27 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
   while (grew) {
     grew = false;
     for (const variable of moduleScope?.variables ?? []) {
-      if (isState.has(variable)) continue;
+      if (isState.has(variable)) {
+        // 대역 쪽 자리가 쓰는 칸의 초기값에 담긴 함수는 도움이다(꺼내 두었다가 await 뒤에 불러도 그 안에서 칸을 그때 읽는다).
+        const [def] = variable.defs;
+        if (
+          !containerVars.has(variable) ||
+          def?.type !== "Variable" ||
+          !def.node.init ||
+          !variable.references.some(
+            ({ identifier, init }) => !init && inRegion(identifier)
+          )
+        )
+          continue;
+        for (const fn of keptFunctions(source, def.node.init))
+          if (!roots.has(fn)) {
+            roots.add(fn);
+            called.add(fn);
+            memo.clear();
+            grew = true;
+          }
+        continue;
+      }
       const [def] = variable.defs;
       const node =
         def?.type === "FunctionName" || def?.type === "ClassName"
@@ -3467,6 +3507,7 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
   // 건네면 만드는 함수로, 아니면 도움으로) 그 파일을 판정하고, 내보낸 값의 속성은 그 파일의 칸으로 보아 칸과 같은 자리에서만 읽는다.
   // 그 밖(함수를 부르지 않고 넘김, 모듈·칸을 통째로 넘김, 계산한 경로·이름)은 판정할 수 없어 짚는다.
   const judgedValues = new Set();
+  const judgedExports = new Set();
   const judgeModuleValue = (start, origin) => {
     let at = start;
     const path = [...origin.path];
@@ -3499,16 +3540,34 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
           findings.push(finding);
         return;
       }
-      // 내보낸 값의 메서드를 부르는 것은 칸 읽기다(`faults.list.push(…)`).
+      // 내보낸 값의 메서드를 부르는 것은 칸 읽기다(`faults.list.push(…)`). 그 값에 담긴 함수는 도움으로 한 번 판정한다.
       if (path.length >= 2 && kind === "value") {
+        const exportKey = `${origin.module}#${path[0]}`;
+        if (!judgedExports.has(exportKey)) {
+          judgedExports.add(exportKey);
+          for (const finding of foreign.value(start, {
+            ...origin,
+            path: [path[0]],
+          }))
+            findings.push(finding);
+        }
         if (!readAllowed(start))
           findings.push({ node: start, messageId: "late" });
         return;
       }
       return unknown();
     }
-    // 내보낸 값의 속성을 읽거나 구조 분해로 잡는 것은 칸 읽기다.
+    // 내보낸 값의 속성을 읽거나 구조 분해로 잡는 것은 칸 읽기다. 그 값에 담긴 함수는 도움으로 한 번 판정한다.
     if (kind === "value" && (path.length >= 2 || declarator)) {
+      const exportKey = `${origin.module}#${path[0]}`;
+      if (!judgedExports.has(exportKey)) {
+        judgedExports.add(exportKey);
+        for (const finding of foreign.value(start, {
+          ...origin,
+          path: [path[0]],
+        }))
+          findings.push(finding);
+      }
       if (!readAllowed(start))
         findings.push({ node: start, messageId: "late" });
       return;
@@ -3563,6 +3622,7 @@ function doubleFindings(source, program, factoriesFrom, foreign, helpers = []) {
  * 칸을 갖지 않아 보지 않는다. 저장소 안인데 파일이나 그 내보낸 것을 찾지 못하면 판정할 수 없어 짚는다.
  * - `maker(call, origin)`: factory·만드는 함수가 그 내보낸 함수를 불러 결과를 건넨 자리. 그 함수를 factory로 놓고 같은 판정.
  * - `helper(call, origin)`: 대역 쪽 자리에서 그 내보낸 함수를 부른 자리. 그 함수를 도움으로 놓고 판정(안의 칸 읽기는 모두 짚음).
+ * - `value(node, origin)`: 대역 쪽 자리에서 쓴 내보낸 값. 그 값의 초기값에 담긴 함수를 도움으로 놓고 판정.
  * - `kind(origin)`: 출처(`{ module, path: [이름] }`)가 저장소 밖(`outside`)인지, 내보낸 함수·값·그 밖인지, 찾지 못했는지.
  * 결과는 부른 자리(`call`)에 그 파일·줄과 함께 단다.
  */
@@ -3577,55 +3637,63 @@ function foreignJudge(filename, seen = new Set()) {
       file && name !== undefined ? exportedBinding(file, name) : undefined;
     return { file, found };
   };
-  const judged = (call, origin, mode) => {
+  /** 안쪽 판정의 지적을 바깥 자리로 옮길 때의 종류: 늦은 읽기·판정할 수 없는 값은 그 종류 그대로, 그 밖은 찾지 못함. */
+  const carried = (messageId) =>
+    messageId === "late" || messageId === "lateIn"
+      ? "lateIn"
+      : messageId === "foreignValue" || messageId === "foreignValueIn"
+        ? "foreignValueIn"
+        : "unresolved";
+  const judged = (node, origin, mode) => {
     if (!origin || origin.global !== undefined)
       return origin
         ? []
-        : [{ node: call, messageId: "unresolved", data: { source: "?" } }];
+        : [{ node, messageId: "unresolved", data: { source: "?" } }];
     const { outside, found } = located(origin);
     if (outside) return [];
-    if (found?.kind !== "function")
-      return [
-        {
-          node: call,
-          messageId: "unresolved",
-          data: { source: origin.module },
-        },
-      ];
+    const unresolved = [
+      { node, messageId: "unresolved", data: { source: origin.module } },
+    ];
+    if (found?.kind !== (mode === "value" ? "value" : "function"))
+      return unresolved;
     const key = `${found.file}#${found.node.range[0]}#${mode}`;
-    if (seen.has(key)) return [];
-    seen.add(key);
     const parsed = parseRepositoryFile(found.file);
     if (!parsed.findings.has(key)) {
+      // 판정 중인 것을 다시 만나면(파일 사이의 순환) 판정할 수 없어 짚는다. 빈 결과로 넘기면 그 빈 판정이 캐시되어 다른 시험 파일이 통과한다.
+      if (seen.has(key)) return unresolved;
+      seen.add(key);
       const inner = doubleFindings(
         parsed.source,
         parsed.ast,
         mode === "maker" ? [found.node] : [],
         foreignJudge(found.file, seen),
-        mode === "helper" ? [found.node] : []
+        mode === "helper"
+          ? [found.node]
+          : mode === "value"
+            ? keptFunctions(parsed.source, found.node.init)
+            : []
       );
+      seen.delete(key);
       parsed.findings.set(
         key,
         inner.map((finding) => ({
-          where: `${path.relative(repositoryRootPath, found.file)}:${finding.node?.loc?.start.line ?? "?"}`,
-          messageId: finding.messageId,
+          where:
+            finding.data?.where ??
+            `${path.relative(repositoryRootPath, found.file)}:${finding.node?.loc?.start.line ?? "?"}`,
+          messageId: carried(finding.messageId),
         }))
       );
     }
     return parsed.findings.get(key).map((finding) => ({
-      node: call,
-      messageId:
-        finding.messageId === "late"
-          ? "lateIn"
-          : finding.messageId === "foreignValue"
-            ? "foreignValueIn"
-            : "unresolved",
+      node,
+      messageId: finding.messageId,
       data: { where: finding.where, source: origin.module },
     }));
   };
   return {
     maker: (call, origin) => judged(call, origin, "maker"),
     helper: (call, origin) => judged(call, origin, "helper"),
+    value: (node, origin) => judged(node, origin, "value"),
     kind: (origin) => {
       const { outside, file, found } = located(origin);
       if (outside) return "outside";
@@ -3711,8 +3779,9 @@ const hoistedStateAtCall = {
 const callContextModules = new Set(["async_hooks", "node:async_hooks"]);
 
 /**
- * 시험 코드는 호출 문맥을 공용 도움 `callArming`(@babojubot/process/call-arming)으로만 쓴다(CODING_STANDARDS.md#정리). 문맥을 따로
- * 만들면 무장을 잡는 때(불린 순간)와 문맥이 없을 때의 답(결함 없음)이 파일마다 달라진다. 그 모듈을 가져오는 모든 자리를 공용 가져오기
+ * 시험 코드는 호출 문맥을 공용 도움(@babojubot/process/call-arming의 `callArming`: 결함, `callAttribution`: 실행 시도 귀속)으로만
+ * 쓴다(CODING_STANDARDS.md#정리). 문맥을 따로 만들면 무장을 잡는 때(불린 순간)와 문맥이 없거나 끝났을 때의 답(결함 없음)이 파일마다
+ * 달라진다. 그 모듈을 가져오는 모든 자리를 공용 가져오기
  * 판정(scripts/eslint-imports.mjs)으로 본다. 그 도움 파일은 eslint.config.js가 이 규칙에서 뺀다.
  */
 const callContextThroughArming = {
@@ -3721,7 +3790,7 @@ const callContextThroughArming = {
     type: "problem",
     docs: {
       description:
-        "test code takes a call's context only through the shared callArming helper",
+        "test code takes a call's context only through the shared call-arming helper (callArming, callAttribution)",
     },
     schema: [],
     messages: {
