@@ -424,10 +424,10 @@ function Thread({
   const visible = usePageVisible();
   const transcript = useMemo(
     () =>
-      history.data?.pages
+      (history.data?.pages ?? [])
         .slice()
         .reverse()
-        .flatMap((p) => p.messages) ?? [],
+        .flatMap((p) => p.messages),
     [history.data]
   );
   const queued = queuedQuery.data ?? [];

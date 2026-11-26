@@ -259,9 +259,13 @@ export function startProcess(options: {
     });
   let broken = false,
     leaderExited = false;
+  /** 시작 실패와 입력 실패의 코드. `done`의 `causes`(실행 시도 폴더를 남길 때 알리는 원인)에 든다. */
+  let startFailure: string | undefined, inputFailure: string | undefined;
   void tree.started.then((start) => {
     if (start.kind === "failed") {
       broken = true;
+      startFailure =
+        start.error === undefined ? "start_failed" : failureCode(start.error);
       // 띄우지 못한 이유를 남긴다. 시작 오류(ENOENT 등)는 문구 대신 짧은 이름만(경로·로그인 내용이 섞일 수 있음).
       console.error(
         start.error === undefined
@@ -334,6 +338,7 @@ export function startProcess(options: {
         `[provider] writing to the program's input failed (${failureCode(error)})`
       );
     broken = true;
+    inputFailure ??= failureCode(error);
     reportInputFailure();
     end();
   });
@@ -376,6 +381,13 @@ export function startProcess(options: {
   const done = new Promise<{
     code: number | null;
     broken: boolean;
+    /**
+     * 이 실행 시도가 띄운 것의 끝을 확인했는가: 트리 전체가 끝났고(끄기 성공), 출력이 닫혔고(출력을 쥔 자손이 없음), 컨테이너로
+     * 돌았으면 그 컨테이너도 없어졌다. 시작 실패·입력 실패처럼 끝을 확인한 뒤의 `broken`과 다르다. 실행 시도 폴더는 이 값으로 지울지 정한다(`attemptFolder`).
+     */
+    ended: boolean;
+    /** `broken`의 까닭(실패 코드). `broken`이 아니면 비어 있다. */
+    causes: readonly string[];
     stderr: string;
   }>((resolve) => {
     /**
@@ -400,6 +412,10 @@ export function startProcess(options: {
           };
         /** 트리 전체가 끝난 것을 확인했는가. 확인하기 전에는 기록을 지우지 않는다(#219). */
         let stopped = false;
+        /** 출력이 닫힌 것을 확인했는가. 닫히지 않았으면 트리 밖의 누군가(물려받은 자손)가 출력을 쥐고 아직 돈다. */
+        let outputClosed = false;
+        /** 컨테이너가 없어진 것을 확인했는가(컨테이너로 돌지 않았으면 처음부터 참). */
+        let containerGone = !options.container;
         const failures = await attemptEach([
           // 중계 권한과 열린 연결을 먼저 회수한다. Docker가 컨테이너를 늦게 지우거나 못 지워도 그 사이 바깥·조직 도구에 닿지 못한다.
           reported(
@@ -430,14 +446,18 @@ export function startProcess(options: {
                     limit = clock.setTimeout(
                       () =>
                         reject(
-                          new Error(
-                            `the output did not close within ${outputCloseLimitMs} ms`
+                          Object.assign(
+                            new Error(
+                              `the output did not close within ${outputCloseLimitMs} ms`
+                            ),
+                            { code: "output_not_closed" }
                           )
                         ),
                       outputCloseLimitMs
                     );
                   }),
                 ]);
+                outputClosed = true;
               } catch (error) {
                 tree.stdout.destroy();
                 tree.stderr.destroy();
@@ -467,6 +487,7 @@ export function startProcess(options: {
                   new Error("it was still there after removing it"),
                   { code: "container_left" }
                 );
+              containerGone = true;
             }
           ),
           reported(
@@ -479,13 +500,24 @@ export function startProcess(options: {
           ),
         ]);
         if (failures.length > 0) broken = true;
+        const causes = [
+          ...(startFailure === undefined ? [] : [startFailure]),
+          ...(inputFailure === undefined ? [] : [inputFailure]),
+          ...failures.map(failureCode),
+        ];
         if (code)
           console.warn(
             `[provider] program exited with code ${code}: ${stderr
               .slice(-500)
               .replace(/\S{32,}/g, "<hidden>")}`
           );
-        resolve({ code, broken, stderr });
+        resolve({
+          code,
+          broken,
+          ended: stopped && outputClosed && containerGone,
+          causes,
+          stderr,
+        });
       })();
     };
     finishWithoutLeader = () => finish(null);

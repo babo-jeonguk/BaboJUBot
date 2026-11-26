@@ -3,7 +3,6 @@ import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   eventListSchema,
   organizationDetailSchema,
@@ -31,13 +30,19 @@ import { goal, scriptedAgents, serverHelpers } from "./scenarios.ts";
 import {
   eventually,
   eventuallyMs,
-  ownedListener,
   startTestServer,
   within,
   type TestServer,
   startOnDatabaseOf,
 } from "./support.ts";
-import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  ownedClosable,
+  ownedListener,
+  removeFolderWithin,
+  withCleanup,
+} from "@babojubot/process/test-cleanup";
+import { ownedConnect } from "@babojubot/process/testing";
 
 let t: TestServer | undefined;
 afterEach(async () => {
@@ -87,7 +92,7 @@ describe("isolation switch", () => {
     // 다시 띄운 서버는 시험 서버의 DB와 이 폴더를 쓴다. 시험 서버(DB)도 이 폴더도 다시 띄운 서버의 끝(한 번만 도는 같은 끝)을 확인한
     // 뒤에만 닫거나 지운다(`startOnDatabaseOf`, `folderCleanup`).
     const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-isolation-"));
-    const folder = folderCleanup(() => removeFolder(dataDir));
+    const folder = folderCleanup(() => removeFolderWithin(dataDir));
     onTestFinished(folder.cleanUp);
     t = await startTestServer({ providers: createFakeProviders(1) });
     await t.request("PUT", "/api/providers/isolation", { isolated: true });
@@ -108,8 +113,8 @@ describe("isolation switch", () => {
 });
 
 /**
- * 중계 소켓으로 보낸 요청 하나의 답을 상한 안에서 기다린다. `answered`가 답을 받는 법을 정하고, 요청 오류·상한은 실패다. 상한이 지나거나
- * 실패하면 요청(과 그 소켓)을 끊어 실제로 끝낸다.
+ * 중계 소켓으로 보낸 요청 하나의 답을 상한 안에서 기다린다. `answered`가 답을 받는 법을 정하고, 요청 오류·상한은 실패다. 요청은
+ * 만든 직후 정리에 맡겨져 있어(`ownedClosable`), 상한이 지나도 그 정리가 끊고 닫힘을 확인한다.
  */
 async function untilAnswered<T>(
   request: http.ClientRequest,
@@ -119,19 +124,14 @@ async function untilAnswered<T>(
   ) => void,
   what: string
 ) {
-  try {
-    return await within(
-      new Promise<T>((resolve, reject) => {
-        request.on("error", reject);
-        answered(resolve, reject);
-      }),
-      eventuallyMs,
-      `${what} over the relay socket did not answer`
-    );
-  } catch (error) {
-    request.destroy();
-    throw error;
-  }
+  return within(
+    new Promise<T>((resolve, reject) => {
+      request.on("error", reject);
+      answered(resolve, reject);
+    }),
+    eventuallyMs,
+    `${what} over the relay socket did not answer`
+  );
 }
 
 /**
@@ -139,6 +139,7 @@ async function untilAnswered<T>(
  * 끊기면 `end` 대신 오류가 오므로 받은 데까지의 본문을 답으로 내주지 않는다.
  */
 function overSocket(
+  own: (step: () => Promise<void>) => void,
   socketPath: string,
   route: string,
   init: {
@@ -149,13 +150,17 @@ function overSocket(
 ) {
   const method = init.method ?? "GET";
   // 연결을 다시 쓰지 않는다(`agent: false`). 답을 받으면 연결도 닫혀 중계 소켓에 남지 않는다.
-  const request = http.request({
-    socketPath,
-    path: route,
-    method,
-    headers: init.headers ?? {},
-    agent: false,
-  });
+  const request = ownedClosable(
+    own,
+    http.request({
+      socketPath,
+      path: route,
+      method,
+      headers: init.headers ?? {},
+      agent: false,
+    }),
+    `${method} ${route} over the relay socket`
+  );
   return untilAnswered<{ status: number; type: string; body: string }>(
     request,
     (resolve, reject) => {
@@ -179,33 +184,26 @@ function overSocket(
 
 /**
  * 컨테이너 쪽처럼 egress.sock에 CONNECT를 보내고 중계의 답을 판정하지 않고 그대로 돌려준다: node:http가 읽은 상태와 거부 이유
- * 머리(`x-babojubot-refusal`), 그 연결의 소켓. CONNECT의 답은 상태와 상관없이 `connect`로 온다(Node http 문서). 답 머리를 다 읽기
- * 전에 끊기거나 형식이 틀리면 그 실패다(`untilAnswered`).
+ * 머리(`x-babojubot-refusal`), 그 연결(`tunnel`). 연결은 만든 직후 `own`에 맡기고 CONNECT는 그 위에 탄다(`ownedConnect`, 터널은 그
+ * 연결이다). `tunnel.closed`는 연결을 만든 순간부터 들은 닫힘이다(거절하지 않음). 답 머리를 다 읽기 전에 끊기거나 형식이 틀리면
+ * 그 실패다.
  */
-function connectOver(directory: string, target: string) {
-  const request = http.request({
-    socketPath: path.join(directory, "egress.sock"),
-    method: "CONNECT",
-    path: target,
-  });
-  return untilAnswered<{
-    status: number;
-    refusal: string | string[] | undefined;
-    socket: net.Socket;
-  }>(
-    request,
-    (resolve) => {
-      request.once("connect", (response, socket) =>
-        resolve({
-          status: response.statusCode!,
-          refusal: response.headers["x-babojubot-refusal"],
-          socket,
-        })
-      );
-      request.end();
-    },
-    `CONNECT ${target}`
+async function connectOver(
+  own: (step: () => Promise<void>) => void,
+  directory: string,
+  target: string
+) {
+  const { response, socket, closed } = await ownedConnect(
+    own,
+    path.join(directory, "egress.sock"),
+    target,
+    { answerMs: eventuallyMs, what: `CONNECT ${target} over the relay socket` }
   );
+  return {
+    status: response.statusCode!,
+    refusal: response.headers["x-babojubot-refusal"],
+    tunnel: { socket, closed },
+  };
 }
 
 /** 중계가 한 요청에 답한 것. 답 머리를 받았으면 상태(CONNECT는 거부 이유 머리도), 받기 전에 끝났으면 그 오류의 원인 코드다. */
@@ -261,6 +259,7 @@ function fakeDocker(
           failed: failureCode(error),
         });
         const tools = await overSocket(
+          defer,
           path.join(opened.directory, "tools.sock"),
           "/api/tools/mcp",
           { method: "POST" }
@@ -270,10 +269,11 @@ function fakeDocker(
           forbidden.push({
             target,
             answer: await connectOver(
+              defer,
               opened.directory,
               `${target.host.includes(":") ? `[${target.host}]` : target.host}:${target.port}`
-            ).then(({ status, refusal, socket }): RelayAnswer => {
-              socket.destroy();
+            ).then(({ status, refusal, tunnel }): RelayAnswer => {
+              tunnel.socket.destroy();
               return { status, refusal };
             }, failed),
           });
@@ -437,7 +437,7 @@ describe("a CONNECT over the relay socket", () => {
    */
   async function answering(answer: string) {
     const directory = await mkdtemp(path.join(tmpdir(), "babojubot-egress-"));
-    const folder = folderCleanup(() => removeFolder(directory));
+    const folder = folderCleanup(() => removeFolderWithin(directory));
     onTestFinished(folder.cleanUp);
     const server = http.createServer();
     server.on("connect", (_req, socket: net.Socket) => socket.end(answer));
@@ -467,11 +467,12 @@ describe("a CONNECT over the relay socket", () => {
     "hands back the relay's answer as it was when it answered $answered",
     async ({ answer, expected }) => {
       const directory = await answering(answer);
-      const { socket, ...answered } = await connectOver(
+      const { tunnel, ...answered } = await connectOver(
+        onTestFinished,
         directory,
         "example.invalid:443"
       );
-      socket.destroy();
+      tunnel.socket.destroy();
       expect(answered).toEqual(expected);
     }
   );
@@ -503,25 +504,30 @@ describe("isolated runs", () => {
           await Promise.all([own.ready, other.ready]);
           const auth = { authorization: `Bearer ${request.access.token}` };
           const mcp = (directory: string) =>
-            overSocket(path.join(directory, "tools.sock"), "/api/tools/mcp", {
-              method: "POST",
-              headers: { ...auth, "content-type": "application/json" },
-              body: JSON.stringify({
-                jsonrpc: "2.0",
-                id: 1,
-                method: "tools/list",
-              }),
-            });
+            overSocket(
+              defer,
+              path.join(directory, "tools.sock"),
+              "/api/tools/mcp",
+              {
+                method: "POST",
+                headers: { ...auth, "content-type": "application/json" },
+                body: JSON.stringify({
+                  jsonrpc: "2.0",
+                  id: 1,
+                  method: "tools/list",
+                }),
+              }
+            );
           const tools = path.join(own.directory, "tools.sock");
           checks.push({
-            health: (await overSocket(tools, "/api/health")).status,
-            settings: (await overSocket(tools, "/api/providers")).status,
+            health: (await overSocket(defer, tools, "/api/health")).status,
+            settings: (await overSocket(defer, tools, "/api/providers")).status,
             tools: (await mcp(own.directory)).status,
             // 다른 조직·실행 시도의 중계로는 이 실행 시도의 토큰을 쓰지 못한다.
             otherRelay: (await mcp(other.directory)).status,
             // 인증 중계도 이 경로에 있고, 실행 시도 권한이 없는 요청은 상류 전에 거부한다(#148).
             credentialRelay: (
-              await overSocket(tools, "/api/relay/real/v1/messages", {
+              await overSocket(defer, tools, "/api/relay/real/v1/messages", {
                 method: "POST",
                 headers: auth,
               })
@@ -676,6 +682,7 @@ describe("isolated runs", () => {
         for (const body of bodies)
           answers.container.push(
             await overSocket(
+              defer,
               path.join(own.directory, "tools.sock"),
               "/api/tools/artifacts",
               {
@@ -920,9 +927,13 @@ describe("organization network allow list", () => {
     });
     const early = relayFor(planning.id, planning.agents[0]!.id);
     await early.ready;
-    const { socket: beforeApprovalSocket, ...beforeApproval } =
-      await connectOver(early.directory, `localhost:${target.port}`);
-    beforeApprovalSocket.destroy();
+    const { tunnel: beforeApprovalTunnel, ...beforeApproval } =
+      await connectOver(
+        onTestFinished,
+        early.directory,
+        `localhost:${target.port}`
+      );
+    beforeApprovalTunnel.socket.destroy();
     expect(beforeApproval).toEqual({
       status: 403,
       refusal: "destination_not_allowed",
@@ -935,29 +946,30 @@ describe("organization network allow list", () => {
     });
     const relay = relayFor(org.id, org.lead.id);
     await relay.ready;
-    const open = await connectOver(relay.directory, `localhost:${target.port}`);
-    // 열린 터널은 이 시험이 소유한다. 중계가 끊기를 기다리다 시험이 끝나도 남지 않는다.
-    onTestFinished(() => {
-      open.socket.destroy();
-    });
+    // 열린 터널은 이 시험의 정리가 소유한다(`connectOver`). 중계가 끊기를 기다리다 시험이 끝나도 남지 않는다.
+    const open = await connectOver(
+      onTestFinished,
+      relay.directory,
+      `localhost:${target.port}`
+    );
     expect(open.status).toBe(200);
     // 다른 조직의 목록은 이 조직의 중계에 쓰이지 않는다.
     const other = relayFor(planning.id, planning.agents[0]!.id);
     await other.ready;
-    const { socket: otherListSocket, ...otherList } = await connectOver(
+    const { tunnel: otherListTunnel, ...otherList } = await connectOver(
+      onTestFinished,
       other.directory,
       `localhost:${target.port}`
     );
-    otherListSocket.destroy();
+    otherListTunnel.socket.destroy();
     expect(otherList).toEqual({
       status: 403,
       refusal: "destination_not_allowed",
     });
     await other.close();
 
-    const closed = new Promise<void>((resolve) =>
-      open.socket.once("close", () => resolve())
-    );
+    // 목적지를 지우기 전에는 터널이 아직 열려 있다. 중계가 일찍 닫았으면 그 이유로 실패한다.
+    expect(open.tunnel.socket.closed).toBe(false);
     expect(
       (
         await t.request("PUT", `/api/organizations/${org.id}/network-policy`, {
@@ -966,15 +978,16 @@ describe("organization network allow list", () => {
       ).status
     ).toBe(200);
     await within(
-      closed,
+      open.tunnel.closed,
       eventuallyMs,
       "the relay did not close the connection the owner removed"
     );
-    const { socket: removedSocket, ...removed } = await connectOver(
+    const { tunnel: removedTunnel, ...removed } = await connectOver(
+      onTestFinished,
       relay.directory,
       `localhost:${target.port}`
     );
-    removedSocket.destroy();
+    removedTunnel.socket.destroy();
     expect(removed).toEqual({
       status: 403,
       refusal: "destination_not_allowed",
@@ -986,29 +999,27 @@ describe("organization network allow list", () => {
       destinations: [entry],
     });
     const again = await connectOver(
+      onTestFinished,
       relay.directory,
       `localhost:${target.port}`
     );
-    onTestFinished(() => {
-      again.socket.destroy();
-    });
     expect(again.status).toBe(200);
-    const stopped = new Promise<void>((resolve) =>
-      again.socket.once("close", () => resolve())
-    );
+    // 멈추기 전에는 터널이 아직 열려 있다.
+    expect(again.tunnel.socket.closed).toBe(false);
     expect(
       (await t.request("POST", `/api/organizations/${org.id}/stop`, {})).status
     ).toBe(200);
     await within(
-      stopped,
+      again.tunnel.closed,
       eventuallyMs,
       "the relay did not close the connection after the stop"
     );
-    const { socket: afterStopSocket, ...afterStop } = await connectOver(
+    const { tunnel: afterStopTunnel, ...afterStop } = await connectOver(
+      onTestFinished,
       relay.directory,
       `localhost:${target.port}`
     );
-    afterStopSocket.destroy();
+    afterStopTunnel.socket.destroy();
     expect(afterStop).toEqual({
       status: 403,
       refusal: "destination_not_allowed",
@@ -1042,11 +1053,12 @@ describe("organization network allow list", () => {
           });
           defer(() => own.close());
           await own.ready;
-          const { socket, ...answer } = await connectOver(
+          const { tunnel, ...answer } = await connectOver(
+            defer,
             own.directory,
             "example.invalid:443"
           );
-          socket.destroy();
+          tunnel.socket.destroy();
           answers.push(answer);
           // 거부 기록은 끝나지 않은 실행 시도에만 남는다. 기록이 실행 활동에 저장된 뒤에 실행을 끝낸다.
           await expect

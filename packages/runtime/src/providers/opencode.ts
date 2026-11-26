@@ -32,7 +32,7 @@ import {
 import { organizationKeysPluginSource } from "./opencode-keys-plugin.ts";
 import type { UsageUnit } from "@babojubot/contracts";
 import { providerUsage } from "./usage.ts";
-import { TreeLaunchRefused } from "@babojubot/process";
+import { realClock, TreeLaunchRefused, type Clock } from "@babojubot/process";
 import {
   startProcess,
   probeTimeoutMs,
@@ -60,7 +60,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { connectionFolders } from "./folders.ts";
 import { record } from "./record.ts";
-import { removeAttemptFolder } from "./attempt-folder.ts";
+import { attemptFolder } from "./attempt-folder.ts";
 const failure = (): RunResult => ({
   stopReason: "failed",
   error: "프로바이더 실행이 실패했습니다.",
@@ -95,12 +95,55 @@ function failedExecution(error: unknown): RunResult {
     };
   return failure();
 }
+/** 서버가 실패로 답한 요청. 진단에는 HTTP 상태가 코드(`HTTP_503` 등)로 남는다. */
 class HttpFailure extends Error {
   readonly status: number;
-  constructor(status: number) {
-    super("Provider request failed");
+  readonly code: string;
+  /** `activating`: plugin 활성화 중이라는 답을 받고 기다리다 활성화 시한(`pluginActivationMs`)에 끊겼다. 그 밖의 실패 답과 다른 code로 남는다. */
+  constructor(status: number, activating = false) {
+    super(
+      activating
+        ? `OpenCode's plugins did not finish activating within ${pluginActivationMs} ms (HTTP ${status})`
+        : `Provider request failed (HTTP ${status})`
+    );
     this.status = status;
+    this.code = activating ? "plugins_not_activated" : `HTTP_${status}`;
   }
+}
+/**
+ * OpenCode가 Location의 plugin 활성화를 다 기다리지 못했다는 답인가. 2.2.6은 서버를 연 뒤에도 plugin 활성화를 이어 가고, 모델 목록 등
+ * Location 경로는 활성화를 5초 기다린 뒤에도 끝나지 않으면 503 `{ _tag: "ServiceUnavailableError", service: "plugin" }`으로 답한다
+ * (server/src/location.ts `awaitPlugins`). 준비를 알리는 신호(stdout 줄·event·상태 경로)는 없다. 이 모양만 "준비 중"으로 보고, 그 밖의
+ * 실패 답은 실패다.
+ */
+const pluginsActivating = (body: unknown) => {
+  const answer = record(body);
+  return (
+    answer._tag === "ServiceUnavailableError" && answer.service === "plugin"
+  );
+};
+/**
+ * 서버 주소를 받은 때부터의 plugin 활성화 시한. 그 안에서는 "준비 중" 답만 다시 묻는다(공식 Desktop 클라이언트도 이 답에만 다시
+ * 묻는다: client/src/service-probe.ts). "준비 중" 답을 받은 뒤의 기다림(쉼·다시 묻기의 답·그 503 본문 판독)이 이 시한에 끊기면
+ * `plugins_not_activated`, 첫 답의 503 본문 판독이 끊기면 활성화 중인지 모르는 503(`HTTP_503`)으로 실패한다.
+ */
+export const pluginActivationMs = 60_000;
+/** "준비 중" 답 뒤 다시 묻기 전의 쉼. 서버가 답하기 전에 이미 5초 기다리므로, 곧바로 답한 경우에도 연달아 묻지 않게만 한다. */
+export const activationPauseMs = 1_000;
+/** `clock`으로 `ms`를 쉰다. `signal`이 끝나면 타이머를 풀고 그 이유로 거절한다. */
+function pauseOn(clock: Clock, ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason as Error);
+    const stop = () => {
+      clock.clearTimeout(timer);
+      reject(signal.reason as Error);
+    };
+    const timer = clock.setTimeout(() => {
+      signal.removeEventListener("abort", stop);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", stop, { once: true });
+  });
 }
 /** 서버 요청의 응답 제한. 모델 목록은 실제로 몇 초씩 걸린다. */
 const requestTimeoutMs = 60_000;
@@ -389,30 +432,47 @@ async function openCodeLoginResidue(
               return { state: "unverified", reason: "changed_while_checked" };
             }
             db = new DatabaseSync(copy);
+            // 없는 표는 로그인이 없다. 표가 있는지는 SQLite의 목록(sqlite_master)으로 묻는다(오류 문구로 짐작하지 않는다). 그 밖의
+            // 읽기 오류는 그대로 던져 확인 실패로 다룬다.
+            const hasTable = db.prepare(
+              "select 1 from sqlite_master where type = 'table' and name = ?"
+            );
             for (const table of ["credential", "account", "control_account"]) {
-              try {
-                const row = db
-                  .prepare(`select count(*) as n from "${table}"`)
-                  .get() as { n?: unknown } | undefined;
-                if (typeof row?.n === "number" && row.n > 0)
-                  return { state: "left" };
-              } catch (error) {
-                // 없는 표는 0으로 본다. 그 밖의 읽기 오류는 남은 로그인으로 본다.
-                if (!/no such table/i.test(String(error))) throw error;
-              }
+              if (hasTable.get(table) === undefined) continue;
+              const row = db
+                .prepare(`select count(*) as n from "${table}"`)
+                .get() as { n?: unknown } | undefined;
+              if (typeof row?.n === "number" && row.n > 0)
+                return { state: "left" };
             }
             return { state: "none" };
           } finally {
             const closedMain = main;
             const closedWal = wal;
-            await Promise.all([
-              continueAfterFailure(
-                () => db?.close(),
+            // 복사본 폴더는 그 안의 DB를 닫은 뒤에만 지운다. 닫지 못하면 폴더를 남기고 그 원인을 알린다(원본 저장소의 handle은
+            // 이 폴더와 무관해 따로 닫는다).
+            const removeCopy = async () => {
+              const closed = continueAfterFailure(
+                () => {
+                  db?.close();
+                  return true;
+                },
                 (error) =>
                   console.warn(
-                    `[provider] the copied OpenCode store could not be closed (${failureCode(error)})`
+                    `[provider] the copied OpenCode store could not be closed; its folder ${copyFolder} is kept (${failureCode(error)})`
                   )
-              ),
+              );
+              if (!closed) return;
+              await continueAfterFailure(
+                () => rm(copyFolder, { recursive: true, force: true }),
+                (error) =>
+                  console.warn(
+                    `[provider] the copied OpenCode store folder could not be removed (${failureCode(error)})`
+                  )
+              );
+            };
+            await Promise.all([
+              removeCopy(),
               closedMain === undefined
                 ? undefined
                 : continueAfterFailure(
@@ -431,13 +491,6 @@ async function openCodeLoginResidue(
                         `[provider] a login store handle could not be closed (${failureCode(error)})`
                       )
                   ),
-              continueAfterFailure(
-                () => rm(copyFolder, { recursive: true, force: true }),
-                (error) =>
-                  console.warn(
-                    `[provider] the copied OpenCode store folder could not be removed (${failureCode(error)})`
-                  )
-              ),
             ]);
           }
         }
@@ -458,7 +511,10 @@ export function createOpenCodeProvider(options: {
   container?: ContainerSettings;
   /** 인증 중계 설정. 시험·합성 검증이 상류를 바꾸고 검증 여부를 정한다. 제품은 기본값(공식 상류, 검증됨: 2026-11-12 실제 구독으로 확인)을 쓴다. */
   relay?: { upstream?: string; verified?: boolean };
+  /** plugin 활성화 시한과 그 쉼을 재는 시계. 시험이 넣고, 제품은 실제 시계. 프로그램 시작·끄기 시한에는 쓰지 않는다. */
+  clock?: Clock;
 }): ProviderConnection {
+  const clock = options.clock ?? realClock;
   const connectionId = options.id ?? "opencode";
   const folders = connectionFolders(options.dataDir, connectionId);
   const home = folders.connection,
@@ -575,11 +631,14 @@ export function createOpenCodeProvider(options: {
     productHome: string,
     runId?: string
   ) {
-    const directory = await mkdtemp(path.join(productHome, "attempt-")),
+    const attempt = attemptFolder(
+        await mkdtemp(path.join(productHome, "attempt-")),
+        { kind: "attempt folder", connection: connectionId, runId }
+      ),
+      directory = attempt.path,
       password = crypto.randomUUID();
     const lifetime = new AbortController();
     let interrupt: (() => void) | undefined;
-    let child: ReturnType<typeof startProcess> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let listening = false;
     let cleaned = false;
@@ -593,16 +652,9 @@ export function createOpenCodeProvider(options: {
       cleaned = true;
       if (timer) clearTimeout(timer);
       lifetime.abort();
-      if (child) {
-        child.end();
-        await child.done;
-      }
+      // 맡긴 서버를 끝내고 그 끝을 확인한 뒤에만 폴더를 지운다(`attemptFolder`의 `remove`).
+      await attempt.remove();
       if (listening) signal.removeEventListener("abort", abort);
-      await removeAttemptFolder(directory, {
-        kind: "attempt folder",
-        connection: connectionId,
-        runId,
-      });
     };
     const close = cleanup;
     try {
@@ -620,49 +672,51 @@ export function createOpenCodeProvider(options: {
       const ready = new Promise<string>((resolve) => {
         resolveUrl = resolve;
       });
-      const started = startProcess({
-        // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
-        stateDir: home,
-        command,
-        args: container
-          ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
-          : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
-        cwd: productHome,
-        env: {
-          ...env(productHome, Boolean(container)),
-          OPENCODE_CONFIG_DIR: directory,
-          OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-          OPENCODE_SERVER_PASSWORD: password,
-        },
-        ...(container ? { container } : {}),
-        onFrame: async (raw) => {
-          const url = record(raw).url;
-          if (typeof url === "string") {
-            if (container) {
-              // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
-              const parsed = orIfUnreadable(() => new URL(url), undefined);
-              if (parsed?.protocol === "http:") {
-                try {
-                  resolveUrl(await started.inboundOrigin());
-                } catch (error) {
-                  console.warn(
-                    `[provider] the OpenCode inbound relay could not open; stopping the server (${failureCode(error)})`
-                  );
-                  lifetime.abort();
+      // 이 실행 시도 폴더(설정)를 쓰는 서버. 폴더가 띄우고 맡으며, 폴더 정리가 끝내고 그 끝을 기다린다.
+      const started = attempt.usedBy(() =>
+        startProcess({
+          // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
+          stateDir: home,
+          command,
+          args: container
+            ? ["serve", "--stdio", "--hostname", "0.0.0.0", "--port", "4096"]
+            : ["serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"],
+          cwd: productHome,
+          env: {
+            ...env(productHome, Boolean(container)),
+            OPENCODE_CONFIG_DIR: directory,
+            OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+            OPENCODE_SERVER_PASSWORD: password,
+          },
+          ...(container ? { container } : {}),
+          onFrame: async (raw) => {
+            const url = record(raw).url;
+            if (typeof url === "string") {
+              if (container) {
+                // 컨테이너에는 네트워크가 없다. 컨테이너 안 서버는 중계가 이 컴퓨터 loopback에 연 주소로만 제어한다(비밀번호 인증 유지).
+                const parsed = orIfUnreadable(() => new URL(url), undefined);
+                if (parsed?.protocol === "http:") {
+                  try {
+                    resolveUrl(await started.inboundOrigin());
+                  } catch (error) {
+                    console.warn(
+                      `[provider] the OpenCode inbound relay could not open; stopping the server (${failureCode(error)})`
+                    );
+                    lifetime.abort();
+                  }
                 }
+              } else {
+                const parsed = new URL(url);
+                if (
+                  parsed.hostname === "127.0.0.1" &&
+                  parsed.protocol === "http:"
+                )
+                  resolveUrl(parsed.origin);
               }
-            } else {
-              const parsed = new URL(url);
-              if (
-                parsed.hostname === "127.0.0.1" &&
-                parsed.protocol === "http:"
-              )
-                resolveUrl(parsed.origin);
             }
-          }
-        },
-      });
-      child = started;
+          },
+        })
+      );
       const stop = () => started.end();
       lifetime.signal.addEventListener("abort", stop, { once: true });
       if (lifetime.signal.aborted) stop();
@@ -686,29 +740,84 @@ export function createOpenCodeProvider(options: {
           "Basic " + Buffer.from("opencode:" + password).toString("base64"),
         "content-type": "application/json",
       };
+      // plugin 활성화 시한: 서버 주소를 받은 때부터 `pluginActivationMs`. 한 서버의 활성화 기다림(다시 물을지 정하는 503 본문 판독, 쉼,
+      // 다시 묻기의 답)은 모두 이 시한 하나에 묶인다. 서버가 끝나면(lifetime) 타이머를 푼다.
+      const activation = new AbortController();
+      const deadline = clock.setTimeout(
+        () => activation.abort(),
+        pluginActivationMs
+      );
+      const clearDeadline = () => clock.clearTimeout(deadline);
+      if (lifetime.signal.aborted) clearDeadline();
+      else
+        lifetime.signal.addEventListener("abort", clearDeadline, {
+          once: true,
+        });
+      /** 시도 하나(`step`)를 활성화 시한에 잇는다. 시한이 지났거나 지나면 `reason()`으로 그 시도를 끊는다. 돌려준 함수로 푼다. */
+      const untilActivationEnds = (
+        step: AbortController,
+        reason: () => Error
+      ) => {
+        const cut = () => step.abort(reason());
+        if (activation.signal.aborted) {
+          cut();
+          return () => {};
+        }
+        activation.signal.addEventListener("abort", cut, { once: true });
+        return () => activation.signal.removeEventListener("abort", cut);
+      };
       const request = async (
         route: string,
         method = "GET",
         body?: unknown,
         timeout = requestTimeoutMs
-      ) => {
-        const response = await fetch(base + route, {
-          method,
-          headers,
-          body: body === undefined ? undefined : JSON.stringify(body),
-          signal:
-            timeout === 0
-              ? lifetime.signal
-              : AbortSignal.any([
-                  lifetime.signal,
-                  AbortSignal.timeout(timeout),
-                ]),
-        });
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw new HttpFailure(response.status);
+      ): Promise<Response> => {
+        // 이 호출이 plugin 활성화 중이라는 답을 받아 기다리는 중인가. 그 뒤의 시도는 쉼부터 답까지 시한에 묶이고, 시한에 끊기면
+        // `plugins_not_activated`로 실패한다.
+        let waiting = false;
+        for (;;) {
+          // 시도 하나(쉼, 요청, 503이면 그 본문 판독)를 끊는 signal. 성공한 답을 돌려주기 전에 시한과의 이음을 풀어, 그 본문
+          // (`/api/event` 스트림 등)은 시한에 묶이지 않는다.
+          const step = new AbortController();
+          let release = waiting
+            ? untilActivationEnds(step, () => new HttpFailure(503, true))
+            : () => {};
+          const signal = AbortSignal.any([lifetime.signal, step.signal]);
+          try {
+            if (waiting) await pauseOn(clock, activationPauseMs, signal);
+            const response = await fetch(base + route, {
+              method,
+              headers,
+              body: body === undefined ? undefined : JSON.stringify(body),
+              signal:
+                timeout === 0
+                  ? signal
+                  : AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
+            });
+            if (response.ok) return response;
+            // 503 본문은 활성화를 더 기다릴지 정하려고만 읽는다(`pluginsActivating`). 시한이 지나 정할 것이 없으면 읽지 않고, 읽는
+            // 동안은 시한에 묶인다. 첫 시도의 판독이 시한에 끊기면 활성화 중인지 모르는 503이다. JSON이 아닌 본문은 "준비 중"이 아니다.
+            if (
+              response.status !== 503 ||
+              (!waiting && activation.signal.aborted)
+            ) {
+              await response.body?.cancel();
+              throw new HttpFailure(response.status);
+            }
+            if (!waiting)
+              release = untilActivationEnds(step, () => new HttpFailure(503));
+            const text = await response.text();
+            if (
+              !pluginsActivating(
+                orIfUnreadable(() => JSON.parse(text) as unknown, undefined)
+              )
+            )
+              throw new HttpFailure(503);
+            waiting = true;
+          } finally {
+            release();
+          }
         }
-        return response;
       };
       return {
         request,

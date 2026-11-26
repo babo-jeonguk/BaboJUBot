@@ -543,7 +543,7 @@ const noIoInUnreadable = {
 };
 
 const chainAlternatives =
-  "서로 무관한 정리는 모두 시도하고 실패를 모아 알리세요. 정리마다 catch를 두고 실패를 모아 원래 실패와 함께 던지거나(`AggregateError`, apps/server/src/app.ts의 서버 끄기), 스크립트는 자원을 잡은 직후 withCleanup의 defer로 등록하거나 attemptAll(@babojubot/contracts)로 모두 시도합니다. 실패를 스스로 기록하고 던지지 않는 정리(removeAttemptFolder 등)끼리는 Promise.all로 함께 시작해 한 번 기다립니다. 동기 정리는 정리마다 continueAfterFailure(@babojubot/contracts)로 실패를 남기고 다음 정리로 갑니다. 앞 단계가 끝나야 안전한 단계(서비스를 닫은 뒤 그 이벤트 흐름이 끝나기를 기다림)는 그 순서를 이름으로 드러낸 함수 하나로 묶습니다. CODING_STANDARDS.md#제품-코드";
+  "서로 무관한 정리는 모두 시도하고 실패를 모아 알리세요. 정리마다 catch를 두고 실패를 모아 원래 실패와 함께 던지거나(`AggregateError`, apps/server/src/app.ts의 서버 끄기), 스크립트는 자원을 잡은 직후 withCleanup의 defer로 등록하거나 attemptAll(@babojubot/contracts)로 모두 시도합니다. 실패를 스스로 기록하고 던지지 않는 정리(실행 시도 폴더의 `remove` 등)끼리는 Promise.all로 함께 시작해 한 번 기다립니다. 동기 정리는 정리마다 continueAfterFailure(@babojubot/contracts)로 실패를 남기고 다음 정리로 갑니다. 앞 단계가 끝나야 안전한 단계(서비스를 닫은 뒤 그 이벤트 흐름이 끝나기를 기다림)는 그 순서를 이름으로 드러낸 함수 하나로 묶습니다. CODING_STANDARDS.md#제품-코드";
 
 /**
  * 실패 경로(`finally`·`catch`의 몸)에서 정리를 차례로 기다리면 앞 정리가 실패한 순간 블록이 끝나 뒤 정리(DB 닫기·폴더 지우기)를
@@ -649,7 +649,8 @@ export const processLaunchers = new Map([
 ]);
 /**
  * 프로세스 패키지가 내보내지만 프로그램을 띄우지 않는 함수: 준비·조회(실행기 준비, 띄운 자식 받기, 그룹·표식·시작 시각 조회, 실행기에
- * 청하는 정리), 폴더 지우기, 시험 도움(정리·기다림·시계·환경 확인, 띄운 자식의 끝 기다리기와 끄기, 연결을 쥔 시험 프로그램의 시작 문장과 정리, 다른 프로세스가 알린 번호 확인).
+ * 청하는 정리), 폴더 지우기, 시험 도움(정리·기다림·시계·환경 확인, 띄운 자식의 끝 기다리기와 끄기, 연결을 쥔 시험 프로그램의 시작 문장과 정리, 다른 프로세스가 알린 번호 확인,
+ * 시험이 만든 소켓·요청·listener의 소유와 닫힘 확인).
  */
 export const processNonLaunchers = [
   "prepareSupervisor",
@@ -657,6 +658,7 @@ export const processNonLaunchers = [
   "TreeLaunchRefused",
   "boundChild",
   "psField",
+  "listenAttempt",
   "groupAlive",
   "identity",
   "members",
@@ -670,6 +672,10 @@ export const processNonLaunchers = [
   "processAlive",
   "killUnlessGone",
   "lifelineHolder",
+  "ownedClosable",
+  "ownedConnect",
+  "ownClosable",
+  "ownedListener",
   "awaitedLater",
   "openLifelines",
   "testFolders",
@@ -2120,6 +2126,96 @@ const gitPathListNul = {
   },
 };
 
+/**
+ * 서버를 닫을 때 `ERR_SERVER_NOT_RUNNING`을 "닫을 것 없음"으로 받지 않는다. 주소 조회를 거치는 듣기(`listen(0, "127.0.0.1")`)에 듣기 시도가
+ * 끝나기 전에 `close`를 부르면 Node는 그 듣기를 취소하고 닫기는 이 오류로 끝나, 확인하지 않은 닫힘이 "없음"으로 접힌다(중계 닫기와
+ * `inboundOrigin`의 경쟁, #286 PR #299 외부 리뷰 1회차 SPEC-2). 듣기 시도의 끝을 본 뒤에 닫으면(`listenAttempt`, `@babojubot/process`)
+ * 들은 서버의 닫기 오류는 무엇이든 실패이므로 제품 코드에 이 이름이 쓰일 곳이 없다. 문자열·template의 그 이름을 짚는다.
+ */
+const noServerNotRunning = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "do not fold ERR_SERVER_NOT_RUNNING into a closed server; close after the listen attempt ended",
+    },
+    schema: [],
+    messages: {
+      folded:
+        'ERR_SERVER_NOT_RUNNING을 "닫을 것 없음"으로 받지 않습니다. 듣기 시도의 끝(`listenAttempt`, @babojubot/process)을 본 뒤 들은 서버만 닫고, 그 닫기 오류는 무엇이든 실패로 드러내세요. CODING_STANDARDS.md#제품-코드',
+    },
+  },
+  create(context) {
+    const name = "ERR_SERVER_NOT_RUNNING";
+    return {
+      Literal(node) {
+        if (typeof node.value === "string" && node.value.includes(name))
+          context.report({ node, messageId: "folded" });
+      },
+      TemplateElement(node) {
+        if (node.value.raw.includes(name))
+          context.report({ node, messageId: "folded" });
+      },
+    };
+  },
+};
+
+/** 단정·`!`(그리고 `await`)만 벗긴 값. 선택 사슬(`ChainExpression`)은 벗기지 않는다. */
+function withoutAssertions(node, { await: unwrapAwait = false } = {}) {
+  let value = node;
+  while (
+    value.type === "TSAsExpression" ||
+    value.type === "TSSatisfiesExpression" ||
+    value.type === "TSNonNullExpression" ||
+    (unwrapAwait && value.type === "AwaitExpression")
+  )
+    value =
+      value.type === "AwaitExpression" ? value.argument : value.expression;
+  return value;
+}
+
+/** 빈 배열·빈 객체 문자(`[]`, `{}`, 단정 포함). */
+function isEmptyLiteral(node) {
+  const value = withoutAssertions(node);
+  return (
+    (value.type === "ArrayExpression" && value.elements.length === 0) ||
+    (value.type === "ObjectExpression" && value.properties.length === 0)
+  );
+}
+
+/**
+ * 선택 사슬로 부른 결과(`a?.f()`, `a?.f?.()`, `a?.b.f()`, `await a?.f()`)의 없음을 `??`로 빈 배열·빈 객체로 바꾸는 모양. 붙지 않았을 수 있는
+ * 것(`?.`)이 없음을 "아무것도 없음"으로 접는다. 그 호출이 정책·권한 조회면 모름이 허용으로 바뀐다(중계가 떼어진 정책의 보호 포트를 빈
+ * 목록으로 접어 이 컴퓨터의 보호 포트를 열 뻔했다, #286 PR #299 외부 리뷰 2회차 대응). 없을 때의 판정은 그 자리에서 드러나게 둔다.
+ */
+const noAbsentCallAsEmpty = {
+  meta: {
+    /** @type {"problem"} */
+    type: "problem",
+    docs: {
+      description:
+        "do not fold the absence of an optional call's result into an empty array or object",
+    },
+    schema: [],
+    messages: {
+      folded:
+        "붙지 않았을 수 있는 것(`?.`)을 부른 결과의 없음을 빈 값으로 접지 않습니다. 정책·권한 조회면 모름이 허용으로 바뀝니다. 없을 때의 판정(거부 등)을 그 자리에서 정하거나, 기본값을 호출 결과가 아니라 읽은 값에 두세요(`(a ?? []).filter(f)`). CODING_STANDARDS.md#제품-코드",
+    },
+  },
+  create(context) {
+    return {
+      LogicalExpression(node) {
+        if (node.operator !== "??" || !isEmptyLiteral(node.right)) return;
+        const left = withoutAssertions(node.left, { await: true });
+        if (left.type !== "ChainExpression") return;
+        if (withoutAssertions(left.expression).type === "CallExpression")
+          context.report({ node, messageId: "folded" });
+      },
+    };
+  },
+};
+
 export default {
   rules: {
     "no-assertion-on-parsed-data": noAssertionOnParsedData,
@@ -2142,5 +2238,7 @@ export default {
     "no-own-untrusted-open": noOwnUntrustedOpen,
     "nul-free-file-shape": nulFreeFileShape,
     "git-path-list-nul": gitPathListNul,
+    "no-server-not-running": noServerNotRunning,
+    "no-absent-call-as-empty": noAbsentCallAsEmpty,
   },
 };

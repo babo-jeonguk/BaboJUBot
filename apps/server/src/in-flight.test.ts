@@ -1,9 +1,9 @@
 import http from "node:http";
 import type net from "node:net";
 import express from "express";
-import { awaitedLater } from "@babojubot/process/test-cleanup";
+import { awaitedLater, ownedListener } from "@babojubot/process/test-cleanup";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { ownedListener, fakeClock } from "../test/support.ts";
+import { fakeClock } from "../test/support.ts";
 import { InFlight, trackHandlers } from "./in-flight.ts";
 
 /** 처리기를 붙인 시험 HTTP 서버. 시험 정리가 소유한다. */

@@ -1,6 +1,5 @@
 // 실모델 장애 검사의 실행기. 장면마다 새 임시 홈·서버를 만들고, 예산·시한 안에서 장면을 돌린 뒤 성공·실패·시간 초과·중단 모두에서 정리한다.
 // 결과는 메타데이터만 담은 JSON이다. 쓰기 전에 모델 원문·메시지 본문·토큰 같은 등록된 비밀값이 섞였는지 검사한다.
-import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -56,10 +55,22 @@ export async function runChaos({
   const secrets = new Set();
   const results = [];
   const fake = connection !== "opencode";
-  // 실행 기록·예산 폴더는 만든 직후 지우기를 등록한다. 장면이 실패해도 지우고, 지우기 실패는 그 실패와 함께 알린다.
+  // 실행 기록·예산 폴더는 만든 직후 지우기를 등록한다. 장면 서버들이 이 폴더의 기록·예산 파일을 쓰므로, 띄운 장면의 정리가 모두
+  // 끝났음을 봤을 때만 지운다. 아니면 폴더를 남기고 알린다(정리가 끝나지 않은 장면은 실패 결과로 남고, 결과 없이 던진 장면은 그 오류가
+  // 이 실행의 실패로 나간다). 지우기 실패는 장면의 실패와 함께 알린다.
+  /** 띄웠지만 정리가 끝났음을 보지 못한 장면. 띄우기 전에 넣고, 정리가 끝났음을 본 뒤에만 뺀다. */
+  const uncleaned = [];
   await withCleanup(async (defer) => {
     const runDir = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-run-"));
-    defer(() => rm(runDir, { recursive: true, force: true }));
+    defer(async () => {
+      if (uncleaned.length) {
+        console.error(
+          `[chaos] the run folder ${runDir} is kept: the cleanup of ${uncleaned.join(", ")} was not confirmed`
+        );
+        return;
+      }
+      await rm(runDir, { recursive: true, force: true });
+    });
     await chmod(runDir, 0o700);
     const ledger = createLedger(path.join(runDir, "ledger.jsonl"));
     const budgetFile = path.join(runDir, "budget.json");
@@ -94,6 +105,8 @@ export async function runChaos({
         continue;
       }
       log(`${scene.id} ${scene.title}: 시작`);
+      // 정리가 끝났음을 본 뒤에만 뺀다. 장면이 결과 없이 던지면(정리 뒤의 읽기 실패 등) 정리됐다고 볼 근거가 없어 남는다.
+      uncleaned.push(scene.id);
       results.push(
         await runScene({
           scene,
@@ -110,6 +123,7 @@ export async function runChaos({
         })
       );
       const last = results.at(-1);
+      if (sceneCleanedUp(last.cleanup)) uncleaned.pop();
       log(
         `${scene.id} ${scene.title}: ${last.outcome}${last.reason ? ` (${last.reason})` : ""}`
       );
@@ -292,16 +306,9 @@ async function runScene({
     }
   }
   // 사용자 중단·시간 초과에서도 진행 중인 실행을 취소하고 서버·DB·프로세스·홈을 정리한다.
-  const cleanup = await cleanupScene({ server, home, harnessDir, marker });
+  const cleanup = await cleanupScene({ server, harnessDir, marker });
   // 정리가 끝나지 않았으면(서버·홈·시험용 명령이 남음) 장면 결과와 상관없이 실패다.
-  if (
-    !cleanup.serverStopped ||
-    !cleanup.homeRemoved ||
-    cleanup.homeKept ||
-    cleanup.providerRecordsLeft > 0 ||
-    cleanup.problems > 0 ||
-    cleanup.commandPidsLeft > 0
-  ) {
+  if (!sceneCleanedUp(cleanup)) {
     checks = [
       ...checks,
       check("cleanup_complete", false, { source: fake ? "fake" : "live" }),
@@ -325,6 +332,17 @@ async function runScene({
     observations,
     cleanup,
   };
+}
+
+/** 장면 정리가 끝났는가: 서버가 멈추고 홈을 지웠고, 프로세스 기록·시험용 명령·정리 문제가 하나도 남지 않았다. */
+function sceneCleanedUp(cleanup) {
+  return (
+    cleanup.serverStopped &&
+    cleanup.homeRemoved &&
+    cleanup.providerRecordsLeft === 0 &&
+    cleanup.problems === 0 &&
+    cleanup.commandPidsLeft === 0
+  );
 }
 
 /** 장면 정리. 정리에서 난 문제도 결과에 남긴다. */
@@ -358,7 +376,7 @@ export async function prepareScene(ready, root = tmpdir()) {
   }
 }
 
-export async function cleanupScene({ server, home, harnessDir, marker }) {
+export async function cleanupScene({ server, harnessDir, marker }) {
   /** 정리 단계 하나. 실패하면 터미널에만 짧게 알리고(증거에는 남기지 않는다) 실패로 돌려준다. 실패 수는 `attemptEach`의 목록이다. */
   const step = (describe, work) => async () => {
     try {
@@ -419,18 +437,38 @@ export async function cleanupScene({ server, home, harnessDir, marker }) {
       }
     ),
   ]);
-  await rm(harnessDir, { recursive: true, force: true });
+  // 장면 서버와 시험용 명령은 harness 폴더를 쓴다. 그 끝을 모두 확인했을 때만 지우고, 아니면 남기고 알린다(지우면 아직 쓰는
+  // 프로세스가 남은 채로 정리된 것처럼 보인다). 지우기의 실패도 정리 실패로 센다.
+  const unconfirmed = serverAndList.length + commands.length;
+  const harness = unconfirmed
+    ? []
+    : await attemptEach([
+        step(
+          (error) =>
+            `could not remove the scene harness folder (${code(error)})`,
+          () => rm(harnessDir, { recursive: true, force: true })
+        ),
+      ]);
+  if (unconfirmed)
+    console.error(
+      `[chaos] the scene harness folder ${harnessDir} is kept: the scene server or its commands were not confirmed ended`
+    );
+  // 폴더 칸은 지우기를 실제로 한 결과다(뒤에 조회해 짐작하지 않는다: 조회 실패도 "없음"으로 나온다). 홈은 서버 정리(`dispose`)가
+  // 지우기를 마쳤을 때만 지운 것이다. 정리가 실패했거나 기록을 지키려 남겼으면 남긴 것이다. harness는 위 지우기 단계를 했고 성공했을 때만.
+  const homeRemoved = leftovers?.homeRemoved === true;
+  const harnessRemoved = unconfirmed === 0 && harness.length === 0;
   return {
     serverStopped: !server.running,
-    homeRemoved: !existsSync(home),
-    // 서버 정리가 실패했으면 홈에는 아직 프로세스 기록이 남아 있을 수 있다. 지우지 않고 남긴다.
-    homeKept: leftovers ? leftovers.homeKept : existsSync(home),
+    homeRemoved,
+    homeKept: !homeRemoved,
     postgresLeft: leftovers?.postgres ?? false,
     providerRecordsFound: leftovers?.providerRecordsFound ?? 0,
     providerRecordsLeft: leftovers?.providerRecordsLeft ?? 0,
     // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
     commandPidsLeft: left?.length ?? null,
-    problems: serverAndList.length + commands.length,
+    harnessKept: !harnessRemoved,
+    // 남긴 harness 폴더는 그 원인(서버·명령의 정리 실패)으로 이미 센다.
+    problems: unconfirmed + harness.length,
   };
 }
 

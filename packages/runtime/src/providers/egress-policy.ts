@@ -15,10 +15,14 @@ import {
 export type EgressRules = {
   /** 지금 열 수 있는 목적지(필수 모델·로그인 목적지와, 연구 단계면 조직의 허용 목록). */
   destinations: readonly Destination[];
-  /** 이 컴퓨터에서 어떤 예외로도 열지 않는 포트(사용자 API·DB). */
-  protectedPorts: readonly number[];
-  /** 이 컴퓨터의 주소. 0.0.0.0에 열린 서비스는 이 주소로도 닿으므로 loopback처럼 막는다. */
-  hostAddresses: readonly string[];
+  /** 이 컴퓨터에서 어떤 예외로도 열지 않는 포트(사용자 API·DB). 규칙 값 "all"은 이 컴퓨터의 모든 포트를 막는다(읽지 못했을 때 중계가 둔다). */
+  protectedPorts: readonly number[] | "all";
+  /**
+   * 이 컴퓨터의 주소. 0.0.0.0에 열린 서비스는 이 주소로도 닿으므로 loopback처럼 막는다. 읽지 못한 상태 "unreadable"이면 어느 주소가
+   * 이 컴퓨터인지 모르므로 모든 주소를 이 컴퓨터의 주소로 본다: 목적지에 적은 주소 예외만 열리고, 보호 포트는 어디로도 열지 않는다
+   * (그 뜻은 `addressAllowed` 한 곳에 있다).
+   */
+  hostAddresses: readonly IpAddress[] | "unreadable";
 };
 
 export type EgressDecision =
@@ -131,9 +135,6 @@ function addressAllowed(
   address: IpAddress,
   port: number
 ): boolean {
-  const own = rules.hostAddresses
-    .map((text) => parseIp(text))
-    .filter((value): value is IpAddress => value !== null);
   const exceptions = entries.flatMap((entry) =>
     (entry.addresses ?? []).flatMap((text) => {
       const parsed = parseIp(text);
@@ -143,12 +144,19 @@ function addressAllowed(
   const forms = [address, embeddedIpv4(address)].filter(
     (form): form is IpAddress => form !== undefined
   );
-  const self = forms.some(
-    (form) =>
-      selfRanges.some((range) => cidrContains(range, form)) ||
-      own.some((value) => sameAddress(value, form))
-  );
-  if (self && rules.protectedPorts.includes(port)) return false;
+  const hostAddresses = rules.hostAddresses;
+  const self =
+    hostAddresses === "unreadable" ||
+    forms.some(
+      (form) =>
+        selfRanges.some((range) => cidrContains(range, form)) ||
+        hostAddresses.some((value) => sameAddress(value, form))
+    );
+  if (
+    self &&
+    (rules.protectedPorts === "all" || rules.protectedPorts.includes(port))
+  )
+    return false;
   const forbidden =
     self ||
     forms.some((form) =>

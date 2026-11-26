@@ -13,11 +13,11 @@ import path from "node:path";
 import { failureCode } from "@babojubot/contracts";
 
 import { pinnedReaderFile } from "../src/workspace.ts";
-import { withCleanup } from "@babojubot/process/test-cleanup";
 import {
   removeFolderWithin,
-  type testFolders,
-} from "@babojubot/process/testing";
+  withCleanup,
+} from "@babojubot/process/test-cleanup";
+import type { testFolders } from "@babojubot/process/testing";
 
 /**
  * 파일 경계 시험이 임시 폴더를 만드는 곳. 환경별 전체 검증(CI `files-*` job)은 시험용 디스크·공유의 폴더를

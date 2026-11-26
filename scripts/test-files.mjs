@@ -30,7 +30,7 @@ export const testFiles = [
   "apps/server/test/**",
   `packages/runtime/src/{testing,runtime-contract}.${codeFormats}`,
   `packages/runtime/src/providers/{test-folders,*-support}.${codeFormats}`,
-  `packages/process/src/{testing,test-cleanup,test-folders,*-support}.${codeFormats}`,
+  `packages/process/src/{testing,test-cleanup,test-connect,test-folders,*-support}.${codeFormats}`,
   `packages/db/src/{testing,test-cluster}.${codeFormats}`,
 ];
 

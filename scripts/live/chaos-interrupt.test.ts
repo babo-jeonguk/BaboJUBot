@@ -8,11 +8,11 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   awaitedLater,
   folderCleanup,
   withCleanup,
+  removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
 
@@ -23,7 +23,7 @@ const handler = new URL("./chaos-interrupt.ts", import.meta.url).href;
 test("a second Ctrl-C ends at once even when nobody reads the output", () =>
   withCleanup(async (defer) => {
     const folder = mkdtempSync(path.join(tmpdir(), "chaos-interrupt-"));
-    const { own, cleanUp } = folderCleanup(() => removeFolder(folder));
+    const { own, cleanUp } = folderCleanup(() => removeFolderWithin(folder));
     defer(cleanUp);
     const driver = path.join(folder, "driver.mjs");
     writeFileSync(

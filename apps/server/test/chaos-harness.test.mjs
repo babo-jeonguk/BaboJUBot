@@ -39,13 +39,14 @@ import {
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { runCommand } from "@babojubot/process";
 import { openLifelines } from "@babojubot/process/lifelines";
-import { removeFolderWithin, testFolders } from "@babojubot/process/testing";
+import { testFolders } from "@babojubot/process/testing";
 import { within } from "@babojubot/process/test-support";
 import {
   awaitedLater,
   folderCleanup,
   lifelineHolder,
   withCleanup,
+  removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 
 const ids = scenes.map((s) => s.id);
@@ -890,7 +891,7 @@ describe("chaos harness on a fake connection", () => {
       // 서버를 끈 뒤 지운다(확인하지 못한 기록이 남으면 사람이 보도록 남긴다). 그래서 홈을 만든 직후 서버를 만들어 그 정리를 맡긴다.
       const home = await withCleanup(async (defer) => {
         const harnessDir = await mkdtemp(path.join(tmpdir(), "chaos-abort-"));
-        const folder = folderCleanup(() => removeFolder(harnessDir));
+        const folder = folderCleanup(() => removeFolderWithin(harnessDir));
         defer(folder.cleanUp);
         const home = await mkdtemp(path.join(tmpdir(), "chaos-abort-home-"));
         const server = chaosServer({

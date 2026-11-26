@@ -53,7 +53,7 @@ import {
   type RelayGrant,
   type RelayProfile,
 } from "./credential-relay.ts";
-import { removeAttemptFolder } from "./attempt-folder.ts";
+import { attemptFolder } from "./attempt-folder.ts";
 
 export type ClaudeOptions = {
   dataDir: string;
@@ -342,9 +342,13 @@ async function executeClaude(
     if (refusal !== undefined) return { ...failed(), error: refusal };
   }
   // 컨테이너에서는 조직의 제품 폴더가 그 조직의 같은 연결 에이전트 컨테이너에 모두 들어가므로, 토큰이 든 이 실행 시도의 파일은 그 밖에 두고 이 컨테이너에만 읽기로 넣는다.
-  const temp = placement.container
-    ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
-    : await mkdtemp(path.join(home, "attempt-"));
+  const attempt = attemptFolder(
+    placement.container
+      ? await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"))
+      : await mkdtemp(path.join(home, "attempt-")),
+    { kind: "attempt folder", connection: connection.id, runId: request.runId }
+  );
+  const temp = attempt.path;
   let launch: ContainerLaunch | undefined;
   try {
     launch = placement.container?.({
@@ -354,11 +358,7 @@ async function executeClaude(
       destinations: providerDestinations.claude,
     });
   } catch (error) {
-    await removeAttemptFolder(temp, {
-      kind: "attempt folder",
-      connection: connection.id,
-      runId: request.runId,
-    });
+    await attempt.remove();
     if (error instanceof ContainerRefusal)
       return { ...failed(), error: error.message };
     throw error;
@@ -383,9 +383,9 @@ async function executeClaude(
       );
       if (!grant) return { ...failed(), error: relayFailure };
     }
-    const config = path.join(temp, "mcp.json");
-    await writeFile(
-      config,
+    // 조직 도구 토큰이 든 설정은 이 실행 시도 폴더에 넣은 자격 증명 사본이다.
+    const config = await attempt.credential(
+      "mcp.json",
       JSON.stringify({
         mcpServers: {
           organization: {
@@ -394,8 +394,7 @@ async function executeClaude(
             headers: { Authorization: `Bearer ${request.access.token}` },
           },
         },
-      }),
-      { mode: 0o600 }
+      })
     );
     const instructions = path.join(temp, "instructions.md");
     await writeFile(instructions, request.instructions, { mode: 0o600 });
@@ -454,117 +453,118 @@ async function executeClaude(
         cacheWriteTokens: 0,
       };
     };
-    const process = startProcess({
-      // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
-      stateDir: folders.connection,
-      command,
-      args,
-      cwd: request.cwd,
-      env: grant
-        ? relayEnvironment(
-            env,
-            request.access.toolsBaseUrl,
-            connection.id,
-            grant
+    const processEnv = grant
+      ? relayEnvironment(env, request.access.toolsBaseUrl, connection.id, grant)
+      : await withLogin(folders.connection, env);
+    // 이 실행 시도 폴더를 쓰는 프로그램. 폴더가 띄우고 맡으며, 폴더 정리가 끝내고 그 끝을 기다린다.
+    const process = attempt.usedBy(() =>
+      startProcess({
+        // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
+        stateDir: folders.connection,
+        command,
+        args,
+        cwd: request.cwd,
+        env: processEnv,
+        container: launch,
+        onFrame: async (raw) => {
+          if (!raw || typeof raw !== "object") return;
+          const frame = raw as Record<string, unknown>;
+          if (
+            frame.type === "system" &&
+            frame.subtype === "compact_boundary" &&
+            frame.session_id === request.previousSession?.id
           )
-        : await withLogin(folders.connection, env),
-      container: launch,
-      onFrame: async (raw) => {
-        if (!raw || typeof raw !== "object") return;
-        const frame = raw as Record<string, unknown>;
-        if (
-          frame.type === "system" &&
-          frame.subtype === "compact_boundary" &&
-          frame.session_id === request.previousSession?.id
-        )
-          compactBoundary = true;
-        if (frame.type === "system" && frame.subtype === "status")
-          compacting = frame.status === "compacting";
-        if (frame.type === "system" && frame.subtype === "init") {
-          clearTimeout(startup);
-          // 백그라운드 일을 마친 뒤의 턴도 init을 다시 낸다. 실행 시도의 시작은 한 번만 알린다.
-          const started = !ready;
-          ready = true;
+            compactBoundary = true;
+          if (frame.type === "system" && frame.subtype === "status")
+            compacting = frame.status === "compacting";
+          if (frame.type === "system" && frame.subtype === "init") {
+            clearTimeout(startup);
+            // 백그라운드 일을 마친 뒤의 턴도 init을 다시 낸다. 실행 시도의 시작은 한 번만 알린다.
+            const started = !ready;
+            ready = true;
+            if (typeof frame.session_id === "string")
+              sessionId = frame.session_id;
+            if (started)
+              await control.emit({
+                type: "progress",
+                text: "프로바이더가 작업을 시작했습니다.",
+              });
+          }
+          if (
+            frame.type === "system" &&
+            frame.subtype === "background_tasks_changed" &&
+            Array.isArray(frame.tasks)
+          )
+            background = frame.tasks.filter(
+              (task) =>
+                !task ||
+                typeof task !== "object" ||
+                (task as Record<string, unknown>).ambient !== true
+            ).length;
+          if (frame.type !== "result") return;
+          // result 프레임의 세션 ID가 init보다 우선한다.
           if (typeof frame.session_id === "string")
             sessionId = frame.session_id;
-          if (started)
+          const usage = frame.usage as Record<string, unknown> | undefined;
+          // 스트리밍 입력 모드에서 usage는 턴마다이고 total_cost_usd는 이어 간 세션까지 포함한 누계다.
+          const sessionBaseline = baseline();
+          const add = (field: UsageField, raw: unknown) => {
+            reported[field] = addUsage(
+              "tokens",
+              reported[field],
+              usageAmount("tokens", raw)
+            );
+          };
+          add("inputTokens", usage?.input_tokens);
+          add("outputTokens", usage?.output_tokens);
+          add("cacheReadTokens", usage?.cache_read_input_tokens);
+          add("cacheWriteTokens", usage?.cache_creation_input_tokens);
+          reported.costUsd = subtractUsage(
+            "usd",
+            usageAmount("usd", frame.total_cost_usd),
+            sessionBaseline === undefined ? null : sessionBaseline.costUsd
+          );
+          // 실제 프로그램은 오류에도 subtype을 success로 낸다.
+          const success =
+            frame.subtype === "success" && frame.is_error !== true;
+          result = {
+            stopReason: success ? "completed" : "failed",
+            error: success ? null : "프로바이더 실행이 실패했습니다.",
+            summary: null,
+            // 사용량은 실행 시도가 끝날 때 한 번 정한다.
+            usage: null,
+            nextSession:
+              success && typeof frame.session_id === "string"
+                ? {
+                    id: frame.session_id,
+                    launch: {
+                      instructions: request.instructions,
+                      cwd: request.cwd,
+                      model: request.model,
+                    },
+                  }
+                : null,
+          };
+          if (
+            !success &&
+            (frame.api_error_status === 401 ||
+              frame.api_error_status === 403 ||
+              saysLoginProblem(frame.result))
+          )
+            result.errorCode = "login_required";
+          if (!hasResult) {
+            hasResult = true;
+            // 입력을 닫으면 더 보낼 턴이 없다고 알린다. Claude는 기다리던 백그라운드 작업을 마치고 그 결과로 한 턴 더 한 뒤 스스로 끝나며, 프로세스 종료가 실행 시도를 끝낸다.
+            process.endInput();
+          }
+          if (background > 0)
             await control.emit({
               type: "progress",
-              text: "프로바이더가 작업을 시작했습니다.",
+              text: "백그라운드 작업이 끝나기를 기다립니다.",
             });
-        }
-        if (
-          frame.type === "system" &&
-          frame.subtype === "background_tasks_changed" &&
-          Array.isArray(frame.tasks)
-        )
-          background = frame.tasks.filter(
-            (task) =>
-              !task ||
-              typeof task !== "object" ||
-              (task as Record<string, unknown>).ambient !== true
-          ).length;
-        if (frame.type !== "result") return;
-        // result 프레임의 세션 ID가 init보다 우선한다.
-        if (typeof frame.session_id === "string") sessionId = frame.session_id;
-        const usage = frame.usage as Record<string, unknown> | undefined;
-        // 스트리밍 입력 모드에서 usage는 턴마다이고 total_cost_usd는 이어 간 세션까지 포함한 누계다.
-        const sessionBaseline = baseline();
-        const add = (field: UsageField, raw: unknown) => {
-          reported[field] = addUsage(
-            "tokens",
-            reported[field],
-            usageAmount("tokens", raw)
-          );
-        };
-        add("inputTokens", usage?.input_tokens);
-        add("outputTokens", usage?.output_tokens);
-        add("cacheReadTokens", usage?.cache_read_input_tokens);
-        add("cacheWriteTokens", usage?.cache_creation_input_tokens);
-        reported.costUsd = subtractUsage(
-          "usd",
-          usageAmount("usd", frame.total_cost_usd),
-          sessionBaseline === undefined ? null : sessionBaseline.costUsd
-        );
-        // 실제 프로그램은 오류에도 subtype을 success로 낸다.
-        const success = frame.subtype === "success" && frame.is_error !== true;
-        result = {
-          stopReason: success ? "completed" : "failed",
-          error: success ? null : "프로바이더 실행이 실패했습니다.",
-          summary: null,
-          // 사용량은 실행 시도가 끝날 때 한 번 정한다.
-          usage: null,
-          nextSession:
-            success && typeof frame.session_id === "string"
-              ? {
-                  id: frame.session_id,
-                  launch: {
-                    instructions: request.instructions,
-                    cwd: request.cwd,
-                    model: request.model,
-                  },
-                }
-              : null,
-        };
-        if (
-          !success &&
-          (frame.api_error_status === 401 ||
-            frame.api_error_status === 403 ||
-            saysLoginProblem(frame.result))
-        )
-          result.errorCode = "login_required";
-        if (!hasResult) {
-          hasResult = true;
-          // 입력을 닫으면 더 보낼 턴이 없다고 알린다. Claude는 기다리던 백그라운드 작업을 마치고 그 결과로 한 턴 더 한 뒤 스스로 끝나며, 프로세스 종료가 실행 시도를 끝낸다.
-          process.endInput();
-        }
-        if (background > 0)
-          await control.emit({
-            type: "progress",
-            text: "백그라운드 작업이 끝나기를 기다립니다.",
-          });
-      },
-    });
+        },
+      })
+    );
     const startup = setTimeout(() => process.end(), startupLimitMs);
     if (request.runId)
       active.set(request.runId, (message) => {
@@ -686,10 +686,6 @@ async function executeClaude(
     }
   } finally {
     grant?.revoke();
-    await removeAttemptFolder(temp, {
-      kind: "attempt folder",
-      connection: connection.id,
-      runId: request.runId,
-    });
+    await attempt.remove();
   }
 }

@@ -1,9 +1,10 @@
 // Synthetic leader exits on interrupt; child ignores TERM, leaves its pid and keeps running until it is killed.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 if (process.argv.includes("--version")) {
   console.log("9.9.9 (Claude Code)");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 const child = spawn(
   process.execPath,
@@ -19,4 +20,5 @@ child.on("message", () => {
   );
 });
 for await (const line of createInterface({ input: process.stdin }))
-  if (JSON.parse(line).type === "control_request") process.exit(0);
+  if (JSON.parse(line).type === "control_request")
+    process.exit(await afterOutput(0));

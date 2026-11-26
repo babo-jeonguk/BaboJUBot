@@ -13,13 +13,14 @@ import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
   console.log("codex-cli 9.9.9");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
-if (args.includes("login")) process.exit(0);
+if (args.includes("login")) process.exit(await afterOutput(0));
 const [scriptFile] = args;
 if (scriptFile === undefined)
   throw new Error(
@@ -58,9 +59,9 @@ function serve() {
           : { id: frame.id, result: step.result ?? {} }
       );
     for (const extra of step.frames ?? []) out(extra);
-    if (step.exit !== undefined) process.exit(step.exit);
+    if (step.exit !== undefined) process.exit(await afterOutput(step.exit));
   });
-  input.on("close", () => process.exit(0));
+  input.on("close", async () => process.exit(await afterOutput(0)));
 }
 // 시험의 연결 서버가 있으면 연결을 쥐고, 서버가 이름을 받은 뒤에야 번호를 남기고 시작한다. 그래서 기록에 있는 프로그램은 모두
 // 연결이 있고, 그 끝은 연결 닫힘으로 보인다.

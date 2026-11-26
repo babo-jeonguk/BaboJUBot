@@ -49,7 +49,7 @@ import {
 import { providerDestinations } from "./destinations.ts";
 import { fileLogin } from "./file-login.ts";
 import { record } from "./record.ts";
-import { removeAttemptFolder } from "./attempt-folder.ts";
+import { attemptFolder, type AttemptFolder } from "./attempt-folder.ts";
 /** 프로그램이 JSON-RPC 오류로 거절한 요청. */
 class AcpRejection extends Error {}
 /** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */
@@ -311,9 +311,8 @@ export function createAntigravityProvider(options: {
       }
     },
     async execute(request, control) {
-      let grant: RelayGrant | undefined,
-        attempt: string | undefined,
-        logs: string | undefined;
+      // 이 실행 시도가 쓰는 폴더 하나: 격리 실행이면 실행 시도 폴더(로그인 파일), 아니면 기록 폴더. 띄우기 전 두 갈래에서 정한다.
+      let grant: RelayGrant | undefined, folder: AttemptFolder | undefined;
       try {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
@@ -329,6 +328,8 @@ export function createAntigravityProvider(options: {
         if (!placement) return failure();
         const cwd = await realpath(request.workspace?.cwd ?? productHome);
         let container: ContainerLaunch | undefined;
+        /** 기록 폴더로 돌면 그 안의 기록 파일. */
+        let logFile: string | undefined;
         if (placement.container && prepared.attemptLogin) {
           grant = continueAfterFailure(
             () =>
@@ -343,7 +344,15 @@ export function createAntigravityProvider(options: {
               )
           );
           if (!grant) return failure(relayFailure);
-          attempt = await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-"));
+          const attempt = attemptFolder(
+            await mkdtemp(path.join(os.tmpdir(), "babojubot-attempt-")),
+            {
+              kind: "attempt folder",
+              connection: connectionId,
+              runId: request.identity.runId,
+            }
+          );
+          folder = attempt;
           const file = await prepared.attemptLogin(attempt, grant.token);
           try {
             container = placement.container({
@@ -357,8 +366,18 @@ export function createAntigravityProvider(options: {
               return failure(error.message);
             throw error;
           }
-        } else
-          logs = await mkdtemp(path.join(os.tmpdir(), "babojubot-agy-log-"));
+        } else {
+          const logs = attemptFolder(
+            await mkdtemp(path.join(os.tmpdir(), "babojubot-agy-log-")),
+            {
+              kind: "log folder",
+              connection: connectionId,
+              runId: request.identity.runId,
+            }
+          );
+          folder = logs;
+          logFile = path.join(logs.path, "agy.log");
+        }
         const runControl = grant
           ? {
               ...control,
@@ -369,7 +388,6 @@ export function createAntigravityProvider(options: {
           `/api/relay/${encodeURIComponent(connectionId)}`,
           request.access.toolsBaseUrl
         ).href;
-        const logFile = logs ? path.join(logs, "agy.log") : undefined;
         const args = [
           "acp",
           "--disable-telemetry",
@@ -409,74 +427,77 @@ export function createAntigravityProvider(options: {
         if (control.signal.aborted)
           return { ...failure(), stopReason: "cancelled", error: null };
         if (grant?.failed.aborted) return failure(relayFailure);
-        const child = startProcess({
-          // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
-          stateDir: home,
-          command,
-          args,
-          cwd,
-          env: {
-            ...env(productHome, isolated),
-            ...(grant
-              ? {
-                  // 모델 통신(Code Assist)을 인증 중계로 보낸다. 컨테이너에는 바깥으로 직접 나가는 길이 없다.
-                  CLOUD_CODE_URL: relayBase,
-                  AGY_CLI_DISABLE_AUTO_UPDATE: "1",
-                }
-              : {}),
-          },
-          container,
-          onFrame: async (raw) => {
-            const frame = record(raw);
-            if (typeof frame.id === "number" && !frame.method) {
-              const waiter = pending.get(frame.id);
-              if (!waiter) return;
-              pending.delete(frame.id);
-              if (frame.error)
-                waiter.reject(
-                  new AcpRejection(String(record(frame.error).message ?? ""))
+        // 이 실행 시도의 폴더(로그인 파일, 기록)를 쓰는 프로그램. 폴더가 띄우고 맡으며, 폴더 정리가 끝내고 그 끝을 기다린다.
+        const child = folder.usedBy(() =>
+          startProcess({
+            // 프로세스 기록은 에이전트가 고칠 수 있는 조직 폴더가 아니라 연결 폴더에 둔다.
+            stateDir: home,
+            command,
+            args,
+            cwd,
+            env: {
+              ...env(productHome, isolated),
+              ...(grant
+                ? {
+                    // 모델 통신(Code Assist)을 인증 중계로 보낸다. 컨테이너에는 바깥으로 직접 나가는 길이 없다.
+                    CLOUD_CODE_URL: relayBase,
+                    AGY_CLI_DISABLE_AUTO_UPDATE: "1",
+                  }
+                : {}),
+            },
+            container,
+            onFrame: async (raw) => {
+              const frame = record(raw);
+              if (typeof frame.id === "number" && !frame.method) {
+                const waiter = pending.get(frame.id);
+                if (!waiter) return;
+                pending.delete(frame.id);
+                if (frame.error)
+                  waiter.reject(
+                    new AcpRejection(String(record(frame.error).message ?? ""))
+                  );
+                else waiter.resolve(record(frame.result));
+                return;
+              }
+              // 명령 허락을 묻지 않게 띄우지만, 물으면 이 실행 시도의 결정대로 허락한다.
+              if (frame.method === "session/request_permission") {
+                const options = Array.isArray(record(frame.params).options)
+                  ? (record(frame.params).options as unknown[]).map(record)
+                  : [];
+                const allow = options.find((option) =>
+                  String(option.kind).startsWith("allow")
                 );
-              else waiter.resolve(record(frame.result));
-              return;
-            }
-            // 명령 허락을 묻지 않게 띄우지만, 물으면 이 실행 시도의 결정대로 허락한다.
-            if (frame.method === "session/request_permission") {
-              const options = Array.isArray(record(frame.params).options)
-                ? (record(frame.params).options as unknown[]).map(record)
-                : [];
-              const allow = options.find((option) =>
-                String(option.kind).startsWith("allow")
-              );
-              child.write({
-                jsonrpc: "2.0",
-                id: frame.id,
-                result: {
-                  outcome: allow
-                    ? { outcome: "selected", optionId: allow.optionId }
-                    : { outcome: "cancelled" },
-                },
-              });
-              return;
-            }
-            const params = record(frame.params);
-            // 불러온 세션의 지난 대화는 본 요청 전에 다시 온다. 본 요청 뒤의 갱신만 본다.
-            if (
-              frame.method !== "session/update" ||
-              !prompting ||
-              params.sessionId !== sessionId
-            )
-              return;
-            const update = record(params.update);
-            // 실제 프로그램(1.5.4)은 실행 오류를 실패 종료로 알리지 않고 이 문구와 end_turn만 보낸다.
-            if (
-              update.sessionUpdate === "agent_message_chunk" &&
-              String(record(update.content).text ?? "").includes(
-                "Agent execution terminated due to error"
+                child.write({
+                  jsonrpc: "2.0",
+                  id: frame.id,
+                  result: {
+                    outcome: allow
+                      ? { outcome: "selected", optionId: allow.optionId }
+                      : { outcome: "cancelled" },
+                  },
+                });
+                return;
+              }
+              const params = record(frame.params);
+              // 불러온 세션의 지난 대화는 본 요청 전에 다시 온다. 본 요청 뒤의 갱신만 본다.
+              if (
+                frame.method !== "session/update" ||
+                !prompting ||
+                params.sessionId !== sessionId
               )
-            )
-              errored = true;
-          },
-        });
+                return;
+              const update = record(params.update);
+              // 실제 프로그램(1.5.4)은 실행 오류를 실패 종료로 알리지 않고 이 문구와 end_turn만 보낸다.
+              if (
+                update.sessionUpdate === "agent_message_chunk" &&
+                String(record(update.content).text ?? "").includes(
+                  "Agent execution terminated due to error"
+                )
+              )
+                errored = true;
+            },
+          })
+        );
         void child.done.then(() => {
           for (const waiter of pending.values())
             waiter.reject(new Error("Protocol closed"));
@@ -642,20 +663,7 @@ export function createAntigravityProvider(options: {
           : failure();
       } finally {
         grant?.revoke();
-        await Promise.all([
-          attempt &&
-            removeAttemptFolder(attempt, {
-              kind: "attempt folder",
-              connection: connectionId,
-              runId: request.identity.runId,
-            }),
-          logs &&
-            removeAttemptFolder(logs, {
-              kind: "log folder",
-              connection: connectionId,
-              runId: request.identity.runId,
-            }),
-        ]);
+        await folder?.remove();
       }
     },
   };

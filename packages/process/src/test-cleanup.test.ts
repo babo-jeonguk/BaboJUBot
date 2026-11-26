@@ -1,20 +1,24 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import net from "node:net";
 import {
   folderCleanup,
   killUnlessGone,
   lifelineHolder,
+  ownedClosable,
+  ownedListener,
   processAlive,
+  removeFolderWithin,
   withCleanup,
 } from "./test-cleanup.ts";
 import { endChild } from "./process-test-support.ts";
 import { removeFolder } from "./remove-folder.ts";
 import { within } from "./test-support.ts";
-import { attemptAll } from "@babojubot/contracts";
+import { attemptAll, isDisconnect } from "@babojubot/contracts";
 
 // 정리 실패가 시험의 원래 실패를 가리지 않고, 한 정리가 실패해도 나머지 정리를 한다.
 describe("withCleanup", () => {
@@ -345,3 +349,243 @@ describe("lifelineHolder", () => {
     expect(openAtSignal).toEqual([true]);
   });
 });
+
+// 시험이 만든 소켓·요청은 만든 직후 정리에 맡긴다. 정리는 끊고, 실제 닫힘을 상한 안에서 확인한다(#286 3b-3).
+describe("ownedClosable", () => {
+  it("ends an open socket and returns once it closed", async () => {
+    const { server } = await ownedListener(
+      net.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the test server"
+    );
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error(`the server is not on a TCP port (${address})`);
+    // 시험 대상이 넘긴 정리는 기록하고 러너에도 맡긴다. 본문이 그 정리를 부르기 전에 실패해도 소켓이 남지 않는다(두 번 불러도 같다).
+    const steps: (() => Promise<void>)[] = [];
+    const socket = ownedClosable(
+      (step) => {
+        steps.push(step);
+        onTestFinished(step);
+      },
+      net.connect(address.port, "127.0.0.1"),
+      "the test socket"
+    );
+    await within(once(socket, "connect"), 5_000, "the socket did not connect");
+    expect(steps).toHaveLength(1);
+    await within(steps[0]!(), 5_000, "the cleanup did not end");
+    expect(socket.destroyed).toBe(true);
+    expect(socket.closed).toBe(true);
+  });
+
+  it("fails with the reason when the resource does not close within its bound", async () => {
+    const destroyed: unknown[][] = [];
+    const resource = Object.assign(new EventEmitter(), {
+      destroy: (...received: unknown[]) => destroyed.push(received),
+    });
+    const steps: (() => unknown)[] = [];
+    ownedClosable(
+      (step) => steps.push(step),
+      resource,
+      "the stuck request",
+      50
+    );
+    await expect(
+      within(Promise.resolve(steps[0]?.()), 5_000, "the cleanup did not end")
+    ).rejects.toMatchObject({
+      message: "the stuck request did not close within 50 ms",
+    });
+    expect(destroyed).toEqual([[]]);
+  });
+});
+
+describe("removeFolderWithin", () => {
+  // 지우기가 매달리면 정리가 이름 없이 hook 시한까지 멈췄다(#297 독립 점검). 폴더 지우기를 기다리는 데는 이름 있는 상한을 둔다.
+  it("fails naming the folder when removing it does not end within its bound", async () => {
+    await expect(
+      within(
+        removeFolderWithin("/the/stuck/folder", {
+          rm: () => new Promise<never>(() => {}),
+          removeTimeoutMs: 50,
+        }),
+        5_000,
+        "removeFolderWithin did not end"
+      )
+    ).rejects.toMatchObject({
+      message: "removing /the/stuck/folder did not finish within 50 ms",
+    });
+  });
+});
+
+// 시험이 띄우는 listener(net·http 서버)는 듣기 전에 그 닫기를 소유자에 맡긴다. 듣기·닫기는 상한 안에서 기다리고, 닫기는 받은 연결을
+// 먼저 끊는다. 듣지 않은 서버·이미 닫은 서버는 닫을 것이 없다(#286 3b-3, server 시험의 같은 계약을 공용 자리로).
+describe("ownedListener", () => {
+  it("hands its close to the owner before listening, and the close ends the connections it took", async () => {
+    const server = net.createServer();
+    const owned: { listening: boolean; close: () => Promise<void> }[] = [];
+    // 맡긴 닫기는 기록하고 러너에도 맡긴다. 본문이 닫기 전에 실패해도 서버가 남지 않는다.
+    const { close } = await ownedListener(
+      server,
+      { port: 0, host: "127.0.0.1" },
+      (step) => {
+        owned.push({ listening: server.listening, close: step });
+        onTestFinished(step);
+      },
+      "the test listener"
+    );
+    expect(owned.map(({ listening }) => listening)).toEqual([false]);
+    expect(server.listening).toBe(true);
+    const address = server.address();
+    if (address === null || typeof address === "string")
+      throw new Error(`the listener is not on a TCP port (${address})`);
+    const accepted = once(server, "connection");
+    const client = ownedClosable(
+      onTestFinished,
+      net.connect(address.port, "127.0.0.1"),
+      "the client"
+    );
+    // 상대가 끊어 난 오류는 이 시험이 기다리는 끝이다. 그 밖의 오류는 드러낸다.
+    client.on("error", (error) => {
+      if (!isDisconnect(error)) throw error;
+    });
+    await within(accepted, 5_000, "the listener did not take the connection");
+    await within(owned[0]!.close(), 5_000, "the owner's close did not end");
+    expect(server.listening).toBe(false);
+    await within(once(client, "close"), 5_000, "the client was not cut");
+    // 시험이 이미 닫았으면 맡긴 닫기는 닫을 것이 없다.
+    await close();
+  });
+
+  it("rejects with the listen failure and leaves nothing to close", async () => {
+    const holder = net.createServer();
+    const { server: held } = await ownedListener(
+      holder,
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the port holder"
+    );
+    const { port } = held.address() as net.AddressInfo;
+    const closes: (() => Promise<void>)[] = [];
+    await expect(
+      ownedListener(
+        net.createServer(),
+        { port, host: "127.0.0.1" },
+        (step) => {
+          closes.push(step);
+          onTestFinished(step);
+        },
+        "the second listener"
+      )
+    ).rejects.toMatchObject({ code: "EADDRINUSE" });
+    expect(closes).toHaveLength(1);
+    await within(closes[0]!(), 5_000, "the close did not end");
+  });
+
+  // 맡긴 닫기가 듣기 시도가 끝나기 전에 불리면 "닫을 것 없음"으로 이행했고, 그 뒤 듣기가 끝난 서버는 아무도 닫지 않았다
+  // (#286 3b-3a merge 설계 점검 1회차 지적 2). 닫기는 듣기 시도의 끝을 본 뒤에 닫는다.
+  it("closes a server whose listening ends after its close was called", async () => {
+    const server = new GatedListen();
+    const closes: (() => Promise<void>)[] = [];
+    const listening = ownedListener(
+      server,
+      { port: 0, host: "127.0.0.1" },
+      (step) => {
+        closes.push(step);
+        onTestFinished(step);
+      },
+      "the gated listener"
+    );
+    const order: string[] = [];
+    server.once("listening", () => order.push("listening"));
+    const closing = closes[0]!().then(() => order.push("closed"));
+    server.open();
+    await within(listening, 5_000, "the gated listener did not listen");
+    await within(closing, 5_000, "the owner's close did not end");
+    expect(order).toEqual(["listening", "closed"]);
+    expect(server.listening).toBe(false);
+  });
+
+  // 듣기 기다림이 상한으로 먼저 끝난 뒤 듣기가 실패하면 그 오류를 아무도 받지 않았다(지적 2). 맡긴 닫기가 그 오류로 실패한다.
+  it("fails its close with a listen failure that came after the listen bound", async () => {
+    const { server: held } = await ownedListener(
+      net.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the port holder"
+    );
+    const { port } = held.address() as net.AddressInfo;
+    const server = new GatedListen();
+    // 러너에 맡기지 않는다: 이 서버는 듣기에 실패하므로(이미 쓰는 포트) 남는 것이 없고, 닫기의 실패는 이 시험이 받는다.
+    const closes: (() => Promise<void>)[] = [];
+    await expect(
+      ownedListener(
+        server,
+        { port, host: "127.0.0.1" },
+        (step) => closes.push(step),
+        "the late listener",
+        { listenMs: 50 }
+      )
+    ).rejects.toMatchObject({
+      message: "the late listener did not start listening within 50 ms",
+    });
+    server.open();
+    await expect(
+      within(closes[0]!(), 5_000, "the owner's close did not end")
+    ).rejects.toMatchObject({ code: "EADDRINUSE" });
+  });
+
+  // 닫기 상한이 먼저 끝난 뒤 닫기가 실패하면(늦게 실패한 듣기) 그 원인을 아무도 받지 않았다(#286 3b-3a 5회차 점검). 그 실패를 원인과
+  // 함께 드러낸다.
+  it("reports a failure its close met after the close bound, with the cause", async () => {
+    const { server: held } = await ownedListener(
+      net.createServer(),
+      { port: 0, host: "127.0.0.1" },
+      onTestFinished,
+      "the port holder"
+    );
+    const { port } = held.address() as net.AddressInfo;
+    const server = new GatedListen();
+    let report!: (failure: Error) => void;
+    const reported = new Promise<Error>((resolve) => (report = resolve));
+    // 러너에 맡기지 않는다: 이 서버는 듣기에 실패하므로(이미 쓰는 포트) 남는 것이 없고, 닫기의 실패는 이 시험이 받는다.
+    const closes: (() => Promise<void>)[] = [];
+    await expect(
+      ownedListener(
+        server,
+        { port, host: "127.0.0.1" },
+        (step) => closes.push(step),
+        "the late listener",
+        { listenMs: 50, closeMs: 50, lateFailure: report }
+      )
+    ).rejects.toMatchObject({
+      message: "the late listener did not start listening within 50 ms",
+    });
+    await expect(closes[0]!()).rejects.toMatchObject({
+      message: "the late listener did not close within 50 ms",
+    });
+    server.open();
+    expect(
+      await within(reported, 5_000, "the late failure was not reported")
+    ).toMatchObject({
+      message: "the late listener failed after its close timed out",
+      cause: { code: "EADDRINUSE" },
+    });
+  });
+});
+
+/** 듣기를 시험이 열 때까지(`open`) 미루는 서버. 시험이 만들어 인자로 넘기는 인스턴스다(공용 prototype·전역을 바꾸지 않는다). */
+class GatedListen extends net.Server {
+  private asked: Parameters<net.Server["listen"]> | undefined;
+
+  override listen(...args: unknown[]): this {
+    this.asked = args as Parameters<net.Server["listen"]>;
+    return this;
+  }
+
+  open() {
+    if (!this.asked)
+      throw new Error("the gated server was not asked to listen");
+    super.listen(...this.asked);
+  }
+}

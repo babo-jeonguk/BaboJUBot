@@ -24,6 +24,7 @@ import {
   lifelineHolder,
   processAlive as isAlive,
   withCleanup,
+  removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 import {
   attemptAll,
@@ -206,9 +207,9 @@ test(
       let scope;
       const folder = folderCleanup(() =>
         attemptAll([
-          () => removeFolder(pids),
+          () => removeFolderWithin(pids),
           async () => {
-            if (scope) await removeFolder(scope);
+            if (scope) await removeFolderWithin(scope);
           },
         ])
       );
@@ -274,9 +275,9 @@ test(
       let scope;
       const folder = folderCleanup(() =>
         attemptAll([
-          () => removeFolder(pids),
+          () => removeFolderWithin(pids),
           async () => {
-            if (scope) await removeFolder(scope);
+            if (scope) await removeFolderWithin(scope);
           },
         ])
       );

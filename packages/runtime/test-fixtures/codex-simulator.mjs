@@ -3,13 +3,14 @@ import { createInterface } from "node:readline";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { bind, recording } from "./recording.mjs";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 const args = process.argv.slice(2),
   out = (x) => process.stdout.write(JSON.stringify(x) + "\n");
 if (args.includes("--version")) {
   console.log("codex-cli 9.9.9");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
-if (args.includes("login")) process.exit(0);
+if (args.includes("login")) process.exit(await afterOutput(0));
 const exec = args.includes("exec");
 /** 시험이 이 프로그램에 주는 CODEX_HOME(세션 메모를 둔다). */
 function codexHome() {
@@ -130,7 +131,7 @@ if (exec && id === "expired") {
   console.error(
     "Error: thread/resume: thread/resume failed: no rollout found for thread id expired (code -32600)"
   );
-  process.exit(1);
+  process.exit(await afterOutput(1));
 }
 await load();
 const lines = createInterface({ input: process.stdin });

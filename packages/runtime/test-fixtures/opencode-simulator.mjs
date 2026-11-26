@@ -2,9 +2,10 @@
 import http from "node:http";
 import { readFile, writeFile, mkdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 if (process.argv.includes("--version")) {
   console.log("opencode v9.9.9");
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 /**
  * 옵션 뒤의 값. 옵션이 없으면 null이고, 값 없이 끝나면 실행을 멈춘다.
@@ -36,6 +37,16 @@ const usage =
 // --fail면 본 실행 요청에 그 파일의 `error`로 2.2.6 `session.execution.failed`(data.error: type·message·선택 status·response.body)를 낸다.
 // 합성 재생이며 실제 SSE 녹화가 아니다. `foreign`이면 먼저 다른 세션의 실패를 낸다. 본 실행 요청마다 `<파일>.prompts`에 한 줄 남긴다.
 const failFile = optionValue("--fail");
+// --plugins-activating이면 그 파일의 `busy`만큼 처음의 모델 목록 요청에 503으로 답한다. 본문은 파일의 `body`이고, 없으면 OpenCode
+// 2.2.6이 Location의 plugin 활성화를 5초 기다리고도 끝나지 않았을 때 내는 답(server/src/location.ts `awaitPlugins`)이다. 합성 재생이며
+// 녹화가 아니다. 모델 목록 요청마다 `<파일>.asked`에 한 줄 남긴다. 파일의 `then`은 `busy` 뒤 첫 모델 목록 요청의 답이다: 없으면 목록,
+// `"hold"`면 답하지 않고 연결을 쥔다(프로그램이 끝나면 끊긴다), `"endless-503"`이면 503 머리와 본문 일부만 보내고 끝내지 않는다.
+// 둘 다 그렇게 한 뒤 파일의 `notify` 주소로 POST를 한 번 보낸다(시험이 그 요청이 시한 전에 왔음을 상태로 안다).
+const activatingFile = optionValue("--plugins-activating");
+const activating = activatingFile
+  ? JSON.parse(await readFile(activatingFile, "utf8"))
+  : null;
+let busyAnswers = activating?.busy ?? 0;
 const failing = failFile ? JSON.parse(await readFile(failFile, "utf8")) : null;
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? "{}"),
   subscribers = new Set();
@@ -135,6 +146,41 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) raw += chunk;
     const input = raw ? JSON.parse(raw) : {};
     if (pathname === "/api/model") {
+      if (activatingFile !== null) {
+        await writeFile(activatingFile + ".asked", "asked\n", { flag: "a" });
+        if (busyAnswers > 0) {
+          busyAnswers -= 1;
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify(
+              activating.body ?? {
+                _tag: "ServiceUnavailableError",
+                message: "Location plugins did not finish activating",
+                service: "plugin",
+              }
+            )
+          );
+          return;
+        }
+        if (activating.then !== undefined) {
+          const then = activating.then;
+          activating.then = undefined;
+          const notify = () => fetch(activating.notify, { method: "POST" });
+          if (then === "hold") {
+            await notify();
+            return;
+          }
+          if (then === "endless-503") {
+            res.writeHead(503, { "content-type": "application/json" });
+            await new Promise((resolve) =>
+              res.write('{"_tag":"ServiceUnavailableError"', resolve)
+            );
+            await notify();
+            return;
+          }
+          throw new Error(`synthetic: unknown answer ${then}`);
+        }
+      }
       // --relay면 설정의 제공자(인증 중계 주소)대로 Go 구독 모델과 Zen 무료 모델을 보인다.
       if (relayMode) {
         json({
@@ -369,7 +415,7 @@ if (gate !== null) {
     await writeFile(starting, "", { flag: "wx" });
   } catch {
     console.error("synthetic: table already exists");
-    process.exit(1);
+    process.exit(await afterOutput(1));
   }
   await writeFile(`${gate}.reached`, "");
   // 열렸는지 다시 확인한다(파일 감시는 OS마다 알림이 다르다).

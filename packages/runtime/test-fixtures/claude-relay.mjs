@@ -2,6 +2,7 @@
 // Reads the first user turn, announces a session, then calls the Messages API at ANTHROPIC_BASE_URL with the grant in
 // CLAUDE_CODE_OAUTH_TOKEN. On 200 it finishes; otherwise it keeps retrying like a CLI would until its input closes, then exits 1.
 import { createInterface } from "node:readline";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 const input = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
 await input.next();
 console.log(
@@ -37,7 +38,7 @@ if (first === 200) {
       usage: { input_tokens: 1, output_tokens: 1 },
     })
   );
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 let closed = false;
 void (async () => {
@@ -48,4 +49,4 @@ while (!closed) {
   await new Promise((resolve) => setTimeout(resolve, 50));
   await call();
 }
-process.exit(1);
+process.exit(await afterOutput(1));

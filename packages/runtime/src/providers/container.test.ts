@@ -62,8 +62,14 @@ import {
   probeEnvironment,
   within,
 } from "@babojubot/process/test-support";
+import { relaySockets } from "./relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
-import { refusing, resetRefusing } from "./connect-failure-support.ts";
+import {
+  failingRelayCloses,
+  refusing,
+  resetRefusing,
+  serverFaults,
+} from "./connect-failure-support.ts";
 import { startProcess } from "./process.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
@@ -174,6 +180,13 @@ const policy = vi.hoisted(() => ({
 vi.mock("node:net", async (importOriginal) =>
   (await import("./connect-failure-support.ts")).failingNet(
     await importOriginal()
+  )
+);
+// 같은 대역이 중계의 HTTP 서버를 만들어, 시험이 정한 닫기만 실패시킨다(`serverFaults`).
+vi.mock("node:http", async (importOriginal) =>
+  (await import("./connect-failure-support.ts")).failingHttp(
+    await importOriginal(),
+    await import("node:net")
   )
 );
 vi.mock("./egress-policy.ts", async (importOriginal) => {
@@ -3046,7 +3059,7 @@ describe("docker failures during container cleanup", () => {
     docker: [
       process.execPath,
       "-e",
-      `process.stderr.write("Cannot connect to the Docker daemon"); process.exit(1);`,
+      `process.stderr.write("Cannot connect to the Docker daemon"); process.exitCode = 1;`,
     ] as const,
     image,
     owner: "owner-test",
@@ -3249,26 +3262,28 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
   // (#264 외부 리뷰 5회차 STD-4). 확인이 실패하면 관문은 격리 환경 없음으로 본다.
   it("still removes its container when the relay does not close, and fails the check", async () => {
     const { environment, removals } = await cleanProbe();
-    const close = net.Server.prototype.close;
-    const failing = vi
-      .spyOn(net.Server.prototype, "close")
-      .mockImplementation(function (
-        this: net.Server,
-        callback?: (error?: Error) => void
-      ) {
-        return close.call(this, (error?: Error) =>
-          callback?.(
-            error ?? Object.assign(new Error("close failed"), { code: "EBUSY" })
-          )
-        );
-      });
-    onTestFinished(() => failing.mockRestore());
-    await expect(
-      environment.probe(
-        { blocked: [], forbidden: [] },
-        AbortSignal.timeout(10_000)
-      )
-    ).rejects.toThrow("a relay server did not close (EBUSY)");
+    // 확인이 연 중계의 egress 서버 닫기가 실패를 알린다(서버는 실제로 닫힌다). 닫힘을 확인하지 못한 중계는 폴더를 남기므로, 그
+    // 폴더는 확인(그 중계 닫기 전부)이 끝난 뒤 정리가 지운다(`failingRelayCloses`). 확인을 시작한 직후(사이에 기다림 없이) 맡긴다.
+    const probing = environment.probe(
+      { blocked: [], forbidden: [] },
+      AbortSignal.timeout(10_000)
+    );
+    const { failedAt } = failingRelayCloses(
+      onTestFinished,
+      (address) => path.basename(address) === relaySockets.egress,
+      () => probing
+    );
+    // 거절을 먼저 받는다. 남긴 폴더의 위치는 대역이 실패시킨 닫기 뒤에야 안다.
+    const failure = await probing.then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(serverFaults.failedClose.mock.calls).toEqual([failedAt]);
+    expect(failure).toMatchObject({
+      message: `the relay could not be closed; its folder ${path.dirname(failedAt[0]!)} is kept`,
+      code: "relay_folder_kept",
+      cause: { message: "a relay server did not close (EBUSY)", code: "EBUSY" },
+    });
     expect(await removals()).toEqual([
       {
         args: ["rm", "-f", expect.stringMatching(/^babojubot-probe-/)],
@@ -3306,7 +3321,7 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
     const broken = path.join(root, "broken.mjs");
     await writeFile(
       broken,
-      `process.stderr.write("probe broke"); process.exit(3);\n`
+      `process.stderr.write("probe broke"); process.exitCode = 3;\n`
     );
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());

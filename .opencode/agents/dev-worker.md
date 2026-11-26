@@ -46,6 +46,9 @@ permissions:
     resource: "*packages/process/src/test-cleanup.*"
     effect: deny
   - action: edit
+    resource: "*packages/process/src/test-connect.*"
+    effect: deny
+  - action: edit
     resource: "*packages/process/src/test-folders.*"
     effect: deny
   - action: edit

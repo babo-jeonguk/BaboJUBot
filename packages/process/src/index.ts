@@ -22,3 +22,4 @@ export {
 } from "./bounded-command.ts";
 export { psField } from "./ps.ts";
 export { realClock, type Clock } from "./clock.ts";
+export { listenAttempt } from "./listen-attempt.ts";

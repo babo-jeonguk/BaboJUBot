@@ -5,8 +5,11 @@ import {
   within,
   type TestServer,
 } from "./support.ts";
-import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup, withCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  withCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 
 const leadOf = (org: { agents: { id: string; role: string }[] }) =>
   org.agents.find((a) => a.role === "lead")!.id;
@@ -550,7 +553,7 @@ it.each([
     // 다시 띄운 서버를 닫은 뒤에 그 폴더를 지운다. 닫기가 실패하면 폴더를 남긴다.
     // 다시 띄운 서버는 시험 서버의 DB를 쓰므로, 그 DB를 닫는 afterEach보다 먼저 시험 안에서 정리한다.
     await withCleanup(async (defer) => {
-      const folder = folderCleanup(() => removeFolder(dataDir));
+      const folder = folderCleanup(() => removeFolderWithin(dataDir));
       defer(folder.cleanUp);
       t = await startTestServer({ dataDir, now: () => now, runtime });
       await t.request("POST", "/api/organizations", {

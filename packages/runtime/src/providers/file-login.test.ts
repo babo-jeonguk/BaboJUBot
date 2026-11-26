@@ -17,6 +17,11 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { fileLogin, type FileLoginShape } from "./file-login.ts";
 import { readRegularFile } from "./regular-file.ts";
 import { testFolders } from "./test-folders.ts";
+import { attemptFolder } from "./attempt-folder.ts";
+
+/** 시험 폴더를 실행 시도 폴더로 감싼다. 로그인 파일은 그 폴더의 자격 증명 사본으로 기록된다(정리는 시험 폴더가 맡는다). */
+const attemptAt = (folder: string) =>
+  attemptFolder(folder, { kind: "attempt folder", connection: "test" });
 
 // 같은 조직의 두 실행 시도가 함께 자리 표시를 두는 순서를 고정한다. 실행 시도 폴더 밖의 첫 쓰기를 잡아 그 사이에 다른 시도를 돌리고,
 // 그 시도의 열기가 "없음"으로 실패하면 첫 쓰기가 끝날 때까지 그 실패를 붙든다.
@@ -153,7 +158,12 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     );
     const attempt = await folders.make("babojubot-attempt-");
 
-    await expect(prepared.attemptLogin(attempt, "grant")).rejects.toThrow();
+    await expect(
+      prepared.attemptLogin(attemptAt(attempt), "grant")
+    ).rejects.toMatchObject({
+      message:
+        "the login place in the organization folder is not a folder; the stand-in was not placed",
+    });
     expect(await readFile(original, "utf8")).toBe("REAL LOGIN");
   });
 
@@ -165,7 +175,7 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
       throw new Error(`no isolated login: ${prepared.refusal}`);
     const attempt = await folders.make("babojubot-attempt-");
 
-    const placed = await prepared.attemptLogin(attempt, "grant");
+    const placed = await prepared.attemptLogin(attemptAt(attempt), "grant");
     expect(await readFile(placed.source, "utf8")).toBe(
       JSON.stringify({ token: "grant" })
     );
@@ -239,12 +249,12 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
           resolve();
         };
       });
-      secondDone = attemptLogin(second, "grant-two");
+      secondDone = attemptLogin(attemptAt(second), "grant-two");
       await secondArrived;
       await write();
     };
 
-    const placed = await attemptLogin(first, "grant-one");
+    const placed = await attemptLogin(attemptAt(first), "grant-one");
     const other = (await secondDone) as typeof placed;
     expect(checkedWhilePlacing).toBe(false);
     expect(race.published).toBe(1);
@@ -291,7 +301,7 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
       if (isolated.refusal !== undefined || !isolated.attemptLogin)
         throw new Error(`no isolated login: ${isolated.refusal}`);
       await isolated.attemptLogin(
-        await folders.make("babojubot-attempt-"),
+        attemptAt(await folders.make("babojubot-attempt-")),
         "grant"
       );
 
@@ -344,7 +354,7 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
       if (isolated.refusal !== undefined || !isolated.attemptLogin)
         throw new Error(`no isolated login: ${isolated.refusal}`);
       await isolated.attemptLogin(
-        await folders.make("babojubot-attempt-"),
+        attemptAt(await folders.make("babojubot-attempt-")),
         "grant"
       );
 
@@ -388,7 +398,9 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     race.outside = [attempt];
     const full = Object.assign(new Error("disk full"), { code: "ENOSPC" });
     race.failAfterCreate = full;
-    await expect(prepared.attemptLogin(attempt, "grant")).rejects.toBe(full);
+    await expect(
+      prepared.attemptLogin(attemptAt(attempt), "grant")
+    ).rejects.toBe(full);
     const place = path.join(
       root,
       "providers",

@@ -11,7 +11,10 @@ import { Workspaces, WorkspaceIdentityError } from "../src/workspace.ts";
 import { within } from "./support.ts";
 import { attemptAll } from "@babojubot/contracts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { folderCleanup } from "@babojubot/process/test-cleanup";
+import {
+  folderCleanup,
+  removeFolderWithin,
+} from "@babojubot/process/test-cleanup";
 
 // 조직 폴더 표식은 확인한 파일과 내용을 읽은 파일이 같아야 한다(#242). 경로로 종류·크기를 본 뒤 같은 경로를 다시 열면,
 // 그 사이 바뀐 파일(다른 곳을 가리키는 링크, 상한보다 큰 파일)의 내용으로 조직을 판정한다.
@@ -79,7 +82,7 @@ async function organization() {
   cleanups.push(users.cleanUp);
   users.own(prepared);
   const root = await mkdtemp(path.join(tmpdir(), "identity-swap-"));
-  const owned = folderCleanup(() => removeFolder(root));
+  const owned = folderCleanup(() => removeFolderWithin(root));
   cleanups.push(owned.cleanUp);
   owned.own(prepared);
   const org = await insertLegacyOrganization(database.db, "표식 바꿔치기");

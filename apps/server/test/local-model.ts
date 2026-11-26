@@ -1,7 +1,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { answering } from "@babojubot/runtime/testing";
-import { ownedListener } from "./support.ts";
+import { ownedListener } from "@babojubot/process/test-cleanup";
 
 /**
  * 실제 OpenCode가 부르는 OpenAI 호환 가짜 모델(#147). 받은 요청 본문을 모두 남기고, 계정·실제 모델 없이 답한다.

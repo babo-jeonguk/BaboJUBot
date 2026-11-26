@@ -7,6 +7,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import path from "node:path";
+import { afterOutput } from "../../../scripts/exit-after-output.ts";
 
 const sceneFile = process.argv[2];
 if (sceneFile === undefined)
@@ -35,21 +36,21 @@ if (scene.mode === "cancel") {
   // Wait for the interrupt, then save the cost like the real program does on exit.
   await input.next();
   await saveCost();
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }
 if (scene.mode === "script") {
   for (const frame of scene.frames) {
     if (frame === "save") await saveCost();
     else out({ session_id: id, ...frame });
   }
-  if (!scene.untilStopped) process.exit(0);
+  if (!scene.untilStopped) process.exit(await afterOutput(0));
   process.on("SIGTERM", async () => {
     await saveCost();
-    process.exit(0);
+    process.exit(await afterOutput(0));
   });
   setInterval(() => {}, 1000);
 } else {
   out({ type: "result", subtype: "success", session_id: id, ...scene.result });
   await saveCost();
-  process.exit(0);
+  process.exit(await afterOutput(0));
 }

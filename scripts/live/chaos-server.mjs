@@ -176,7 +176,8 @@ export function chaosServer({
       postgres: false,
       providerRecordsFound: 0,
       providerRecordsLeft: 0,
-      homeKept: false,
+      // 홈을 지웠는가: 아래 지우기가 이행한 뒤에만 참이다. 기록을 지키려 남기면 거짓이고 그 까닭은 `providerRecordsLeft`가 말한다.
+      homeRemoved: false,
     };
     const { openDatabase, openEphemeralDatabase } =
       await import("@babojubot/db");
@@ -220,12 +221,12 @@ export function chaosServer({
     });
     if (leftovers.providerRecordsLeft > 0) {
       // 우리 것인지 확인하지 못한 기록은 지우지 않는다. 사람이 정리할 수 있게 홈을 남긴다.
-      leftovers.homeKept = true;
       console.error(
         `[chaos] ${leftovers.providerRecordsLeft} provider process record(s) could not be recovered; kept ${home} for manual cleanup`
       );
     } else {
       await rm(home, { recursive: true, force: true });
+      leftovers.homeRemoved = true;
     }
     return leftovers;
   }
