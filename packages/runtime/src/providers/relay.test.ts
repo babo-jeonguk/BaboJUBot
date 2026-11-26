@@ -13,6 +13,7 @@ import {
   type EgressRefusal,
 } from "@babojubot/contracts";
 import {
+  awaitedLater,
   ownClosable,
   ownedClosable,
   ownedListener,
@@ -1895,11 +1896,15 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       ]);
       const relay = relays.open({ identity, required: [] });
       await relay.ready;
-      const revalidating: Promise<void>[] = [];
+      // 판정 도중(이름 풀이 안)에 시작한 다시 보기. 응답을 기다리는 사이 거절돼도 처리되지 않은 거절로 남지 않게, 시작하는 자리에서
+      // 나중에 기다릴 것으로 맡긴다.
+      const started: { revalidation?: Promise<void> } = {};
       nameFaults.looked.mockImplementation(() => {
         osFaults.interfaces = { cause: "ENOMEM" };
         setResearch([]);
-        revalidating.push(relays.revalidate(identity.organizationId));
+        started.revalidation = awaitedLater(
+          relays.revalidate(identity.organizationId)
+        );
       });
       const authority = `relay-recheck.test:${target.port}`;
       if (kind === "CONNECT")
@@ -1911,9 +1916,11 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
           status: 403,
           refusal: "policy_unavailable",
         });
-      expect(revalidating).toHaveLength(1);
+      // 판정 도중의 이름 풀이는 한 번이고, 그 안에서 다시 보기를 한 번 시작했다.
+      expect(nameFaults.looked).toHaveBeenCalledTimes(1);
+      expect(started.revalidation).toBeDefined();
       await within(
-        Promise.all(revalidating),
+        started.revalidation!,
         5_000,
         "the revalidation did not end"
       );
