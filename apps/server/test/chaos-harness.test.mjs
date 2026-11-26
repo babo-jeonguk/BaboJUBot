@@ -34,6 +34,7 @@ import {
 import {
   chaosEnvironment,
   chaosServer,
+  folderOutcome,
   scrubEnvironment,
 } from "../../../scripts/live/chaos-server.mjs";
 import { removeFolder } from "@babojubot/process/remove-folder";
@@ -599,8 +600,7 @@ describe("chaos harness on a fake connection", () => {
       );
       expect(scene.cleanup).toMatchObject({
         serverStopped: true,
-        homeRemoved: true,
-        homeKept: false,
+        home: "removed",
         providerRecordsLeft: 0,
         commandPidsLeft: 0,
         problems: 0,
@@ -670,7 +670,7 @@ describe("chaos harness on a fake connection", () => {
     });
     expect(scene.cleanup).toMatchObject({
       serverStopped: true,
-      homeRemoved: true,
+      home: "removed",
       postgresLeft: true,
       problems: 0,
     });
@@ -712,7 +712,7 @@ describe("chaos harness on a fake connection", () => {
     expect(summary.outcome).toBe("incomplete");
     expect(first.cleanup).toMatchObject({
       serverStopped: true,
-      homeRemoved: true,
+      home: "removed",
     });
   }, 120_000);
 
@@ -742,7 +742,7 @@ describe("chaos harness on a fake connection", () => {
     ]);
     expect(summary.scenes[0].cleanup).toMatchObject({
       serverStopped: true,
-      homeRemoved: true,
+      home: "removed",
       problems: 0,
     });
   }, 120_000);
@@ -855,8 +855,7 @@ describe("chaos harness on a fake connection", () => {
     const [scene] = summary.scenes;
     expect(scene.outcome).toBe("failed");
     expect(scene.cleanup).toMatchObject({
-      homeKept: true,
-      homeRemoved: false,
+      home: "kept",
       providerRecordsLeft: 1,
     });
     // 사람이 정리할 수 있게 기록을 지우지 않는다.
@@ -873,7 +872,7 @@ describe("chaos harness on a fake connection", () => {
    * (`packages/db/src/embedded.ts`, `packages/process/src/supervised.ts`): 남은 Postgres 멈추기 10초 + 시작 60초 + 닫기 30초에 `pg_ctl`마다
    * 여유 15초씩(`leftoverStopSeconds`·`startSeconds`·`stopSeconds`·`pgCtlMarginMs`), 그리고 트리 정지(유예 2초 + 감독 실행기 정지 20초
    * `supervisorStopLimitMs` + 끝 확인 10초 `endLimitMs`). 모든 단계의 보장은 아니다: 여러 번 도는 상태 확인(`pg_ctl status` 15초씩),
-   * 남은 프로바이더 기록 정리, 상한이 없는 단계(마이그레이션, 홈 지우기)는 더하지 않았다. 넘기면 끝을 확인하지 못한 것으로 실패하고
+   * 남은 프로바이더 기록 정리, 상한이 없는 단계(마이그레이션)와 홈 지우기(`removeFolderWithin` 10초)는 더하지 않았다. 넘기면 끝을 확인하지 못한 것으로 실패하고
    * 폴더를 남긴다(fail closed).
    */
   const disposeMs =
@@ -900,9 +899,18 @@ describe("chaos harness on a fake connection", () => {
           connection: "fake-live",
           database: "persistent",
         });
-        folder.own(() =>
-          within(server.dispose(), disposeMs, "disposing the scene server")
-        );
+        // 정리는 홈 지우기까지 확인한다: dispose는 지우기를 확인하지 못해도 거절하지 않고 그 끝(`home`)을 돌려준다.
+        folder.own(async () => {
+          const left = await within(
+            server.dispose(),
+            disposeMs,
+            "disposing the scene server"
+          );
+          if (!folderOutcome(left.home).removed)
+            throw new Error(
+              `the scene server cleanup reported the scene home as ${left.home} (expected removed)`
+            );
+        });
         // 서버 프로그램을 띄워 준비를 기다리기 시작한 뒤(시작 횟수가 는 뒤) 중단한다. 멈춘 이유는 시작 실패가 아니라 그 중단의
         // 이유 그대로다. 시작 대기(180s)까지 갔다면 시작 실패("not ready in time")로 끝나므로 이유가 다르다.
         const scene = new AbortController();
@@ -918,6 +926,7 @@ describe("chaos harness on a fake connection", () => {
         return home;
       });
       expect(await postgresAlive(home)).toBe(false);
+      expect(existsSync(home)).toBe(false);
       // 시험 시한은 본문과 정리의 상한을 더한 값이다: 시작 대기 확인 30초(위 `waitUntil`) + 중단된 시작의 끝 확인 30초(`chaos-server.mjs`
       // `kill`) + 정리 `disposeMs` + Postgres 확인 10초(`postgresAlive`의 `limitMs`).
     },

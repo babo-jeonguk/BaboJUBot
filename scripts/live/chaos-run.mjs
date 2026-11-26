@@ -23,7 +23,11 @@ import {
   writeBudget,
   writeSecretFile,
 } from "./chaos-budget.mjs";
-import { chaosServer } from "./chaos-server.mjs";
+import {
+  chaosServer,
+  folderOutcome,
+  removeEndedFolder,
+} from "./chaos-server.mjs";
 import { stillRunning } from "./processes.mjs";
 import {
   brief,
@@ -343,7 +347,7 @@ async function runScene({
 function sceneCleanedUp(cleanup) {
   return (
     cleanup.serverStopped &&
-    cleanup.homeRemoved &&
+    folderOutcome(cleanup.home).removed &&
     cleanup.providerRecordsLeft === 0 &&
     cleanup.problems === 0 &&
     cleanup.commandPidsLeft === 0
@@ -371,7 +375,7 @@ export async function prepareScene(ready, root = tmpdir()) {
       () => attemptAll(made.map((dir) => () => removeFolderWithin(dir))),
       (cleanupError) =>
         console.error(
-          `[chaos] scene folders were not removed after a failed start (${failureCode(cleanupError)})`
+          `[chaos] the removal of scene folders after a failed start was not confirmed (${failureCode(cleanupError)})`
         )
     );
     throw error;
@@ -440,38 +444,43 @@ export async function cleanupScene({ server, harnessDir, marker }) {
     ),
   ]);
   // 장면 서버와 시험용 명령은 harness 폴더를 쓴다. 그 끝을 모두 확인했을 때만 지우고, 아니면 남기고 알린다(지우면 아직 쓰는
-  // 프로세스가 남은 채로 정리된 것처럼 보인다). 지우기의 실패도 정리 실패로 센다.
-  const unconfirmed = serverAndList.length + commands.length;
-  const harness = unconfirmed
-    ? []
-    : await attemptEach([
-        step(
-          (error) =>
-            `could not remove the scene harness folder (${code(error)})`,
-          () => removeFolderWithin(harnessDir)
-        ),
-      ]);
-  if (unconfirmed)
+  // 프로세스가 남은 채로 정리된 것처럼 보인다). 지우기를 확인하지 못하면(실패·상한 초과) 남긴 것이 아니라 확인 못 함으로 적고 정리
+  // 문제로 센다.
+  const notEnded = serverAndList.length + commands.length;
+  /** @type {import("./chaos-server.mjs").FolderEnd} */
+  let harness = "kept";
+  if (notEnded)
     console.error(
       `[chaos] the scene harness folder ${harnessDir} is kept: the scene server or its commands were not confirmed ended`
     );
-  // 폴더 칸은 지우기를 실제로 한 결과다(뒤에 조회해 짐작하지 않는다: 조회 실패도 "없음"으로 나온다). 홈은 서버 정리(`dispose`)가
-  // 지우기를 마쳤을 때만 지운 것이다. 정리가 실패했거나 기록을 지키려 남겼으면 남긴 것이다. harness는 위 지우기 단계를 했고 성공했을 때만.
-  const homeRemoved = leftovers?.homeRemoved === true;
-  const harnessRemoved = unconfirmed === 0 && harness.length === 0;
+  else {
+    const removal = await removeEndedFolder(harnessDir);
+    harness = removal.end;
+    if (removal.end === "unconfirmed")
+      console.error(
+        `[chaos] could not confirm that the scene harness folder was removed (${code(removal.failure)})`
+      );
+  }
+  // 폴더 칸(`FolderEnd`)은 지우기를 실제로 한 결과다(뒤에 조회해 짐작하지 않는다: 조회 실패도 "없음"으로 나온다).
+  // - 지움(removed): 지우기 이행을 확인함.
+  // - 남김(kept): 지우기를 시작하지 않음. 홈은 서버 정리(`dispose`)가 거절했거나(dispose 계약: 거절은 지우기를 시작하기 전에만 난다)
+  //   기록을 지키려 남긴 것, harness는 서버·명령의 끝을 확인하지 못한 것이다.
+  // - 확인 못 함(unconfirmed): 지우기를 시작했지만 실패했거나 상한 안에 끝을 보지 못함(그 뒤에 지워질 수 있다).
+  /** @type {import("./chaos-server.mjs").FolderEnd} */
+  const home = leftovers === undefined ? "kept" : leftovers.home;
   return {
     serverStopped: !server.running,
-    homeRemoved,
-    homeKept: !homeRemoved,
+    home,
     // 서버 정리(`dispose`)가 결과를 주지 못했으면 남은 DB·기록을 모른다. "남은 것 없음"(false·0)으로 적지 않고 모름(null)으로 적는다.
     postgresLeft: leftovers?.postgres ?? null,
     providerRecordsFound: leftovers?.providerRecordsFound ?? null,
     providerRecordsLeft: leftovers?.providerRecordsLeft ?? null,
     // 정리에 들어갈 때 시험용 명령이 남아 있었다는 것 자체가 정리 실패의 신호다. 끈 뒤에 끝났는지와 상관없이 그 수를 센다.
     commandPidsLeft: left?.length ?? null,
-    harnessKept: !harnessRemoved,
-    // 남긴 harness 폴더는 그 원인(서버·명령의 정리 실패)으로 이미 센다.
-    problems: unconfirmed + harness.length,
+    harness,
+    // 남긴 폴더는 그 원인(서버·명령의 정리 실패, 남은 기록)으로 이미 센다. 지우기를 확인하지 못한 폴더는 하나씩 센다.
+    problems:
+      notEnded + folderOutcome(home).problem + folderOutcome(harness).problem,
   };
 }
 

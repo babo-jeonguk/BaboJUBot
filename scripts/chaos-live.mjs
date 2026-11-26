@@ -6,8 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { attemptEach, failureCode } from "@babojubot/contracts";
-import { removeFolderWithin } from "@babojubot/process/test-cleanup";
+import { failureCode } from "@babojubot/contracts";
 import {
   createOpenCodeProvider,
   processRecordPids,
@@ -15,7 +14,7 @@ import {
 } from "@babojubot/runtime";
 import { LaunchRefused, limits, parseLaunch } from "./live/chaos-budget.mjs";
 import { exitCodeOf, runChaos, writeEvidence } from "./live/chaos-run.mjs";
-import { scrubEnvironment } from "./live/chaos-server.mjs";
+import { removeEndedFolder, scrubEnvironment } from "./live/chaos-server.mjs";
 import { scenes } from "./live/chaos-scenes.mjs";
 import { afterOutput } from "./exit-after-output.ts";
 import { installUserInterrupt } from "./live/chaos-interrupt.ts";
@@ -88,7 +87,7 @@ function readinessOf(readiness) {
 /**
  * 임시 홈에서 준비 확인을 하고, 그 확인이 띄운 프로그램이 끝났는지 본다. 서버의 끝은 제품 복구 뒤 남은 복구 기록이 없는 것으로 본다
  * (제품은 트리가 멈춘 것을 확인했을 때만 기록을 지운다). 한계: 제품이 기록을 저장하지 못한 길과, 트리는 멈췄지만 출력을 쥔 자손이
- * 남은 길은 이 판정이 보지 못한다(#286 PR 3b-3b-1 「한계」, 남은 폴더 자동 정리 후속 이슈).
+ * 남은 길은 이 판정이 보지 못한다(#286 PR 3b-3b-1 「한계」, #301).
  */
 async function checkIn(home) {
   const connection = createOpenCodeProvider({ dataDir: home });
@@ -104,8 +103,9 @@ async function checkIn(home) {
 
 /**
  * 실제 호출 전 확인: 프로그램·로그인 상태와 무료 모델. 임시 홈에서 하고, 그 확인이 띄운 프로그램의 끝을 확인했을 때만 지운다. 사용자
- * OpenCode 설정·자격 증명은 읽지 않는다. 확인하지 못했거나 지우지 못하면 홈을 남기고 그 위치와 까닭을 알리며, 문제로 돌려줘 실제
- * 호출로 넘어가지 않는다. 확인 자체가 던지면 남긴 위치를 알린 뒤 그대로 던진다.
+ * OpenCode 설정·자격 증명은 읽지 않는다. 끝을 확인하지 못하면 홈을 남기고(지우기를 시작하지 않음), 지우기를 확인하지 못하면(실패·상한
+ * 초과, 그 뒤에 지워질 수 있다) 그 까닭을 알리며, 어느 쪽이든 위치와 함께 문제로 돌려줘 실제 호출로 넘어가지 않는다. 확인 자체가
+ * 던지면 남긴 위치를 알린 뒤 그대로 던진다.
  */
 async function preflight() {
   const home = await mkdtemp(path.join(tmpdir(), "babojubot-chaos-preflight-"));
@@ -132,11 +132,11 @@ async function preflight() {
       `확인이 띄운 프로그램의 끝을 확인하지 못함, 임시 홈을 남김(${home})`
     );
   } else {
-    // 지우기 실패는 확인 결과를 버리지 않고 문제로 더한다(증거 파일에 남는다).
-    const [unremoved] = await attemptEach([() => removeFolderWithin(home)]);
-    if (unremoved !== undefined)
+    // 지우기를 확인하지 못하면 확인 결과를 버리지 않고 문제로 더한다(증거 파일에 남는다). 남긴 것이 아니다: 지우기는 그 뒤에도 돌 수 있다.
+    const removal = await removeEndedFolder(home);
+    if (removal.end === "unconfirmed")
       problems.push(
-        `임시 홈을 지우지 못함(${failureCode(unremoved)}), 남김(${home})`
+        `임시 홈 지우기를 확인하지 못함(${failureCode(removal.failure)}): ${home}`
       );
   }
   return problems.length > 0

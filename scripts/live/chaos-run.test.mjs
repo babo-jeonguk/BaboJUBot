@@ -10,6 +10,7 @@ import {
   removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 import { cleanupScene, prepareScene } from "./chaos-run.mjs";
+import { removeEndedFolder } from "./chaos-server.mjs";
 
 test("a failing scene preparation removes the folders it made and keeps its error", async () => {
   await withCleanup(async (defer) => {
@@ -91,9 +92,8 @@ test("a scene whose server cleanup failed keeps its folders and counts the failu
       }
     );
     assert.equal(existsSync(harnessDir), true);
-    assert.equal(cleanup.harnessKept, true);
-    assert.equal(cleanup.homeRemoved, false);
-    assert.equal(cleanup.homeKept, true);
+    assert.equal(cleanup.harness, "kept");
+    assert.equal(cleanup.home, "kept");
     assert.equal(cleanup.problems, 1);
     assert.deepEqual(reported, [
       ["[chaos] scene server cleanup failed (EBUSY)"],
@@ -158,10 +158,32 @@ test("a scene whose server cleanup kept its home for left provider records does 
       postgres: false,
       providerRecordsFound: 1,
       providerRecordsLeft: 1,
-      homeRemoved: false,
+      home: "kept",
     }));
-    assert.equal(cleanup.homeRemoved, false);
-    assert.equal(cleanup.homeKept, true);
+    assert.equal(cleanup.home, "kept");
     assert.equal(cleanup.providerRecordsLeft, 1);
+  });
+});
+
+// 끝을 확인한 폴더의 지우기 결과는 둘이다: 이행하면 지움, 실패하거나 상한을 넘기면 확인 못 함(그 실패와 함께). 지우기 실패를 "남김"으로
+// 적지 않는다(#286 PR #300 외부 리뷰 1회차 SPEC-1).
+test("removing an ended folder is removed when the removal ends and unconfirmed with its failure when it fails", async () => {
+  await withCleanup(async (defer) => {
+    const folder = mkdtempSync(path.join(tmpdir(), "babojubot-chaos-removal-"));
+    defer(() => removeFolderWithin(folder));
+    const refused = Object.assign(new Error("permission denied"), {
+      code: "EACCES",
+    });
+    assert.deepEqual(
+      await removeEndedFolder(folder, {
+        rm: async () => {
+          throw refused;
+        },
+      }),
+      { end: "unconfirmed", failure: refused }
+    );
+    assert.equal(existsSync(folder), true);
+    assert.deepEqual(await removeEndedFolder(folder), { end: "removed" });
+    assert.equal(existsSync(folder), false);
   });
 });
