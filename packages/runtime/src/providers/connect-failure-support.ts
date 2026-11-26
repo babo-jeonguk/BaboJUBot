@@ -36,57 +36,91 @@ export type Gate = {
   readonly [gateBrand]: true;
 };
 
-/** 아직 열리지 않은 gate를 여는 함수들. `resetRefusing()`이 모두 `"reset"`으로 연다. */
-const openAtReset = new Set<(outcome: "opened" | "reset") => void>();
-
-/**
- * gate 하나를 만든다. 만드는 순간 그 해제를 대역의 reset에 맡긴다: 본문이 열지 못한 채 시험이 끝나도(본문 실패) afterEach의
- * `resetRefusing()`이 `"reset"`으로 연다. vitest는 afterEach를 그 시험의 모든 onTestFinished보다 먼저 부르므로(5.0.5 러너:
- * `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인) gate에 걸린 hub·중계 닫기(onTestFinished)보다 먼저
- * 풀린다(등록 순서에 기대지 않는다). 본문의 `open()`과 reset 가운데 먼저 부른 것 하나만 효과가 있다. 붙잡힌 일의 해제일 뿐 그 일의
- * 끝(닫힘) 확인은 그 일의 정리가 따로 한다.
- */
-export function gate(): Gate {
-  const { promise, resolve } = Promise.withResolvers<"opened" | "reset">();
-  const settle = (outcome: "opened" | "reset") => {
-    openAtReset.delete(settle);
-    resolve(outcome);
-  };
-  openAtReset.add(settle);
-  return { until: promise, open: () => settle("opened"), [gateBrand]: true };
-}
-
 /** 대역의 reset이 붙잡힌 기다림을 포기시킬 때의 거절. 무엇을 포기했는지(`what`)를 밝힌다. 포기하는 자리는 모두 이 문구를 쓴다. */
 export function givenUpAtReset(what: string) {
   return new Error(`${what} was given up at the double's reset`);
 }
 
+/** 대역·콜백이 붙잡는 것: gate와 콜백 안 기다림. 얻는 자리에서 그 소유자에 등록한다. */
+export type Holds = {
+  gate(): Gate;
+  until<T>(event: Promise<T>, what: string): Promise<T>;
+};
+
 /**
- * 콜백(정책 hook, 대역 구현) 안에서 사건 `event`를 기다리는 길. 사건의 결과를 그대로 돌려주고(이행·거절 모두), 사건이 오기 전에 대역의
- * reset(afterEach)이 오면 `givenUpAtReset(what)`으로 거절한다. 이 시험의 reset 전에 시작한 기다림은 그 reset이 그 시험의 hub·중계
- * 닫기(onTestFinished)보다 먼저 푼다. 그래서 본문이 실패해 사건이 오지 않아도 콜백의 기다림은 시험 뒤에 남지 않는다(reset 뒤에 시작한
- * 기다림은 다음 reset까지 남는다). 바깥 기다림의 상한은 바깥 기다림만 끝내므로 이 해제를 대신하지 못한다.
- * 콜백은 이것을 시험이 소유한 칸에 `awaitedLater`로 담고 그 칸을 기다린다. 본문은 답을 받은 뒤 답 내용을 단언하기 전에 그 칸을 상한
- * 안에서 받아, 사건으로 풀렸는지(이행) 단언하고 사건의 실패는 그 거절로 받는다. 콜백 안에 상한(`within`)을 두지 않는다: 그 거절이
- * 제품의 정책 읽기 실패(`policy_unavailable`)로 접혀 까닭이 사라진다. 사건이 먼저 끝나면 이 기다림의 gate는 reset 때 풀리고, 그때 생기는
- * 거절은 이미 끝난 `race`가 받는다.
- * 사건이 오지 않은 채 reset에 닿은 기다림은 reset이 모두 푼 뒤 그 `what` 목록으로 실패한다(`resetRefusing`). 본문이 바깥 답 기다림의
- * 상한으로 먼저 실패해 칸의 거절을 받지 못해도, 어느 hook 기다림이 멈췄는지가 그 시험의 afterEach 실패로 남는다.
+ * 붙잡는 것의 소유자 하나. `giveUp()`이 등록된 기다림을 `givenUpAtReset(what)`으로 풀고 gate를 `"reset"`으로 연 뒤, 사건이 오지
+ * 않은 채 풀린 기다림의 `what` 목록을 돌려준다.
  */
-export function heldUntil<T>(event: Promise<T>, what: string): Promise<T> {
-  const waiting = { what };
-  unendedHolds.add(waiting);
-  const reset = gate();
-  return Promise.race([
-    event.finally(() => unendedHolds.delete(waiting)),
-    reset.until.then(() => {
-      throw givenUpAtReset(what);
-    }),
-  ]);
+export function holdsOwner() {
+  const gates = new Set<(outcome: "opened" | "reset") => void>();
+  const waiting = new Set<{ what: string; giveUp: (reason: Error) => void }>();
+  const holds: Holds = {
+    /**
+     * gate 하나를 만든다. 만드는 순간 그 해제를 소유자의 `giveUp()`에 맡긴다: 본문이 열지 못한 채 시험이 끝나도(본문 실패) afterEach의
+     * `resetRefusing()`이 `"reset"`으로 연다. vitest는 afterEach를 그 시험의 모든 onTestFinished보다 먼저 부르므로(5.0.5 러너:
+     * `test.afterEach` 다음 `test.onFinished`, 본문이 실패한 시험으로 실행해 확인) gate에 걸린 hub·중계 닫기(onTestFinished)보다 먼저
+     * 풀린다(등록 순서에 기대지 않는다). 본문의 `open()`과 reset 가운데 먼저 부른 것 하나만 효과가 있다. 붙잡힌 일의 해제일 뿐 그 일의
+     * 끝(닫힘) 확인은 그 일의 정리가 따로 한다.
+     */
+    gate() {
+      const { promise, resolve } = Promise.withResolvers<"opened" | "reset">();
+      const settle = (outcome: "opened" | "reset") => {
+        gates.delete(settle);
+        resolve(outcome);
+      };
+      gates.add(settle);
+      return {
+        until: promise,
+        open: () => settle("opened"),
+        [gateBrand]: true,
+      };
+    },
+    /**
+     * 콜백(정책 hook, 대역 구현) 안에서 사건 `event`를 기다리는 길. 사건의 결과를 그대로 돌려주고(이행·거절 모두), 사건이 오기 전에
+     * 소유자의 `giveUp()`(대역의 reset, afterEach)이 오면 `givenUpAtReset(what)`으로 거절한다. 이 시험의 reset 전에 시작한 기다림은 그
+     * reset이 그 시험의 hub·중계 닫기(onTestFinished)보다 먼저 푼다. 그래서 본문이 실패해 사건이 오지 않아도 콜백의 기다림은 시험 뒤에
+     * 남지 않는다(reset 뒤에 시작한 기다림은 다음 reset까지 남는다). 바깥 기다림의 상한은 바깥 기다림만 끝내므로 이 해제를 대신하지 못한다.
+     * 콜백은 이것을 시험이 소유한 칸에 `awaitedLater`로 담고 그 칸을 기다린다. 본문은 답을 받은 뒤 답 내용을 단언하기 전에 그 칸을 상한
+     * 안에서 받아, 사건으로 풀렸는지(이행) 단언하고 사건의 실패는 그 거절로 받는다. 콜백 안에 상한(`within`)을 두지 않는다: 그 거절이
+     * 제품의 정책 읽기 실패(`policy_unavailable`)로 접혀 까닭이 사라진다. 사건이 먼저 끝나면 그 기다림은 등록에서 빠진다.
+     * 사건이 오지 않은 채 reset에 닿은 기다림은 reset이 모두 푼 뒤 그 `what` 목록으로 실패한다(`resetRefusing`). 본문이 바깥 답 기다림의
+     * 상한으로 먼저 실패해 칸의 거절을 받지 못해도, 어느 hook 기다림이 멈췄는지가 그 시험의 afterEach 실패로 남는다.
+     */
+    until<T>(event: Promise<T>, what: string) {
+      const given = Promise.withResolvers<never>();
+      const entry = { what, giveUp: given.reject };
+      waiting.add(entry);
+      return Promise.race([
+        event.finally(() => waiting.delete(entry)),
+        given.promise,
+      ]);
+    },
+  };
+  return {
+    holds,
+    giveUp() {
+      const unended = [...waiting].map(({ what }) => what);
+      for (const { what, giveUp } of waiting) giveUp(givenUpAtReset(what));
+      waiting.clear();
+      for (const open of gates) open("reset");
+      gates.clear();
+      return unended;
+    },
+  };
 }
 
-/** `heldUntil`이 시작했고 아직 사건이 오지 않은 기다림. `resetRefusing()`이 풀고 실패로 알린 뒤 비운다. */
-const unendedHolds = new Set<{ what: string }>();
+/** 대역의 reset(`resetRefusing()`)이 푸는 소유자. */
+const shared = holdsOwner();
+
+/** 대역의 reset이 푸는 gate(`Holds.gate`). */
+export function gate(): Gate {
+  return shared.holds.gate();
+}
+
+/** 대역의 reset이 푸는 콜백 안 기다림(`Holds.until`). */
+export function heldUntil<T>(event: Promise<T>, what: string): Promise<T> {
+  return shared.holds.until(event, what);
+}
 
 /** 대역이 붙잡고 있는 연결(`refusing.holdConnect`). `resetRefusing()`이 포기시킨다. */
 const heldSockets = new Set<netModule.Socket>();
@@ -154,10 +188,7 @@ export const serverFaults = {
  * 기다림이 있으면 그 `what` 목록으로 던진다(푸는 일은 그 전에 모두 하므로 실패가 해제를 건너뛰지 않는다).
  */
 export function resetRefusing() {
-  const unended = [...unendedHolds].map(({ what }) => what);
-  unendedHolds.clear();
-  for (const open of openAtReset) open("reset");
-  openAtReset.clear();
+  const unended = shared.giveUp();
   for (const socket of heldSockets)
     socket.destroy(
       Object.assign(givenUpAtReset("a held connect"), { code: "ECONNABORTED" })
