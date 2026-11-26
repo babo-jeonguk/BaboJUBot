@@ -206,10 +206,12 @@ export const holdsTest = test.extend<{ holds: Holds }>({
   },
 });
 
-/** 대역이 붙잡고 있는 연결(`refusing.holdConnect`). `resetRefusing()`이 포기시킨다. */
-const heldSockets = new Set<netModule.Socket>();
-
 export const refusing = {
+  /**
+   * 대역이 붙잡고 있는 연결(`holdConnect`). `resetRefusing()`이 새 묶음으로 바꿔 끼우고 앞 묶음의 연결을 포기시킨다. 대역은 불린 순간
+   * 지금의 묶음을 잡고 그 묶음에만 넣고 뺀다.
+   */
+  held: { sockets: new Set<netModule.Socket>() },
   /** 실패시킬 포트와 오류 코드. 없으면 아무 연결도 대역하지 않는다. */
   refuse: undefined as { port: number; code: string } | undefined,
   /** 대역한 연결마다 `{ host, port }`로 불린다. */
@@ -271,11 +273,12 @@ export const serverFaults = {
  */
 export function resetRefusing() {
   thisTest?.giveUp();
-  for (const socket of heldSockets)
+  const { held } = refusing;
+  refusing.held = { sockets: new Set() };
+  for (const socket of held.sockets)
     socket.destroy(
       Object.assign(givenUpAtReset("a held connect"), { code: "ECONNABORTED" })
     );
-  heldSockets.clear();
   refusing.refuse = undefined;
   refusing.dialed.mockReset();
   refusing.holdConnect = undefined;
@@ -370,16 +373,23 @@ function connectTarget(
   return { host, port: Number(options.port) };
 }
 
-/** `options`가 정한 포트로 가는 연결이면 그 실패를 돌려준다. 실제 연결에서 나오는 오류와 같은 모양(`code`·`syscall`)이다. */
-function refusal(options: unknown): Error | undefined {
-  const refuse = refusing.refuse;
+/**
+ * `options`가 대역이 불린 순간 잡은 `refuse`의 포트로 가는 연결이면 그 대상과 실패를 돌려준다. 실패는 실제 연결에서 나오는 오류와
+ * 같은 모양(`code`·`syscall`)이다. 기록(`dialed`)은 부른 대역이 잡아 둔 것으로 남긴다.
+ */
+function refusal(
+  refuse: (typeof refusing)["refuse"],
+  options: unknown
+): { target: { host: unknown; port: number }; error: Error } | undefined {
   const target = connectTarget(options);
   if (!refuse || target?.port !== refuse.port) return undefined;
-  refusing.dialed(target);
-  return Object.assign(
-    new Error(`connect ${refuse.code} ${String(target.host)}:${refuse.port}`),
-    { code: refuse.code, syscall: "connect" }
-  );
+  return {
+    target,
+    error: Object.assign(
+      new Error(`connect ${refuse.code} ${String(target.host)}:${refuse.port}`),
+      { code: refuse.code, syscall: "connect" }
+    ),
+  };
 }
 
 /** 연결을 시작하지 않고 `failure`로 끝나는 소켓. 실제 연결 실패처럼 다음 차례에 `error`와 `close`를 낸다. */
@@ -389,12 +399,19 @@ function failedSocket(real: typeof netModule, failure: Error) {
   return socket;
 }
 
-/** 붙지 않고 연결 중으로 남는 소켓(`refusing.holdConnect`). 끊기면 실제 연결 중 소켓처럼 `close`를 낸다. */
-function heldSocket(real: typeof netModule) {
+/**
+ * 붙지 않고 연결 중으로 남는 소켓(`refusing.holdConnect`). 끊기면 실제 연결 중 소켓처럼 `close`를 낸다. 대역이 불린 순간 잡은 묶음
+ * (`held`)에 넣고 그 묶음에서 빼며, 잡아 둔 기록(`heldConnect`)에 남긴다.
+ */
+function heldSocket(
+  real: typeof netModule,
+  held: (typeof refusing)["held"],
+  heldConnect: (typeof refusing)["heldConnect"]
+) {
   const socket = new real.Socket();
-  heldSockets.add(socket);
-  socket.once("close", () => heldSockets.delete(socket));
-  refusing.heldConnect(socket);
+  held.sockets.add(socket);
+  socket.once("close", () => held.sockets.delete(socket));
+  heldConnect(socket);
   return socket;
 }
 
@@ -402,11 +419,14 @@ function heldSocket(real: typeof netModule) {
 export function failingNet(real: typeof netModule) {
   const passThrough = real.connect as (...args: unknown[]) => netModule.Socket;
   const connect = ((...args: unknown[]) => {
-    const hold = refusing.holdConnect;
+    // 설정과 기록 칸은 불린 순간 잡는다(tests/hoisted-state-at-call).
+    const { holdConnect: hold, refuse, dialed, held, heldConnect } = refusing;
     if (hold && connectTarget(args[0])?.port === hold.port)
-      return heldSocket(real);
-    const failure = refusal(args[0]);
-    return failure ? failedSocket(real, failure) : passThrough(...args);
+      return heldSocket(real, held, heldConnect);
+    const refused = refusal(refuse, args[0]);
+    if (!refused) return passThrough(...args);
+    dialed(refused.target);
+    return failedSocket(real, refused.error);
   }) as typeof real.connect;
   const Server = faultyServer(real.Server);
   const createServer = creating(Server) as typeof real.createServer;
@@ -425,13 +445,16 @@ export function failingHttp(real: typeof httpModule, net: typeof netModule) {
     ...args: unknown[]
   ) => httpModule.ClientRequest;
   const request = ((...args: unknown[]) => {
+    // 설정과 기록 칸은 불린 순간 잡는다(tests/hoisted-state-at-call).
+    const { refuse, dialed } = refusing;
     const [options, ...rest] = args;
-    const failure = refusal(options);
-    if (!failure) return passThrough(...args);
+    const refused = refusal(refuse, options);
+    if (!refused) return passThrough(...args);
+    dialed(refused.target);
     return passThrough(
       {
         ...(options as httpModule.RequestOptions),
-        createConnection: () => failedSocket(net, failure),
+        createConnection: () => failedSocket(net, refused.error),
       },
       ...rest
     );

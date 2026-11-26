@@ -1,5 +1,5 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import type { Readable } from "node:stream";
+import { callArming } from "@babojubot/process/call-arming";
 
 // 계약 시험(runtime-contract.ts)이 실행 시도가 띄운 것을 그 실행 시도에 귀속해 보고, 돌아온 뒤를 판정한다. 판정·활동 기록·수집과
 // 귀속을 계약 시험 밖의 작은 단위로 떼어 program-watch-support.test.ts가 결함 사례로 시험한다(#294 외부 리뷰 1회차 SPEC-2,
@@ -14,7 +14,7 @@ import type { Readable } from "node:stream";
 //
 // 띄운 것은 세 가지로 센다. `tree`(공용 실행 `launchTree`)와 `command`(`runTree`)는 프로그램이고, 실제로 시작했는지(`started`)와
 // 끝(`state`)을 따로 본다. `run`(`startProcess`)은 프로그램이 아니라 그 아래 `tree` 하나의 출력 처리 경계라 프로그램 수에 넣지 않고
-// 끝만 본다. 띄우는 순간 지금의 실행 시도 문맥(`AsyncLocalStorage`)에 귀속한다. 타이머·promise 이어짐·입출력 콜백은 그것을
+// 끝만 본다. 띄우는 순간 지금의 실행 시도 문맥(공용 `callArming`)에 귀속한다. 타이머·promise 이어짐·입출력 콜백은 그것을
 // 일으킨 실행 시도의 문맥에서 돈다.
 
 /** 띄운 것 하나. */
@@ -81,9 +81,9 @@ export function newOwner(name: string): Owner {
   return owner;
 }
 
-const owners = new AsyncLocalStorage<Owner>();
-/** 어느 실행 시도에도 귀속되지 않고 띄운 것. 계약 시험은 시험마다 이것이 비어 있는지 본다. */
-let unowned: Launch[] = [];
+const owners = callArming<Owner>();
+/** 어느 실행 시도에도 귀속되지 않고 띄운 것. 계약 시험은 시험마다 이것이 비어 있는지 본다(꺼낼 때 새 목록으로 바꿔 끼운다). */
+const unowned = { list: [] as Launch[] };
 const watched = { processModule: false, processPackage: false };
 
 /** `work`와 그것이 일으킨 비동기 일을 `owner`의 문맥에서 돌린다. 그 안에서 띄운 것은 `owner`에 귀속된다. */
@@ -93,15 +93,17 @@ export function runAs<T>(owner: Owner, work: () => T): T {
 
 /** 귀속되지 않은 것을 꺼내고 비운다. */
 export function takeUnowned(): Launch[] {
-  const taken = unowned;
-  unowned = [];
+  const taken = unowned.list;
+  unowned.list = [];
   return taken;
 }
 
-/** 띄운 것 하나를 지금의 문맥에 귀속한다. 돌아온 실행 시도면 그 실행 시도의 늦은 것으로, 문맥이 없으면 귀속 없음으로 둔다. */
-function attribute(launch: Launch) {
-  const owner = owners.getStore();
-  if (!owner) unowned.push(launch);
+/** 띄운 순간 잡은 귀속 자리: 그 실행 시도 문맥(없으면 그때의 귀속 없음 목록). */
+type Attribution = { owner: Owner | undefined; unowned: Launch[] };
+
+/** 띄운 것 하나를 잡아 둔 귀속 자리에 넣는다. 돌아온 실행 시도면 그 실행 시도의 늦은 것으로, 문맥이 없으면 귀속 없음으로 둔다. */
+function attribute(launch: Launch, { owner, unowned: list }: Attribution) {
+  if (!owner) list.push(launch);
   else if (owner.returned) owner.lateLaunches.push(launch);
   else owner.launches.push(launch);
 }
@@ -110,7 +112,8 @@ function attribute(launch: Launch) {
 function launched(
   kind: Launch["kind"],
   ending: Promise<unknown>,
-  started: Launch["started"]
+  started: Launch["started"],
+  at: Attribution
 ): Launch {
   const launch: Launch = {
     kind,
@@ -125,7 +128,7 @@ function launched(
       }
     ),
   };
-  attribute(launch);
+  attribute(launch, at);
   return launch;
 }
 
@@ -144,8 +147,11 @@ export function watchPrograms<
 >(real: M): M {
   watched.processModule = true;
   const startProcess = ((...args: Parameters<M["startProcess"]>) => {
+    // 귀속 자리는 불린 순간(띄우기 전) 잡는다(tests/hoisted-state-at-call).
+    const { list } = unowned;
+    const at: Attribution = { owner: owners.current(), unowned: list };
     const started = real.startProcess(...args);
-    launched("run", started.done, "yes");
+    launched("run", started.done, "yes", at);
     return started;
   }) as M["startProcess"];
   return { ...real, startProcess };
@@ -171,6 +177,9 @@ export function watchProcessPackage<
 >(real: M): M {
   watched.processPackage = true;
   const launchTree = ((...args: Parameters<M["launchTree"]>) => {
+    // 귀속 자리는 불린 순간(띄우기 전) 잡는다(tests/hoisted-state-at-call).
+    const { list } = unowned;
+    const at: Attribution = { owner: owners.current(), unowned: list };
     const tree = real.launchTree(...args);
     let markStopped!: () => void;
     let markStopFailed!: (error: unknown) => void;
@@ -181,7 +190,8 @@ export function watchProcessPackage<
     const launch = launched(
       "tree",
       Promise.all([stopped, closed(tree.stdout), closed(tree.stderr)]),
-      "pending"
+      "pending",
+      at
     );
     tree.started.then(
       (start) => {
@@ -202,8 +212,11 @@ export function watchProcessPackage<
     };
   }) as M["launchTree"];
   const runTree = ((...args: Parameters<M["runTree"]>) => {
+    // 귀속 자리는 불린 순간(띄우기 전) 잡는다(tests/hoisted-state-at-call).
+    const { list } = unowned;
+    const at: Attribution = { owner: owners.current(), unowned: list };
     const run = real.runTree(...args);
-    const launch = launched("command", run, "pending");
+    const launch = launched("command", run, "pending", at);
     run.then(
       (result) => {
         launch.started = result.started ? "yes" : "no";

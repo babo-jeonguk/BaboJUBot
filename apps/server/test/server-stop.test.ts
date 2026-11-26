@@ -15,51 +15,68 @@ import {
  * 서버 처리기 안의 DB 호출을 멈춰 둔다. 걸어 둔 곳마다 첫 호출만 멈추고, 풀면 실제 저장을 돌린 결과를 `done`에 남긴다.
  * 요청을 보낸 쪽이 먼저 떠나도 서버 처리기는 계속 돌므로, 서버를 끄는 동안 그 처리기가 DB를 쓰는 상황을 만든다.
  */
-const held = vi.hoisted(() => {
-  type At = "tool_read" | "organizations" | "inbox" | "channel_messages";
-  type Deferred<T> = {
-    promise: Promise<T>;
-    resolve: (value: T) => void;
-    reject: (error: unknown) => void;
-  };
-  const deferred = <T>(): Deferred<T> => {
-    // Promise의 executor는 생성자 안에서 바로 돌므로 돌려주기 전에 둘 다 정해진다.
-    let resolve!: Deferred<T>["resolve"];
-    let reject!: Deferred<T>["reject"];
-    const promise = new Promise<T>((yes, no) => {
-      resolve = yes;
-      reject = no;
-    });
-    return { promise, resolve, reject };
-  };
-  type Held = {
-    entered: Deferred<void>;
-    release: Deferred<void>;
-    done: Deferred<unknown>;
-  };
-  const armed = new Map<At, Held>();
-  const all = new Set<Held>();
+type At = "tool_read" | "organizations" | "inbox" | "channel_messages";
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+};
+type Held = {
+  entered: Deferred<void>;
+  release: Deferred<void>;
+  done: Deferred<unknown>;
+  /** 처음 닿은 호출 하나만 붙잡아 풀릴 때까지 기다린 뒤 실제로 돌리고 그 결과를 `done`에 남긴다. 붙잡기는 이 객체가 한 번만 한다. */
+  pass<T>(call: () => Promise<T>): Promise<T>;
+};
+/** 걸어 둔 곳(`armed`)과 걸어 둔 모든 것(`all`, 정리가 푼다). 대역은 불린 순간 그 자리의 것을 잡고 그 객체에만 묻는다. */
+const held = vi.hoisted(() => ({
+  armed: new Map<string, Held>(),
+  all: new Set<Held>(),
+}));
+vi.mock("@babojubot/db", async (original) => {
+  const real = await original<typeof import("@babojubot/db")>();
   return {
-    arm(at: At): Held {
-      const hold = {
-        entered: deferred<void>(),
-        release: deferred<void>(),
-        done: deferred<unknown>(),
-      };
-      armed.set(at, hold);
-      all.add(hold);
-      return hold;
-    },
-    /** 걸어 둔 것을 모두 풀고 지운다. 시험이 중간에 실패해도 멈춘 처리기가 남지 않게 한다. */
-    releaseAll() {
-      for (const hold of all) hold.release.resolve();
-      all.clear();
-      armed.clear();
-    },
-    async around<T>(at: At, call: () => Promise<T>): Promise<T> {
-      const hold = armed.get(at);
-      if (!hold) return call();
-      armed.delete(at);
+    ...real,
+    // 조직 도구 처리기가 읽기 도구의 요약을 실행 활동에 남기는 저장(CI에서 닫힌 DB를 쓴 곳).
+    appendRunActivity: (...args: Parameters<typeof real.appendRunActivity>) =>
+      args[2].activity.type === "org_tool"
+        ? passHeld(held.armed.get("tool_read"), () =>
+            real.appendRunActivity(...args)
+          )
+        : real.appendRunActivity(...args),
+    listOrganizations: (...args: Parameters<typeof real.listOrganizations>) =>
+      passHeld(held.armed.get("organizations"), () =>
+        real.listOrganizations(...args)
+      ),
+    listInbox: (...args: Parameters<typeof real.listInbox>) =>
+      passHeld(held.armed.get("inbox"), () => real.listInbox(...args)),
+    // 가짜 채널의 경로는 서버가 시작한 뒤(`channel.listen`) 등록된다.
+    listFakeChannelMessages: (
+      ...args: Parameters<typeof real.listFakeChannelMessages>
+    ) =>
+      passHeld(held.armed.get("channel_messages"), () =>
+        real.listFakeChannelMessages(...args)
+      ),
+  };
+});
+
+const deferred = <T>(): Deferred<T> => {
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  return { promise, resolve, reject };
+};
+/** 대역이 잡은 걸어 둔 것(`hold`)이 있으면 그것으로, 없으면 그대로 돌린다. 칸은 대역이 불린 순간 잡아 넘긴다. */
+const passHeld = <T>(hold: Held | undefined, call: () => Promise<T>) =>
+  hold ? hold.pass(call) : call();
+/** `at`의 첫 호출을 멈춰 둔다. */
+function arm(at: At): Held {
+  let used = false;
+  const hold: Held = {
+    entered: deferred<void>(),
+    release: deferred<void>(),
+    done: deferred<unknown>(),
+    async pass(call) {
+      if (used) return call();
+      used = true;
       hold.entered.resolve();
       await hold.release.promise;
       try {
@@ -72,29 +89,16 @@ const held = vi.hoisted(() => {
       }
     },
   };
-});
-vi.mock("@babojubot/db", async (original) => {
-  const real = await original<typeof import("@babojubot/db")>();
-  return {
-    ...real,
-    // 조직 도구 처리기가 읽기 도구의 요약을 실행 활동에 남기는 저장(CI에서 닫힌 DB를 쓴 곳).
-    appendRunActivity: (...args: Parameters<typeof real.appendRunActivity>) =>
-      args[2].activity.type === "org_tool"
-        ? held.around("tool_read", () => real.appendRunActivity(...args))
-        : real.appendRunActivity(...args),
-    listOrganizations: (...args: Parameters<typeof real.listOrganizations>) =>
-      held.around("organizations", () => real.listOrganizations(...args)),
-    listInbox: (...args: Parameters<typeof real.listInbox>) =>
-      held.around("inbox", () => real.listInbox(...args)),
-    // 가짜 채널의 경로는 서버가 시작한 뒤(`channel.listen`) 등록된다.
-    listFakeChannelMessages: (
-      ...args: Parameters<typeof real.listFakeChannelMessages>
-    ) =>
-      held.around("channel_messages", () =>
-        real.listFakeChannelMessages(...args)
-      ),
-  };
-});
+  held.armed.set(at, hold);
+  held.all.add(hold);
+  return hold;
+}
+/** 걸어 둔 것을 모두 풀고 지운다. 시험이 중간에 실패해도 멈춘 처리기가 남지 않게 한다. */
+function releaseAll() {
+  for (const hold of held.all) hold.release.resolve();
+  held.all.clear();
+  held.armed.clear();
+}
 
 /** Event stream 연결. 서버를 끄는 HTTP 단계가 시작하면 서버가 이 연결을 끊는다. 시험이 그 전에 끝나도 끊기게 만든 직후 정리에 맡긴다. */
 async function openEventStream(baseUrl: string) {
@@ -117,11 +121,7 @@ async function openEventStream(baseUrl: string) {
 }
 
 /** 요청을 보내고 곧바로 떠난다(실행 시도가 멈춰 도구 요청을 끊는 것과 같다). 서버 처리기가 멈춘 뒤에 떠난다. */
-async function abandon(
-  baseUrl: string,
-  path: string,
-  hold: ReturnType<typeof held.arm>
-) {
+async function abandon(baseUrl: string, path: string, hold: Held) {
   const client = new AbortController();
   // 처리기를 기다리다 시험이 끝나도 요청이 남지 않게 만든 직후 정리에 맡긴다(이미 떠났으면 아무 일도 없다).
   onTestFinished(() => client.abort());
@@ -142,11 +142,7 @@ async function abandon(
  * 처리기를 멈춰 둔 채 서버를 끈다. HTTP 단계가 시작하면 처리기를 풀고, 그 저장이 열린 DB에서 끝난 뒤에야
  * 끄기가 끝나는지 순서로 본다. 고치기 전의 끄기는 연결만 닫고 곧바로 끝나 저장보다 먼저 끝난다.
  */
-async function stopWhileHeld(
-  t: TestServer,
-  hold: ReturnType<typeof held.arm>,
-  waitingFor: string
-) {
+async function stopWhileHeld(t: TestServer, hold: Held, waitingFor: string) {
   const stream = await openEventStream(t.baseUrl);
   const errors = vi.spyOn(console, "error");
   const order: string[] = [];
@@ -166,7 +162,7 @@ async function stopWhileHeld(
       eventually
     );
   } finally {
-    held.releaseAll();
+    releaseAll();
   }
   await within(stopping, 10_000, "stopping the server did not finish");
   await within(handled, 10_000, "the held save did not finish");
@@ -201,14 +197,14 @@ function getOver(agent: http.Agent, url: string) {
 describe("stopping the server", () => {
   let t: TestServer | undefined;
   afterEach(async () => {
-    held.releaseAll();
+    releaseAll();
     vi.restoreAllMocks();
     await t?.close();
     t = undefined;
   });
 
   it("waits for a tool request the stopped run left behind before closing", async () => {
-    const read = held.arm("tool_read");
+    const read = arm("tool_read");
     t = await startTestServer({ runtime: quietCreation() });
     const created = await t.request("POST", "/api/organizations", {
       name: "종료 대기 조직",
@@ -226,14 +222,14 @@ describe("stopping the server", () => {
 
   it("waits for a user request whose client left before closing", async () => {
     t = await startTestServer();
-    const list = held.arm("organizations");
+    const list = arm("organizations");
     await abandon(t.baseUrl, "/api/organizations", list);
     await stopWhileHeld(t, list, "GET /api/organizations");
   });
 
   it("waits for a channel request registered after the server started", async () => {
     t = await startTestServer();
-    const messages = held.arm("channel_messages");
+    const messages = arm("channel_messages");
     await abandon(t.baseUrl, "/api/channels/fake/messages", messages);
     await stopWhileHeld(t, messages, "GET /api/channels/fake/messages");
   });
@@ -245,7 +241,7 @@ describe("stopping the server", () => {
     const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
     // 끝나지 않은 요청까지 이 agent의 연결을 모두 끊는다.
     onTestFinished(() => agent.destroy());
-    const inbox = held.arm("inbox");
+    const inbox = arm("inbox");
     // 처리기를 붙잡은 동안 기다리는 요청이다. 시험이 먼저 실패해 agent가 끊어도 처리하지 않은 거절로 남지 않는다.
     const first = awaitedLater(getOver(agent, t.baseUrl + "/api/inbox"));
     await within(
@@ -254,7 +250,7 @@ describe("stopping the server", () => {
       "the Inbox handler did not finish"
     );
     // 다른 처리기 하나를 더 멈춰 두어 끄기가 처리기를 기다리는 동안 이 연결로 다음 요청을 보낸다.
-    const list = held.arm("organizations");
+    const list = arm("organizations");
     await abandon(t.baseUrl, "/api/organizations", list);
     const stream = await openEventStream(t.baseUrl);
     const stopping = t.stopServer();
@@ -273,7 +269,7 @@ describe("stopping the server", () => {
       );
       expect(second).toEqual({ connection: "close", reused: true });
     } finally {
-      held.releaseAll();
+      releaseAll();
     }
     await within(stopping, 10_000, "stopping the server did not finish");
   });

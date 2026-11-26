@@ -1,5 +1,8 @@
 // 시험 코드 전용 lint 규칙. 선택자만으로는 판단할 수 없는 규칙(값이 어디로 가는지, 타이머가 무엇을 하는지)을 둔다.
 // 설정은 eslint.config.js의 `testFiles` 범위에 걸고, 회귀 시험은 scripts/lint-rules.test.mjs가 맡는다.
+import { existsSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
+import tseslint from "typescript-eslint";
 import { originName, originOf, targetOf } from "./eslint-imports.mjs";
 
 /**
@@ -2896,20 +2899,532 @@ function unasserted(node) {
   return at;
 }
 
+/** 다른 파일을 읽을 때 쓰는 SourceCode의 면(getScope·getDeclaredVariables). ESLint의 SourceCode와 같은 규칙으로 범위를 찾는다. */
+function parsedSource(scopeManager) {
+  return {
+    getScope(node) {
+      const inner = node.type !== "Program";
+      for (let at = node; at; at = at.parent) {
+        const scope = scopeManager.acquire(at, inner);
+        if (scope)
+          return scope.type === "function-expression-name"
+            ? scope.childScopes[0]
+            : scope;
+      }
+      return scopeManager.globalScope;
+    },
+    getDeclaredVariables: (node) => scopeManager.getDeclaredVariables(node),
+    scopeManager,
+  };
+}
+
+/** 저장소 파일 하나를 읽어 AST(부모 연결)와 범위를 만든다. 파일과 수정 시각이 같으면 다시 읽지 않는다. */
+const parsedFiles = new Map();
+function parseRepositoryFile(file) {
+  const stamp = statSync(file).mtimeMs;
+  const cached = parsedFiles.get(file);
+  if (cached?.stamp === stamp) return cached;
+  const { ast, scopeManager } = tseslint.parser.parseForESLint(
+    readFileSync(file, "utf8"),
+    {
+      filePath: file,
+      range: true,
+      loc: true,
+      sourceType: "module",
+      ecmaVersion: "latest",
+    }
+  );
+  walkAll(ast, (node) => {
+    for (const key of Object.keys(node)) {
+      if (key === "parent") continue;
+      const value = node[key];
+      for (const child of Array.isArray(value) ? value : [value])
+        if (child && typeof child.type === "string") child.parent = node;
+    }
+  });
+  const parsed = {
+    stamp,
+    ast,
+    source: parsedSource(scopeManager),
+    findings: new Map(),
+  };
+  parsedFiles.set(file, parsed);
+  return parsed;
+}
+
+/** 저장소 기준 경로(확장자 없음)에 붙는 실제 파일. 없으면 undefined. */
+const repositoryRootPath = path.resolve(import.meta.dirname, "..");
+function existingFile(withoutExtension) {
+  for (const extension of [".ts", ".tsx", ".mts", ".mjs", ".js", ".cjs"]) {
+    const file = path.join(
+      repositoryRootPath,
+      `${withoutExtension}${extension}`
+    );
+    if (existsSync(file)) return file;
+  }
+  return undefined;
+}
+
+/** 모듈이 이름 `name`으로 내보낸 함수(`export function name`, `export const name = 함수 리터럴`). 없으면 undefined. */
+function exportedFunction(program, name) {
+  for (const statement of program.body) {
+    if (statement.type !== "ExportNamedDeclaration") continue;
+    const declaration = statement.declaration;
+    if (
+      declaration?.type === "FunctionDeclaration" &&
+      declaration.id?.name === name
+    )
+      return declaration;
+    if (declaration?.type === "VariableDeclaration")
+      for (const declarator of declaration.declarations)
+        if (
+          declarator.id.type === "Identifier" &&
+          declarator.id.name === name &&
+          isFunction(unwrapped(declarator.init))
+        )
+          return unwrapped(declarator.init);
+  }
+  return undefined;
+}
+
 /**
- * 모듈 경계 대역(`vi.mock(…, factory)`·`vi.doMock`)이 시험이 바꿔 끼우는 모듈 칸을 대역이 불린 뒤에 다시 찾으면, 그 사이 afterEach·본문이
+ * 한 파일(시험 파일, 또는 시험 파일의 factory가 쓰는 공용 대역 파일)의 대역이 시험이 바꿔 끼우는 칸을 아는 모양 밖에서 찾는 자리.
+ * `factories`는 그 파일에서 대역을 만드는 함수(vi.mock의 인라인 factory, 공용 대역 파일이면 factory가 부른 그 내보낸 함수)다.
+ * `foreign(call, origin)`은 다른 저장소 파일의 내보낸 함수를 부른 자리를 판정하고(그 파일의 자리 목록), 판정할 수 없으면 undefined다.
+ * 돌려주는 것: `{ node, messageId, data? }` 목록.
+ */
+function doubleFindings(source, program, factoriesFrom, foreign) {
+  const findings = [];
+  const factories = new Set(factoriesFrom);
+  const originAt = (node) => originOf(source.getScope(node), node);
+  const enclosingFunctions = (node) => {
+    const found = [];
+    for (let at = node.parent; at; at = at.parent)
+      if (functionTypes.has(at.type)) found.push(at);
+    return found;
+  };
+  const moduleScope = source.scopeManager.scopes.find(
+    (scope) => scope.type === "module"
+  );
+  const atModule = (node) => source.getScope(node) === moduleScope;
+  // 칸: 모듈 범위 선언과 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 선언.
+  const containers = [];
+  const bindings = [];
+  const classify = (declarator) => {
+    if (!declarator.init) {
+      bindings.push(declarator);
+      return;
+    }
+    const origin = originAt(declarator.init);
+    const container =
+      (origin?.module === "vitest" &&
+        origin.path[0] === "vi" &&
+        (origin.path[1] === "hoisted()" || origin.path[1] === "fn()")) ||
+      containerInit.has(unwrapped(declarator.init)?.type);
+    if (container) containers.push(declarator);
+    else if (declarator.parent.kind !== "const") bindings.push(declarator);
+  };
+  const hoistedCallbacks = [];
+  walkAll(program, (node) => {
+    if (node.type === "VariableDeclarator" && atModule(node)) classify(node);
+    if (
+      node.type === "CallExpression" &&
+      isVi(originAt(node.callee), "hoisted")
+    ) {
+      const [callback] = node.arguments;
+      if (isFunction(callback)) hoistedCallbacks.push(callback);
+    }
+  });
+  const contains = (outer, inner) =>
+    outer.range[0] <= inner.range[0] && inner.range[1] <= outer.range[1];
+  const roots = new Set(factories);
+  const inRegion = (node) => [...roots].some((root) => contains(root, node));
+  // 대역 쪽 자리에서 쓰는 hoisted 콜백의 지역 칸.
+  const hoistedLocals = new Set();
+  /** 함수 몸의 최상위 문장 가운데 `node`를 담은 것이 첫 await 문장보다 앞인가. 식 몸이면 그 식에 await가 없을 때만. */
+  const beforeFirstAwait = (fn, node) => {
+    if (fn.body.type !== "BlockStatement")
+      return awaitsIn(fn, { forAwait: true }).length === 0;
+    for (const statement of fn.body.body) {
+      let waits = false;
+      walkBody(statement, (inner) => {
+        if (
+          inner.type === "AwaitExpression" ||
+          (inner.type === "ForOfStatement" && inner.await)
+        )
+          waits = true;
+      });
+      if (contains(statement, node)) return !waits;
+      if (waits) return false;
+    }
+    return false;
+  };
+  /** 이름 붙은 값의 쓰임(대역 쪽 자리 안의 것)이 모두 건네는 자리인가. */
+  /** 판정 결과를 기억한다. 판정 중인 것은 거짓으로 두어 순환을 끊는다. 만드는 함수가 늘면 비운다. */
+  const memo = new Map();
+  const remembered = (key, judge) => {
+    if (memo.has(key)) return memo.get(key);
+    memo.set(key, false);
+    const result = judge();
+    memo.set(key, result);
+    return result;
+  };
+  const usedOnlyAsValue = (variable) =>
+    Boolean(variable) && remembered(variable, () => valueOnlyUses(variable));
+  const valueOnlyUses = (variable) => {
+    return variable.references.every(({ identifier, init }) => {
+      if (init || !inRegion(identifier)) return true;
+      // 그 객체의 속성에 대역을 담는 자리(`watched[name] = …`)는 담는 쪽이 따로 판정받는다.
+      const member = identifier.parent;
+      if (
+        member.type === "MemberExpression" &&
+        member.object === identifier &&
+        member.parent.type === "AssignmentExpression" &&
+        member.parent.left === member
+      )
+        return true;
+      return handedOver(identifier);
+    });
+  };
+  /**
+   * 값(`node`)이 제품에 건네는 자리로만 가는가: factory(또는 만드는 함수)가 돌려주는 식 안(객체·배열·펼치기·TS 단언을 거쳐도 됨),
+   * 그런 자리로만 가는 const, 건네는 const 객체의 속성.
+   */
+  /** 함수가 건네는 자리로만 가는 함수(대역)이거나 factory·만드는 함수인가: 그 함수가 돌려주는 값도 제품에 간다. */
+  const returnsToProduct = (fn) =>
+    factories.has(fn) ||
+    remembered(fn, () =>
+      fn.type === "FunctionDeclaration"
+        ? usedOnlyAsValue(functionVariable(source, fn))
+        : handedOver(fn)
+    );
+  const handedOver = (node) => {
+    let child = node;
+    for (let at = node.parent; at; at = at.parent) {
+      if (
+        (at.type === "Property" && at.value === child) ||
+        at.type === "ObjectExpression" ||
+        at.type === "ArrayExpression" ||
+        at.type === "SpreadElement" ||
+        (at.type === "NewExpression" && at.callee === child) ||
+        unasserted(at) !== at
+      ) {
+        child = at;
+        continue;
+      }
+      if (at.type === "ReturnStatement" && at.argument === child) {
+        const [fn] = enclosingFunctions(at);
+        return fn !== undefined && returnsToProduct(fn);
+      }
+      if (functionTypes.has(at.type) && at.body === child) {
+        return returnsToProduct(at);
+      }
+      // 만드는 함수에 넘겨 그 결과를 건네는 값(`creating(Server)`)도 건네는 자리다. 만드는 함수 안의 쓰임은 그 함수가 판정받는다.
+      if (at.type === "CallExpression" && at.arguments.includes(child)) {
+        const maker = definitionOf(at.callee);
+        return maker !== undefined && factories.has(maker) && handedOver(at);
+      }
+      if (
+        at.type === "VariableDeclarator" &&
+        at.init === child &&
+        at.id.type === "Identifier"
+      )
+        return usedOnlyAsValue(source.getDeclaredVariables(at)[0]);
+      if (
+        at.type === "AssignmentExpression" &&
+        at.right === child &&
+        at.left.type === "MemberExpression" &&
+        at.left.object.type === "Identifier"
+      ) {
+        const target = bindingOf(source, at.left.object);
+        return (
+          target?.defs[0]?.parent?.kind === "const" && usedOnlyAsValue(target)
+        );
+      }
+      return false;
+    }
+    return false;
+  };
+  /** 함수 `fn`이 대역(제품에 건네는 값으로만 쓰임)인가. */
+  const isDouble = (fn) => {
+    if (fn.generator) return false;
+    const method = fn.parent;
+    if (method?.type === "MethodDefinition" && method.value === fn) {
+      if (method.computed || method.key.type !== "Identifier") return false;
+      const name = method.key.name;
+      let selfCall = false;
+      walkAll(method.parent, (node) => {
+        if (
+          node.type === "MemberExpression" &&
+          node.object.type === "ThisExpression" &&
+          !node.computed &&
+          node.property.type === "Identifier" &&
+          node.property.name === name
+        )
+          selfCall = true;
+      });
+      return !selfCall;
+    }
+    if (fn.type === "FunctionDeclaration")
+      return usedOnlyAsValue(functionVariable(source, fn));
+    return handedOver(fn);
+  };
+  /** 모듈 범위에 함수 리터럴로 정의한 이름 붙은 함수인가(`function f`, `const f = 함수 리터럴`). */
+  const moduleFunction = (fn) => {
+    if (fn.type === "FunctionDeclaration")
+      return (
+        fn.parent.type === "Program" ||
+        (fn.parent.type === "ExportNamedDeclaration" &&
+          fn.parent.parent.type === "Program")
+      );
+    for (let up = fn.parent; up; up = up.parent) {
+      if (up.type === "VariableDeclarator")
+        return unasserted(up.init) === fn && atModule(up);
+      if (unasserted(up) === up) return false;
+    }
+    return false;
+  };
+  /** 같은 파일 안 함수 정의(`function f`·`const f = 함수 리터럴`)가 가리키는 함수 노드. */
+  const definitionOf = (callee) => {
+    if (callee.type !== "Identifier") return undefined;
+    const variable = bindingOf(source, callee);
+    const [def] = variable?.defs ?? [];
+    if (def?.type === "FunctionName") return def.node;
+    if (def?.type === "Variable" && isFunction(unwrapped(def.node.init)))
+      return unwrapped(def.node.init);
+    return undefined;
+  };
+  /** 형 자리(`typeof state` 형 주석)의 참조인가. 값을 읽지 않는다. */
+  const inTypePosition = (node) => {
+    for (let at = node.parent; at; at = at.parent)
+      if (at.type === "TSTypeQuery") return true;
+    return false;
+  };
+  const isState = new Set();
+  const containerVars = new Set();
+  const aliasesOf = (variable) => {
+    if (isState.has(variable)) return;
+    isState.add(variable);
+    containerVars.add(variable);
+    for (const { identifier } of variable.references) {
+      const parent = identifier.parent;
+      if (
+        parent.type === "VariableDeclarator" &&
+        parent.init === identifier &&
+        parent.id.type === "Identifier"
+      )
+        for (const alias of source.getDeclaredVariables(parent))
+          aliasesOf(alias);
+      if (
+        parent.type === "AssignmentExpression" &&
+        parent.right === identifier &&
+        parent.left.type === "Identifier"
+      ) {
+        const alias = bindingOf(source, parent.left);
+        if (alias) aliasesOf(alias);
+      }
+    }
+  };
+  for (const declarator of containers)
+    for (const variable of source.getDeclaredVariables(declarator))
+      aliasesOf(variable);
+  for (const declarator of bindings)
+    for (const variable of source.getDeclaredVariables(declarator))
+      isState.add(variable);
+  // 대역 쪽 자리와 만드는 함수: factory에서 시작해 더 생기지 않을 때까지 넓힌다. 만드는 함수는 factory(또는 만드는 함수)의 몸에서 부르고
+  // 그 결과를 건네는 함수다. 같은 파일이면 그 함수를, 다른 저장소 파일이면 그 파일을 판정한다.
+  const judgedCalls = new Set();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const variable of moduleScope?.variables ?? []) {
+      if (isState.has(variable)) continue;
+      const [def] = variable.defs;
+      const node =
+        def?.type === "FunctionName" || def?.type === "ClassName"
+          ? def.node
+          : def?.type === "Variable"
+            ? def.node.init
+            : undefined;
+      if (!node || roots.has(node)) continue;
+      if (
+        variable.references.some(
+          ({ identifier, init }) => !init && inRegion(identifier)
+        )
+      ) {
+        roots.add(node);
+        grew = true;
+      }
+    }
+    walkAll(program, (node) => {
+      if (node.type !== "CallExpression" || judgedCalls.has(node)) return;
+      const [around] = enclosingFunctions(node);
+      if (!around || !factories.has(around) || !handedOver(node)) return;
+      // factory의 인수(진짜 모듈을 주는 importOriginal)를 부른 것은 진짜 모듈이다.
+      if (
+        node.callee.type === "Identifier" &&
+        around.params.some(
+          (param) =>
+            param.type === "Identifier" && param.name === node.callee.name
+        )
+      )
+        return;
+      judgedCalls.add(node);
+      const local = definitionOf(node.callee);
+      if (local) {
+        if (!factories.has(local)) {
+          factories.add(local);
+          memo.clear();
+          roots.add(local);
+          grew = true;
+        }
+        return;
+      }
+      const result = foreign(node, originAt(node.callee));
+      for (const finding of result ?? []) findings.push(finding);
+    });
+  }
+  // 대역 쪽 자리가 쓰는 hoisted 값이면 그 콜백의 지역 칸도 본다.
+  for (const callback of hoistedCallbacks) {
+    const declarator = callback.parent.parent;
+    const variables =
+      declarator?.type === "VariableDeclarator"
+        ? source.getDeclaredVariables(declarator)
+        : [];
+    if (
+      !variables.some((variable) =>
+        variable.references.some(({ identifier }) => inRegion(identifier))
+      )
+    )
+      continue;
+    const scope = source.scopeManager.acquire(callback);
+    for (const variable of scope?.variables ?? []) {
+      const [def] = variable.defs;
+      if (def?.type !== "Variable") continue;
+      const local = def.node;
+      const container =
+        local.init && containerInit.has(unwrapped(local.init)?.type);
+      if (container || local.parent.kind !== "const")
+        hoistedLocals.add(variable);
+    }
+  }
+  for (const variable of hoistedLocals)
+    for (const { identifier, init } of variable.references) {
+      if (init || inTypePosition(identifier)) continue;
+      const [fn] = enclosingFunctions(identifier);
+      // hoisted 콜백 몸(처음 한 번)만 받는다. 그 안의 함수는 대역이 부르는 도움이라 칸을 읽으면 짚는다.
+      if (!hoistedCallbacks.includes(fn))
+        findings.push({ node: identifier, messageId: "late" });
+    }
+  for (const variable of isState)
+    for (const reference of variable.references) {
+      const { identifier, init } = reference;
+      if (init || !inRegion(identifier) || inTypePosition(identifier)) continue;
+      const parent = identifier.parent;
+      // 별칭을 만드는 자리와 그릇 별칭 변수에 대입하는 왼쪽은 칸을 읽는 자리가 아니다(별칭의 쓰임을 따로 본다).
+      if (
+        (parent.type === "VariableDeclarator" &&
+          parent.init === identifier &&
+          parent.id.type === "Identifier") ||
+        (parent.type === "AssignmentExpression" &&
+          parent.right === identifier &&
+          parent.left.type === "Identifier") ||
+        (containerVars.has(variable) &&
+          reference.isWrite() &&
+          !reference.isRead())
+      )
+        continue;
+      const report = () =>
+        findings.push({ node: identifier, messageId: "late" });
+      if (
+        containerVars.has(variable) &&
+        !(
+          (parent.type === "MemberExpression" &&
+            parent.object === identifier) ||
+          (parent.type === "CallExpression" && parent.callee === identifier) ||
+          (parent.type === "VariableDeclarator" &&
+            parent.init === identifier &&
+            parent.id.type === "ObjectPattern")
+        )
+      ) {
+        report();
+        continue;
+      }
+      const around = enclosingFunctions(identifier);
+      if (around.length > 0 && factories.has(around[0])) continue;
+      const [fn, outer] = around;
+      const known =
+        fn &&
+        ((outer && factories.has(outer)) ||
+          (around.length === 1 && moduleFunction(fn))) &&
+        isDouble(fn) &&
+        beforeFirstAwait(fn, identifier);
+      if (!known) report();
+    }
+  return findings;
+}
+
+/**
+ * 다른 저장소 파일이 내보낸 함수(`origin`)를 factory가 불러 대역을 만든 자리를 판정한다. 그 파일을 읽어 그 함수를 factory로 놓고
+ * 같은 판정을 한 결과를 부른 자리(`call`)에 단다. 저장소 밖(Node 기본 모듈, 라이브러리)은 시험의 칸을 갖지 않아 보지 않는다. 저장소
+ * 안인데 파일이나 그 내보낸 함수를 찾지 못하면 판정할 수 없어 짚는다.
+ */
+function foreignFindings(filename, call, origin, seen = new Set()) {
+  if (!origin || origin.global !== undefined) return [];
+  const target = targetOf(filename, origin.module);
+  if (!target) return [];
+  const file =
+    target.file === undefined ? undefined : existingFile(target.file);
+  const name = origin.path.length === 1 ? origin.path[0] : undefined;
+  if (!file || name === undefined)
+    return [
+      { node: call, messageId: "unresolved", data: { source: origin.module } },
+    ];
+  const key = `${file}#${name}`;
+  if (seen.has(key)) return [];
+  seen.add(key);
+  const parsed = parseRepositoryFile(file);
+  if (!parsed.findings.has(name)) {
+    const maker = exportedFunction(parsed.ast, name);
+    const inner = maker
+      ? doubleFindings(
+          parsed.source,
+          parsed.ast,
+          [maker],
+          (innerCall, innerOrigin) =>
+            foreignFindings(file, innerCall, innerOrigin, seen)
+        )
+      : [{ node: undefined, messageId: "unresolved" }];
+    parsed.findings.set(
+      name,
+      inner.map((finding) => ({
+        where: `${path.relative(repositoryRootPath, file)}:${finding.node?.loc?.start.line ?? "?"}`,
+        messageId: finding.messageId,
+      }))
+    );
+  }
+  return parsed.findings.get(name).map((finding) => ({
+    node: call,
+    messageId: finding.messageId === "late" ? "lateIn" : "unresolved",
+    data: { where: finding.where, source: origin.module },
+  }));
+}
+
+/**
+ * 모듈 경계 대역(`vi.mock(…, factory)`·`vi.doMock`)이 시험이 바꿔 끼우는 칸을 대역이 불린 뒤에 다시 찾으면, 그 사이 afterEach·본문이
  * 칸을 바꿀 때 앞 시험의 늦은 호출이 다음 시험의 설정·기록에 닿는다(#286 PR #300 외부 리뷰 2회차 `lease`, PR 3b-3b-2). 아는 모양만
  * 통과시키고 그 밖은 모두 짚는다(판정할 수 없는 것도 짚는다).
- * 칸(모듈 범위에 선언한 것): `vi.hoisted(…)` 값(구조 분해 선언 포함), 가짜 함수(`vi.fn(…)`), 객체·배열·`new`로 만든 값(TS 단언·`await`로
- * 감싸도)은 속성을 바꿔 끼우는 그릇이라 그것을 그대로 담은 별칭(`const s = state`, `s = state`)도 같은 칸이다. `let`·`var`는 바인딩을 바꿔
- * 끼우는 칸이라 지역 값으로 담으면 그 값을 잡은 것이다.
- * 대역 쪽 자리: factory(인라인 함수 인자) 안, 그리고 대역 쪽 자리 안에서 이름이 쓰인 모듈 범위 값의 정의 안(쓰인 값이 다시 쓰는 값까지).
+ * 칸: 모듈 범위의 `vi.hoisted(…)` 값(구조 분해 선언 포함)·가짜 함수(`vi.fn(…)`)·객체·배열·`new`로 만든 값(TS 단언·`await`로 감싸도)과 그
+ * 별칭, `let`·`var`, 그리고 대역 쪽 자리가 쓰는 hoisted 콜백의 지역 그릇·`let`(콜백 몸 밖, 곧 그 안의 함수에서 읽으면 짚는다).
+ * 대역 쪽 자리: factory(인라인 함수 인자)와 만드는 함수(factory·만드는 함수의 몸에서 부르고 결과를 건네는 함수) 안, 그리고 그 안에서
+ * 이름이 쓰인 모듈 범위 값의 정의 안(쓰인 값이 다시 쓰는 값까지). 만드는 함수가 다른 저장소 파일의 내보낸 함수면(공용 대역) 그 파일을
+ * 읽어 같은 판정을 하고 그 결과를 부른 자리에 단다. 그 파일을 찾지 못하면 짚는다.
  * 대역 쪽 자리의 칸 참조가 통과하는 것은 둘뿐이다.
- * - (a) factory 몸에 바로 있는 참조(가져올 때 한 번 돈다).
- * - (b) 참조를 감싼 가장 안쪽 함수가 대역이고(가장 가까운 바깥 함수가 factory인 함수, 또는 모듈 범위에 함수 리터럴로 정의한 이름 붙은
- *   함수), 생성기가 아니고, 참조가 그 몸의 최상위 문장 가운데 첫 await(`for await` 포함, 안쪽 함수의 것은 빼고)를 담은 문장보다 앞선
- *   문장 안에 있다. 대역이란 제품에 건네는 값으로만 쓰이는 함수다: factory가 돌려주는 식 안(객체·배열·펼치기·TS 단언·그 식에만 쓰이는
- *   const를 거쳐도 됨), factory 안에서 `new`로 만들거나 돌려주는 클래스의 메서드(같은 클래스에서 `this.<그 메서드>`로 부르면 도움).
+ * - (a) factory·만드는 함수의 몸에 바로 있는 참조(대역을 만들 때 한 번 돈다).
+ * - (b) 참조를 감싼 가장 안쪽 함수가 대역이고(가장 가까운 바깥 함수가 factory·만드는 함수인 함수, 또는 모듈 범위에 함수 리터럴로 정의한
+ *   이름 붙은 함수), 생성기가 아니고, 참조가 그 몸의 최상위 문장 가운데 첫 await(`for await` 포함, 안쪽 함수의 것은 빼고)를 담은 문장보다
+ *   앞선 문장 안에 있다. 대역이란 제품에 건네는 값으로만 쓰이는 함수다: factory·만드는 함수가 돌려주는 식 안(객체·배열·펼치기·TS 단언·그
+ *   식에만 쓰이는 const·건네는 const 객체의 속성을 거쳐도 됨), 또는 그런 클래스의 메서드(같은 클래스에서 `this.<그 메서드>`로 부르면 도움).
  *   대역 쪽 자리 안에서 부르거나 인수로 넘기면(도움·콜백) 대역이 아니다.
  * 그릇 칸 참조는 속성을 읽는 자리(`state.x`, `state.x(…)`), 구조 분해 선언(`const { x } = state`), 별칭, 가짜 함수 부르기(`hook(…)`)에서만
  * 받는다. 그릇 값 자체를 인수·속성 값·돌려주는 값으로 넘기면 그 너머의 늦은 읽기를 볼 수 없어 짚는다. 인라인이 아닌 factory 인자도 짚는다.
@@ -2925,288 +3440,35 @@ const hoistedStateAtCall = {
     schema: [],
     messages: {
       late: "대역이 시험이 바꿔 끼우는 모듈 칸을 대역 몸의 첫 await 앞이 아닌 자리(await 뒤, 콜백·도움·안쪽 함수, 칸 값을 넘긴 너머)에서 찾습니다. 그 사이 afterEach·본문이 칸을 바꾸면 앞 시험의 늦은 호출이 다음 시험의 설정·기록에 닿습니다. 대역 함수의 첫 await 전에 칸을 지역 값으로 잡고(`const { x } = state`) 그 뒤에는 잡은 것만 쓰세요. CODING_STANDARDS.md#정리",
+      lateIn:
+        "이 factory가 쓰는 공용 대역({{where}})이 시험이 바꿔 끼우는 모듈 칸을 대역 몸의 첫 await 앞이 아닌 자리에서 찾습니다. 그 파일의 대역 함수가 첫 await 전에 칸을 지역 값으로 잡고 그 뒤에는 잡은 것만 쓰게 고치세요. CODING_STANDARDS.md#정리",
+      unresolved:
+        "이 factory가 쓰는 저장소 모듈({{source}})의 대역을 찾지 못해 칸을 언제 찾는지 판정할 수 없습니다. 그 모듈이 그 이름의 함수를 내보내게 하세요. CODING_STANDARDS.md#정리",
       factory:
         "vi.mock의 factory를 인라인 함수로 두지 않아 대역이 칸을 언제 찾는지 판정할 수 없습니다. factory를 vi.mock 호출 안에 함수로 쓰세요. CODING_STANDARDS.md#정리",
     },
   },
   create(context) {
     const { sourceCode } = context;
-    /** 속성을 바꿔 끼우는 그릇 칸의 선언자. 별칭도 같은 그릇이다. */
-    const containers = [];
-    /** 바인딩을 바꿔 끼우는 칸의 선언자(`let`·`var`). */
-    const bindings = [];
-    /** `vi.mock(…, factory)`의 factory 함수. */
-    const factories = new Set();
-    const originAt = (node) => originOf(sourceCode.getScope(node), node);
-    const enclosingFunctions = (node) => {
-      const found = [];
-      for (let at = node.parent; at; at = at.parent)
-        if (functionTypes.has(at.type)) found.push(at);
-      return found;
-    };
-    /** 모듈 범위에 함수 리터럴로 정의한 이름 붙은 함수인가(`function f`, `const f = 함수 리터럴`). */
-    const moduleFunction = (fn) => {
-      if (fn.type === "FunctionDeclaration")
-        return sourceCode.getScope(fn).upper?.type === "module";
-      for (let up = fn.parent; up; up = up.parent) {
-        if (up.type === "VariableDeclarator")
-          return (
-            unasserted(up.init) === fn &&
-            sourceCode.getScope(up).type === "module"
-          );
-        if (
-          up.type !== "TSAsExpression" &&
-          up.type !== "TSSatisfiesExpression" &&
-          up.type !== "TSNonNullExpression"
-        )
-          return false;
-      }
-      return false;
-    };
-    /** 함수 몸의 최상위 문장 가운데 `node`를 담은 것이 첫 await 문장보다 앞인가. 식 몸이면 그 식에 await가 없을 때만. */
-    const beforeFirstAwait = (fn, node) => {
-      if (fn.body.type !== "BlockStatement")
-        return awaitsIn(fn, { forAwait: true }).length === 0;
-      for (const statement of fn.body.body) {
-        let waits = false;
-        walkBody(statement, (inner) => {
-          if (
-            inner.type === "AwaitExpression" ||
-            (inner.type === "ForOfStatement" && inner.await)
-          )
-            waits = true;
-        });
-        if (contains(statement, node)) return !waits;
-        if (waits) return false;
-      }
-      return false;
-    };
-    /**
-     * 값(`node`)이 제품에 건네는 자리로만 가는가: factory가 돌려주는 식 안(객체·배열·펼치기·TS 단언을 거쳐도 됨), 또는 그런 자리로만 가는
-     * const. `seen`은 이미 본 변수.
-     */
-    const handedOver = (node, seen) => {
-      let child = node;
-      for (let at = node.parent; at; at = at.parent) {
-        if (
-          (at.type === "Property" && at.value === child) ||
-          at.type === "ObjectExpression" ||
-          at.type === "ArrayExpression" ||
-          at.type === "SpreadElement" ||
-          unasserted(at) !== at
-        ) {
-          child = at;
-          continue;
-        }
-        if (at.type === "ReturnStatement" && at.argument === child) {
-          const [fn] = enclosingFunctions(at);
-          return factories.has(fn);
-        }
-        if (factories.has(at) && at.body === child) return true;
-        if (
-          at.type === "VariableDeclarator" &&
-          at.init === child &&
-          at.id.type === "Identifier"
-        )
-          return usedOnlyAsValue(sourceCode.getDeclaredVariables(at)[0], seen);
-        // 건네는 const 객체의 속성에 담는 것(`watched[name] = 대역`)도 건네는 자리다.
-        if (
-          at.type === "AssignmentExpression" &&
-          at.right === child &&
-          at.left.type === "MemberExpression" &&
-          at.left.object.type === "Identifier"
-        ) {
-          const target = bindingOf(sourceCode, at.left.object);
-          return (
-            target?.defs[0]?.parent?.kind === "const" &&
-            usedOnlyAsValue(target, seen)
-          );
-        }
-        return false;
-      }
-      return false;
-    };
-    /** 이름 붙은 값의 쓰임(대역 쪽 자리 안의 것)이 모두 건네는 자리인가. */
-    const usedOnlyAsValue = (variable, seen) => {
-      if (!variable || seen.has(variable)) return false;
-      seen.add(variable);
-      return variable.references.every(({ identifier, init }) => {
-        if (init || !inRegion(identifier)) return true;
-        // 그 객체의 속성에 대역을 담는 자리(`watched[name] = …`)는 담는 쪽이 따로 판정받는다.
-        const member = identifier.parent;
-        if (
-          member.type === "MemberExpression" &&
-          member.object === identifier &&
-          member.parent.type === "AssignmentExpression" &&
-          member.parent.left === member
-        )
-          return true;
-        return handedOver(identifier, seen);
-      });
-    };
-    /** 함수 `fn`이 대역(제품에 건네는 값으로만 쓰임)인가. */
-    const isDouble = (fn) => {
-      if (fn.generator) return false;
-      const method = fn.parent;
-      if (method?.type === "MethodDefinition" && method.value === fn) {
-        if (method.computed || method.key.type !== "Identifier") return false;
-        const name = method.key.name;
-        let selfCall = false;
-        walkAll(method.parent, (node) => {
-          if (
-            node.type === "MemberExpression" &&
-            node.object.type === "ThisExpression" &&
-            !node.computed &&
-            node.property.type === "Identifier" &&
-            node.property.name === name
-          )
-            selfCall = true;
-        });
-        return !selfCall;
-      }
-      if (fn.type === "FunctionDeclaration")
-        return usedOnlyAsValue(functionVariable(sourceCode, fn), new Set());
-      return handedOver(fn, new Set());
-    };
-    /** 대역 쪽 자리의 뿌리(factory 함수, 모듈 범위 값의 정의). */
-    const roots = new Set();
-    const inRegion = (node) => [...roots].some((root) => contains(root, node));
+    const factories = [];
     return {
-      VariableDeclarator(node) {
-        if (sourceCode.getScope(node).type !== "module") return;
-        if (!node.init) {
-          bindings.push(node);
-          return;
-        }
-        const origin = originAt(node.init);
-        const container =
-          (origin?.module === "vitest" &&
-            origin.path[0] === "vi" &&
-            (origin.path[1] === "hoisted()" || origin.path[1] === "fn()")) ||
-          containerInit.has(unwrapped(node.init)?.type);
-        if (container) containers.push(node);
-        else if (node.parent.kind !== "const") bindings.push(node);
-      },
       CallExpression(node) {
-        const origin = originAt(node.callee);
+        const origin = originOf(sourceCode.getScope(node.callee), node.callee);
         if (!isVi(origin, "mock") && !isVi(origin, "doMock")) return;
         const factory = node.arguments[1];
-        if (isFunction(factory)) factories.add(factory);
+        if (isFunction(factory)) factories.push(factory);
         else if (factory && factory.type !== "ObjectExpression")
           context.report({ node, messageId: "factory" });
       },
-      "Program:exit"() {
-        if (factories.size === 0) return;
-        const state = new Set();
-        const containerVars = new Set();
-        const aliasesOf = (variable) => {
-          if (state.has(variable)) return;
-          state.add(variable);
-          containerVars.add(variable);
-          for (const { identifier } of variable.references) {
-            const parent = identifier.parent;
-            if (
-              parent.type === "VariableDeclarator" &&
-              parent.init === identifier &&
-              parent.id.type === "Identifier"
-            )
-              for (const alias of sourceCode.getDeclaredVariables(parent))
-                aliasesOf(alias);
-            if (
-              parent.type === "AssignmentExpression" &&
-              parent.right === identifier &&
-              parent.left.type === "Identifier"
-            ) {
-              const alias = bindingOf(sourceCode, parent.left);
-              if (alias) aliasesOf(alias);
-            }
-          }
-        };
-        for (const declarator of containers)
-          for (const variable of sourceCode.getDeclaredVariables(declarator))
-            aliasesOf(variable);
-        for (const declarator of bindings)
-          for (const variable of sourceCode.getDeclaredVariables(declarator))
-            state.add(variable);
-        // 대역 쪽 자리: factory에서 시작해, 그 안에서 이름이 쓰인 모듈 범위 값의 정의를 더 생기지 않을 때까지 더한다(칸 자체는 빼고).
-        for (const factory of factories) roots.add(factory);
-        const moduleScope = sourceCode.scopeManager.scopes.find(
-          (scope) => scope.type === "module"
+      "Program:exit"(program) {
+        if (factories.length === 0) return;
+        const findings = doubleFindings(
+          sourceCode,
+          program,
+          factories,
+          (call, origin) => foreignFindings(context.filename, call, origin)
         );
-        let grew = true;
-        while (grew) {
-          grew = false;
-          for (const variable of moduleScope?.variables ?? []) {
-            if (state.has(variable)) continue;
-            const [def] = variable.defs;
-            const node =
-              def?.type === "FunctionName"
-                ? def.node
-                : def?.type === "Variable"
-                  ? def.node.init
-                  : def?.type === "ClassName"
-                    ? def.node
-                    : undefined;
-            if (!node || roots.has(node)) continue;
-            if (
-              variable.references.some(
-                ({ identifier, init }) => !init && inRegion(identifier)
-              )
-            ) {
-              roots.add(node);
-              grew = true;
-            }
-          }
-        }
-        for (const variable of state)
-          for (const reference of variable.references) {
-            const { identifier, init } = reference;
-            if (init || !inRegion(identifier)) continue;
-            // 그릇 별칭 변수에 값을 대입하는 자리(`kept = state`의 왼쪽)는 칸을 읽는 자리가 아니다.
-            if (
-              containerVars.has(variable) &&
-              reference.isWrite() &&
-              !reference.isRead()
-            )
-              continue;
-            const parent = identifier.parent;
-            // 별칭을 만드는 자리는 칸을 읽는 자리가 아니다(별칭의 쓰임을 따로 본다).
-            if (
-              (parent.type === "VariableDeclarator" &&
-                parent.init === identifier &&
-                parent.id.type === "Identifier") ||
-              (parent.type === "AssignmentExpression" &&
-                parent.right === identifier &&
-                parent.left.type === "Identifier")
-            )
-              continue;
-            const report = () =>
-              context.report({ node: identifier, messageId: "late" });
-            if (containerVars.has(variable)) {
-              const read =
-                (parent.type === "MemberExpression" &&
-                  parent.object === identifier) ||
-                (parent.type === "CallExpression" &&
-                  parent.callee === identifier) ||
-                (parent.type === "VariableDeclarator" &&
-                  parent.init === identifier &&
-                  parent.id.type === "ObjectPattern");
-              if (!read) {
-                report();
-                continue;
-              }
-            }
-            const around = enclosingFunctions(identifier);
-            if (around.length > 0 && factories.has(around[0])) continue;
-            const [fn, outer] = around;
-            const known =
-              fn &&
-              ((outer && factories.has(outer)) ||
-                (around.length === 1 && moduleFunction(fn))) &&
-              isDouble(fn) &&
-              beforeFirstAwait(fn, identifier);
-            if (!known) report();
-          }
+        for (const finding of findings) context.report(finding);
       },
     };
   },

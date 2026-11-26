@@ -44,13 +44,14 @@ type StoreFault = {
 };
 const store = vi.hoisted(() => {
   const faults: { admission?: StoreFault; finish?: StoreFault } = {};
+  /** 대역이 불린 순간 잡은 결함(`fault`)으로 그 저장을 감싼다. 결함 칸은 대역이 잡고 이 함수는 받은 것만 쓴다. */
   async function guard<D extends object, T>(
     boundary: keyof typeof faults,
+    fault: StoreFault | undefined,
     target: string,
     db: D,
     save: (db: D) => Promise<T>
   ): Promise<T> {
-    const fault = faults[boundary];
     if (
       !fault ||
       fault.target !== target ||
@@ -99,12 +100,13 @@ vi.mock("@babojubot/db", async (original) => {
   const real = await original<typeof import("@babojubot/db")>();
   return {
     ...real,
+    // 결함 칸은 불린 순간 잡는다(tests/hoisted-state-at-call).
     claimNextRun: (...args: Parameters<typeof real.claimNextRun>) =>
-      store.guard("admission", args[1], args[0], (db) =>
+      store.guard("admission", store.faults.admission, args[1], args[0], (db) =>
         real.claimNextRun(db, args[1], args[2])
       ),
     finishRun: (...args: Parameters<typeof real.finishRun>) =>
-      store.guard("finish", args[1], args[0], (db) =>
+      store.guard("finish", store.faults.finish, args[1], args[0], (db) =>
         real.finishRun(db, args[1], args[2], args[3])
       ),
   };

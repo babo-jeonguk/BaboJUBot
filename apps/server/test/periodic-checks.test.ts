@@ -8,36 +8,27 @@ import { unused } from "./stand-ins.ts";
 
 // 주기 확인(heartbeat·압축)이 DB를 몇 번 읽는지 센다. 첫 조회를 시험이 붙잡아 느린 확인을 만들고, 그동안 타이머 주기를
 // 여러 번 지나게 한다. 타이머는 가짜(setInterval)로 시험이 돌린다.
-const queries = vi.hoisted(() => {
-  let release: () => void = () => {};
-  let held = false;
-  const counted = { heartbeats: 0, compactions: 0 };
-  return {
-    counted,
-    /** 다음 조회를 붙잡는다. 돌려준 함수가 풀어 준다. */
-    holdNext: () => {
-      held = true;
-      return () => release();
-    },
-    async query(kind: "heartbeats" | "compactions") {
-      counted[kind]++;
-      if (!held) return;
-      held = false;
-      await new Promise<void>((resolve) => (release = resolve));
-    },
-  };
-});
+const queries = vi.hoisted(() => ({
+  /** 조회 종류마다 센 수. 시험마다 새 칸을 연다. */
+  counted: { heartbeats: 0, compactions: 0 },
+  /** 다음 조회 하나를 붙잡는다(`holdNext`). 처음 닿은 조회가 가져가고 풀릴 때까지 기다린다. */
+  hold: undefined as { released: Promise<void> } | undefined,
+}));
 vi.mock("@babojubot/db", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@babojubot/db")>()),
   runDueHeartbeats: async () => {
-    // 칸은 불린 순간(첫 await를 담은 문장 앞) 잡는다(tests/hoisted-state-at-call).
-    const { query } = queries;
-    await query("heartbeats");
+    // 칸은 불린 순간(첫 await를 담은 문장 앞) 잡고 붙잡기는 그 자리에서 가져간다(tests/hoisted-state-at-call).
+    const { counted, hold } = queries;
+    counted.heartbeats++;
+    if (hold) queries.hold = undefined;
+    await hold?.released;
     return { events: [] };
   },
   listCompactionCandidates: async () => {
-    const { query } = queries;
-    await query("compactions");
+    const { counted, hold } = queries;
+    counted.compactions++;
+    if (hold) queries.hold = undefined;
+    await hold?.released;
     return [];
   },
 }));
@@ -56,9 +47,17 @@ const hub: AfterCommitDeps["hub"] = {
 
 afterEach(() => {
   vi.useRealTimers();
-  queries.counted.heartbeats = 0;
-  queries.counted.compactions = 0;
+  // 대역이 잡아 두는 기록 칸은 새 값으로 바꿔 끼운다(제자리에서 비우지 않는다).
+  queries.counted = { heartbeats: 0, compactions: 0 };
+  queries.hold = undefined;
 });
+
+/** 다음 조회를 붙잡는다. 돌려준 함수가 풀어 준다. */
+function holdNext() {
+  const gate = Promise.withResolvers<void>();
+  queries.hold = { released: gate.promise };
+  return () => gate.resolve();
+}
 
 const schedulers = {
   heartbeats: () =>
@@ -97,7 +96,7 @@ describe.each(["heartbeats", "compactions"] as const)(
     it("runs one follow-up check instead of one per missed interval", async () => {
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const scheduler = schedulers[kind]();
-      const release = queries.holdNext();
+      const release = holdNext();
       // 단언이 먼저 실패해도 붙잡은 조회를 풀어야 닫기가 그 확인을 기다리다 멈추지 않는다.
       onTestFinished(() => {
         release();
@@ -117,7 +116,7 @@ describe.each(["heartbeats", "compactions"] as const)(
     // 직접 부른 확인은 진행 중인 확인을 자기 확인으로 치지 않는다. 부른 뒤의 상태를 읽은 확인이 끝나야 돌아온다.
     it("makes a direct check wait for a check that starts after the call", async () => {
       const scheduler = schedulers[kind]();
-      const release = queries.holdNext();
+      const release = holdNext();
       onTestFinished(() => {
         release();
         return scheduler.close();
