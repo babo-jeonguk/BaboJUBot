@@ -34,44 +34,51 @@ const inject = vi.hoisted(() => ({
   listens: [] as { handle: string; failure?: Error }[],
   /** 제품이 경로에서 실제로 듣기 시작한 자리(듣기가 성공해 알린 뒤에 남긴다). 그 자리가 닫혔는지는 이 목록으로 본다. */
   listened: [] as string[],
-  /** 경로에서 들은 서버의 닫기가 실제로 닫힌 뒤 이 오류로 끝난다(#286). */
-  closeFails: undefined as Error | undefined,
+  /** 이 폴더(`in`)의 경로에서 들은 서버의 닫기가 실제로 닫힌 뒤 이 오류로 끝난다(#286). 그 시험이 만든 폴더로 고른다. */
+  closeFails: undefined as { in: string; error: Error } | undefined,
 }));
 vi.mock("node:net", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:net")>();
-  // 경로(소켓·pipe)에서 듣는 서버만 본다. 번호로 듣는 서버(빈 port 고르기)는 그대로 둔다.
-  const createServer = ((...args: Parameters<typeof real.createServer>) => {
-    const server = real.createServer(...args);
-    const listen = server.listen.bind(server);
-    const listenAt = (...listenArgs: unknown[]) => {
+  // 대역이 만든 서버만 다르게 답한다(서버 객체의 메서드를 대입으로 바꾸지 않는다). 경로(소켓·pipe)에서 듣는 서버만 본다. 번호로 듣는
+  // 서버(빈 port 고르기)는 진짜와 같다.
+  class OwnerServer extends real.Server {
+    /** 이 서버가 들은 경로. 닫기 결함은 경로에서 들은 서버에만 건다. */
+    listenedAt: string | undefined;
+    override listen(...listenArgs: unknown[]) {
       const [handle, callback] = listenArgs;
       if (typeof handle !== "string")
-        return listen(...(listenArgs as Parameters<typeof listen>));
+        return (super.listen as (...args: unknown[]) => this)(...listenArgs);
       if (listenArgs.length !== 2 || typeof callback !== "function")
         throw new Error(
           `the owner connection was listened in an unexpected way: ${JSON.stringify(listenArgs)}`
         );
+      // 기록 칸은 불린 순간 잡는다. 듣기 콜백은 나중에 돌므로 그 안에서 칸을 다시 찾지 않는다(그 사이 beforeEach가 새 칸을 연다).
+      const { listened } = inject;
       const failure = inject.listenFails?.(handle);
       inject.listens.push({ handle, ...(failure && { failure }) });
       if (failure) {
-        process.nextTick(() => server.emit("error", failure));
-        return server;
+        process.nextTick(() => this.emit("error", failure));
+        return this;
       }
-      // 이 서버의 닫기는 실제로 닫은 뒤, 실패를 주입했으면 그 오류로 답한다.
-      const close = server.close.bind(server);
-      server.close = ((done?: (error?: Error) => void) =>
-        close((error) =>
-          done?.(inject.closeFails ?? error)
-        )) as typeof server.close;
-      return listen(handle, () => {
-        inject.listened.push(handle);
+      this.listenedAt = handle;
+      return super.listen(handle, () => {
+        listened.push(handle);
         (callback as () => void)();
       });
-    };
-    server.listen = listenAt as typeof server.listen;
-    return server;
-  }) as typeof real.createServer;
-  return { ...real, createServer, default: { ...real, createServer } };
+    }
+    /** 경로에서 들은 서버의 닫기는 실제로 닫은 뒤, 부른 순간 그 경로의 폴더에 주입한 실패가 있으면 그 오류로 답한다. */
+    override close(done?: (error?: Error) => void) {
+      const fault = inject.closeFails;
+      const at = this.listenedAt;
+      if (at === undefined || fault?.in !== path.dirname(at))
+        return super.close(done);
+      return super.close((error) => done?.(error ?? fault.error));
+    }
+  }
+  const createServer = ((...args: ConstructorParameters<typeof real.Server>) =>
+    new OwnerServer(...args)) as typeof real.createServer;
+  const replaced = { Server: OwnerServer, createServer };
+  return { ...real, ...replaced, default: { ...real, ...replaced } };
 });
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
@@ -249,7 +256,7 @@ describe.runIf(posix)(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = failure;
+      inject.closeFails = { in: privateFolder(base), error: failure };
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -293,7 +300,7 @@ describe.runIf(posix)(
     }, 60_000);
 
     it("fails a temporary stop with the owner connection's close failure", async () => {
-      const { cleanup } = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const options = await ephemeralCluster();
       const cluster = await startEmbeddedCluster(options);
       let stopped = false;
@@ -302,7 +309,7 @@ describe.runIf(posix)(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = failure;
+      inject.closeFails = { in: privateFolder(base), error: failure };
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -321,10 +328,13 @@ describe.runIf(posix)(
         { code: "EIO" }
       );
       inject.recordFails = failure;
-      inject.closeFails = Object.assign(
-        new Error("injected: the owner connection could not be closed"),
-        { code: "EIO" }
-      );
+      inject.closeFails = {
+        in: privateFolder(base),
+        error: Object.assign(
+          new Error("injected: the owner connection could not be closed"),
+          { code: "EIO" }
+        ),
+      };
       onTestFinished(() => {
         inject.recordFails = undefined;
       });

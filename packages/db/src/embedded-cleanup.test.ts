@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
+import fs, { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { removeFolder } from "@babojubot/process/remove-folder";
@@ -26,8 +26,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       throw inject.removeFails;
     return real.rm(target, options);
   };
+  // 만들기와 기록을 불린 순간 한 동기 구간에서 한다(기다리지 않으므로 만든 뒤에 칸을 다시 찾지 않는다). 시험이 끝난 뒤에 시작한
+  // 만들기는 그때의 칸(다음 시험)에 기록된다(그 시험은 이미 실패했다). 제품이 보는 계약(유일한 새 폴더 경로로 이행)은 같다.
   const mkdtemp = (async (prefix: string) => {
-    const made = await real.mkdtemp(prefix);
+    const made = mkdtempSync(prefix);
     inject.made.push(made);
     return made;
   }) as typeof real.mkdtemp;
@@ -81,6 +83,9 @@ afterEach(() => {
   inject.ownerFolderFails = undefined;
   inject.ownerReadFails = undefined;
   inject.ownerReadFailsIn = undefined;
+  // 시험마다 새 칸을 연다. 시험은 정리를 등록할 때 자기 칸을 잡아 그 칸의 폴더를 치운다(onTestFinished는 afterEach 뒤에 돌므로, 끝날 때
+  // 칸을 찾으면 새 빈 칸을 읽는다).
+  inject.made = [];
   vi.restoreAllMocks();
 });
 
@@ -117,9 +122,10 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       new Error("injected: removing the folder failed"),
       { code: "EACCES" }
     );
+    const { made: madeHere } = inject;
     onTestFinished(() =>
       attemptAll(
-        inject.made
+        madeHere
           .splice(0)
           .flatMap((made) => [
             () => removeFolder(made),

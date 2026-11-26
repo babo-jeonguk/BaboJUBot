@@ -37,9 +37,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   ] as const) {
     const real = actual[name] as (...args: unknown[]) => Promise<unknown>;
     watched[name] = async (...args: unknown[]) => {
+      // 불린 순간의 칸을 잡는다. await 뒤에 다시 찾으면 그 사이 afterEach가 바꾼 다음 시험의 것을 부른다.
+      const { after } = probe;
       probe.seen.push(String(args[0]));
       const result = await real(...args);
-      probe.after?.(name, String(args[0]), result);
+      after?.(name, String(args[0]), result);
       return result;
     };
   }

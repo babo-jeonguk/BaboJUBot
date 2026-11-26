@@ -39,11 +39,11 @@ vi.mock("@babojubot/db", async (original) => {
     ) => {
       if (hold.first) {
         hold.first = false;
-        const gate = new Promise<void>((resolve) => {
-          hold.release = resolve;
-        });
+        // 풀기를 칸에 두는 것도 불린 순간(첫 await 전)에 한다. 실행기 콜백 안에서 칸을 찾지 않는다(tests/hoisted-state-at-call).
+        const gate = Promise.withResolvers<void>();
+        hold.release = gate.resolve;
         hold.arrived();
-        await gate;
+        await gate.promise;
       }
       return real.hasWorkspaceIdentity(...args);
     },

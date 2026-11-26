@@ -279,6 +279,7 @@ export default defineConfig([
     // 시험은 process.env를 직접 바꾸지 않는다(CODING_STANDARDS.md#격리). 가져오기·구조 분해로 받은 env까지 출처를 따라가야 해서 규칙을 따로 둔다.
     // 시험은 기다리지 않는 Promise의 거절을 빈 처리기로 버리지 않는다(CODING_STANDARDS.md#단언). 처리기의 몸과 같은 Promise를 돌려주는지 봐야 해서 규칙을 따로 둔다.
     // awaitedLater로 표시한 Promise는 담아 두고 뒤에서 기다린다(CODING_STANDARDS.md#단언). 출처와 담은 바인딩의 기다림을 따라가야 해서 규칙을 따로 둔다.
+    // 모듈 경계 대역은 시험이 바꿔 끼우는 모듈 칸(hoisted 값·모듈 let·그릇)을 불린 순간 잡는다(CODING_STANDARDS.md#정리). 칸의 별칭과 대역 함수의 await·콜백 위치를 봐야 해서 규칙을 따로 둔다.
     files: testFiles,
     plugins: { tests: testRules },
     rules: {
@@ -288,6 +289,7 @@ export default defineConfig([
       "tests/no-elapsed-time-assertion": "error",
       "tests/no-expected-failure": "error",
       "tests/no-fixed-time-wait": "error",
+      "tests/hoisted-state-at-call": "error",
       "tests/no-ignored-close-error": "error",
       "tests/no-ignored-kill-error": "error",
       "tests/no-process-env-change": "error",

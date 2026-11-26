@@ -7,16 +7,19 @@ import { publishFile } from "./index.ts";
 
 // 쓰기·이름 바꾸기·지우기를 원하는 오류로 실패시킨다. 쓰기 실패는 임시 파일을 만든 뒤에 낸다(디스크가 찬 경우처럼).
 const failing = vi.hoisted(() => ({
-  writeAfterCreate: undefined as Error | undefined,
+  /** 이 폴더(`in`)에 쓰는 쓰기가 파일을 만든 뒤 이 오류로 실패한다. 그 시험이 만든 폴더로 고른다. */
+  writeAfterCreate: undefined as { in: string; error: Error } | undefined,
   rename: undefined as Error | undefined,
   rm: undefined as Error | undefined,
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const writeFile: typeof real.writeFile = async (file, data, options) => {
-    if (failing.writeAfterCreate) {
+    // 결함은 불린 순간 잡고, 그 시험이 고른 폴더의 쓰기에만 건다.
+    const failure = failing.writeAfterCreate;
+    if (failure && path.dirname(String(file)) === failure.in) {
       await real.writeFile(file, "", options);
-      throw failing.writeAfterCreate;
+      throw failure.error;
     }
     return real.writeFile(file, data, options);
   };
@@ -71,7 +74,7 @@ describe("publishing a file in one step", () => {
   it("removes the temporary file when the write fails after creating it, and throws that failure", async () => {
     const root = await folders.make("babojubot-publish-");
     const full = code("ENOSPC");
-    failing.writeAfterCreate = full;
+    failing.writeAfterCreate = { in: root, error: full };
     await expect(
       publishFile(path.join(root, "token"), "placed", { mode: 0o600 })
     ).rejects.toBe(full);

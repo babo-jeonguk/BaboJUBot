@@ -88,9 +88,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         : actual.symlink(...args);
     },
     rename: async (...args: Parameters<typeof actual.rename>) => {
+      // 끼움은 불린 순간 잡는다. 기다린 뒤 칸을 다시 찾으면 그 사이 afterEach·다음 시험이 바꾼 끼움을 부른다.
+      const current = race;
       await hold("rename", args[0]);
       await actual.rename(...args);
-      await race?.afterRename?.(String(args[0]), String(args[1]));
+      await current?.afterRename?.(String(args[0]), String(args[1]));
     },
     readFile: ((...args: Parameters<typeof actual.readFile>) => {
       race?.onRead?.(String(args[0]));

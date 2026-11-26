@@ -1,3 +1,4 @@
+import { mkdtempSync } from "node:fs";
 import { readdir, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -37,15 +38,20 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     return real.rm(target, options);
   };
   const writeFile: typeof real.writeFile = async (target, ...rest) => {
+    // 기록 칸은 불린 순간 잡는다. 쓰기가 끝난 뒤 칸을 다시 찾으면 그 사이 afterEach가 연 다음 시험의 칸에 남는다.
+    const { written } = inject;
     if (inject.writeFails && String(target).endsWith(inject.writeFails))
       throw Object.assign(new Error("ENOSPC: no space left on device"), {
         code: "ENOSPC",
       });
     await real.writeFile(target, ...rest);
-    inject.written.push(path.basename(String(target)));
+    written.push(path.basename(String(target)));
   };
+  // 만들기와 기록을 불린 순간 한 동기 구간에서 한다(기다리지 않으므로 만든 뒤에 칸을 다시 찾지 않는다). 기록은 정리가 쓰는 목록이라,
+  // 기다린 뒤 칸에 남기면 그 사이 afterEach가 비운 칸에 남아 다음 시험의 기록에 섞였다. 시험이 끝난 뒤에 시작한 만들기는 그때의 칸(다음
+  // 시험)에 기록된다(그 시험은 이미 실패했다). 제품이 보는 계약(유일한 새 폴더 경로로 이행)은 같다.
   const mkdtemp = (async (prefix: string) => {
-    const made = await real.mkdtemp(prefix);
+    const made = mkdtempSync(prefix);
     inject.made.push(made);
     return made;
   }) as typeof real.mkdtemp;
@@ -66,9 +72,11 @@ const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 afterEach(() => {
   inject.removeFails = undefined;
   inject.writeFails = undefined;
-  inject.written.splice(0);
+  inject.written = [];
   inject.removed.mockReset();
-  for (const made of inject.made.splice(0)) folders.adopt(made);
+  const { made } = inject;
+  inject.made = [];
+  for (const folder of made) folders.adopt(folder);
   vi.restoreAllMocks();
 });
 

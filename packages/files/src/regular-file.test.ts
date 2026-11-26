@@ -3,6 +3,7 @@ import { closeSync, constants, openSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
+import { armSwap, resetSwap } from "@babojubot/process/fs-swap";
 import { fileLinks } from "@babojubot/process/test-support";
 import { testFolders } from "@babojubot/process/testing";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -10,23 +11,19 @@ import { openRegularFile } from "./regular-file.ts";
 
 // 확인한 파일과 읽는 파일이 같아야 한다. 열린 직후 경로를 다른 파일로 바꾸거나, 열기를 원하는 오류로 실패시켜 그 사이를 만든다.
 const swap = vi.hoisted(() => ({
-  /** 이 경로를 열면, 연 직후 `replacement`를 그 경로로 옮긴다. */
-  path: undefined as string | undefined,
-  replacement: undefined as string | undefined,
   /** 이 경로를 열면 이 오류로 실패한다. */
   failing: undefined as { path: string; error: Error } | undefined,
 }));
+// 열린 직후 경로를 다른 파일로 바꾸는 것은 공용 바꿔치기 대역(`@babojubot/process/fs-swap`)이 한다. 시험은 `armSwap`으로 무장한다.
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
+  const swapped = (await import("@babojubot/process/fs-swap")).swapAfter(real, [
+    "open",
+  ]);
   const open: typeof real.open = async (file, ...rest) => {
     if (swap.failing && String(file) === swap.failing.path)
       throw swap.failing.error;
-    const handle = await real.open(file, ...rest);
-    if (swap.path && String(file) === swap.path && swap.replacement) {
-      await real.rename(swap.replacement, swap.path);
-      swap.path = undefined;
-    }
-    return handle;
+    return swapped.open(file, ...rest);
   };
   return { ...real, open, default: { ...real, open } };
 });
@@ -37,8 +34,7 @@ const canLink = fileLinks();
 
 const folders = testFolders();
 afterEach(() => {
-  swap.path = undefined;
-  swap.replacement = undefined;
+  resetSwap();
   swap.failing = undefined;
 });
 
@@ -208,9 +204,9 @@ describe("opening a file in a place others can change, only if it is a regular f
       await writeFile(file, "opened");
       const replacement = path.join(root, "replacement.json");
       await writeFile(replacement, "replaced");
-      swap.path = file;
-      swap.replacement = replacement;
+      const swapped = armSwap({ path: file, replacement });
       expect(await opened(file)).toBe("opened");
+      expect(swapped.used).toBe(true);
     }
   );
 });

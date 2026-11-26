@@ -33,8 +33,8 @@ const race = vi.hoisted(() => ({
   onOpenMissing: undefined as undefined | (() => Promise<void>),
   /** 실행 시도 폴더 밖의 쓰기가 파일을 만든 뒤 이 오류로 실패한다(디스크가 찬 경우처럼). */
   failAfterCreate: undefined as Error | undefined,
-  /** 로그인 자리 이름(`token`)으로 옮겨 둔 횟수. 자리 표시를 게시한 횟수다. */
-  published: 0,
+  /** 로그인 자리 이름(`token`)으로 옮긴 대상. 자리 표시를 게시한 자리다. 시험마다 새 칸을 연다. */
+  published: [] as string[],
   /** 제품이 키 하나의 차례를 청할 때 그 키로 부른다(`oneAtATime`). */
   turnRequested: undefined as undefined | ((key: string) => void),
 }));
@@ -53,32 +53,27 @@ vi.mock("./one-at-a-time.ts", async (importOriginal) => {
 });
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
+  // 대역은 칸을 불린 순간(첫 await 전) 모두 잡고 그 뒤에는 잡은 것만 쓴다. await 뒤에 칸을 다시 찾으면 그 사이 afterEach가 바꾼 다음
+  // 시험의 것에 닿는다(tests/hoisted-state-at-call).
   const writeFile: typeof real.writeFile = async (file, ...rest) => {
-    const failure = race.failAfterCreate;
-    if (
-      failure &&
-      !race.outside.some((folder) => String(file).startsWith(folder))
-    ) {
+    const { failAfterCreate: failure, holdFirstWrite: hold, outside } = race;
+    const inside = outside.some((folder) => String(file).startsWith(folder));
+    const held = !failure && hold && !inside ? hold : undefined;
+    if (held) race.holdFirstWrite = undefined;
+    if (failure && !inside) {
       await real.writeFile(file, "", rest[1]);
       throw failure;
     }
-    const hold = race.holdFirstWrite;
-    if (
-      hold &&
-      !race.outside.some((folder) => String(file).startsWith(folder))
-    ) {
-      race.holdFirstWrite = undefined;
-      return hold(() => real.writeFile(file, ...rest));
-    }
+    if (held) return held(() => real.writeFile(file, ...rest));
     return real.writeFile(file, ...rest);
   };
   const open: typeof real.open = async (...args) => {
+    const missed = race.onOpenMissing;
     try {
       return await real.open(...args);
     } catch (error) {
-      const missed = race.onOpenMissing;
+      // 불린 순간 잡은 동작만 부른다. 그 동작(시험이 둔 것)은 여러 번 불려도 같은 결과다(표시와 풀기).
       if (missed && hasErrorCode("ENOENT")(error)) {
-        race.onOpenMissing = undefined;
         // 주입한 동작이 실패해도 원래 열기 실패를 잃지 않는다. 둘을 함께 던진다.
         const failures = await attemptEach([missed]);
         if (failures.length)
@@ -91,8 +86,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     }
   };
   const rename: typeof real.rename = async (from, to) => {
+    const { published } = race;
     await real.rename(from, to);
-    if (path.basename(String(to)) === "token") race.published++;
+    if (path.basename(String(to)) === "token") published.push(String(to));
   };
   return {
     ...real,
@@ -107,7 +103,7 @@ afterEach(() => {
   race.holdFirstWrite = undefined;
   race.onOpenMissing = undefined;
   race.failAfterCreate = undefined;
-  race.published = 0;
+  race.published = [];
   race.turnRequested = undefined;
 });
 
@@ -225,7 +221,7 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
       throw new Error(`no isolated login: ${prepared.refusal}`);
     const attemptLogin = prepared.attemptLogin;
     // 준비(prepare)는 연결 폴더에 로그인 링크를 두며 같은 이름(`token`)으로 옮긴다. 자리 표시 게시만 센다.
-    race.published = 0;
+    race.published = [];
     const place = path.join(
       root,
       "providers",
@@ -257,7 +253,7 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     const placed = await attemptLogin(attemptAt(first), "grant-one");
     const other = (await secondDone) as typeof placed;
     expect(checkedWhilePlacing).toBe(false);
-    expect(race.published).toBe(1);
+    expect(race.published).toHaveLength(1);
     expect(placed.target).toBe(place);
     expect(other.target).toBe(place);
     expect(await readFile(placed.source, "utf8")).toBe(
