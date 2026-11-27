@@ -1,51 +1,28 @@
-import { mkdir, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type {
-  ModelOption,
-  ProviderConnection,
-  RunRequest,
-  RunResult,
-} from "@babojubot/contracts";
-import { failureCode } from "@babojubot/contracts";
-import { TreeLaunchRefused } from "@babojubot/process";
+import type { ModelOption, ProviderConnection } from "@babojubot/contracts";
 import { record } from "./record.ts";
 import {
   commandFor,
+  probeEnding,
   probeTimeoutMs,
-  providerEnvironment,
   runProbe,
-  saysLoginProblem,
-  startProcess,
-  startupLimitMs,
 } from "./process.ts";
-
-/** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */
-const cancelGraceMs = 3_000;
-/** JSON-RPC로 거절한 요청. 문구는 공개 기록에 넣지 않고 로그인 문제만 가른다. */
-class AcpRejection extends Error {}
-
-const failed = (
-  error: string | null = "프로바이더 실행이 실패했습니다."
-): RunResult => ({
-  stopReason: "failed",
-  error,
-  summary: null,
-  usage: null,
-  nextSession: null,
-});
+import {
+  extractJsonObject,
+  hostProviderEnvironment,
+  isAcpAuthProblem,
+  isExplicitlySignedOut,
+  probeErrorFields,
+  runAcpSession,
+  stripAnsi,
+} from "./acp-session.ts";
 
 /**
- * `grok models`가 로그인 없음을 알리는지. "Not signed in"은 공통 로그인 문구에 안 걸린다.
- * "You are logged in"은 여기 해당하지 않는다.
- */
-const saysSignedOut = (text: string) =>
-  saysLoginProblem(text) || /not signed in/i.test(text);
-
-/**
- * Grok Build CLI의 ACP(`grok agent --no-leader stdio`). 로그인은 이 컴퓨터의 `grok login`(grok.com)이다.
- * 제품 폴더로 HOME을 바꾸면 `~/.grok`의 로그인이 보이지 않으므로, 이 연결만 사용자의 HOME을 그대로 쓴다.
- * 격리 실행은 하지 않는다. 인증 중계가 없고, 컨테이너에 그 로그인을 넣지 않는다.
+ * Grok Build CLI의 ACP(`grok agent --no-leader stdio`). 로그인은 이 컴퓨터의 `grok login`(grok.com, `~/.grok`)이다.
+ * 제품 폴더로 HOME을 바꾸면 `~/.grok`의 로그인이 보이지 않으므로 사용자 HOME을 그대로 쓴다.
+ * 실제 프로그램을 띄우는 연결(`isolatable: true`)이지만 인증 중계가 아직 없으므로,
+ * 격리 실행 스위치가 꺼져 있을 때만 이 컴퓨터에서 돌고 격리 실행 스위치를 켜면 fail-closed로 거부한다.
  * 조직 도구 토큰은 ACP 세션 인자로만 넘기고 `~/.grok`와 작업 폴더에는 쓰지 않는다.
  */
 export function createGrokProvider(options: {
@@ -56,20 +33,13 @@ export function createGrokProvider(options: {
 }): ProviderConnection {
   const connectionId = options.id ?? "grok";
   const command = options.command ?? commandFor(connectionId, "grok");
-  const userHome = process.env.HOME || os.homedir();
-  const localBin = path.join(userHome, ".local", "bin");
-  const env = providerEnvironment(connectionId, userHome, {
-    // 로그인 셸이 아니면 grok가 ~/.local/bin에만 있는 경우가 있다.
-    PATH: [localBin, process.env.PATH]
-      .filter((part) => part)
-      .join(path.delimiter),
-  });
+  const env = () => hostProviderEnvironment(connectionId);
   const stateDir = path.join(options.dataDir, "providers", connectionId);
   const probe = async (args: string[], signal: AbortSignal) =>
     (
       await runProbe(command, args, {
         cwd: os.tmpdir(),
-        env,
+        env: env(),
         signal,
         timeout: probeTimeoutMs,
         maxBuffer: 1024 * 1024,
@@ -88,265 +58,50 @@ export function createGrokProvider(options: {
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       try {
-        const output = await probe(["models"], signal);
-        if (!/logged in/i.test(output) || saysSignedOut(output))
+        const output = stripAnsi(await probe(["models"], signal));
+        if (isExplicitlySignedOut(output))
           return { status: "not_ready", reason: "product_login_missing" };
-        return { status: "ready", reason: null };
+        if (
+          modelsFrom(output).length > 0 ||
+          /\b(?:logged in|signed in|authenticated)\b/i.test(output)
+        )
+          return { status: "ready", reason: null };
+        return { status: "not_ready", reason: "product_login_missing" };
       } catch (error) {
-        const detail = error as NodeJS.ErrnoException & {
-          stdout?: string;
-          stderr?: string;
-        };
+        const detail = probeErrorFields(error);
         if (detail.code === "ENOENT")
           return { status: "not_ready", reason: "program_missing" };
-        const text = `${detail.stdout ?? ""}\n${detail.stderr ?? ""}`;
-        if (saysSignedOut(text))
+        const text = `${detail.stdout}\n${detail.stderr}`;
+        if (isAcpAuthProblem(text))
           return { status: "not_ready", reason: "product_login_missing" };
         console.warn(
-          `[provider] the Grok login check failed (${failureCode(error)})`
+          `[provider] the ${connectionId} readiness check failed (${probeEnding(error)})`
         );
         return { status: "not_ready", reason: "check_failed" };
       }
     },
-    async execute(request, control) {
-      if (control.signal.aborted)
-        return { ...failed(null), stopReason: "cancelled" };
-      await mkdir(stateDir, { recursive: true, mode: 0o700 });
-      const cwd = request.workspace?.cwd
-        ? await realpath(request.workspace.cwd)
-        : await realpath(stateDir);
-      const mcpServers = [
+    execute(request, control) {
+      return runAcpSession(
         {
-          type: "http",
-          name: "organization",
-          url: new URL("/api/tools/mcp", request.access.toolsBaseUrl).href,
-          headers: [
-            { name: "Authorization", value: `Bearer ${request.access.token}` },
-          ],
-        },
-      ];
-      const sessionParams = (sessionId?: string) => ({
-        ...(sessionId ? { sessionId } : {}),
-        cwd,
-        mcpServers,
-      });
-      const previous =
-        typeof request.previousSession?.id === "string"
-          ? request.previousSession.id
-          : null;
-      let sequence = 0;
-      let sessionId: string | undefined;
-      let prompting = false;
-      const pending = new Map<
-        number,
-        {
-          resolve: (value: Record<string, unknown>) => void;
-          reject: (error: Error) => void;
-        }
-      >();
-      let startup: ReturnType<typeof setTimeout> | undefined;
-      let ending: ReturnType<typeof setTimeout> | undefined;
-      let child: ReturnType<typeof startProcess> | undefined;
-      const cancel = () => {
-        if (sessionId && prompting && child) {
-          child.write({
-            jsonrpc: "2.0",
-            method: "session/cancel",
-            params: { sessionId },
-          });
-          ending ??= setTimeout(() => child?.end(), cancelGraceMs);
-        } else child?.end();
-      };
-      try {
-        child = startProcess({
+          logName: "Grok",
           stateDir,
           command,
+          // `--no-leader`는 공유 리더 데몬에 붙지 않고 독립 프로세스로 띄워 감독 실행기가 트리 수명을 소유하게 한다.
           args: ["agent", "--no-leader", "stdio"],
-          cwd,
-          env,
-          onFrame: async (raw) => {
-            const frame = record(raw);
-            if (typeof frame.id === "number" && !frame.method) {
-              const waiter = pending.get(frame.id);
-              if (!waiter) return;
-              pending.delete(frame.id);
-              if (frame.error)
-                waiter.reject(
-                  new AcpRejection(String(record(frame.error).message ?? ""))
-                );
-              else waiter.resolve(record(frame.result));
-              return;
-            }
-            if (frame.method === "session/update") {
-              const params = record(frame.params);
-              if (!prompting || params.sessionId !== sessionId) return;
-              const update = record(params.update);
-              if (update.sessionUpdate !== "tool_call") return;
-              const title =
-                typeof update.title === "string" && update.title.trim()
-                  ? update.title.trim()
-                  : "tool";
-              await control.emit({
-                type: "tool_use",
-                tool: title.slice(0, 100),
-                summary: title.slice(0, 2_000),
-              });
-              return;
-            }
-            if (typeof frame.id !== "number") return;
-            if (frame.method === "session/request_permission") {
-              const listed = record(frame.params).options;
-              const allow = (Array.isArray(listed) ? listed : [])
-                .map(record)
-                .find(
-                  (option) =>
-                    typeof option.optionId === "string" &&
-                    String(option.kind).startsWith("allow")
-                );
-              child?.write({
-                jsonrpc: "2.0",
-                id: frame.id,
-                result: {
-                  outcome: allow
-                    ? { outcome: "selected", optionId: allow.optionId }
-                    : { outcome: "cancelled" },
-                },
-              });
-              return;
-            }
-            // 처리하지 않는 요청을 열어 두면 턴이 끝나지 않는다.
-            child?.write({
-              jsonrpc: "2.0",
-              id: frame.id,
-              error: { code: -32601, message: "Method not supported" },
-            });
-          },
-        });
-        const rpc = (method: string, params: unknown) =>
-          new Promise<Record<string, unknown>>((resolve, reject) => {
-            const id = ++sequence;
-            pending.set(id, { resolve, reject });
-            if (!child?.write({ jsonrpc: "2.0", id, method, params })) {
-              pending.delete(id);
-              reject(new Error("Protocol closed"));
-            }
-          });
-        control.signal.addEventListener("abort", cancel, { once: true });
-        startup = setTimeout(() => child?.end(), startupLimitMs);
-        void child.done.then(() => {
-          for (const waiter of pending.values())
-            waiter.reject(new Error("Protocol closed"));
-          pending.clear();
-        });
-        let sessionError: string | undefined;
-        let outcome: Record<string, unknown> | undefined;
-        try {
-          if (control.signal.aborted) cancel();
-          else {
-            await rpc("initialize", {
-              protocolVersion: 1,
-              clientCapabilities: {
-                fs: { readTextFile: false, writeTextFile: false },
-                terminal: false,
-              },
-              clientInfo: { name: "babojubot", version: "0.0.0" },
-            });
-            if (previous)
-              try {
-                await rpc("session/load", sessionParams(previous));
-                sessionId = previous;
-              } catch (error) {
-                if (!(error instanceof AcpRejection)) throw error;
-                if (saysSignedOut(error.message)) {
-                  sessionError = error.message;
-                  throw error;
-                }
-                await control.emit({
-                  type: "progress",
-                  text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
-                });
-              }
-            if (!sessionId) {
-              const opened = await rpc("session/new", sessionParams());
-              if (typeof opened.sessionId !== "string" || !opened.sessionId)
-                throw new AcpRejection("session id missing");
-              sessionId = opened.sessionId;
-            }
-            if (request.model)
-              try {
-                await rpc("session/set_config_option", {
-                  sessionId,
-                  configId: "model",
-                  value: request.model,
-                });
-              } catch (error) {
-                if (error instanceof AcpRejection) {
-                  child.end();
-                  await child.done;
-                  return failed("고른 모델을 쓸 수 없어 실행하지 않았습니다.");
-                }
-                throw error;
-              }
-            clearTimeout(startup);
-            startup = undefined;
-            await control.emit({
-              type: "progress",
-              text: "프로바이더가 작업을 시작했습니다.",
-            });
-            prompting = true;
-            if (control.signal.aborted) cancel();
-            outcome = await rpc("session/prompt", {
-              sessionId,
-              prompt: [{ type: "text", text: promptText(request) }],
-            });
-          }
-        } catch (error) {
-          if (error instanceof AcpRejection) sessionError = error.message;
-          if (!control.signal.aborted)
-            console.warn(
-              `[provider] the Grok session ended without a result (${failureCode(error)})`
-            );
-        } finally {
-          if (startup) clearTimeout(startup);
-          child.end();
-          await child.done;
-          if (ending) clearTimeout(ending);
-          control.signal.removeEventListener("abort", cancel);
-        }
-        if (control.signal.aborted)
-          return { ...failed(null), stopReason: "cancelled" };
-        if (sessionError !== undefined && saysSignedOut(sessionError))
-          return { ...failed(), errorCode: "login_required" };
-        if (outcome?.stopReason === "end_turn" && sessionId)
-          return {
-            stopReason: "completed",
-            error: null,
-            summary: null,
-            usage: null,
-            nextSession: { id: sessionId },
-          };
-        return failed();
-      } catch (error) {
-        if (error instanceof TreeLaunchRefused) throw error;
-        if (!control.signal.aborted)
-          console.warn(
-            `[provider] the Grok run failed (${failureCode(error)})`
-          );
-        return control.signal.aborted
-          ? { ...failed(null), stopReason: "cancelled" }
-          : failed();
-      }
+          env: env(),
+        },
+        request,
+        control
+      );
     },
   };
   return {
     id: connectionId,
     label: options.label ?? "Grok Build",
-    login: { command, args: ["login"], env },
+    isolatable: true,
+    login: { command, args: ["login"], env: env() },
     adapter,
-    models: [
-      { id: "grok-4.7", label: "grok-4.7" },
-      { id: "grok-4.5", label: "grok-4.5" },
-    ],
+    models: [],
     async listModels(signal) {
       const stdout = await probe(["models"], signal);
       const parsed = modelsFrom(stdout);
@@ -356,29 +111,47 @@ export function createGrokProvider(options: {
   };
 }
 
-/** `grok models`의 글머리 줄. `* grok-4.7 (default)`에서 ID만 남긴다. */
+/** `grok models` 출력에서 모델 ID를 읽는다. JSON 객체 출력과 ANSI가 섞인 글머리 줄(`* grok-4.7 (default)`)을 모두 받는다. */
 function modelsFrom(stdout: string): ModelOption[] {
   const seen = new Set<string>();
   const models: ModelOption[] = [];
-  for (const row of stdout.split("\n")) {
-    const match = /^\s*[*+-]\s+(\S+)/.exec(row);
+  const push = (id: string, label?: string) => {
+    const cleanId = id.trim();
+    if (!cleanId || seen.has(cleanId)) return;
+    seen.add(cleanId);
+    models.push({ id: cleanId, label: label?.trim() || cleanId });
+  };
+  const json = extractJsonObject(stdout);
+  if (json && Array.isArray(json.models)) {
+    for (const item of json.models) {
+      if (typeof item === "string") {
+        push(item);
+        continue;
+      }
+      const row = record(item);
+      const id =
+        typeof row.id === "string"
+          ? row.id
+          : typeof row.model_id === "string"
+            ? row.model_id
+            : "";
+      const label =
+        typeof row.label === "string"
+          ? row.label
+          : typeof row.name === "string"
+            ? row.name
+            : typeof row.model_name === "string"
+              ? row.model_name
+              : undefined;
+      if (id) push(id, label);
+    }
+    return models;
+  }
+  for (const row of stripAnsi(stdout).split("\n")) {
+    // 대문자로 시작하는 안내 문장(`- Run grok login ...`)은 모델 ID로 오인하지 않는다.
+    const match = /^\s*[*+-]\s+([a-z0-9][a-z0-9._:/-]*)(?:\s|$)/.exec(row);
     const id = match?.[1];
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    models.push({ id, label: id });
+    if (id) push(id);
   }
   return models;
-}
-
-/** 지침과 이번 깨우기. 실행 시도 토큰은 조직 도구 헤더에만 있고 여기 넣지 않는다. */
-function promptText(request: RunRequest) {
-  return (
-    request.instructions.map((file) => file.content).join("\n\n") +
-    "\n\n" +
-    JSON.stringify({
-      identity: request.identity,
-      context: request.context,
-      wakeReasons: request.wakeReasons,
-    })
-  );
 }

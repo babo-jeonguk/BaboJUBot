@@ -6,32 +6,26 @@ import { createGrokProvider as unownedGrokProvider } from "./grok.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
-// `grok agent --no-leader stdio` 대화를 재생한다. 프레임 순서는 Grok Build 1.0.92 ACP의 initialize, session/new, session/prompt다.
+// `grok agent --no-leader stdio` 대화를 재생한다. 프레임 순서는 ACP v1의 initialize, session/new(또는 session/load), session/prompt다.
 const folders = testFolders();
 const createGrokProvider = folders.owning(unownedGrokProvider);
 const rpc = (id: number, body: Record<string, unknown>) => ({
   frame: { jsonrpc: "2.0", id, ...body },
 });
+const organizationMcp = {
+  mcpServers: [
+    {
+      type: "http",
+      name: "organization",
+      url: "http://127.0.0.1:1/api/tools/mcp",
+      headers: [{ name: "Authorization", value: "Bearer private-run-token" }],
+    },
+  ],
+};
 const opening = [
   { input: { method: "initialize" } },
   rpc(1, { result: { protocolVersion: 1 } }),
-  {
-    input: {
-      method: "session/new",
-      params: {
-        mcpServers: [
-          {
-            type: "http",
-            name: "organization",
-            url: "http://127.0.0.1:1/api/tools/mcp",
-            headers: [
-              { name: "Authorization", value: "Bearer private-run-token" },
-            ],
-          },
-        ],
-      },
-    },
-  },
+  { input: { method: "session/new", params: organizationMcp } },
   rpc(2, { result: { sessionId: "saved" } }),
 ];
 
@@ -97,6 +91,14 @@ const allowed = {
 };
 
 describe("Grok Build ACP", () => {
+  it("declares isolatable: true so isolation mode fails closed without a verified relay", async () => {
+    const root = await folders.make("grok-meta-");
+    const provider = createGrokProvider({ dataDir: root });
+    expect(provider.isolatable).toBe(true);
+    expect(provider.credentialRelay).toBeUndefined();
+    expect(provider.models).toEqual([]);
+  });
+
   it("gives the organization tools to the session and allows the tool it asks for", async () => {
     const { result, activity } = await run([
       ...opening,
@@ -115,8 +117,11 @@ describe("Grok Build ACP", () => {
       allowed,
       rpc(3, { result: { stopReason: "end_turn" } }),
     ]);
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       stopReason: "completed",
+      error: null,
+      summary: null,
+      usage: null,
       nextSession: { id: "saved" },
     });
     expect(activity).toContainEqual({
@@ -126,7 +131,7 @@ describe("Grok Build ACP", () => {
     });
   });
 
-  it("loads the previous session instead of starting another", async () => {
+  it("loads the previous session with organization MCP servers instead of starting another", async () => {
     const { result } = await run(
       [
         { input: { method: "initialize" } },
@@ -134,7 +139,7 @@ describe("Grok Build ACP", () => {
         {
           input: {
             method: "session/load",
-            params: { sessionId: "saved" },
+            params: { sessionId: "saved", ...organizationMcp },
           },
         },
         rpc(2, { result: {} }),
@@ -143,7 +148,13 @@ describe("Grok Build ACP", () => {
       ],
       { previousSession: { id: "saved" } }
     );
-    expect(result.nextSession).toEqual({ id: "saved" });
+    expect(result).toEqual({
+      stopReason: "completed",
+      error: null,
+      summary: null,
+      usage: null,
+      nextSession: { id: "saved" },
+    });
   });
 
   it("fails the run when the chosen model is refused", async () => {
@@ -160,41 +171,57 @@ describe("Grok Build ACP", () => {
       ],
       { model: "grok-4.5" }
     );
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       stopReason: "failed",
       error: "고른 모델을 쓸 수 없어 실행하지 않았습니다.",
+      summary: null,
+      usage: null,
       nextSession: null,
     });
   });
 });
 
 describe("Grok readiness and models", () => {
-  it("reads grok models without calling a model", async () => {
+  it("reads grok models with ANSI codes, ignores prose bullets, and handles failure states", async () => {
     const root = await folders.make("grok-probe-");
     const program = path.join(root, "grok.mjs");
+    // 출력 직후 process.exit()를 부르지 않고 process.exitCode로 자연 종료해 파이프 쓰기를 끝까지 넘긴다(CODING_STANDARDS.md).
     await writeFile(
       program,
       [
         "const args = process.argv.slice(2);",
+        "const mode = args[0];",
         "if (args.includes('models')) {",
-        "  if (args.includes('signed-out')) {",
+        "  if (mode === 'signed-out') {",
         "    console.error('Not signed in');",
-        "    process.exit(1);",
+        "    process.exitCode = 1;",
+        "  } else if (mode === 'signed-out-zero') {",
+        "    console.log('Not signed in. Run grok login.');",
+        "  } else if (mode === 'broken') {",
+        "    console.error('internal failure');",
+        "    process.exitCode = 2;",
+        "  } else if (mode === 'models-only') {",
+        "    console.log('  * grok-next (default)');",
+        "  } else if (mode === 'empty-models') {",
+        "    console.log('You are logged in with grok.com.');",
+        "  } else {",
+        "    console.log('You are logged in with grok.com.');",
+        "    console.log('  - Run grok login to switch accounts');",
+        "    console.log('  \\u001b[32m* grok-4.7 (default)\\u001b[0m');",
+        "    console.log('  - grok-4.5');",
         "  }",
-        "  console.log('You are logged in with grok.com.');",
-        "  console.log('  * grok-4.7 (default)');",
-        "  console.log('  - grok-4.5');",
-        "  process.exit(0);",
+        "} else {",
+        "  process.exitCode = 9;",
         "}",
-        "process.exit(9);",
         "",
       ].join("\n")
     );
+    const signal = new AbortController().signal;
+
     const provider = createGrokProvider({
       dataDir: root,
-      command: [process.execPath, program],
+      command: [process.execPath, program, "ready"],
     });
-    const signal = new AbortController().signal;
     await expect(provider.adapter.checkReadiness(signal)).resolves.toEqual({
       status: "ready",
       reason: null,
@@ -203,6 +230,17 @@ describe("Grok readiness and models", () => {
       { id: "grok-4.7", label: "grok-4.7" },
       { id: "grok-4.5", label: "grok-4.5" },
     ]);
+
+    const modelsOnly = createGrokProvider({
+      dataDir: root,
+      id: "grok-models-only",
+      command: [process.execPath, program, "models-only"],
+    });
+    await expect(modelsOnly.adapter.checkReadiness(signal)).resolves.toEqual({
+      status: "ready",
+      reason: null,
+    });
+
     const signedOut = createGrokProvider({
       dataDir: root,
       id: "grok-out",
@@ -212,6 +250,38 @@ describe("Grok readiness and models", () => {
       status: "not_ready",
       reason: "product_login_missing",
     });
+
+    const signedOutZero = createGrokProvider({
+      dataDir: root,
+      id: "grok-out-zero",
+      command: [process.execPath, program, "signed-out-zero"],
+    });
+    await expect(signedOutZero.adapter.checkReadiness(signal)).resolves.toEqual(
+      {
+        status: "not_ready",
+        reason: "product_login_missing",
+      }
+    );
+
+    const broken = createGrokProvider({
+      dataDir: root,
+      id: "grok-broken",
+      command: [process.execPath, program, "broken"],
+    });
+    await expect(broken.adapter.checkReadiness(signal)).resolves.toEqual({
+      status: "not_ready",
+      reason: "check_failed",
+    });
+
+    const emptyModels = createGrokProvider({
+      dataDir: root,
+      id: "grok-empty",
+      command: [process.execPath, program, "empty-models"],
+    });
+    await expect(emptyModels.listModels?.(signal)).rejects.toThrow(
+      "Grok returned no models"
+    );
+
     const missing = createGrokProvider({
       dataDir: root,
       id: "grok-missing",
