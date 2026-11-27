@@ -1,5 +1,4 @@
 import os from "node:os";
-import path from "node:path";
 import type { ModelOption, ProviderConnection } from "@babojubot/contracts";
 import { record } from "./record.ts";
 import {
@@ -9,10 +8,11 @@ import {
   runProbe,
 } from "./process.ts";
 import {
-  extractJsonObject,
+  extractJsonValue,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
+  isPositiveLoginLine,
   probeErrorFields,
   runAcpSession,
   stripAnsi,
@@ -34,7 +34,6 @@ export function createGrokProvider(options: {
   const connectionId = options.id ?? "grok";
   const command = options.command ?? commandFor(connectionId, "grok");
   const env = () => hostProviderEnvironment(connectionId);
-  const stateDir = path.join(options.dataDir, "providers", connectionId);
   const probe = async (args: string[], signal: AbortSignal) =>
     (
       await runProbe(command, args, {
@@ -58,15 +57,15 @@ export function createGrokProvider(options: {
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       try {
-        const output = stripAnsi(await probe(["models"], signal));
+        const output = await probe(["models"], signal);
         if (isExplicitlySignedOut(output))
           return { status: "not_ready", reason: "product_login_missing" };
-        if (
-          modelsFrom(output).length > 0 ||
-          /\b(?:logged in|signed in|authenticated)\b/i.test(output)
-        )
+        if (modelsFrom(output).length > 0 || isPositiveLoginLine(output))
           return { status: "ready", reason: null };
-        return { status: "not_ready", reason: "product_login_missing" };
+        console.warn(
+          `[provider] the ${connectionId} readiness check returned an unexpected response`
+        );
+        return { status: "not_ready", reason: "check_failed" };
       } catch (error) {
         const detail = probeErrorFields(error);
         if (detail.code === "ENOENT")
@@ -84,7 +83,8 @@ export function createGrokProvider(options: {
       return runAcpSession(
         {
           logName: "Grok",
-          stateDir,
+          dataDir: options.dataDir,
+          connectionId,
           command,
           // `--no-leader`는 공유 리더 데몬에 붙지 않고 독립 프로세스로 띄워 감독 실행기가 트리 수명을 소유하게 한다.
           args: ["agent", "--no-leader", "stdio"],
@@ -111,7 +111,7 @@ export function createGrokProvider(options: {
   };
 }
 
-/** `grok models` 출력에서 모델 ID를 읽는다. JSON 객체 출력과 ANSI가 섞인 글머리 줄(`* grok-4.7 (default)`)을 모두 받는다. */
+/** `grok models` 출력에서 모델 ID를 읽는다. JSON(객체 `{ models }`·최상위 배열)과 ANSI가 섞인 글머리 줄을 모두 받는다. */
 function modelsFrom(stdout: string): ModelOption[] {
   const seen = new Set<string>();
   const models: ModelOption[] = [];
@@ -121,9 +121,14 @@ function modelsFrom(stdout: string): ModelOption[] {
     seen.add(cleanId);
     models.push({ id: cleanId, label: label?.trim() || cleanId });
   };
-  const json = extractJsonObject(stdout);
-  if (json && Array.isArray(json.models)) {
-    for (const item of json.models) {
+  const json = extractJsonValue(stdout);
+  const items = Array.isArray(json)
+    ? json
+    : json !== null && typeof json === "object"
+      ? record(json).models
+      : undefined;
+  if (Array.isArray(items)) {
+    for (const item of items) {
       if (typeof item === "string") {
         push(item);
         continue;
@@ -148,10 +153,15 @@ function modelsFrom(stdout: string): ModelOption[] {
     return models;
   }
   for (const row of stripAnsi(stdout).split("\n")) {
-    // 대문자로 시작하는 안내 문장(`- Run grok login ...`)은 모델 ID로 오인하지 않는다.
-    const match = /^\s*[*+-]\s+([a-z0-9][a-z0-9._:/-]*)(?:\s|$)/.exec(row);
+    const match =
+      /^\s*[*+-]\s+([A-Za-z0-9][A-Za-z0-9._:/-]*)(?:\s+(.*))?$/.exec(row);
     const id = match?.[1];
-    if (id) push(id);
+    if (!id) continue;
+    const trailing = (match?.[2] ?? "").trim();
+    // 구분자(`-`·`.`·`:`·`/`·숫자)가 있거나 뒤가 비어 있거나 `(default)` 메타데이터인 줄만 모델 ID로 인정해 안내 문장을 배제한다.
+    const looksLikeModelId =
+      /[-.:/0-9]/.test(id) || trailing === "" || /^\([^)]*\)$/.test(trailing);
+    if (looksLikeModelId) push(id);
   }
   return models;
 }

@@ -1,0 +1,150 @@
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+import type {
+  ProviderConnection,
+  RunRequest,
+  RunResult,
+} from "@babojubot/contracts";
+import { runAcpSession } from "./acp-session.ts";
+import { request } from "./test-support.ts";
+import type { testFolders } from "./test-folders.ts";
+
+export const acpRpc = (id: number, body: Record<string, unknown>) => ({
+  frame: { jsonrpc: "2.0", id, ...body },
+});
+
+export const acpOrganizationMcp = {
+  mcpServers: [
+    {
+      type: "http",
+      name: "organization",
+      url: "http://127.0.0.1:1/api/tools/mcp",
+      headers: [{ name: "Authorization", value: "Bearer private-run-token" }],
+    },
+  ],
+};
+
+export const acpOpening = [
+  { input: { method: "initialize" } },
+  acpRpc(1, { result: { protocolVersion: 1 } }),
+  { input: { method: "session/new", params: acpOrganizationMcp } },
+  acpRpc(2, { result: { sessionId: "saved" } }),
+];
+
+/**
+ * 공용 ACP replay 실행기. `folders.own`으로 중단·종료 대기를 등록해 시험이 실패하거나
+ * 중단돼도 자식이 끝난 뒤에만 임시 폴더를 지우게 한다(CODING_STANDARDS.md#정리).
+ */
+export async function runAcpSessionReplay(
+  folders: ReturnType<typeof testFolders>,
+  options: {
+    prefix: string;
+    argv?: Record<string, unknown>;
+    args?: readonly string[];
+    steps: Record<string, unknown>[];
+    patch?: Partial<RunRequest>;
+    signal?: AbortSignal;
+    /** `true`이면 기본 workspace를 채우지 않고 `patch.workspace`(기본 `null`)를 그대로 넘긴다. */
+    keepWorkspace?: boolean;
+  }
+): Promise<{ result: RunResult; activity: unknown[]; root: string }> {
+  const root = await folders.make(options.prefix);
+  const fixture = path.join(root, "fixture.json");
+  await writeFile(
+    fixture,
+    JSON.stringify({
+      argv: options.argv ?? { acp: true },
+      steps: options.steps,
+    })
+  );
+  const activity: unknown[] = [];
+  const stop = new AbortController();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, stop.signal])
+    : stop.signal;
+  const runRequest: RunRequest = {
+    ...request(),
+    ...(options.keepWorkspace
+      ? {}
+      : {
+          workspace: {
+            cwd: root,
+            organization: root,
+            personal: root,
+            peers: [],
+          },
+        }),
+    ...options.patch,
+  };
+  const running = runAcpSession(
+    {
+      logName: "TestAcp",
+      dataDir: root,
+      connectionId: "test-acp",
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/replay.mjs"),
+        fixture,
+      ],
+      args: options.args ?? ["acp"],
+      env: { ...process.env },
+    },
+    runRequest,
+    {
+      signal,
+      emit: async (item) => {
+        activity.push(item);
+      },
+    }
+  );
+  folders.own(async () => {
+    stop.abort();
+    await running.catch(() => undefined);
+  }, "an ACP replay run");
+  const result = await running;
+  return { result, activity, root };
+}
+
+/** 프로바이더 factory(`folders.owning`으로 감싼 것)로 replay를 한 번 실행한다. */
+export async function runProviderAcpReplay(
+  folders: ReturnType<typeof testFolders>,
+  createProvider: (options: {
+    dataDir: string;
+    command?: readonly [string, ...string[]];
+  }) => ProviderConnection,
+  options: {
+    prefix: string;
+    argv: Record<string, unknown>;
+    steps: Record<string, unknown>[];
+    patch?: Partial<RunRequest>;
+  }
+): Promise<{ result: RunResult; activity: unknown[] }> {
+  const root = await folders.make(options.prefix);
+  const fixture = path.join(root, "fixture.json");
+  await writeFile(
+    fixture,
+    JSON.stringify({ argv: options.argv, steps: options.steps })
+  );
+  const activity: unknown[] = [];
+  const result = await createProvider({
+    dataDir: root,
+    command: [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      fixture,
+    ],
+  }).adapter.execute(
+    {
+      ...request(),
+      ...options.patch,
+      workspace: { cwd: root, organization: root, personal: root, peers: [] },
+    },
+    {
+      signal: new AbortController().signal,
+      emit: async (item) => {
+        activity.push(item);
+      },
+    }
+  );
+  return { result, activity };
+}

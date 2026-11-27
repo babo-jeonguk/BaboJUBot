@@ -62,7 +62,7 @@ BaboJUBot connects to your favorite LLM providers and coding agents:
 - **OpenAI Codex**
 - **OpenCode**
 - **Google Antigravity**
-- **Grok Build** (`grok`, 이 컴퓨터에 로그인한 grok.com 계정. 격리 실행 미지원 — 격리 스위치를 켜면 실행하지 않음)
+- **Grok Build** (`grok`, uses this machine's grok.com login; host-only, refused when isolation is enabled)
 
 Install the CLI you want to use and sign in with it yourself. Then start BaboJUBot with the connections you need, for example:
 

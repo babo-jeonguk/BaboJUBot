@@ -4,8 +4,18 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { hasErrorCode, orIfMissing } from "@babojubot/contracts/failure";
+import {
+  hasErrorCode,
+  orIfMissing,
+  orIfUnreadable,
+} from "@babojubot/contracts/failure";
 import { afterOutput } from "../../../scripts/exit-after-output.ts";
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? Object.assign({}, value)
+    : {};
+}
 
 function flagValue(argv: string[], flag: string): string | undefined {
   const index = argv.indexOf(flag);
@@ -67,26 +77,47 @@ if (mode === "kiro") {
 if (!storeDir) throw new Error("acp-simulator: --store is required");
 const sessionsDir = path.join(storeDir, `${mode}-sessions`);
 
-type McpServer = {
-  name?: string;
-  url?: string;
-  headers?: { name?: string; value?: string }[];
-};
+type McpHeader = { name: string; value: string };
+type McpServer = { name: string; url: string; headers: McpHeader[] };
 type Session = { id: string; file: string; note: string; model: string };
+
+function parseMcpServers(raw: unknown): McpServer[] {
+  if (!Array.isArray(raw)) return [];
+  const servers: McpServer[] = [];
+  for (const item of raw) {
+    const entry = asRecord(item);
+    if (typeof entry.name !== "string" || typeof entry.url !== "string")
+      continue;
+    const headers: McpHeader[] = [];
+    if (Array.isArray(entry.headers)) {
+      for (const h of entry.headers) {
+        const pair = asRecord(h);
+        if (typeof pair.name === "string" && typeof pair.value === "string")
+          headers.push({ name: pair.name, value: pair.value });
+      }
+    }
+    servers.push({ name: entry.name, url: entry.url, headers });
+  }
+  return servers;
+}
 
 let session: Session | undefined;
 let mcpServers: McpServer[] = [];
 let waitingPromptId: number | undefined;
 let permissionCounter = 0;
-const pendingPermissions = new Map<string, () => void>();
+const pendingPermissions = new Map<
+  string,
+  { resolve: () => void; reject: (error: Error) => void }
+>();
+let activePrompt: Promise<void> | undefined;
 
 const allowedModels = new Set(["auto", "simulated-model", "other-model"]);
 
 async function askPermission(sessionId: string): Promise<void> {
-  // 문자열 ID를 섞어 에이전트→클라이언트 요청 ID 처리 일반화를 함께 확인한다.
+  // 문자열 ID를 섞어 에이전트→클라이언트 요청 ID 처리 일반화와 allow_once 우선 선택을 함께 검증한다.
   const permId = `perm-${++permissionCounter}`;
-  await new Promise<void>((resolve) => {
-    pendingPermissions.set(permId, resolve);
+  await new Promise<void>((resolve, reject) => {
+    pendingPermissions.set(permId, { resolve, reject });
     out({
       id: permId,
       method: "session/request_permission",
@@ -102,16 +133,24 @@ async function askPermission(sessionId: string): Promise<void> {
   });
 }
 
-async function handlePrompt(id: number, text: string) {
+async function handlePrompt(id: number, text: string): Promise<void> {
   if (!session) {
     out({ id, error: { code: -32602, message: "No active session" } });
     return;
   }
-  const parsed = JSON.parse(text.slice(text.indexOf('{"identity"'))) as {
-    wakeReasons?: { body?: string }[];
-    context?: { conversations?: { id: string }[] };
-  };
-  const body = parsed.wakeReasons?.[0]?.body ?? "";
+  const marker = text.indexOf('{"identity"');
+  if (marker < 0) {
+    out({ id, error: { code: -32602, message: "Missing request payload" } });
+    return;
+  }
+  const parsed = asRecord(
+    orIfUnreadable((): unknown => JSON.parse(text.slice(marker)), {})
+  );
+  const wakeReasons = Array.isArray(parsed.wakeReasons)
+    ? parsed.wakeReasons.map(asRecord)
+    : [];
+  const body =
+    typeof wakeReasons[0]?.body === "string" ? wakeReasons[0].body : "";
   if (body === "실행 유지 연습") {
     waitingPromptId = id;
     return;
@@ -129,20 +168,23 @@ async function handlePrompt(id: number, text: string) {
   });
   await askPermission(session.id);
   const server = mcpServers.find((entry) => entry.name === "organization");
-  const conversations = parsed.context?.conversations ?? [];
-  if (conversations.length > 0 && server?.url) {
+  const context = asRecord(parsed.context);
+  const conversations = Array.isArray(context.conversations)
+    ? context.conversations.map(asRecord)
+    : [];
+  const firstConversationId = conversations[0]?.id;
+  if (typeof firstConversationId === "string" && server) {
     const headers: Record<string, string> = {
       "content-type": "application/json",
     };
-    for (const h of server.headers ?? [])
-      if (h.name && h.value) headers[h.name] = h.value;
+    for (const h of server.headers) headers[h.name] = h.value;
     const response = await fetch(server.url.replace(/\/mcp$/, "/messages"), {
       method: "POST",
       headers,
       body: JSON.stringify({
         body:
           body === "세션 메모를 알려 주세요" ? session.note || "없음" : "완료",
-        conversationId: conversations[0]?.id,
+        conversationId: firstConversationId,
       }),
     });
     if (!response.ok) process.exit(await afterOutput(23));
@@ -152,21 +194,30 @@ async function handlePrompt(id: number, text: string) {
 
 for await (const line of createInterface({ input: process.stdin })) {
   if (!line.trim()) continue;
-  const frame = JSON.parse(line) as {
-    id?: number | string;
-    method?: string;
-    params?: Record<string, unknown>;
-    result?: Record<string, unknown>;
-  };
-  if (typeof frame.id === "string" && !frame.method) {
+  const frame = asRecord(
+    orIfUnreadable((): unknown => JSON.parse(line), undefined)
+  );
+  if (typeof frame.id === "string" && typeof frame.method !== "string") {
     const waiter = pendingPermissions.get(frame.id);
     if (waiter) {
       pendingPermissions.delete(frame.id);
-      waiter();
+      const outcome = asRecord(asRecord(frame.result).outcome);
+      if (
+        frame.error === undefined &&
+        outcome.outcome === "selected" &&
+        outcome.optionId === "allow-once"
+      )
+        waiter.resolve();
+      else
+        waiter.reject(
+          new Error("acp-simulator: expected allow-once permission selection")
+        );
     }
     continue;
   }
-  const { id, method, params = {} } = frame;
+  const id = frame.id;
+  const method = typeof frame.method === "string" ? frame.method : "";
+  const params = asRecord(frame.params);
   if (method === "initialize") {
     out({
       id,
@@ -189,9 +240,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       continue;
     }
     if (note === null) await writeFile(file, "");
-    mcpServers = Array.isArray(params.mcpServers)
-      ? (params.mcpServers as McpServer[])
-      : [];
+    mcpServers = parseMcpServers(params.mcpServers);
     session = {
       id: sessionId,
       file,
@@ -222,8 +271,13 @@ for await (const line of createInterface({ input: process.stdin })) {
     out({ id, result: {} });
   } else if (method === "session/prompt" && typeof id === "number") {
     const prompt = Array.isArray(params.prompt) ? params.prompt : [];
-    const first = prompt[0] as { text?: string } | undefined;
-    void handlePrompt(id, first?.text ?? "");
+    const first = asRecord(prompt[0]);
+    const text = typeof first.text === "string" ? first.text : "";
+    const task = handlePrompt(id, text).catch(async (error: unknown) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(await afterOutput(27));
+    });
+    activePrompt = task;
   } else if (method === "session/cancel") {
     if (waitingPromptId !== undefined) {
       const pendingId = waitingPromptId;
@@ -232,3 +286,8 @@ for await (const line of createInterface({ input: process.stdin })) {
     }
   }
 }
+
+for (const waiter of pendingPermissions.values())
+  waiter.reject(new Error("acp-simulator: stdin closed before permission"));
+pendingPermissions.clear();
+if (activePrompt) await activePrompt;

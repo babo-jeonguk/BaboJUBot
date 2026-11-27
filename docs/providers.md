@@ -8,7 +8,7 @@
 | Codex | 0.166.0, 0.169.0(끼워 넣기·기록 읽기만 확인, #206) | app-server 기본, `BABOJUBOT_CODEX_MODE=exec` 선택 | developerInstructions | app-server 턴 ACK(답이 없으면 대화 기록의 메시지 번호로 확인); exec 미지원 |
 | OpenCode | 2.2.5, 2.2.6 | 실행마다 `serve --stdio`로 HTTP 서버 시작, 조직 도구 호출 키 plugin | 기본 지침 유지, session instructions API 추가 | `delivery: steer` 응답 |
 | Antigravity | 1.5.4(가짜 상류로 합성 확인) | 실행마다 `agy acp`(Agent Client Protocol) 세션 하나 | 첫 입력 앞에 추가 | 미지원 |
-| Grok Build | 1.0.92 | 실행마다 `grok agent --no-leader stdio`(Agent Client Protocol) 세션 하나 | 첫 입력 앞에 추가 | 미지원 |
+| Grok Build | 1.0.92(단건 한 턴 확인; 도구·계약은 합성 검증) | 실행마다 `grok agent --no-leader stdio`(Agent Client Protocol) 세션 하나 | 첫 입력 앞에 추가 | 미지원 |
 
 Grok Build는 이 컴퓨터에 이미 있는 `grok` 로그인(`grok login`, grok.com)을 쓴다. HOME을 제품 폴더로 바꾸면 `~/.grok`가 보이지 않으므로 이 연결만 사용자 HOME을 그대로 둔다(`grok:work`처럼 별칭을 붙여도 같은 `~/.grok` 로그인을 쓴다). 조직 도구는 작업 폴더나 `~/.grok`에 토큰을 쓰지 않고 ACP `session/new`와 `session/load`의 MCP 서버로 그 실행 시도에만 넘긴다. 고른 모델은 세션이 알린 `configOptions`의 모델 항목으로 `session/set_config_option`(구버전 `-32601`이면 `session/set_model`)으로 정하며, 거절되면 실행하지 않는다. 도구 허락은 그 세션에서 `allow_once`를 우선 선택한다. 이전 세션을 이어 가지 못하면 새 세션으로 시작한다. 격리 실행(컨테이너·인증 중계)은 아직 없으며, 격리 스위치를 켜면 이 컴퓨터로 우회하지 않고 `준비안됨`(`격리 실행 미지원`)으로 거부한다.
 
@@ -44,13 +44,13 @@ pnpm provider:login claude   # codex, opencode, antigravity, grok, claude:work
 
 실행 시도와 같은 환경으로 프로그램의 로그인을 띄운다. 로그인은 연결 폴더(`providers/<연결>`)에 하며 모든 조직이 그 로그인을 쓴다(아래 조직별 제품 폴더). Grok Build는 예외로, 이 컴퓨터의 `~/.grok` 로그인을 그대로 쓴다. Claude는 화면에 나온 토큰을 붙여 넣으면 연결 폴더에 0600으로 저장한다. 입력이 터미널이면 붙여 넣는 토큰은 화면에 보이지 않고, 끝나면 터미널을 원래 상태로 되돌린다. 빈 입력은 저장 없이 건너뛰고, Ctrl-C는 저장 없이 `Login cancelled.`와 종료 코드 130으로 끝난다. 파이프로 넣은 입력은 그대로 읽는다. 토큰은 명령 인수·Git·이슈에 넣지 않는다. 무료 모델 제공자는 OpenCode 로그인 없이 쓸 수 있다.
 
-로그인 여부는 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. Claude는 `claude auth status`, Codex는 `codex login status`, Antigravity는 `agy models`를 쓰고, 그 전에 조직 실행과 같은 링크로 로그인을 읽게 맞춘 뒤 로그인 원본을 다시 쓸 수 있는지도 본다(못 쓰면 `준비안됨`). Grok Build는 `grok models`의 로그인 문구로 판단한다. Claude와 Antigravity는 실행 시도도 파일 없이 시작하고, 거절되면 로그인 필요로 알린다. Antigravity는 로그인이 없으면 결과 없이 오류 문구만 남기고 끝나며, 이것도 로그인 필요로 알린다.
+로그인 여부는 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. Claude는 `claude auth status`, Codex는 `codex login status`, Antigravity는 `agy models`를 쓰고, 그 전에 조직 실행과 같은 링크로 로그인을 읽게 맞춘 뒤 로그인 원본을 다시 쓸 수 있는지도 본다(못 쓰면 `준비안됨`). Grok Build는 `grok models`의 모델 목록·로그인 문구로 판단하며(알 수 없는 출력은 `check_failed`), Claude와 Antigravity는 실행 시도도 파일 없이 시작하고 거절되면 로그인 필요로 알린다. Antigravity는 로그인이 없으면 결과 없이 오류 문구만 남기고 끝나며, 이것도 로그인 필요로 알린다.
 
 제품 HOME/XDG와 환경 변수 허용 목록은 개인 설정의 자동 유입을 막는 경계다. 호스트 파일·네트워크 접근은 아래 격리 실행을 켰을 때만 막는다. 사용자 홈·자격 증명·연구 원본은 Git에 추가하지 않는다.
 
 ## 조직별 제품 폴더
 
-Grok Build는 사용자 HOME을 그대로 둔다. 조직 폴더로 HOME을 바꾸면 `~/.grok` 로그인이 보이지 않는다. 프로세스 기록만 `providers/<연결>`에 둔다. 나머지 연결은 실행 시도마다 조직 폴더 `providers/<연결>/organizations/<조직>`을 HOME·설정 폴더로 쓴다. 설정·세션 기록·확장(hook·plugin)은 그 조직 안에만 쌓이므로 한 조직의 에이전트가 써 둔 설정을 다른 조직의 프로그램이 읽어 그 조직의 실행 시도 토큰을 내보낼 수 없다. 격리 실행을 켜든 끄든 같다. 끈 경우에는 에이전트가 이 컴퓨터의 다른 폴더도 열 수 있어 보안 경계가 아니며, 다른 조직의 설정이 실수로 섞이는 것을 막는다.
+Grok Build는 사용자 HOME을 그대로 둔다. 조직 폴더로 HOME을 바꾸면 `~/.grok` 로그인이 보이지 않는다. 프로세스 기록은 `providers/<연결>`에 두고, 작업 폴더가 없는 `planning` 실행의 작업 위치(`cwd`)는 조직별 폴더 `providers/<연결>/organizations/<조직>`으로 분리해 복구 기록과 다른 조직에 닿지 않게 한다. 나머지 연결은 실행 시도마다 조직 폴더 `providers/<연결>/organizations/<조직>`을 HOME·설정 폴더로 쓴다. 설정·세션 기록·확장(hook·plugin)은 그 조직 안에만 쌓이므로 한 조직의 에이전트가 써 둔 설정을 다른 조직의 프로그램이 읽어 그 조직의 실행 시도 토큰을 내보낼 수 없다. 격리 실행을 켜든 끄든 같다. 끈 경우에는 에이전트가 이 컴퓨터의 다른 폴더도 열 수 있어 보안 경계가 아니며, 다른 조직의 설정이 실수로 섞이는 것을 막는다.
 
 연결 폴더 `providers/<연결>`은 로그인 원본·준비 확인·모델 목록·프로세스 기록에만 쓰고 컨테이너에 넣지 않는다. 로그인은 연결마다 한 번 하고 모든 조직이 같이 쓴다.
 
@@ -64,7 +64,7 @@ Grok Build는 사용자 HOME을 그대로 둔다. 조직 폴더로 HOME을 바�
 
 Codex·Antigravity의 이 준비(조직 확인, 연결 로그인 준비, 격리 실행이면 남은 로그인 검사·실행 시도 전용 로그인 파일, 끈 실행이면 조직 자리 링크, 돌 제품 폴더 결정)는 두 연결이 같은 순서로 한다(#146). 준비 중에 실행 시도를 취소하면 시작한 파일 작업은 끝낸 뒤 프로그램·컨테이너를 띄우지 않고 취소됨으로 끝낸다.
 
-이 배치 전의 세션 기록은 연결 폴더에 남고 조직 폴더로 옮기지 않는다. 네 연결 모두 이전 세션을 찾지 못하면 새 세션으로 시작한다. 근거와 선택지는 [조사](research/org-product-folders-references.md)에 있다.
+이 배치 전의 세션 기록은 연결 폴더에 남고 조직 폴더로 옮기지 않는다. 모든 실제 연결은 이전 세션을 찾지 못하면 새 세션으로 시작한다. 근거와 선택지는 [조사](research/org-product-folders-references.md)에 있다.
 
 ## 격리 실행
 
