@@ -62,6 +62,7 @@ BaboJUBot connects to your favorite LLM providers and coding agents:
 - **OpenAI Codex**
 - **OpenCode**
 - **Google Antigravity**
+- **Kiro CLI** (`kiro-cli`, 이 컴퓨터에 로그인한 계정. 격리 실행은 하지 않음)
 
 Install the CLI you want to use and sign in with it yourself. Then start BaboJUBot with the connections you need, for example:
 
