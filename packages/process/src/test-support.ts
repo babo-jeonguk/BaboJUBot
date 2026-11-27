@@ -1,10 +1,27 @@
 // node:net·node:http는 값으로 불러오지 않는다(runtime `connect-failure-support.ts` 머리의 대역 경로 제약).
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { symlinkSync, unlinkSync } from "node:fs";
+import { readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
+
+/**
+ * 파일 `file`이 폴더 `folder` 안(그 자신 포함)인가. 결함을 그 시험의 폴더로 고르는 대역이 쓴다. 제품은 확인한 폴더 handle을 거친
+ * 경로(`/proc/self/fd/<n>/…`, `@babojubot/files`)로 다루기도 하므로, 그 경로는 handle이 붙든 폴더의 경로로 바꿔 본다. `folder`는
+ * 실제 경로(`realpath`)로 준다.
+ */
+export function insideFolder(folder: string, file: string): boolean {
+  const handle = /^\/proc\/self\/fd\/(\d+)(\/.*)?$/.exec(file);
+  const spelled = handle
+    ? readlinkSync(`/proc/self/fd/${handle[1]}`) + (handle[2] ?? "")
+    : file;
+  const relative = path.relative(folder, spelled);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
 
 // 시험의 대기 상한(`within`)은 node 기본 모듈을 불러오지 않는 파일 하나에 둔다(모듈 대역의 factory가 불러오는 지원 파일도 쓴다).
 export { within } from "./within-support.ts";

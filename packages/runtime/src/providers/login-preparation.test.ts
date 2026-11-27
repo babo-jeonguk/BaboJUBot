@@ -10,7 +10,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { readlinkSync } from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -22,7 +21,7 @@ import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
-import { within } from "@babojubot/process/test-support";
+import { insideFolder, within } from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
 import { attemptAll, hasErrorCode, orIfMissing } from "@babojubot/contracts";
@@ -76,7 +75,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     symlink: (...args: Parameters<typeof actual.symlink>) => {
       // 결함과 gate는 불린 순간(기다리기 전) 읽는다.
       const current = gate;
-      if (refusal && inside(refusal.in, String(args[1]))) {
+      if (refusal && insideFolder(refusal.in, String(args[1]))) {
         refusal.refused.push(String(args[1]));
         return Promise.reject(
           Object.assign(new Error(`${refusal.code}: cannot link`), {
@@ -404,24 +403,6 @@ function holdAt(operation: Operation, matches: (file: string) => boolean) {
   return { reached, release };
 }
 
-/**
- * 조직 폴더 안은 확인한 폴더 handle을 거친 경로(`/proc/self/fd/<n>/…`, #278)로 다룬다. 그 경로는 handle이 붙든 폴더의 경로로
- * 바꿔 어느 폴더 안인지 본다.
- */
-const spelled = (file: string) => {
-  const handle = /^\/proc\/self\/fd\/(\d+)(\/.*)?$/.exec(file);
-  return handle
-    ? readlinkSync(`/proc/self/fd/${handle[1]}`) + (handle[2] ?? "")
-    : file;
-};
-const inside = (folder: string, file: string) => {
-  const relative = path.relative(folder, spelled(file));
-  return (
-    relative === "" ||
-    (!relative.startsWith("..") && !path.isAbsolute(relative))
-  );
-};
-
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
 const noIsolation = process.platform === "win32";
 
@@ -429,7 +410,9 @@ describe.each(connections)("$name", (connection) => {
   it("does not start the program when cancelled while the organization's login link is being made, and finishes the link first", async () => {
     const env = await setup(connection);
     const a = crypto.randomUUID();
-    const held = holdAt("symlink", (file) => inside(env.organization(a), file));
+    const held = holdAt("symlink", (file) =>
+      insideFolder(env.organization(a), file)
+    );
     const cancel = new AbortController();
     const running = env.provider.adapter.execute(
       await env.requestFor(a),
@@ -521,9 +504,9 @@ describe.each(connections)("$name", (connection) => {
       const sources = (mounts ?? []).map(
         (mount) => /source=([^,]+)/.exec(mount)![1]!
       );
-      expect(sources.filter((source) => inside(env.folder, source))).toEqual([
-        env.organization(a),
-      ]);
+      expect(
+        sources.filter((source) => insideFolder(env.folder, source))
+      ).toEqual([env.organization(a)]);
       // 붙인 자리는 실행 중에 모두 훑었고(실행이 끝나면 임시 자리는 지워진다), 로그인 내용이 든 파일은 없다.
       expect(await env.mountScans()).toEqual([{ sources, holding: [] }]);
       expect((await env.dumps()).map((one) => one.HOME)).toEqual([
