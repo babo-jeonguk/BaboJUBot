@@ -238,10 +238,6 @@ export const nameFaults = {
 
 /** 서버 경계의 결함. 정한 것이 없으면 대역이 만든 서버도 진짜와 같다. */
 export const serverFaults = {
-  /** 대역이 만든 서버의 다음 듣기 하나를 이 코드의 오류(`error` 이벤트)로 끝낸다. 그 서버는 듣지 않는다. */
-  listen: undefined as { code: string } | undefined,
-  /** 실패시킨 듣기가 받은 주소. */
-  refusedListen: vi.fn<(address: unknown) => void>(),
   /**
    * 파일 소켓 경로로 들은 서버 가운데 그 경로가 `at`에 맞는 서버의 닫기가 실제로 닫은 뒤 이 코드로 실패를 알린다(닫기 콜백의 오류).
    * 포트로 들은 서버는 대상이 아니다. 닫을 것이 없던 서버의 원래 오류(ERR_SERVER_NOT_RUNNING)는 그대로 넘긴다. 결함이 실제로 걸렸는지는
@@ -291,8 +287,6 @@ export function resetRefusing() {
   refusing.heldConnect.mockReset();
   nameFaults.lookup = undefined;
   nameFaults.looked.mockReset();
-  serverFaults.listen = undefined;
-  serverFaults.refusedListen.mockReset();
   serverFaults.close = undefined;
   serverFaults.listening = undefined;
   serverFaults.holdClose = undefined;
@@ -310,11 +304,11 @@ function faultyServer(Base: typeof netModule.Server) {
     /** 이 서버가 들은 파일 소켓 경로. 닫기 결함의 대상을 고를 때 본다. 포트로 들은 서버는 없음이라 닫기 결함의 대상이 되지 않는다. */
     listenedAt: string | undefined;
     override listen(...args: unknown[]) {
-      const fault = serverFaults.listen;
+      // 결함은 그 시험이 부른 제품 호출의 문맥에서 불린 순간 잡는다(`failingListensDuring`).
+      const fault = listenCalls.current();
       const [address] = args;
-      if (fault) {
-        serverFaults.listen = undefined;
-        serverFaults.refusedListen(address);
+      if (fault && typeof address === "string" && fault.at(address)) {
+        fault.refused.push(address);
         process.nextTick(() =>
           this.emit("error", codeError("listen failed", fault.code))
         );
@@ -533,11 +527,38 @@ function keptByDouble(failure: unknown, code: string): boolean {
 }
 
 type CloseFault = NonNullable<(typeof serverFaults)["close"]>;
+/** 듣기 결함: 그 호출이 파일 소켓 경로로 듣는 자리 가운데 `at`에 맞는 것을 이 코드로 실패시키고, 실패시킨 주소를 `refused`에 남긴다. */
+type ListenFault = {
+  code: string;
+  at: (address: string) => boolean;
+  refused: string[];
+};
+/**
+ * 그 시험만의 경로로 고를 수 없는 듣기 결함(공유 임시 폴더에 무작위 이름으로 생기는 중계 폴더의 소켓)은 그 시험이 부른 제품 호출에
+ * 묶는다(`failingListensDuring`).
+ */
+const listenCalls = callArming<ListenFault>();
 /**
  * 그 시험만의 경로로 고를 수 없는 닫기 결함(공유 임시 폴더에 무작위 이름으로 생기는 중계 폴더)은 그 시험이 부른 제품 호출에 묶는다
  * (`failingRelayClosesDuring`). 닫기 대역은 불린 순간 `serverFaults.close`(경로로 고른 결함)가 없으면 이 문맥의 결함을 잡는다.
  */
 const closeCalls = callArming<CloseFault>();
+
+/**
+ * 제품 호출 `call`(그 시험이 부른 것)이 파일 소켓 경로로 듣는 자리 가운데 `at`에 맞는 것의 듣기를 `code`의 오류(`error` 이벤트)로
+ * 끝낸다(그 서버는 듣지 않는다). 무장의 끝은 `own`(그 시험의 정리)에 맡긴다. 그 호출의 결과(`result`)와 실패시킨 주소(`refused`)를
+ * 돌려준다. 시험은 `refused`로 결함이 그 자리에서 났음을 단언한다.
+ */
+export function failingListensDuring<T>(
+  own: (step: () => Promise<void>) => void,
+  at: (address: string) => boolean,
+  call: () => T,
+  code = "EACCES"
+) {
+  const fault: ListenFault = { code, at, refused: [] };
+  const result = listenCalls.run(fault, call, own);
+  return { refused: fault.refused as readonly string[], result };
+}
 
 /**
  * 결함 `fault`가 실패시킨 닫기로 중계가 남긴 폴더를 정리(`own`)에 맡긴다. `closing`은 그 중계들의 닫기 전부가 끝나는 promise를 돌려준다.

@@ -22,6 +22,7 @@ import { ownedConnect } from "@babojubot/process/testing";
 import { within } from "@babojubot/process/test-support";
 import {
   refusing,
+  failingListensDuring,
   failingRelayCloses,
   givenUpAtReset,
   holdsOwner,
@@ -1257,8 +1258,12 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
     onTestFinished(() => void process.off("unhandledRejection", unhandled));
     const warned = vi.spyOn(console, "warn");
     onTestFinished(() => warned.mockRestore());
-    serverFaults.listen = { code: "EACCES" };
-    const relay = relays.open({ identity, required: [] });
+    // 중계 폴더는 공유 임시 폴더에 무작위 이름으로 생겨 경로로 가를 수 없으므로, 듣기 결함을 이 시험이 부른 열기에 묶는다.
+    const { refused, result: relay } = failingListensDuring(
+      onTestFinished,
+      (address) => path.basename(address) === relaySockets.egress,
+      () => relays.open({ identity, required: [] })
+    );
     const { failedAt } = failCloses(
       () => relay.close(),
       socketOf(relay, relaySockets.tools)
@@ -1267,9 +1272,7 @@ describe.skipIf(process.platform === "win32")("isolated run relay", () => {
       message: "listen failed",
       code: "EACCES",
     });
-    expect(serverFaults.refusedListen.mock.calls).toEqual([
-      [socketOf(relay, relaySockets.egress)],
-    ]);
+    expect(refused).toEqual([socketOf(relay, relaySockets.egress)]);
     await expect(
       within(relay.close(), 5_000, "the relay did not close")
     ).rejects.toMatchObject(keptFolder(relay, "EBUSY"));
