@@ -11,29 +11,38 @@ import { attemptAll } from "@babojubot/contracts";
 // 임시 cluster를 만들다 실패한 뒤 그 폴더를 지우는 정리까지 실패하게 한다. 지우기·주인 기록 폴더 만들기·주인 기록 읽기를 그 시험의
 // 경로에서만 실패시킨다(#286).
 const inject = vi.hoisted(() => ({
-  /** 정확히 이 경로(`at`, 그 시험의 임시 cluster 폴더)를 지우면 이 오류로 실패한다. */
-  removeFails: undefined as { at: string; error: Error } | undefined,
-  /** 이 폴더(`in`, 그 시험의 `<dataDir>.owner`) 안의 주인 기록 파일을 읽으면 이 오류로 실패한다. */
-  ownerReadFails: undefined as { in: string; error: Error } | undefined,
+  /** 정확히 이 경로(`at`, 그 시험의 임시 cluster 폴더)를 지우면 이 오류로 실패하고 그 경로를 `failedAt`에 남긴다. */
+  removeFails: undefined as
+    { at: string; error: Error; failedAt: string[] } | undefined,
+  /** 이 폴더(`in`, 그 시험의 `<dataDir>.owner`) 안의 주인 기록 파일을 읽으면 이 오류로 실패하고 그 파일을 `failedAt`에 남긴다. */
+  ownerReadFails: undefined as
+    { in: string; error: Error; failedAt: string[] } | undefined,
 }));
 /**
  * 제품이 안에서 만드는 임시 cluster 폴더는 시험이 그 경로를 미리 알 수 없다. 시험은 제품 호출을
  * `madeCalls.run(무장, () => 제품 호출, onTestFinished)`로 감싸고(끝은 그 시험의 정리가 정함), 대역은 불린 순간 그 호출의 무장을 잡는다. 그 호출이 만든 폴더를 `made`에 남기고,
- * 그 폴더의 지우기·주인 기록 폴더 만들기만 실패시킨다. 다른 시험의 호출이나 문맥 밖 호출은 무장이 없어 실패하지 않는다(#286).
+ * 그 폴더의 지우기·주인 기록 폴더 만들기만 실패시키고 실패시킨 경로를 `failedAt`에 남긴다. 다른 시험의 호출이나 문맥 밖 호출은 무장이
+ * 없어 실패하지 않는다(#286).
  */
 const madeCalls = callArming<{
   made: string[];
   removeFails?: Error;
   ownerFolderFails?: Error;
+  failedAt: string[];
 }>();
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
     const fault = inject.removeFails;
-    if (fault?.at === String(target)) throw fault.error;
+    if (fault?.at === String(target)) {
+      fault.failedAt.push(String(target));
+      throw fault.error;
+    }
     const arming = madeCalls.current();
-    if (arming?.removeFails && arming.made.includes(String(target)))
+    if (arming?.removeFails && arming.made.includes(String(target))) {
+      arming.failedAt.push(String(target));
       throw arming.removeFails;
+    }
     return real.rm(target, options);
   };
   // 무장의 문맥에서 만드는 폴더는 시작 순간 무장에 등록한다(끝난 무장이면 던진다). 무장의 끝이 그 만들기의 끝을 기다린 뒤 정리가
@@ -58,13 +67,18 @@ vi.mock("node:fs", async (importOriginal) => {
     if (
       arming?.ownerFolderFails &&
       arming.made.some((made) => `${made}.owner` === String(target))
-    )
+    ) {
+      arming.failedAt.push(String(target));
       throw arming.ownerFolderFails;
+    }
     return real.mkdirSync(target, options);
   }) as typeof real.mkdirSync;
   const readFileSync = ((...args: Parameters<typeof real.readFileSync>) => {
     const fault = inject.ownerReadFails;
-    if (fault?.in === path.dirname(String(args[0]))) throw fault.error;
+    if (fault?.in === path.dirname(String(args[0]))) {
+      fault.failedAt.push(String(args[0]));
+      throw fault.error;
+    }
     return real.readFileSync(...args);
   }) as typeof real.readFileSync;
   return {
@@ -111,10 +125,17 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       ])
     );
     const logs = logged();
-    inject.removeFails = { at: options.dataDir, error: removeError };
+    const removeFails = {
+      at: options.dataDir,
+      error: removeError,
+      failedAt: [] as string[],
+    };
+    inject.removeFails = removeFails;
     await expect(startEmbeddedCluster(options)).rejects.toThrow(
       "could not create embedded Postgres"
     );
+    // 지우기 실패는 그 시험의 cluster 폴더에서 났다.
+    expect([...new Set(removeFails.failedAt)]).toEqual([options.dataDir]);
     expectLoggedCode(logs(), "EACCES");
   }, 60_000);
 
@@ -131,6 +152,7 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
       made: [] as string[],
       ownerFolderFails: ownerError,
       removeFails: removeError,
+      failedAt: [] as string[],
     };
     onTestFinished(() =>
       attemptAll(
@@ -144,8 +166,10 @@ describe("a temporary cluster whose cleanup fails after a failed start", () => {
     await expect(
       madeCalls.run(arming, () => ephemeralCluster(), onTestFinished)
     ).rejects.toBe(ownerError);
-    // 그 호출이 만든 폴더 하나에서 두 실패가 났다.
+    // 그 호출이 만든 폴더 하나에서 두 실패가 났다: 주인 기록 폴더 만들기, 그다음 그 폴더 지우기.
     expect(arming.made).toHaveLength(1);
+    const [made] = arming.made;
+    expect([...new Set(arming.failedAt)]).toEqual([`${made}.owner`, made]);
     // 지우기 실패는 소유 오류와 다른 원인 코드로 남는다.
     expectLoggedCode(logs(), "EBUSY");
   });
@@ -169,13 +193,19 @@ describe("an owner record that cannot be read", () => {
       new Error("injected: the owner record could not be read"),
       { code: "EACCES" }
     );
-    inject.ownerReadFails = { in: owners, error: denied };
+    const ownerReadFails = {
+      in: owners,
+      error: denied,
+      failedAt: [] as string[],
+    };
+    inject.ownerReadFails = ownerReadFails;
     logged();
 
     await expect(
       startEmbeddedCluster({ dataDir, persistent: true })
     ).rejects.toBe(denied);
     inject.ownerReadFails = undefined;
+    expect(ownerReadFails.failedAt).toEqual([path.join(owners, "1")]);
     expect(fs.readdirSync(owners).sort()).toEqual(["1"]);
   });
 });
@@ -192,13 +222,15 @@ describe("a leftover temporary cluster whose owner record cannot be read", () =>
       path.join(owners, "1"),
       JSON.stringify({ pid: process.pid, persistent: false })
     );
-    inject.ownerReadFails = {
+    const ownerReadFails = {
       in: owners,
       error: Object.assign(
         new Error("injected: the leftover owner record could not be read"),
         { code: "EACCES" }
       ),
+      failedAt: [] as string[],
     };
+    inject.ownerReadFails = ownerReadFails;
     const logs = logged();
 
     const options = await ephemeralCluster();
@@ -210,6 +242,10 @@ describe("a leftover temporary cluster whose owner record cannot be read", () =>
     );
     inject.ownerReadFails = undefined;
 
+    // 읽기 실패는 그 남은 cluster의 주인 기록에서 났다.
+    expect([...new Set(ownerReadFails.failedAt)]).toEqual([
+      path.join(owners, "1"),
+    ]);
     expect(fs.existsSync(options.dataDir)).toBe(true);
     expect(fs.readdirSync(owners)).toEqual(["1"]);
     // 남긴 줄이 그 남은 cluster와 원인 코드를 함께 담는다.

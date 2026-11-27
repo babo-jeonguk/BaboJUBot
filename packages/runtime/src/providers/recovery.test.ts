@@ -64,7 +64,8 @@ function testStart(): string {
 // 기록 칸을 잡는다(그 시험은 이미 실패했다). 정리 실패(`fails`)는 그 시험이 기록에 쓴 무작위 표식으로 고른다: 그 표식을 실은 요청만
 // 실패하므로 다른 시험의 늦은 요청은 걸리지 않는다.
 const lease = vi.hoisted(() => ({
-  fails: undefined as { lease: string } | undefined,
+  /** 이 표식(`lease`)을 실은 정리 요청이 실패하고, 실패시킨 표식을 `failedAt`에 남긴다. */
+  fails: undefined as { lease: string; failedAt: string[] } | undefined,
   stopped: [] as unknown[],
   /** 실제 실행기 정리가 성공한(남은 것 없음을 실행기가 확인한) 요청. */
   cleaned: [] as {
@@ -84,8 +85,10 @@ vi.mock("@babojubot/process/recovery", async (original) => {
       const { requests, stopped, cleaned, fails } = lease;
       requests.push(request);
       if (request.lease !== undefined) stopped.push(request.lease);
-      if (fails !== undefined && request.lease === fails.lease)
+      if (fails !== undefined && request.lease === fails.lease) {
+        fails.failedAt.push(request.lease);
         throw new Error("the supervisor's cleanup failed");
+      }
       const result = await real.cleanThroughSupervisor(request);
       cleaned.push(request);
       return result;
@@ -547,9 +550,12 @@ it.skipIf(process.platform === "win32")(
     const finished = spawnSync(process.execPath, ["-e", ""]).pid;
     const marker = crypto.randomUUID();
     await recordFor(directory, finished, marker);
-    lease.fails = { lease: marker };
+    const fails = { lease: marker, failedAt: [] as string[] };
+    lease.fails = fails;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await recoverProviderProcesses(root);
+    // 주입한 정리 실패는 그 기록의 표식을 실은 요청에서 났다.
+    expect(fails.failedAt).toEqual([marker]);
     expect(await readdir(directory)).toEqual([`${finished}.json`]);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("it stays for the next start")

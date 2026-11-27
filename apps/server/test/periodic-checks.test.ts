@@ -13,8 +13,10 @@ type Db = ConstructorParameters<typeof HeartbeatScheduler>[0]["db"];
 type Watched = {
   db: Db;
   counted: { heartbeats: number; compactions: number };
-  hold: { released: Promise<void> } | undefined;
+  hold: Hold | undefined;
 };
+/** 다음 조회 하나를 붙잡는 결함. 붙잡은 조회를 `heldQueries`에 `<종류> <그 종류의 몇째 조회>`로 남긴다. */
+type Hold = { released: Promise<void>; heldQueries: string[] };
 const queries = vi.hoisted(() => ({
   /** 지금 시험의 조회 기록. 다른 db로 온 조회(앞 시험의 늦은 확인)는 세지도 붙잡지도 않는다(#286). */
   watched: undefined as Watched | undefined,
@@ -29,6 +31,7 @@ async function query(
   watched.counted[kind]++;
   const { hold } = watched;
   watched.hold = undefined;
+  hold?.heldQueries.push(`${kind} ${watched.counted[kind]}`);
   await hold?.released;
 }
 vi.mock("@babojubot/db", async (importOriginal) => ({
@@ -73,11 +76,12 @@ function watch(): Watched {
   return watched;
 }
 
-/** 그 시험의 다음 조회를 붙잡는다. 돌려준 함수가 풀어 준다. */
+/** 그 시험의 다음 조회를 붙잡는다. `release`가 풀어 주고, `heldQueries`가 붙잡힌 조회를 남긴다. */
 function holdNext(watched: Watched) {
   const gate = Promise.withResolvers<void>();
-  watched.hold = { released: gate.promise };
-  return () => gate.resolve();
+  const hold: Hold = { released: gate.promise, heldQueries: [] };
+  watched.hold = hold;
+  return { release: () => gate.resolve(), heldQueries: hold.heldQueries };
 }
 
 const schedulers = {
@@ -118,7 +122,7 @@ describe.each(["heartbeats", "compactions"] as const)(
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
       const watched = watch();
       const scheduler = schedulers[kind](watched.db);
-      const release = holdNext(watched);
+      const { release, heldQueries } = holdNext(watched);
       // 단언이 먼저 실패해도 붙잡은 조회를 풀어야 닫기가 그 확인을 기다리다 멈추지 않는다.
       onTestFinished(() => {
         release();
@@ -127,6 +131,8 @@ describe.each(["heartbeats", "compactions"] as const)(
       scheduler.start();
       vi.advanceTimersByTime(pollMs);
       await vi.waitFor(() => expect(watched.counted[kind]).toBe(1));
+      // 붙잡기는 그 시험 db의 첫 조회에 걸렸다.
+      expect(heldQueries).toEqual([`${kind} 1`]);
       // 첫 확인이 붙잡힌 동안 주기가 네 번 더 지난다.
       vi.advanceTimersByTime(pollMs * 4);
       release();
@@ -139,13 +145,15 @@ describe.each(["heartbeats", "compactions"] as const)(
     it("makes a direct check wait for a check that starts after the call", async () => {
       const watched = watch();
       const scheduler = schedulers[kind](watched.db);
-      const release = holdNext(watched);
+      const { release, heldQueries } = holdNext(watched);
       onTestFinished(() => {
         release();
         return scheduler.close();
       });
       const first = scheduler.tick();
       await vi.waitFor(() => expect(watched.counted[kind]).toBe(1));
+      // 붙잡기는 그 시험 db의 첫 조회에 걸렸다.
+      expect(heldQueries).toEqual([`${kind} 1`]);
       let returned = false;
       const second = scheduler.tick().then(() => (returned = true));
       release();

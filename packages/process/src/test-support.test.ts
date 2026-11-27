@@ -6,7 +6,8 @@ import { fileLinks, reportedPid, within } from "./test-support.ts";
 // 파일 링크 만들기와 지우기를 대신한다(모듈 경계 대역). 실제 링크는 만들지 않아 권한 없는 Windows에서도 같은 결과다. 받은 인수를 남겨
 // 무엇을 만들고 지웠는지 본다. 실제 링크 만들기는 `fileLinks`를 쓰는 링크 시험(CI는 필수)이 본다.
 const linking = vi.hoisted(() => ({
-  refusal: undefined as string | undefined,
+  /** 링크 만들기가 이 원인(`code`)으로 거절되고, 거절한 링크 자리를 `failedAt`에 남긴다. 시험마다 그 시험이 만든 결함이다. */
+  refusal: undefined as { code: string; failedAt: string[] } | undefined,
   unlinkFailure: undefined as string | undefined,
   made: [] as unknown[][],
   removed: [] as unknown[][],
@@ -17,7 +18,11 @@ vi.mock("node:fs", async (importOriginal) => {
     Object.assign(new Error(`${code}: refused`), { code });
   const symlinkSync = ((...args: unknown[]) => {
     linking.made.push(args);
-    if (linking.refusal) throw failure(linking.refusal);
+    const { refusal } = linking;
+    if (refusal) {
+      refusal.failedAt.push(String(args[1]));
+      throw failure(refusal.code);
+    }
   }) as typeof real.symlinkSync;
   const unlinkSync = ((...args: unknown[]) => {
     linking.removed.push(args);
@@ -106,10 +111,14 @@ describe("fileLinks", () => {
 
   it("skips saying why when it may not make links and CI does not require them", () => {
     vi.stubEnv("BABOJUBOT_REQUIRE_FILE_LINKS", "");
-    linking.refusal = "EPERM";
+    const refusal = { code: "EPERM", failedAt: [] as string[] };
+    linking.refusal = refusal;
     const said = vi.spyOn(console, "log").mockImplementation(() => {});
     onTestFinished(() => said.mockRestore());
     expect(fileLinks()).toBe(false);
+    // 거절은 그 확인이 만들려던 링크 하나에서 났다.
+    expect(linking.made).toHaveLength(1);
+    expect(refusal.failedAt).toEqual([String(linking.made[0]![1])]);
     // 만들지 못한 링크는 지울 것이 없다.
     expect(linking.removed).toEqual([]);
     expect(said.mock.calls).toEqual([
@@ -121,18 +130,22 @@ describe("fileLinks", () => {
 
   it("fails instead of skipping when CI requires links and it may not make them", () => {
     vi.stubEnv("BABOJUBOT_REQUIRE_FILE_LINKS", "1");
-    linking.refusal = "EPERM";
+    const refusal = { code: "EPERM", failedAt: [] as string[] };
+    linking.refusal = refusal;
     expect(() => fileLinks()).toThrow(
       new Error(
         "BABOJUBOT_REQUIRE_FILE_LINKS=1이라 파일 링크 시험은 필수인데 쓸 수 없다: 파일 링크를 만들 권한이 없다(EPERM). Windows는 관리자 권한이나 개발자 모드에서만 만든다"
       )
     );
+    // 거절은 그 확인이 만들려던 링크 하나에서 났다.
+    expect(linking.made).toHaveLength(1);
+    expect(refusal.failedAt).toEqual([String(linking.made[0]![1])]);
   });
 
   // 권한 밖의 실패(디스크·임시 폴더 오류)는 링크를 지원하지 않는다는 답이 아니다. 건너뛰지 않고 그 원인으로 실패한다.
   it("throws a failure other than a refused permission as it is, even when CI does not require links", () => {
     vi.stubEnv("BABOJUBOT_REQUIRE_FILE_LINKS", "");
-    linking.refusal = "EIO";
+    linking.refusal = { code: "EIO", failedAt: [] };
     expect(() => fileLinks()).toThrow(
       expect.objectContaining({ code: "EIO", message: "EIO: refused" })
     );

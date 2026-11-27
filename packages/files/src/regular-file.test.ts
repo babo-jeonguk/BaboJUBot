@@ -11,8 +11,9 @@ import { openRegularFile } from "./regular-file.ts";
 
 // 확인한 파일과 읽는 파일이 같아야 한다. 열린 직후 경로를 다른 파일로 바꾸거나, 열기를 원하는 오류로 실패시켜 그 사이를 만든다.
 const swap = vi.hoisted(() => ({
-  /** 이 경로를 열면 이 오류로 실패한다. */
-  failing: undefined as { path: string; error: Error } | undefined,
+  /** 이 경로를 열면 이 오류로 실패하고 그 경로를 `failedAt`에 남긴다. */
+  failing: undefined as
+    { path: string; error: Error; failedAt: string[] } | undefined,
 }));
 // 열린 직후 경로를 다른 파일로 바꾸는 것은 공용 바꿔치기 대역(`@babojubot/process/fs-swap`)이 한다. 시험은 `armSwap`으로 무장한다.
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -21,8 +22,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     "open",
   ]);
   const open: typeof real.open = async (file, ...rest) => {
-    if (swap.failing && String(file) === swap.failing.path)
-      throw swap.failing.error;
+    const { failing } = swap;
+    if (failing && String(file) === failing.path) {
+      failing.failedAt.push(String(file));
+      throw failing.error;
+    }
     return swapped.open(file, ...rest);
   };
   return { ...real, open, default: { ...real, open } };
@@ -148,7 +152,7 @@ describe("opening a file in a place others can change, only if it is a regular f
     const denied = Object.assign(new Error("permission denied"), {
       code: "EACCES",
     });
-    swap.failing = { path: file, error: denied };
+    swap.failing = { path: file, error: denied, failedAt: [] };
     await expect(openRegularFile(file)).rejects.toBe(denied);
   });
 
@@ -160,11 +164,15 @@ describe("opening a file in a place others can change, only if it is a regular f
       const root = await folders.make("babojubot-files-");
       const file = path.join(root, "mark.json");
       await writeFile(file, "content");
-      swap.failing = {
+      const failing = {
         path: file,
         error: Object.assign(new Error("the place changed"), { code }),
+        failedAt: [] as string[],
       };
+      swap.failing = failing;
       expect(await openRegularFile(file)).toBe("changed");
+      // 주입한 열기 실패가 그 시험의 경로에서 났다(다시 열어 보지 않는다).
+      expect(failing.failedAt).toEqual([file]);
     }
   );
 
@@ -176,7 +184,7 @@ describe("opening a file in a place others can change, only if it is a regular f
       const root = await folders.make("babojubot-files-");
       const file = path.join(root, "mark.json");
       const failed = Object.assign(new Error("could not open"), { code });
-      swap.failing = { path: file, error: failed };
+      swap.failing = { path: file, error: failed, failedAt: [] };
       await expect(openRegularFile(file)).rejects.toBe(failed);
     }
   );
@@ -187,11 +195,15 @@ describe("opening a file in a place others can change, only if it is a regular f
     async (code) => {
       const root = await folders.make("babojubot-files-");
       const file = path.join(root, "mark.json");
-      swap.failing = {
+      const failing = {
         path: file,
         error: Object.assign(new Error("the place changed"), { code }),
+        failedAt: [] as string[],
       };
+      swap.failing = failing;
       expect(await openRegularFile(file)).toBe("changed");
+      // 주입한 열기 실패가 그 시험의 경로에서 났다(다시 열어 보지 않는다).
+      expect(failing.failedAt).toEqual([file]);
     }
   );
 

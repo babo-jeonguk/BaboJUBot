@@ -41,8 +41,9 @@ const race = vi.hoisted(() => ({
   failAfterCreate: undefined as undefined | { in: string; error: Error },
   /** 이 폴더에서 로그인 자리 이름(`token`)으로 옮긴 대상. 자리 표시를 게시한 자리다. */
   published: undefined as undefined | { in: string; renamed: string[] },
-  /** 제품이 키 하나의 차례를 청할 때 그 키로 부른다(`oneAtATime`). */
-  turnRequested: undefined as undefined | ((key: string) => void),
+  /** 제품이 이 키(`at`, 그 시험의 로그인 자리)의 차례를 청하면(`oneAtATime`) `requested`에 남기고 `arrived`를 부른다. */
+  turnRequested: undefined as
+    undefined | { at: string; requested: string[]; arrived: () => void },
 }));
 // 같은 자리의 확인과 게시는 키마다 차례로 한다(`./one-at-a-time.ts`). 차례를 청한 것을 시험이 본다. 기다리는 쪽은 아무 일도
 // 하지 않으므로, 이 신호가 없으면 "기다리는 중"을 알 수 없다.
@@ -52,7 +53,11 @@ vi.mock("./one-at-a-time.ts", async (importOriginal) => {
   }>();
   return {
     oneAtATime: <T>(key: string, task: () => Promise<T>) => {
-      race.turnRequested?.(key);
+      const turn = race.turnRequested;
+      if (turn?.at === key) {
+        turn.requested.push(key);
+        turn.arrived();
+      }
       return real.oneAtATime(key, task);
     },
   };
@@ -258,14 +263,19 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     const second = await folders.make("babojubot-attempt-");
     let secondDone: Promise<unknown> = Promise.resolve();
     let checkedWhilePlacing = false;
+    let turnsWhileHeld: string[] = [];
     const opened: string[] = [];
     race.holdFirstWrite = {
       in: placeFolder,
       hold: async (write) => {
+        const turn = {
+          at: place,
+          requested: [] as string[],
+          arrived: () => {},
+        };
         const secondArrived = new Promise<void>((resolve) => {
-          race.turnRequested = (key) => {
-            if (key === place) resolve();
-          };
+          turn.arrived = resolve;
+          race.turnRequested = turn;
           race.onOpen = {
             in: placeFolder,
             missing: async () => {
@@ -277,6 +287,7 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
         });
         secondDone = attemptLogin(attemptAt(second), "grant-two");
         await secondArrived;
+        turnsWhileHeld = [...turn.requested];
         await write();
       },
     };
@@ -284,6 +295,8 @@ describe("placing the login stand-in in a folder an isolated agent can write", (
     const placed = await attemptLogin(attemptAt(first), "grant-one");
     const other = (await secondDone) as typeof placed;
     expect(checkedWhilePlacing).toBe(false);
+    // 첫 쓰기를 붙잡은 동안 둘째 시도가 그 자리의 차례를 청해 기다렸다(붙잡기가 실제로 그 사이를 만들었다).
+    expect(turnsWhileHeld).toEqual([place]);
     // 감시가 이 시험의 자리 표시 폴더를 실제로 보았다(고르기가 어긋나 감시가 꺼진 채 통과하지 않게).
     expect(opened.length).toBeGreaterThan(0);
     expect(published.renamed).toHaveLength(1);

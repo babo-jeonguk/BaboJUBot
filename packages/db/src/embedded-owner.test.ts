@@ -35,8 +35,9 @@ const listenCalls = callArming<{
 const inject = vi.hoisted(() => ({
   /** 이 폴더(`in`, 그 시험의 `<dataDir>.owner`) 안의 주인 기록을 붙이는 hard link가 이 오류로 실패한다(#286). */
   recordFails: undefined as { in: string; error: Error } | undefined,
-  /** 정확히 이 경로(`at`, 그 시험의 임시 cluster 폴더)를 지우면 이 오류로 실패한다(#286). */
-  removeFails: undefined as { at: string; error: Error } | undefined,
+  /** 정확히 이 경로(`at`, 그 시험의 임시 cluster 폴더)를 지우면 이 오류로 실패하고 그 경로를 `failedAt`에 남긴다(#286). */
+  removeFails: undefined as
+    { at: string; error: Error; failedAt: string[] } | undefined,
   /**
    * 주인 연결을 그 자리(경로)에서 듣지 못하게 한다. 오류를 돌려주면 듣기가 그 오류로 실패한다. 그 시험의 폴더 안 자리만 고른다.
    * 시험끼리 같은 자리(제품의 고정 후보 `/tmp`)는 `listenCalls`로 그 시험의 호출에만 건다.
@@ -46,8 +47,12 @@ const inject = vi.hoisted(() => ({
   listens: [] as { handle: string; failure?: Error }[],
   /** 제품이 경로에서 실제로 듣기 시작한 자리(듣기가 성공해 알린 뒤에 남긴다). 그 자리가 닫혔는지는 이 목록으로 본다. */
   listened: [] as string[],
-  /** 이 폴더(`in`)의 경로에서 들은 서버의 닫기가 실제로 닫힌 뒤 이 오류로 끝난다(#286). 그 시험이 만든 폴더로 고른다. */
-  closeFails: undefined as { in: string; error: Error } | undefined,
+  /**
+   * 이 폴더(`in`)의 경로에서 들은 서버의 닫기가 실제로 닫힌 뒤 이 오류로 끝나고, 그 서버가 들은 경로를 `failedAt`에 남긴다(#286).
+   * 그 시험이 만든 폴더로 고른다.
+   */
+  closeFails: undefined as
+    { in: string; error: Error; failedAt: string[] } | undefined,
 }));
 vi.mock("node:net", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:net")>();
@@ -85,6 +90,7 @@ vi.mock("node:net", async (importOriginal) => {
       const at = this.listenedAt;
       if (at === undefined || fault?.in !== path.dirname(at))
         return super.close(done);
+      fault.failedAt.push(at);
       return super.close((error) => done?.(error ?? fault.error));
     }
   }
@@ -97,7 +103,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
     const fault = inject.removeFails;
-    if (fault?.at === String(target)) throw fault.error;
+    if (fault?.at === String(target)) {
+      fault.failedAt.push(String(target));
+      throw fault.error;
+    }
     return real.rm(target, options);
   };
   return { ...real, rm, default: { ...real, rm } };
@@ -246,7 +255,12 @@ describe.runIf(posix)(
       cleanup.own(() => (stopping ??= cluster.stop()));
       // 실패를 주입하기 전에 주인 연결이 실제로 열려 있음을 본다.
       expect(await listenedStates()).toEqual(["open"]);
-      inject.removeFails = { at: options.dataDir, error: failure };
+      const removeFails = {
+        at: options.dataDir,
+        error: failure,
+        failedAt: [] as string[],
+      };
+      inject.removeFails = removeFails;
       onTestFinished(() => {
         inject.removeFails = undefined;
       });
@@ -254,6 +268,8 @@ describe.runIf(posix)(
       await expect(stopping).rejects.toThrow(failure.message);
       stopping = Promise.resolve();
       inject.removeFails = undefined;
+      // 지우기 실패는 그 시험의 임시 cluster 폴더에서 났다.
+      expect([...new Set(removeFails.failedAt)]).toEqual([options.dataDir]);
       expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
@@ -269,7 +285,11 @@ describe.runIf(posix)(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = { in: privateFolder(base), error: failure };
+      inject.closeFails = {
+        in: privateFolder(base),
+        error: failure,
+        failedAt: [],
+      };
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -322,7 +342,11 @@ describe.runIf(posix)(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = { in: privateFolder(base), error: failure };
+      inject.closeFails = {
+        in: privateFolder(base),
+        error: failure,
+        failedAt: [],
+      };
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -342,13 +366,15 @@ describe.runIf(posix)(
       );
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
       inject.recordFails = { in: `${dataDir}.owner`, error: failure };
-      inject.closeFails = {
+      const closeFails = {
         in: privateFolder(base),
         error: Object.assign(
           new Error("injected: the owner connection could not be closed"),
           { code: "EIO" }
         ),
+        failedAt: [] as string[],
       };
+      inject.closeFails = closeFails;
       onTestFinished(() => {
         inject.recordFails = undefined;
       });
@@ -361,6 +387,9 @@ describe.runIf(posix)(
         [expect.stringContaining("(EMBEDDED_OWNER_CLOSE_FAILED)")],
       ]);
       inject.closeFails = undefined;
+      // 닫기 실패는 이번에 연 그 연결에서 났다.
+      expect(inject.listened).toHaveLength(1);
+      expect(closeFails.failedAt).toEqual(inject.listened);
       expect(await listenedStates()).toEqual(["closed"]);
     });
 

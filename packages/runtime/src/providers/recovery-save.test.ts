@@ -9,11 +9,13 @@ import { testFolders } from "./test-folders.ts";
 // 기록의 시작 시각은 감독 실행기가 첫 메시지로 알린 값이다(#283 외부 리뷰 2회차 SPEC-3). Windows에서는 다른 프로그램이 기록을 읽는
 // 동안 덮어쓰기가 EPERM으로 잠깐 실패한다. 그 순간을 그대로 만든다.
 const rename = vi.hoisted(() => ({
-  /** 이 폴더(`in`, 그 시험의 기록 폴더)의 기록 옮기기가 `times`번 막힌다(#286). */
-  blocked: undefined as { in: string; times: number } | undefined,
+  /** 이 폴더(`in`, 그 시험의 기록 폴더)의 기록 옮기기가 `times`번 막히고, 막은 옮기기를 `failedAt`에 `<옮길 것> -> <자리>`로 남긴다(#286). */
+  blocked: undefined as
+    { in: string; times: number; failedAt: string[] } | undefined,
   tried: 0,
-  /** 이 폴더(`in`, 그 시험의 기록 폴더)의 임시 기록 지우기가 이 오류로 실패한다(#286). */
-  removal: undefined as { in: string; error: Error } | undefined,
+  /** 이 폴더(`in`, 그 시험의 기록 폴더)의 임시 기록 지우기가 이 오류로 실패하고 그 파일을 `failedAt`에 남긴다(#286). */
+  removal: undefined as
+    { in: string; error: Error; failedAt: string[] } | undefined,
 }));
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -28,13 +30,17 @@ vi.mock("node:fs", async (original) => {
       ) {
         blocked.times--;
         rename.tried++;
+        blocked.failedAt.push(`${String(args[0])} -> ${String(args[1])}`);
         throw Object.assign(new Error("in use"), { code: "EPERM" });
       }
       return actual.renameSync(...args);
     },
     rmSync: (...args: Parameters<typeof actual.rmSync>) => {
       const { removal } = rename;
-      if (removal?.in === path.dirname(String(args[0]))) throw removal.error;
+      if (removal?.in === path.dirname(String(args[0]))) {
+        removal.failedAt.push(String(args[0]));
+        throw removal.error;
+      }
       return actual.rmSync(...args);
     },
   };
@@ -94,7 +100,7 @@ it("saves the start time once the record stops being held", async () => {
     { pid, lease: "lease", supervisorStart: start.supervisorStart },
     { platform: withoutProc }
   );
-  rename.blocked = { in: directory, times: 3 };
+  rename.blocked = { in: directory, times: 3, failedAt: [] };
   await start.tell("1700000000123456");
   vi.runAllTimers();
   expect(await readFile(file, "utf8")).toMatch(/"start":"1700000000123456"/);
@@ -113,7 +119,7 @@ it("does not save the start time after forgetting a held record", async () => {
     { pid, lease: "lease", supervisorStart: start.supervisorStart },
     { platform: withoutProc }
   );
-  rename.blocked = { in: directory, times: 1 };
+  rename.blocked = { in: directory, times: 1, failedAt: [] };
   await start.tell("1700000000123456");
   expect(rename.tried).toBe(1);
   forget();
@@ -148,7 +154,11 @@ it("warns and keeps the first record when the file stays held", async () => {
     { pid, lease: "lease", supervisorStart: start.supervisorStart },
     { platform: withoutProc }
   );
-  rename.blocked = { in: directory, times: Number.POSITIVE_INFINITY };
+  rename.blocked = {
+    in: directory,
+    times: Number.POSITIVE_INFINITY,
+    failedAt: [],
+  };
   await start.tell("1700000000123456");
   vi.runAllTimers();
   expect(warn).toHaveBeenCalled();
@@ -159,13 +169,20 @@ it("warns and keeps the first record when the file stays held", async () => {
 
 // 기록을 제자리에 두지 못하고 임시 기록도 지우지 못하면, 지우기 실패가 원래 실패를 덮지 않는다(#280 리뷰 2회차 STD-2와 같은 모양).
 it("throws the failure to place the record, not the failure to remove its temporary file", async () => {
-  const { home, pid, directory } = await running();
+  const { home, pid, file, directory } = await running();
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-  rename.blocked = { in: directory, times: Number.POSITIVE_INFINITY };
-  rename.removal = {
+  const blocked = {
+    in: directory,
+    times: Number.POSITIVE_INFINITY,
+    failedAt: [] as string[],
+  };
+  rename.blocked = blocked;
+  const removal = {
     in: directory,
     error: Object.assign(new Error("io"), { code: "EIO" }),
+    failedAt: [] as string[],
   };
+  rename.removal = removal;
   expect(() =>
     recordProcess(
       home,
@@ -173,5 +190,10 @@ it("throws the failure to place the record, not the failure to remove its tempor
       { platform: withoutProc }
     )
   ).toThrow(expect.objectContaining({ code: "EPERM" }));
+  // 지우지 못한 것은 그 시험의 기록 자리로 옮기지 못한 바로 그 임시 기록이다.
+  expect(removal.failedAt).toHaveLength(1);
+  expect([...new Set(blocked.failedAt)]).toEqual([
+    `${removal.failedAt[0]} -> ${file}`,
+  ]);
   expect(warn).toHaveBeenCalledWith(expect.stringContaining("EIO"));
 }, 30_000);

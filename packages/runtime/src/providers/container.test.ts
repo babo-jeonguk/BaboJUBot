@@ -3429,11 +3429,12 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
  * 실제 확인 스크립트를 이 컴퓨터에서 돌린다. 가짜 docker가 `node`를 이 프로그램으로 바꿔 띄우고, 먼저 읽히는 모듈이 컨테이너의
  * 네트워크를 대신한다: 네트워크 장치는 loopback뿐이고, 컨테이너 안 중계 포트(이미지의 relay.mjs가 잇는 127.0.0.1:39280·39281)는 이 확인이 연 실제 중계의 파일
  * 소켓으로 잇고, `HTTPS_PROXY`는 이미지의 시작 프로그램처럼 둔다. 직접 연결은 옆 파일 `direct.json`에 적은 주소만 정한 결과
- * (연결됨·연결 오류 코드·답 없음)를 내고, 그 밖은 이 컴퓨터에서 실제로 연결한다. 옆 파일 `answers.json`에 중계 포트의 답을 적으면
+ * (연결됨·연결 오류 코드·답 없음)를 내고 낸 결과를 옆 파일 `direct-answered.log`에 `<주소>:<포트> <결과>` 한 줄로 남기며, 그 밖은
+ * 이 컴퓨터에서 실제로 연결한다. 옆 파일 `answers.json`에 중계 포트의 답을 적으면
  * 그 포트는 중계 대신 그 글자를 답하고 열어 둔다(HTTP가 아닌 것이 답한 경우).
  */
 const containerNetwork = `
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -3475,6 +3476,7 @@ const connect = (options, ...rest) => {
     return real({ path: path.join(relay, relayed[options.port]) }, ...rest);
   const outcome = typeof options === "object" ? outcomes[options.host + ":" + options.port] : undefined;
   if (outcome === undefined) return real(options, ...rest);
+  appendFileSync(new URL("./direct-answered.log", import.meta.url), options.host + ":" + options.port + " " + outcome + "\\n");
   const socket = new net.Socket();
   setImmediate(() => {
     if (outcome === "connected") socket.emit("connect");
@@ -3498,12 +3500,36 @@ describe.skipIf(process.platform === "win32")(
       direct: Record<string, string> = {},
       answers: Record<string, string> = {}
     ) {
+      return (await probeSetup(direct, answers)).environment;
+    }
+
+    /**
+     * 직접 연결의 정한 결과(`direct`)만 주는 확인 환경. `answered`는 가짜 네트워크가 실제로 낸 직접 연결 결과(`<주소>:<포트> <결과>`)를
+     * 겹치지 않게 돌려준다(그 시험 폴더의 `direct-answered.log`).
+     */
+    async function directProbeEnvironment(direct: Record<string, string>) {
+      const { root, environment } = await probeSetup(direct, {});
+      const answered = async () => [
+        ...new Set(
+          (await readFile(path.join(root, "direct-answered.log"), "utf8"))
+            .trim()
+            .split("\n")
+        ),
+      ];
+      return { environment, answered };
+    }
+
+    /** 확인 스크립트를 돌릴 가짜 docker와 그 시험 폴더(`root`). */
+    async function probeSetup(
+      direct: Record<string, string>,
+      answers: Record<string, string>
+    ) {
       const root = await folders.make("babojubot-probe-");
       const network = path.join(root, "container-network.mjs");
       await writeFile(network, containerNetwork);
       await writeFile(path.join(root, "direct.json"), JSON.stringify(direct));
       await writeFile(path.join(root, "answers.json"), JSON.stringify(answers));
-      return createDockerEnvironment({
+      const environment = createDockerEnvironment({
         docker: [
           process.execPath,
           fixture("fake-docker.mjs"),
@@ -3514,6 +3540,7 @@ describe.skipIf(process.platform === "win32")(
         owner: "owner-test",
         relay: attachedRelayHub(),
       });
+      return { root, environment };
     }
 
     /**
@@ -3619,7 +3646,7 @@ describe.skipIf(process.platform === "win32")(
         const target = { host: "192.0.2.10", port: 5432 };
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
-        const environment = await probeEnvironmentWith({
+        const { environment, answered } = await directProbeEnvironment({
           "192.0.2.10:5432": outcome,
         });
         await expect(
@@ -3634,6 +3661,8 @@ describe.skipIf(process.platform === "win32")(
           toolsReached: true,
           unverified,
         });
+        // 가짜 네트워크가 그 목적지의 직접 연결에 정한 결과를 실제로 냈다.
+        expect(await answered()).toEqual([`192.0.2.10:5432 ${outcome}`]);
       }
     );
 
@@ -3692,7 +3721,7 @@ describe.skipIf(process.platform === "win32")(
 
     it("counts a direct connection that opened as reached", async () => {
       const target = { host: "192.0.2.10", port: 5432 };
-      const environment = await probeEnvironmentWith({
+      const { environment, answered } = await directProbeEnvironment({
         "192.0.2.10:5432": "connected",
       });
       await expect(
@@ -3701,6 +3730,8 @@ describe.skipIf(process.platform === "win32")(
           AbortSignal.timeout(20_000)
         )
       ).resolves.toMatchObject({ reached: [target], unverified: [] });
+      // 가짜 네트워크가 그 목적지의 직접 연결을 실제로 열었다.
+      expect(await answered()).toEqual(["192.0.2.10:5432 connected"]);
     });
 
     // HTTP가 아닌 것이 답하면 닿았는지 막혔는지 알 수 없다. HTTP 파서가 알린 원인을 남기고 확인 불가로 넘긴다(#286).
@@ -3732,21 +3763,28 @@ describe.skipIf(process.platform === "win32")(
 );
 
 describe("the Docker engine check", () => {
+  /** 그 시험 폴더의 파일로 답하는 가짜 docker 환경과, 가짜 docker가 받은 호출의 인수(`calls`, 받은 차례대로). */
   async function engine(files: Record<string, string> = {}) {
     const root = await folders.make("babojubot-engine-");
     for (const [name, value] of Object.entries(files))
       await writeFile(path.join(root, name), value);
-    return createDockerEnvironment({
+    const environment = createDockerEnvironment({
       docker: [process.execPath, fixture("fake-docker.mjs"), root, "{}"],
       image,
       owner: "owner-test",
       relay: attachedRelayHub(),
     });
+    const calls = async () =>
+      (await readFile(path.join(root, "calls.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => (JSON.parse(line) as Call).args);
+    return { environment, calls };
   }
 
   it("accepts a local Linux engine with the current runner image", async () => {
     await expect(
-      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+      (await engine()).environment.checkDaemon(AbortSignal.timeout(10_000))
     ).resolves.toBeUndefined();
   });
 
@@ -3760,6 +3798,8 @@ describe("the Docker engine check", () => {
           SecurityOptions: [],
         }),
       },
+      "Docker Desktop is not supported for isolated runs",
+      ["info"],
     ],
     [
       "rootless Docker",
@@ -3770,6 +3810,8 @@ describe("the Docker engine check", () => {
           SecurityOptions: ["name=rootless"],
         }),
       },
+      "rootless Docker is not supported for isolated runs",
+      ["info"],
     ],
     [
       "a Windows engine",
@@ -3780,22 +3822,36 @@ describe("the Docker engine check", () => {
           SecurityOptions: [],
         }),
       },
+      "docker daemon is not a Linux engine",
+      ["info"],
     ],
-    ["an image without the relay start program", { "runner-version": "" }],
+    [
+      "an image without the relay start program",
+      { "runner-version": "" },
+      "runner image is outdated; rebuild it with pnpm runner:build",
+      ["image", "inspect"],
+    ],
     [
       "a Docker context on another computer",
       { "context-host": "ssh://user@build-box" },
+      "docker daemon is not on this computer",
+      ["context", "inspect"],
     ],
-  ])("refuses %s", async (_case, files) => {
+  ])("refuses %s", async (_case, files, refusal, answeredBy) => {
+    const { environment, calls } = await engine(files);
     await expect(
-      (await engine(files)).checkDaemon(AbortSignal.timeout(10_000))
-    ).rejects.toThrow();
+      environment.checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow(new Error(refusal));
+    // 거절은 그 시험 폴더의 파일로 답한 가짜 docker 호출 바로 뒤에 났다(그 뒤로 묻지 않았다).
+    expect((await calls()).at(-1)?.slice(0, answeredBy.length)).toEqual(
+      answeredBy
+    );
   });
 
   it("refuses a daemon on another computer, whose folders this computer cannot check", async () => {
     vi.stubEnv("DOCKER_HOST", "tcp://10.0.0.9:2375");
     await expect(
-      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+      (await engine()).environment.checkDaemon(AbortSignal.timeout(10_000))
     ).rejects.toThrow(/not on this computer/);
   });
 });
