@@ -12,6 +12,7 @@ import { within } from "./support.ts";
 import { attemptAll } from "@babojubot/contracts";
 import { armSwap, resetSwap } from "@babojubot/process/fs-swap";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { settledWithin } from "@babojubot/process/test-support";
 import {
   folderCleanup,
   releaseAcquired,
@@ -74,8 +75,8 @@ async function organization() {
   // 지운다. 시한이 지나도 만들기·준비는 멈추지 않으므로, 끝을 확인하지 못하면 둘 다 남기고 실패한다.
   const preparations = new Set<Promise<unknown>>();
   const prepared = () =>
-    within(
-      Promise.allSettled(preparations),
+    settledWithin(
+      [...preparations],
       10_000,
       "a folder preparation did not end"
     );

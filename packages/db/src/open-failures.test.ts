@@ -1,9 +1,10 @@
 import { callArming } from "@babojubot/process/call-arming";
-import pg from "pg";
+import { ownedListener } from "@babojubot/process/test-cleanup";
+import net from "node:net";
+import type pg from "pg";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { openDatabase, withClient } from "./client.ts";
 import { clusterUrl, type EmbeddedCluster } from "./embedded.ts";
-import { candidatePort } from "./ports.ts";
 import { testClusterPort } from "./testing.ts";
 
 // DB를 여는 단계(cluster 시작 → DB 연결 → migration)와 닫는 단계에서 실패를 일부러 일으킨다. cluster는 시험 실행이 띄운
@@ -58,6 +59,44 @@ vi.mock("drizzle-orm/node-postgres/migrator", async (importOriginal) => {
   return { ...real, migrate };
 });
 
+vi.mock("pg", async (importOriginal) => {
+  const real = (await importOriginal<{ default: typeof pg }>()).default;
+  // 제품이 만드는 pool·연결만 이 하위 클래스다. 무장한 호출에서 닫기(`end`)가 실제로 닫은 뒤 그 결함으로 실패하고, 그 밖의 닫기와 다른
+  // 인스턴스는 그대로다. 제품은 Promise를 돌려주는 `end()`만 부르고, 콜백 판(`end(cb)`)은 그대로 넘긴다.
+  class Pool extends real.Pool {
+    override end(): Promise<void>;
+    override end(callback: () => void): void;
+    override end(callback?: () => void): Promise<void> | void {
+      if (callback) return super.end(callback);
+      const fault = faultCalls.current();
+      const ending = super.end();
+      const failure = fault?.poolEndFails;
+      if (!fault || !failure) return ending;
+      const target = `pool end ${String(this.options.connectionString)}`;
+      return ending.then(() => {
+        fault.failedAt.push(target);
+        throw failure;
+      });
+    }
+  }
+  class Client extends real.Client {
+    override end(): Promise<void>;
+    override end(callback: (error: Error) => void): void;
+    override end(callback?: (error: Error) => void): Promise<void> | void {
+      if (callback) return super.end(callback);
+      const fault = faultCalls.current();
+      const ending = super.end();
+      const failure = fault?.clientEndFails;
+      if (!fault || !failure) return ending;
+      return ending.then(() => {
+        fault.failedAt.push(this);
+        throw failure;
+      });
+    }
+  }
+  return { ...real, Pool, Client, default: { ...real, Pool, Client } };
+});
+
 /** 정지를 세는 가짜 cluster. `stopFails`면 정지가 그 오류로 실패하고 `failedAt`에 `stop <port>`를 남긴다. */
 function fakeCluster(failedAt: unknown[], port: number, stopFails?: Error) {
   const stop = vi.fn(async () => {
@@ -66,6 +105,30 @@ function fakeCluster(failedAt: unknown[], port: number, stopFails?: Error) {
     throw stopFails;
   });
   return { port, stop, stopping: () => "stopping Postgres" };
+}
+
+/**
+ * 받은 연결을 첫 내용을 받자마자 끊는(RST) listener를 이 시험이 열어 소유한다(닫기는 듣기 시작 전에 정리에 맡긴다). 연결 실패의 대상은 이 시험의
+ * 이 포트이고, 받은 연결이 닿은 포트는 `dropped`에 남는다. 닫힌 빈 포트를 빌려 쓰면 그 사이 남이 그 번호를 잡을 수 있다(#286).
+ */
+async function droppingListener() {
+  const dropped: (number | undefined)[] = [];
+  const { server } = await ownedListener(
+    // 연결의 첫 내용(시작 메시지)을 받은 뒤 끊는다. 쓰기 전에 끊기면 실패가 쓰기(EPIPE)로 날 수 있어 읽기의 실패(ECONNRESET)로 고정한다.
+    net.createServer((socket) =>
+      socket.once("data", () => {
+        dropped.push(socket.localPort);
+        socket.resetAndDestroy();
+      })
+    ),
+    { port: 0, host: "127.0.0.1" },
+    onTestFinished,
+    "the connection-dropping listener"
+  );
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    throw new Error("the connection-dropping listener has no port");
+  return { port: address.port, dropped };
 }
 
 /** `fault`를 무장한 채 DB를 연다. */
@@ -103,11 +166,13 @@ describe("opening a database that fails", () => {
 
   it("throws the connection error and stops Postgres once", async () => {
     const failedAt: unknown[] = [];
-    const cluster = fakeCluster(failedAt, await candidatePort());
+    const listener = await droppingListener();
+    const cluster = fakeCluster(failedAt, listener.port);
 
     await expect(opened({ start: cluster, failedAt })).rejects.toMatchObject({
-      code: "ECONNREFUSED",
+      code: "ECONNRESET",
     });
+    expect(listener.dropped).toEqual([listener.port]);
     expect(cluster.stop).toHaveBeenCalledTimes(1);
     expect(failedAt).toEqual([]);
   });
@@ -118,12 +183,14 @@ describe("opening a database that fails", () => {
       { code: "EMBEDDED_STOP_TIMEOUT" }
     );
     const failedAt: unknown[] = [];
-    const cluster = fakeCluster(failedAt, await candidatePort(), stopError);
+    const listener = await droppingListener();
+    const cluster = fakeCluster(failedAt, listener.port, stopError);
     const logs = logged();
 
     await expect(opened({ start: cluster, failedAt })).rejects.toMatchObject({
-      code: "ECONNREFUSED",
+      code: "ECONNRESET",
     });
+    expect(listener.dropped).toEqual([listener.port]);
     expect(cluster.stop).toHaveBeenCalledTimes(1);
     expect(failedAt).toEqual([`stop ${cluster.port}`]);
     expectLoggedCode(logs(), "EMBEDDED_STOP_TIMEOUT");
@@ -162,16 +229,6 @@ describe("opening a database that fails", () => {
 
 describe("closing a database that fails", () => {
   it("still stops Postgres when closing the connections fails, and reports both failures", async () => {
-    // 제품은 Promise를 돌려주는 end()만 부른다. 콜백 판(end(cb): void)은 빼고 그 판만 바꾼다. 무장한 호출이 닫는 pool만 실패한다.
-    const pools: { end(this: pg.Pool): Promise<void> } = pg.Pool.prototype;
-    const end = pools.end;
-    vi.spyOn(pools, "end").mockImplementation(async function (this: pg.Pool) {
-      const fault = faultCalls.current();
-      await end.call(this);
-      if (!fault?.poolEndFails) return;
-      fault.failedAt.push(`pool end ${String(this.options.connectionString)}`);
-      throw fault.poolEndFails;
-    });
     const stopError = Object.assign(
       new Error("injected: Postgres did not stop"),
       { code: "EMBEDDED_STOP_TIMEOUT" }
@@ -203,19 +260,6 @@ describe("closing a database that fails", () => {
 
 describe("a one-off connection that fails", () => {
   it("keeps the work's error and records the close failure", async () => {
-    // 제품은 Promise를 돌려주는 end()만 부른다. 콜백 판(end(cb): void)은 빼고 그 판만 바꾼다. 무장한 호출이 닫는 연결만 실패한다.
-    const clients: { end(this: pg.Client): Promise<void> } =
-      pg.Client.prototype;
-    const end = clients.end;
-    vi.spyOn(clients, "end").mockImplementation(async function (
-      this: pg.Client
-    ) {
-      const fault = faultCalls.current();
-      await end.call(this);
-      if (!fault?.clientEndFails) return;
-      fault.failedAt.push(this);
-      throw fault.clientEndFails;
-    });
     const workError = new Error("injected: the work failed");
     const closeError = Object.assign(
       new Error("injected: closing the connection failed"),

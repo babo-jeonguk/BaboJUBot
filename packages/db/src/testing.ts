@@ -234,16 +234,23 @@ export async function insertLegacyOrganization(
 
 /**
  * 그 실행 시도의 종료 Event 기록이 실패하게 한다. 종료 저장 transaction의 마지막 쓰기가 실패하는 경우다.
- * 돌려준 함수가 되돌린다. 한 DB에 하나만 걸 수 있다.
+ * `failed`는 트리거가 실패시킨 그 실행 시도의 종료 기록 수다: 실패한 transaction이 되돌려져도 남도록 sequence로 센다(Postgres는
+ * sequence 증가를 되돌리지 않는다). 시험은 이 수로 결함이 실제로 그 실행 시도의 종료 기록에서 났는지 본다(`failArtifactRecord`와 같은
+ * 모양). `remove`가 되돌린다. 한 DB에 하나만 걸 수 있다.
  */
 export async function failRunEnd(
   db: Database,
   runId: string
-): Promise<() => Promise<void>> {
+): Promise<{
+  failed: () => Promise<number>;
+  remove: () => Promise<void>;
+}> {
   await db.execute(`
+    create sequence fail_run_end_failed;
     create function fail_run_end() returns trigger as $$
     begin
       if new.type = 'run.finished' and new.payload->>'runId' = '${runId}' then
+        perform nextval('fail_run_end_failed');
         raise exception 'run end could not be saved';
       end if;
       return new;
@@ -251,10 +258,18 @@ export async function failRunEnd(
     create trigger fail_run_end before insert on events
       for each row execute function fail_run_end();
   `);
-  return async () => {
-    await db.execute(
-      "drop trigger fail_run_end on events; drop function fail_run_end();"
-    );
+  return {
+    failed: async () => {
+      const result = await db.execute(
+        sql`select case when is_called then last_value else 0 end::int as n from fail_run_end_failed`
+      );
+      return (result.rows[0] as { n: number }).n;
+    },
+    remove: async () => {
+      await db.execute(
+        "drop trigger fail_run_end on events; drop function fail_run_end(); drop sequence fail_run_end_failed;"
+      );
+    },
   };
 }
 

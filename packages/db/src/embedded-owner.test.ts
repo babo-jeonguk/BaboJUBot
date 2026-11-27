@@ -10,6 +10,7 @@ import { callArming } from "@babojubot/process/call-arming";
 import {
   awaitedLater,
   folderCleanup,
+  releaseAcquired,
   removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
@@ -132,12 +133,15 @@ beforeEach(() => {
 /**
  * 이 시험만 쓰는 임시 폴더를 이 프로세스의 임시 폴더로 둔다(제품은 그 아래 `babojubot-<uid>`에 주인 연결을 둔다). 사용자 실행
  * 폴더(`XDG_RUNTIME_DIR`)는 비워 임시 폴더를 쓰게 한다. 그 안에서 띄운 cluster는 `cleanup.own`으로 맡겨, 멈춘 것을 확인한 뒤에만
- * 폴더를 지운다(STD-4).
+ * 폴더를 지운다(STD-4). 폴더는 만들기를 시작한 순간 정리에 맡긴다.
  */
 async function ownTemporaryFolder(name = "babojubot-owner-tmp-") {
-  const base = await fsp.mkdtemp(path.join(os.tmpdir(), name));
-  const cleanup = folderCleanup(() => removeFolderWithin(base));
+  const making = fsp.mkdtemp(path.join(os.tmpdir(), name));
+  const cleanup = folderCleanup(() =>
+    releaseAcquired(making, (made) => removeFolderWithin(made))
+  );
   onTestFinished(cleanup.cleanUp);
+  const base = await making;
   vi.stubEnv("TMPDIR", base);
   vi.stubEnv("XDG_RUNTIME_DIR", "");
   onTestFinished(() => {
@@ -147,17 +151,19 @@ async function ownTemporaryFolder(name = "babojubot-owner-tmp-") {
 }
 
 /**
- * cluster를 띄우고 바로 그 멈춤을 폴더 정리에 맡긴다. 돌려준 `stop`은 한 번만 멈춘다(시험이 멈춰도 정리가 다시 멈추지 않는다).
+ * cluster를 띄우기 시작한 순간 그 멈춤을 폴더 정리에 맡긴다(시작이 끝나면 멈추고, 실패했으면 멈출 것이 없다). 돌려준 `stop`은 한
+ * 번만 멈춘다(시험이 멈춰도 정리가 다시 멈추지 않는다).
  */
 async function startOwned(
   cleanup: ReturnType<typeof folderCleanup>,
   options: EmbeddedOptions
 ) {
-  const cluster = await startEmbeddedCluster(options);
+  const starting = startEmbeddedCluster(options);
   let stopping: Promise<void> | undefined;
-  const stop = () => (stopping ??= cluster.stop());
-  cleanup.own(stop);
-  return { cluster, stop };
+  const stopOnce = (cluster: EmbeddedCluster) => (stopping ??= cluster.stop());
+  cleanup.own(() => releaseAcquired(starting, stopOnce));
+  const cluster = await starting;
+  return { cluster, stop: () => stopOnce(cluster) };
 }
 
 /**
@@ -195,7 +201,7 @@ describe.runIf(posix)(
   () => {
     // STD-2: 주인 연결을 연 뒤 기록을 쓰지 못하면, 이번에 연 연결을 닫고 실패한다. 연결이 남으면 주인이 아닌 프로세스가 주인처럼 보인다.
     it("closes the connection it opened when its owner record cannot be written", async () => {
-      const { base } = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const failure = Object.assign(
         new Error("injected: the owner record could not be written"),
         { code: "EIO" }
@@ -205,8 +211,9 @@ describe.runIf(posix)(
       onTestFinished(() => {
         inject.recordFails = undefined;
       });
+      // 실패를 기대하는 시작도 시작하는 순간 그 멈춤을 맡긴다(잘못 켜지면 정리가 멈춘다).
       await expect(
-        startEmbeddedCluster({ dataDir, persistent: true })
+        startOwned(cleanup, { dataDir, persistent: true })
       ).rejects.toBe(failure);
       inject.recordFails = undefined;
       expect(await listenedStates()).toEqual(["closed"]);
@@ -249,10 +256,13 @@ describe.runIf(posix)(
         new Error("injected: the temporary folder could not be removed"),
         { code: "EBUSY" }
       );
-      const cluster: EmbeddedCluster = await startEmbeddedCluster(options);
-      // 시험의 멈춤이 기대한 대로 실패하면, 정리는 남은 폴더만 지운다(Postgres는 이미 멈췄다).
+      // 멈춤은 시작하는 순간 정리에 맡긴다. 시험의 멈춤이 기대한 대로 실패하면, 정리는 남은 폴더만 지운다(Postgres는 이미 멈췄다).
+      const starting = startEmbeddedCluster(options);
       let stopping: Promise<void> | undefined;
-      cleanup.own(() => (stopping ??= cluster.stop()));
+      cleanup.own(() =>
+        releaseAcquired(starting, (started) => (stopping ??= started.stop()))
+      );
+      const cluster: EmbeddedCluster = await starting;
       // 실패를 주입하기 전에 주인 연결이 실제로 열려 있음을 본다.
       expect(await listenedStates()).toEqual(["open"]);
       const removeFails = {
@@ -278,18 +288,25 @@ describe.runIf(posix)(
     it("fails a persistent stop with the owner connection's close failure", async () => {
       const { base, cleanup } = await ownTemporaryFolder();
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
-      const cluster = await startEmbeddedCluster({ dataDir, persistent: true });
+      // 멈춤은 시작하는 순간 정리에 맡긴다. 시험이 멈췄으면 정리는 다시 멈추지 않는다.
+      const starting = startEmbeddedCluster({ dataDir, persistent: true });
       let stopped = false;
-      cleanup.own(() => (stopped ? undefined : cluster.stop()));
+      cleanup.own(() =>
+        releaseAcquired(starting, (started) =>
+          stopped ? Promise.resolve() : started.stop()
+        )
+      );
+      const cluster = await starting;
       const failure = Object.assign(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = {
+      const closeFails = {
         in: privateFolder(base),
         error: failure,
-        failedAt: [],
+        failedAt: [] as string[],
       };
+      inject.closeFails = closeFails;
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -297,6 +314,9 @@ describe.runIf(posix)(
         cause: failure,
       });
       inject.closeFails = undefined;
+      // 닫기 실패는 이 cluster가 연 그 주인 연결에서 났다.
+      expect(inject.listened).toHaveLength(1);
+      expect(closeFails.failedAt).toEqual(inject.listened);
       expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
@@ -335,18 +355,25 @@ describe.runIf(posix)(
     it("fails a temporary stop with the owner connection's close failure", async () => {
       const { base, cleanup } = await ownTemporaryFolder();
       const options = await ephemeralCluster();
-      const cluster = await startEmbeddedCluster(options);
+      // 멈춤은 시작하는 순간 정리에 맡긴다. 시험이 멈췄으면 정리는 다시 멈추지 않는다.
+      const starting = startEmbeddedCluster(options);
       let stopped = false;
-      cleanup.own(() => (stopped ? undefined : cluster.stop()));
+      cleanup.own(() =>
+        releaseAcquired(starting, (started) =>
+          stopped ? Promise.resolve() : started.stop()
+        )
+      );
+      const cluster = await starting;
       const failure = Object.assign(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = {
+      const closeFails = {
         in: privateFolder(base),
         error: failure,
-        failedAt: [],
+        failedAt: [] as string[],
       };
+      inject.closeFails = closeFails;
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -354,12 +381,15 @@ describe.runIf(posix)(
         cause: failure,
       });
       inject.closeFails = undefined;
+      // 닫기 실패는 이 cluster가 연 그 주인 연결에서 났다.
+      expect(inject.listened).toHaveLength(1);
+      expect(closeFails.failedAt).toEqual(inject.listened);
       expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
     // 주인 기록을 쓰지 못해 이번에 연 연결을 닫을 때 그 닫기도 실패하면, 원래 실패를 그대로 던지고 닫기 실패는 원인 코드로 남긴다.
     it("keeps the record failure and logs the close failure of the connection it opened", async () => {
-      const { base } = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const failure = Object.assign(
         new Error("injected: the owner record could not be written"),
         { code: "EIO" }
@@ -380,8 +410,9 @@ describe.runIf(posix)(
       });
       const logged = vi.spyOn(console, "error").mockImplementation(() => {});
       onTestFinished(() => logged.mockRestore());
+      // 실패를 기대하는 시작도 시작하는 순간 그 멈춤을 맡긴다(잘못 켜지면 정리가 멈춘다).
       await expect(
-        startEmbeddedCluster({ dataDir, persistent: true })
+        startOwned(cleanup, { dataDir, persistent: true })
       ).rejects.toBe(failure);
       expect(logged.mock.calls).toEqual([
         [expect.stringContaining("(EMBEDDED_OWNER_CLOSE_FAILED)")],
@@ -424,7 +455,7 @@ describe.runIf(posix)(
 
     // 모든 후보에서 듣기가 실패하면 후보마다 그 원인을 함께 남기고 실패한다.
     it("names the failure of every folder when listening fails in all of them", async () => {
-      const { base } = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       // 실패는 제품의 두 후보 폴더에서만 낸다. 둘째 후보 `/tmp`는 제품의 고정 후보라 시험끼리 같은 폴더여서 경로로 이 시험의 것을
       // 가를 수 없으므로, 이 시험의 제품 호출에만 건다.
       const candidates = [privateFolder(base), privateFolder("/tmp")];
@@ -438,7 +469,8 @@ describe.runIf(posix)(
       const refused: unknown = await listenCalls
         .run(
           { fails },
-          () => startEmbeddedCluster({ dataDir, persistent: true }),
+          // 잘못 켜지면 정리가 멈추도록 시작하는 순간 그 멈춤을 맡긴다.
+          () => startOwned(cleanup, { dataDir, persistent: true }),
           onTestFinished
         )
         .then(

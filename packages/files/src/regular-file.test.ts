@@ -152,8 +152,11 @@ describe("opening a file in a place others can change, only if it is a regular f
     const denied = Object.assign(new Error("permission denied"), {
       code: "EACCES",
     });
-    swap.failing = { path: file, error: denied, failedAt: [] };
+    const failing = { path: file, error: denied, failedAt: [] as string[] };
+    swap.failing = failing;
     await expect(openRegularFile(file)).rejects.toBe(denied);
+    // 주입한 열기 실패가 그 시험의 경로에서 났다.
+    expect(failing.failedAt).toEqual([file]);
   });
 
   // 열기가 본 항목(없음·링크·폴더)과 바로 뒤 lstat이 본 일반 파일이 다르면 그 사이 자리가 바뀐 것이다. 다른 실행이 같은 자리에
@@ -184,8 +187,11 @@ describe("opening a file in a place others can change, only if it is a regular f
       const root = await folders.make("babojubot-files-");
       const file = path.join(root, "mark.json");
       const failed = Object.assign(new Error("could not open"), { code });
-      swap.failing = { path: file, error: failed, failedAt: [] };
+      const failing = { path: file, error: failed, failedAt: [] as string[] };
+      swap.failing = failing;
       await expect(openRegularFile(file)).rejects.toBe(failed);
+      // 주입한 열기 실패가 그 시험의 경로에서 났다(다시 열어 보지 않는다).
+      expect(failing.failedAt).toEqual([file]);
     }
   );
 
