@@ -6,32 +6,26 @@ import { createKiroProvider as unownedKiroProvider } from "./kiro.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
-// `kiro-cli acp --agent-engine=v3` 대화를 재생한다. 프레임 순서는 Kiro CLI 3.6 ACP 문서의 initialize, session/new, session/prompt다.
+// `kiro-cli acp` 대화를 재생한다. 프레임 순서는 ACP v1의 initialize, session/new(또는 session/load), session/prompt다.
 const folders = testFolders();
 const createKiroProvider = folders.owning(unownedKiroProvider);
 const rpc = (id: number, body: Record<string, unknown>) => ({
   frame: { jsonrpc: "2.0", id, ...body },
 });
+const organizationMcp = {
+  mcpServers: [
+    {
+      type: "http",
+      name: "organization",
+      url: "http://127.0.0.1:1/api/tools/mcp",
+      headers: [{ name: "Authorization", value: "Bearer private-run-token" }],
+    },
+  ],
+};
 const opening = [
   { input: { method: "initialize" } },
   rpc(1, { result: { protocolVersion: 1 } }),
-  {
-    input: {
-      method: "session/new",
-      params: {
-        mcpServers: [
-          {
-            type: "http",
-            name: "organization",
-            url: "http://127.0.0.1:1/api/tools/mcp",
-            headers: [
-              { name: "Authorization", value: "Bearer private-run-token" },
-            ],
-          },
-        ],
-      },
-    },
-  },
+  { input: { method: "session/new", params: organizationMcp } },
   rpc(2, { result: { sessionId: "saved" } }),
 ];
 
@@ -44,7 +38,7 @@ async function run(
   await writeFile(
     fixture,
     JSON.stringify({
-      argv: { acp: true, "--agent-engine": "v3", "--auth-method": "cli" },
+      argv: { acp: true },
       steps,
     })
   );
@@ -97,6 +91,14 @@ const allowed = {
 };
 
 describe("Kiro ACP", () => {
+  it("declares isolatable: true so isolation mode fails closed without a verified relay", async () => {
+    const root = await folders.make("kiro-meta-");
+    const provider = createKiroProvider({ dataDir: root });
+    expect(provider.isolatable).toBe(true);
+    expect(provider.credentialRelay).toBeUndefined();
+    expect(provider.models).toEqual([]);
+  });
+
   it("gives the organization tools to the session and allows the tool it asks for", async () => {
     const { result, activity } = await run([
       ...opening,
@@ -115,8 +117,11 @@ describe("Kiro ACP", () => {
       allowed,
       rpc(3, { result: { stopReason: "end_turn" } }),
     ]);
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       stopReason: "completed",
+      error: null,
+      summary: null,
+      usage: null,
       nextSession: { id: "saved" },
     });
     expect(activity).toContainEqual({
@@ -126,7 +131,7 @@ describe("Kiro ACP", () => {
     });
   });
 
-  it("loads the previous session instead of starting another", async () => {
+  it("loads the previous session with organization MCP servers instead of starting another", async () => {
     const { result } = await run(
       [
         { input: { method: "initialize" } },
@@ -134,7 +139,7 @@ describe("Kiro ACP", () => {
         {
           input: {
             method: "session/load",
-            params: { sessionId: "saved" },
+            params: { sessionId: "saved", ...organizationMcp },
           },
         },
         rpc(2, { result: {} }),
@@ -143,7 +148,13 @@ describe("Kiro ACP", () => {
       ],
       { previousSession: { id: "saved" } }
     );
-    expect(result.nextSession).toEqual({ id: "saved" });
+    expect(result).toEqual({
+      stopReason: "completed",
+      error: null,
+      summary: null,
+      usage: null,
+      nextSession: { id: "saved" },
+    });
   });
 
   it("fails the run when the chosen model is refused", async () => {
@@ -160,60 +171,108 @@ describe("Kiro ACP", () => {
       ],
       { model: "claude-haiku-5.5" }
     );
-    expect(result).toMatchObject({
+    expect(result).toEqual({
       stopReason: "failed",
       error: "고른 모델을 쓸 수 없어 실행하지 않았습니다.",
+      summary: null,
+      usage: null,
       nextSession: null,
     });
   });
 });
 
 describe("Kiro readiness and models", () => {
-  it("reads whoami and the model list without calling a model", async () => {
+  it("reads structured whoami JSON, falls back for older CLIs, and parses multi-line model JSON", async () => {
     const root = await folders.make("kiro-probe-");
     const program = path.join(root, "kiro.mjs");
+    // 출력 직후 process.exit()를 부르지 않고 process.exitCode로 자연 종료해 파이프 쓰기를 끝까지 넘긴다(CODING_STANDARDS.md).
     await writeFile(
       program,
       [
         "const args = process.argv.slice(2);",
+        "const mode = args[0];",
         "if (args.includes('whoami')) {",
-        "  if (args.includes('signed-out')) {",
-        "    console.error('not logged in');",
-        "    process.exit(1);",
+        "  if (mode === 'signed-out-json') {",
+        "    console.log(JSON.stringify({ account: null }));",
+        "    process.exitCode = 1;",
+        "  } else if (mode === 'legacy-cli') {",
+        "    if (args.includes('--format')) {",
+        "      console.error(\"error: unexpected argument '--format' found\");",
+        "      process.exitCode = 2;",
+        "    } else {",
+        "      console.log('Authenticated with IAM Identity Center');",
+        "    }",
+        "  } else if (mode === 'broken') {",
+        "    console.error('internal failure');",
+        "    process.exitCode = 2;",
+        "  } else {",
+        "    console.log(JSON.stringify({ account: { provider: 'iam' } }));",
         "  }",
-        "  console.log('Logged in with IAM Identity Center');",
-        "  process.exit(0);",
+        "} else if (args.includes('--list-models')) {",
+        "  if (mode === 'empty-models') {",
+        "    console.log(JSON.stringify({ models: [] }));",
+        "  } else {",
+        "    console.log(JSON.stringify({ models: [{ model_id: 'auto', model_name: 'auto' }, { model_id: 'model-a', model_name: 'Model A' }] }, null, 2));",
+        "  }",
+        "} else {",
+        "  process.exitCode = 9;",
         "}",
-        "if (args.includes('--list-models')) {",
-        "  console.log(JSON.stringify({ models: [{ model_id: 'auto', model_name: 'auto' }, { model_id: 'claude-haiku-5.5', model_name: 'Haiku' }] }));",
-        "  process.exit(0);",
-        "}",
-        "process.exit(9);",
         "",
       ].join("\n")
     );
-    const provider = createKiroProvider({
-      dataDir: root,
-      command: [process.execPath, program],
-    });
     const signal = new AbortController().signal;
-    await expect(provider.adapter.checkReadiness(signal)).resolves.toEqual({
+
+    const readyProvider = createKiroProvider({
+      dataDir: root,
+      command: [process.execPath, program, "ready"],
+    });
+    await expect(readyProvider.adapter.checkReadiness(signal)).resolves.toEqual(
+      { status: "ready", reason: null }
+    );
+    await expect(readyProvider.listModels?.(signal)).resolves.toEqual([
+      { id: "auto", label: "auto" },
+      { id: "model-a", label: "Model A" },
+    ]);
+
+    const legacyCli = createKiroProvider({
+      dataDir: root,
+      id: "kiro-legacy",
+      command: [process.execPath, program, "legacy-cli"],
+    });
+    await expect(legacyCli.adapter.checkReadiness(signal)).resolves.toEqual({
       status: "ready",
       reason: null,
     });
-    await expect(provider.listModels?.(signal)).resolves.toEqual([
-      { id: "auto", label: "auto" },
-      { id: "claude-haiku-5.5", label: "Haiku" },
-    ]);
+
     const signedOut = createKiroProvider({
       dataDir: root,
       id: "kiro-out",
-      command: [process.execPath, program, "signed-out"],
+      command: [process.execPath, program, "signed-out-json"],
     });
     await expect(signedOut.adapter.checkReadiness(signal)).resolves.toEqual({
       status: "not_ready",
       reason: "product_login_missing",
     });
+
+    const broken = createKiroProvider({
+      dataDir: root,
+      id: "kiro-broken",
+      command: [process.execPath, program, "broken"],
+    });
+    await expect(broken.adapter.checkReadiness(signal)).resolves.toEqual({
+      status: "not_ready",
+      reason: "check_failed",
+    });
+
+    const emptyModels = createKiroProvider({
+      dataDir: root,
+      id: "kiro-empty",
+      command: [process.execPath, program, "empty-models"],
+    });
+    await expect(emptyModels.listModels?.(signal)).rejects.toThrow(
+      "Kiro returned no models"
+    );
+
     const missing = createKiroProvider({
       dataDir: root,
       id: "kiro-missing",
