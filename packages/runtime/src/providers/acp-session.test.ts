@@ -1,6 +1,13 @@
 import { realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { runAcpSession } from "./acp-session.ts";
+import {
+  acpOrganizationMcp,
+  acpRpc,
+  runAcpSessionReplay,
+  runOwnedAcpSession,
+} from "./acp-test-support.ts";
 import {
   extractJsonModels,
   extractJsonObject,
@@ -8,14 +15,8 @@ import {
   isExplicitlySignedOut,
   isPositiveLoginLine,
   parsePlainBulletModels,
-  runAcpSession,
   stripAnsi,
-} from "./acp-session.ts";
-import {
-  acpOrganizationMcp,
-  acpRpc,
-  runAcpSessionReplay,
-} from "./acp-test-support.ts";
+} from "./host-cli.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -146,8 +147,8 @@ describe("ACP session client", () => {
       script,
       "console.error('\\u001b[31mNot signed in. Run login first.\\u001b[0m');\nprocess.exitCode = 1;\n"
     );
-    const stop = new AbortController();
-    const running = runAcpSession(
+    const { result } = await runOwnedAcpSession(
+      folders,
       {
         logName: "TestAcp",
         dataDir: root,
@@ -159,14 +160,9 @@ describe("ACP session client", () => {
       {
         ...request(),
         workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      },
-      { signal: stop.signal, emit: async () => {} }
+      }
     );
-    folders.own(async () => {
-      stop.abort();
-      await running.catch(() => undefined);
-    }, "an early-exit ACP run");
-    await expect(running).resolves.toEqual({
+    expect(result).toEqual({
       stopReason: "failed",
       error: "프로바이더 실행이 실패했습니다.",
       errorCode: "login_required",
@@ -195,8 +191,8 @@ describe("ACP session client", () => {
         "",
       ].join("\n")
     );
-    const stop = new AbortController();
-    const running = runAcpSession(
+    const { result } = await runOwnedAcpSession(
+      folders,
       {
         logName: "TestAcp",
         dataDir: root,
@@ -209,16 +205,57 @@ describe("ACP session client", () => {
         ...request(),
         model: "bad-model",
         workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      },
-      { signal: stop.signal, emit: async () => {} }
+      }
     );
-    folders.own(async () => {
-      stop.abort();
-      await running.catch(() => undefined);
-    }, "a banner-stderr ACP run");
-    await expect(running).resolves.toEqual({
+    expect(result).toEqual({
       stopReason: "failed",
       error: "고른 모델을 쓸 수 없어 실행하지 않았습니다.",
+      summary: null,
+      usage: null,
+      nextSession: null,
+    });
+  });
+
+  it("reports login_required when session/prompt returns a generic RPC error alongside auth failure on stderr", async () => {
+    const root = await folders.make("acp-prompt-stderr-auth-");
+    const script = path.join(root, "prompt-auth-stderr.mjs");
+    await writeFile(
+      script,
+      [
+        "import { createInterface } from 'node:readline';",
+        "const out = (v) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...v }) + '\\n');",
+        "for await (const line of createInterface({ input: process.stdin })) {",
+        "  if (!line.trim()) continue;",
+        "  const { id, method } = JSON.parse(line);",
+        "  if (method === 'initialize') out({ id, result: { protocolVersion: 1 } });",
+        "  else if (method === 'session/new') out({ id, result: { sessionId: 's-stderr-auth' } });",
+        "  else if (method === 'session/prompt') {",
+        "    console.error('401 Unauthorized: token expired');",
+        "    out({ id, error: { code: -32603, message: 'Internal error' } });",
+        "  }",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const { result } = await runOwnedAcpSession(
+      folders,
+      {
+        logName: "TestAcp",
+        dataDir: root,
+        connectionId: "test-acp",
+        command: [process.execPath, script],
+        args: ["acp"],
+        env: { ...process.env },
+      },
+      {
+        ...request(),
+        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      }
+    );
+    expect(result).toEqual({
+      stopReason: "failed",
+      error: "프로바이더 실행이 실패했습니다.",
+      errorCode: "login_required",
       summary: null,
       usage: null,
       nextSession: null,
@@ -548,9 +585,67 @@ describe("ACP session client", () => {
       text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
     });
   });
+
+  it("resets configOptions from a failed session/load before falling back to session/new", async () => {
+    const { result } = await runAcpSessionReplay(folders, {
+      prefix: "acp-load-reset-config-",
+      steps: [
+        { input: { method: "initialize" } },
+        acpRpc(1, { result: { protocolVersion: 1 } }),
+        {
+          input: {
+            method: "session/load",
+            params: { sessionId: "stale-cfg", ...acpOrganizationMcp },
+          },
+        },
+        {
+          frame: {
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId: "stale-cfg",
+              update: {
+                sessionUpdate: "config_option_update",
+                configOptions: [{ id: "stale_model", category: "model" }],
+              },
+            },
+          },
+        },
+        acpRpc(2, { error: { code: -32002, message: "session not found" } }),
+        { input: { method: "session/new", params: acpOrganizationMcp } },
+        acpRpc(3, { result: { sessionId: "fresh-cfg" } }),
+        {
+          input: {
+            method: "session/set_config_option",
+            params: {
+              sessionId: "fresh-cfg",
+              configId: "model",
+              value: "m-fresh",
+            },
+          },
+        },
+        acpRpc(4, { result: {} }),
+        {
+          input: {
+            method: "session/prompt",
+            params: { sessionId: "fresh-cfg" },
+          },
+        },
+        acpRpc(5, { result: { stopReason: "end_turn" } }),
+      ],
+      patch: { previousSession: { id: "stale-cfg" }, model: "m-fresh" },
+    });
+    expect(result).toEqual({
+      stopReason: "completed",
+      error: null,
+      summary: null,
+      usage: null,
+      nextSession: { id: "fresh-cfg" },
+    });
+  });
 });
 
-describe("ACP parsing and login classification helpers", () => {
+describe("Host CLI parsing and login classification helpers", () => {
   it("strips ANSI CSI and OSC sequences and evaluates auth errors per line excluding positive lines", () => {
     expect(stripAnsi("\u001b[32m* grok-4.7\u001b[0m")).toBe("* grok-4.7");
     expect(stripAnsi("\u001b]0;window title\u0007Logged in")).toBe("Logged in");
@@ -564,6 +659,9 @@ describe("ACP parsing and login classification helpers", () => {
     expect(
       isAcpAuthProblem("Authenticated with IAM Identity Center\nNetwork error")
     ).toBe(false);
+    expect(isAcpAuthProblem("Authenticated with IAM: 401 Unauthorized")).toBe(
+      true
+    );
   });
 
   it("distinguishes positive login confirmations from negative or ambiguous text", () => {
@@ -574,6 +672,9 @@ describe("ACP parsing and login classification helpers", () => {
       true
     );
     expect(isPositiveLoginLine("You are logged in with grok.com.")).toBe(true);
+    expect(
+      isPositiveLoginLine("Authenticated with IAM: 401 Unauthorized")
+    ).toBe(false);
     expect(isPositiveLoginLine("Not authenticated")).toBe(false);
     expect(isPositiveLoginLine("You must be logged in to continue.")).toBe(
       false
@@ -596,20 +697,25 @@ describe("ACP parsing and login classification helpers", () => {
     ).toEqual([{ id: "grok-4.7", label: "grok-4.7" }]);
   });
 
-  it("parses plain bullet models including auto with description while rejecting help and numbered lists", () => {
+  it("parses plain bullet models including parenthetical and column rows while rejecting prose bullets", () => {
     expect(
       parsePlainBulletModels(
         [
           "  - Help",
           "  - 1. Run login first",
           "  - non-interactive mode",
+          "  - v2 API enabled",
           "  * auto  Automatic selection",
+          "  * grok-fast (default)",
+          "  * claude-opus (default) - Fast reasoning model",
           "  * Grok-4.8 (default)",
           "  - grok-4.5",
         ].join("\n")
       )
     ).toEqual([
       { id: "auto", label: "auto" },
+      { id: "grok-fast", label: "grok-fast" },
+      { id: "claude-opus", label: "claude-opus" },
       { id: "Grok-4.8", label: "Grok-4.8" },
       { id: "grok-4.5", label: "grok-4.5" },
     ]);

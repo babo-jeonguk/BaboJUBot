@@ -52,17 +52,22 @@ async function createProbeFixture(root: string): Promise<string> {
       "  process.exitCode = 1;",
       "} else if (mode === 'signed-out-zero') {",
       "  console.log('Not authenticated. You must be logged in.');",
+      "} else if (mode === 'signed-out-stderr') {",
+      "  console.error('Not signed in');",
       "} else if (mode === 'unknown-help') {",
       "  console.log('Usage: grok [options]');",
       "  console.log('  - Help');",
       "  console.log('  - 1. Run diagnostics');",
       "  console.log('  - non-interactive mode');",
+      "  console.log('  - v2 API enabled');",
       "} else if (mode === 'broken') {",
       "  console.error('internal failure');",
       "  process.exitCode = 2;",
       "} else if (mode === 'models-only') {",
       "  console.log('Available models [2]:');",
       "  console.log('  * Grok-4.8 (default)');",
+      "} else if (mode === 'digitless-model') {",
+      "  console.log('  * grok-fast (default)');",
       "} else if (mode === 'json-array') {",
       "  console.log(JSON.stringify([{ id: 'grok-json-1', name: 'Grok JSON 1' }]));",
       "} else if (mode === 'empty-models') {",
@@ -223,6 +228,19 @@ describe("Grok readiness and models", () => {
       { id: "Grok-4.8", label: "Grok-4.8" },
     ]);
 
+    const digitless = createGrokProvider({
+      dataDir: root,
+      id: "grok-digitless",
+      command: [process.execPath, program, "digitless-model"],
+    });
+    await expect(digitless.adapter.checkReadiness(signal)).resolves.toEqual({
+      status: "ready",
+      reason: null,
+    });
+    await expect(digitless.listModels?.(signal)).resolves.toEqual([
+      { id: "grok-fast", label: "grok-fast" },
+    ]);
+
     const jsonArray = createGrokProvider({
       dataDir: root,
       id: "grok-json-array",
@@ -240,6 +258,7 @@ describe("Grok readiness and models", () => {
     for (const [id, mode] of [
       ["grok-out", "signed-out"],
       ["grok-out-zero", "signed-out-zero"],
+      ["grok-out-stderr", "signed-out-stderr"],
     ] as const) {
       const provider = createGrokProvider({
         dataDir: root,

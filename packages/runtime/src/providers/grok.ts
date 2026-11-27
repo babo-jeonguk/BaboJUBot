@@ -1,5 +1,5 @@
 import os from "node:os";
-import type { ModelOption, ProviderConnection } from "@babojubot/contracts";
+import type { ProviderConnection } from "@babojubot/contracts";
 import {
   commandFor,
   probeEnding,
@@ -7,15 +7,14 @@ import {
   runProbe,
 } from "./process.ts";
 import {
-  extractJsonModels,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
   isPositiveLoginLine,
-  parsePlainBulletModels,
+  parseCliModels,
   probeErrorFields,
-  runAcpSession,
-} from "./acp-session.ts";
+} from "./host-cli.ts";
+import { runAcpSession } from "./acp-session.ts";
 
 /**
  * Grok Build CLI의 ACP(`grok agent --no-leader stdio`). 로그인은 이 컴퓨터의 `grok login`(grok.com, `~/.grok`)이다.
@@ -33,16 +32,14 @@ export function createGrokProvider(options: {
   const connectionId = options.id ?? "grok";
   const command = options.command ?? commandFor(connectionId, "grok");
   const env = () => hostProviderEnvironment(connectionId);
-  const probe = async (args: string[], signal: AbortSignal) =>
-    (
-      await runProbe(command, args, {
-        cwd: os.tmpdir(),
-        env: env(),
-        signal,
-        timeout: probeTimeoutMs,
-        maxBuffer: 1024 * 1024,
-      })
-    ).stdout;
+  const probe = (args: string[], signal: AbortSignal) =>
+    runProbe(command, args, {
+      cwd: os.tmpdir(),
+      env: env(),
+      signal,
+      timeout: probeTimeoutMs,
+      maxBuffer: 1024 * 1024,
+    });
   const adapter: ProviderConnection["adapter"] = {
     capabilities: {
       steer: false,
@@ -56,15 +53,11 @@ export function createGrokProvider(options: {
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       try {
-        const output = await probe(["models"], signal);
-        if (isExplicitlySignedOut(output))
+        const { stdout, stderr } = await probe(["models"], signal);
+        const combined = `${stdout}\n${stderr}`;
+        if (isExplicitlySignedOut(combined))
           return { status: "not_ready", reason: "product_login_missing" };
-        // 도움말·배너의 일반 글머리가 ready로 오판되지 않도록, JSON 모델·숫자 포함 모델 ID 또는 명시적 로그인 문구만 양성 증거로 인정한다.
-        const jsonModels = extractJsonModels(output);
-        const hasVersionedModel =
-          (jsonModels !== undefined && jsonModels.length > 0) ||
-          parsePlainBulletModels(output).some((model) => /\d/.test(model.id));
-        if (hasVersionedModel || isPositiveLoginLine(output))
+        if (parseCliModels(stdout).length > 0 || isPositiveLoginLine(combined))
           return { status: "ready", reason: null };
         console.warn(
           `[provider] the ${connectionId} readiness check returned an unexpected response`
@@ -107,15 +100,10 @@ export function createGrokProvider(options: {
     adapter,
     models: [],
     async listModels(signal) {
-      const stdout = await probe(["models"], signal);
-      const parsed = modelsFrom(stdout);
+      const { stdout } = await probe(["models"], signal);
+      const parsed = parseCliModels(stdout);
       if (parsed.length === 0) throw new Error("Grok returned no models");
       return parsed;
     },
   };
-}
-
-/** `grok models` 출력에서 모델 ID를 읽는다. JSON(객체 `{ models }`·최상위 배열)과 ANSI가 섞인 글머리 줄을 모두 받는다. */
-function modelsFrom(stdout: string): ModelOption[] {
-  return extractJsonModels(stdout) ?? parsePlainBulletModels(stdout);
 }
