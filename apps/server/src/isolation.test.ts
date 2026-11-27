@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -15,6 +15,8 @@ import type { CredentialRelayEndpoint } from "@babojubot/contracts";
 import { containerOwner, IsolationGate } from "./isolation.ts";
 import {
   folderCleanup,
+  ownedListener,
+  releaseAcquired,
   removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 import { insideFolder } from "@babojubot/process/test-support";
@@ -451,19 +453,19 @@ describe.each([
       },
     };
     async function failedRelay() {
-      const dataDir = await mkdtemp(path.join(tmpdir(), "babojubot-gate-"));
-      // 폴더는 그것을 쓰는 서버가 모두 닫힌 뒤에 지운다. 닫지 못한 서버가 있으면 폴더를 남기고 알린다.
-      const cleanup = folderCleanup(() => removeFolderWithin(dataDir));
-      onTestFinished(cleanup.cleanUp);
-      const server = http.createServer((_req, res) => res.writeHead(200).end());
-      await new Promise<void>((resolve) =>
-        server.listen(0, "127.0.0.1", resolve)
+      // 폴더는 만들기를 시작한 순간 정리에 맡기고, 그것을 쓰는 서버가 모두 닫힌 뒤에 지운다. 닫지 못한 서버가 있으면 폴더를 남기고 알린다.
+      const making = mkdtemp(path.join(tmpdir(), "babojubot-gate-"));
+      const cleanup = folderCleanup(() =>
+        releaseAcquired(making, (folder) => removeFolderWithin(folder))
       );
-      cleanup.own(
-        () =>
-          new Promise<void>((resolve, reject) =>
-            server.close((error) => (error ? reject(error) : resolve()))
-          )
+      onTestFinished(cleanup.cleanUp);
+      const dataDir = await making;
+      // 서버의 닫기는 듣기 전에 폴더 정리에 맡긴다.
+      const { server } = await ownedListener(
+        http.createServer((_req, res) => res.writeHead(200).end()),
+        { port: 0, host: "127.0.0.1" },
+        (close) => cleanup.own(close),
+        "the upstream server"
       );
       const provider = connection.create({
         dataDir,
@@ -489,29 +491,23 @@ describe.each([
       };
       refusal = fault;
       const folder = path.join(dataDir, "providers", connection.id);
-      // 이 컴퓨터가 링크를 만들 수 없다는 것은 연결 확인이 로그인 자리를 준비할 때 드러난다. 확인은 링크를 시도해 거절당하고, 로그인을
-      // 연결 폴더의 자리로 둔다. 거절이 실제로 그 자리의 임시 링크에서 났는지 본다(임시 링크 이름의 무작위 부분은 뗀다).
+      // 이 컴퓨터가 링크를 만들 수 없다는 것은 연결 확인이 로그인 자리를 준비할 때 드러난다(서버의 준비 확인이 격리 관문 다음에 부르는
+      // 그 확인. 아래 중계·관문·배치는 링크를 시도하지 않는다). 확인은 링크를 시도해 거절당하고, 링크 대신 연결 폴더의 자리를 쓰기로
+      // 한다. 옮길 로그인이 아직 없어 그 자리는 빈 채로 남는다(링크로 바뀌지 않는다). 그래서 뒤에 그 자리에 쓰는 로그인은 보통 파일이다.
+      // 거절이 실제로 그 자리 옆(그 자리의 폴더)의 링크에서 났는지, 대역이 받은 정확한 경로의 폴더로 본다.
       await provider.adapter.checkReadiness(AbortSignal.timeout(10_000));
       expect([
-        ...new Set(
-          fault.failedAt.map((link) =>
-            link.replace(/\.[0-9a-f-]{36}\.link$/, "")
-          )
-        ),
-      ]).toEqual([path.join(folder, ...connection.place)]);
-      // 로그인이 어디에도 없다. 격리 실행의 모델 요청이 중계 실패로 끝난다.
-      const relayServer = http.createServer((req, res) =>
-        relay.handle(req, res)
+        ...new Set(fault.failedAt.map((link) => path.dirname(link))),
+      ]).toEqual([path.dirname(path.join(folder, ...connection.place))]);
+      // 로그인이 어디에도 없다. 격리 실행의 모델 요청이 중계 실패로 끝난다. 아래 세 단언(중계 503, 관문의 credential_relay_failed,
+      // 배치 거절)은 이 로그인 없음을 본다. 링크 거절 때문에 나는 것이 아니다(거절은 옮길 로그인이 없어 바꾼 것이 없다). 서버의 닫기는
+      // 듣기 전에 폴더 정리에 맡긴다(받은 연결을 먼저 끊는다).
+      const { server: relayServer } = await ownedListener(
+        http.createServer((req, res) => relay.handle(req, res)),
+        { port: 0, host: "127.0.0.1" },
+        (close) => cleanup.own(close),
+        "the relay server"
       );
-      await new Promise<void>((resolve) =>
-        relayServer.listen(0, "127.0.0.1", resolve)
-      );
-      cleanup.own(() => {
-        relayServer.closeAllConnections();
-        return new Promise<void>((resolve, reject) =>
-          relayServer.close((error) => (error ? reject(error) : resolve()))
-        );
-      });
       const { token } = relay.grant({
         signal: new AbortController().signal,
         organizationId: crypto.randomUUID(),
@@ -532,30 +528,37 @@ describe.each([
         reason: "credential_relay_failed",
       });
       await expect(gate.place(target)).rejects.toThrow("로그인을 쓰지 못해");
-      /** 다시 로그인한다. 로그인 명령은 연결 폴더에서 돌아 그 자리에 쓴다. */
+      /** 연결 폴더의 로그인 자리. */
+      const place = path.join(folder, ...connection.place);
+      /** 다시 로그인한다. 로그인 명령은 연결 폴더에서 돌아 그 자리에 보통 파일로 쓴다(앞의 거절로 그 자리는 링크가 아니다). */
       const logIn = async () => {
-        const at = path.join(folder, ...connection.place);
-        await mkdir(path.dirname(at), { recursive: true });
-        await writeFile(at, connection.login, { mode: 0o600 });
+        await mkdir(path.dirname(place), { recursive: true });
+        await writeFile(place, connection.login, { mode: 0o600 });
       };
       const original = path.join(folder, "login", connection.place.at(-1)!);
-      return { target, logIn, provider, original };
+      return { target, logIn, provider, original, place };
     }
 
-    it("clears the relay failure on the check after logging in again at the connection folder's place, and lets the next isolated run start", async () => {
-      const { target, logIn } = await failedRelay();
+    it("clears the relay failure on the check after logging in again at the connection folder's place, which stays a regular file with no login at the login folder, and lets the next isolated run start", async () => {
+      const { target, logIn, original, place } = await failedRelay();
+      // 링크 거절의 결과: 그 자리는 링크가 아니어서 다시 로그인한 파일이 그 자리의 보통 파일로 남고 원본으로 흘러가지 않는다. 링크를
+      // 만들 수 있었다면 연결 확인이 그 자리를 원본을 가리키는 링크로 두어 로그인이 원본에 쓰인다. 원본이 없으므로 중계는 연결 폴더의
+      // 자리를 읽어 회복하고, 회복과 배치 뒤에도 로그인은 그 자리에만 있다.
       await logIn();
       await expect(gate!.readiness(target)).resolves.toBeNull();
       await expect(gate!.place(target)).resolves.toMatchObject({
         execution: "container",
       });
+      expect((await lstat(place)).isFile()).toBe(true);
+      await expect(lstat(original)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    it("clears the relay failure on the first check after links become possible, and keeps it clear once the check moves the login back to the login folder", async () => {
+    it("clears the relay failure on the first check after links become possible, and keeps it clear once the check moves the login from the connection folder's place to the login folder", async () => {
       const { target, logIn, provider, original } = await failedRelay();
       await logIn();
       refusal = null;
-      // 준비 확인은 격리 관문(중계 복구)을 먼저 보고 그다음 연결을 확인한다. 연결 확인이 로그인을 원본 자리로 되돌린다.
+      // 준비 확인은 격리 관문(중계 복구)을 먼저 보고 그다음 연결을 확인한다. 링크를 만들 수 있게 된 연결 확인이 연결 폴더 자리의 보통
+      // 파일(링크를 만들 수 없던 동안 쓴 로그인)을 원본 자리로 옮기고 그 자리를 원본을 가리키는 링크로 둔다.
       await expect(gate!.readiness(target)).resolves.toBeNull();
       await provider.adapter.checkReadiness(AbortSignal.timeout(10_000));
       expect(await readFile(original, "utf8")).toBe(connection.login);
