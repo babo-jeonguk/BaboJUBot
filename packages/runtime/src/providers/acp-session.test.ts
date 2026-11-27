@@ -1,20 +1,23 @@
 import { access, realpath, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
+import { within } from "@babojubot/process/test-support";
 import { describe, expect, it } from "vitest";
 import {
   acpOrganizationMcp,
   acpRpc,
+  acpWorkspace,
   readRecordedFrames,
   runAcpSessionReplay,
   runOwnedAcpSession,
+  testAcpSessionOptions,
   writeRecordingAcpPeer,
 } from "./acp-test-support.ts";
 import {
   extractJsonModels,
   extractJsonObject,
   hasPositiveLoginLine,
-  isAcpAuthProblem,
+  isAuthProblem,
   isExplicitlySignedOut,
   isPositiveLoginLine,
   parsePlainBulletModels,
@@ -31,19 +34,12 @@ describe("ACP session client", () => {
     const marker = path.join(root, "spawned");
     const { result } = await runOwnedAcpSession(
       folders,
-      {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [
-          process.execPath,
-          "-e",
-          "require('node:fs').writeFileSync(process.argv[1], 'ran')",
-          marker,
-        ],
-        args: ["acp"],
-        env: { ...process.env },
-      },
+      testAcpSessionOptions(root, [
+        process.execPath,
+        "-e",
+        "require('node:fs').writeFileSync(process.argv[1], 'ran')",
+        marker,
+      ]),
       { ...request(), execution: "container" }
     );
     expect(result).toEqual({
@@ -123,28 +119,13 @@ describe("ACP session client", () => {
     const marker = path.join(root, "spawned");
     const { result } = await runOwnedAcpSession(
       folders,
-      {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [
-          process.execPath,
-          "-e",
-          "require('node:fs').writeFileSync(process.argv[1], 'ran')",
-          marker,
-        ],
-        args: ["acp"],
-        env: { ...process.env },
-      },
-      {
-        ...request(),
-        workspace: {
-          cwd: missing,
-          organization: root,
-          personal: root,
-          peers: [],
-        },
-      }
+      testAcpSessionOptions(root, [
+        process.execPath,
+        "-e",
+        "require('node:fs').writeFileSync(process.argv[1], 'ran')",
+        marker,
+      ]),
+      { ...request(), workspace: acpWorkspace(root, missing) }
     );
     expect(result).toEqual({
       stopReason: "failed",
@@ -165,18 +146,8 @@ describe("ACP session client", () => {
     );
     const { result } = await runOwnedAcpSession(
       folders,
-      {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [process.execPath, script],
-        args: ["acp"],
-        env: { ...process.env },
-      },
-      {
-        ...request(),
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      }
+      testAcpSessionOptions(root, [process.execPath, script]),
+      { ...request(), workspace: acpWorkspace(root) }
     );
     expect(result).toEqual({
       stopReason: "failed",
@@ -205,19 +176,8 @@ describe("ACP session client", () => {
     });
     const { result } = await runOwnedAcpSession(
       folders,
-      {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [process.execPath, script],
-        args: ["acp"],
-        env: { ...process.env },
-      },
-      {
-        ...request(),
-        model: "bad-model",
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      }
+      testAcpSessionOptions(root, [process.execPath, script]),
+      { ...request(), model: "bad-model", workspace: acpWorkspace(root) }
     );
     expect(result).toEqual({
       stopReason: "failed",
@@ -249,18 +209,8 @@ describe("ACP session client", () => {
     });
     const { result } = await runOwnedAcpSession(
       folders,
-      {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [process.execPath, script],
-        args: ["acp"],
-        env: { ...process.env },
-      },
-      {
-        ...request(),
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      }
+      testAcpSessionOptions(root, [process.execPath, script]),
+      { ...request(), workspace: acpWorkspace(root) }
     );
     expect(result).toEqual({
       stopReason: "failed",
@@ -336,13 +286,26 @@ describe("ACP session client", () => {
       stop.abort();
       socket.end();
     });
-    await new Promise<void>((resolve) =>
-      trigger.listen(0, "127.0.0.1", () => resolve())
+    await within(
+      new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => reject(error);
+        trigger.once("error", onError);
+        trigger.listen(0, "127.0.0.1", () => {
+          trigger.off("error", onError);
+          resolve();
+        });
+      }),
+      5_000,
+      "the cancel trigger server did not listen"
     );
     folders.own(
       () =>
-        new Promise<void>((resolve, reject) =>
-          trigger.close((error) => (error ? reject(error) : resolve()))
+        within(
+          new Promise<void>((resolve, reject) =>
+            trigger.close((error) => (error ? reject(error) : resolve()))
+          ),
+          5_000,
+          "the cancel trigger server did not close"
         ),
       "the cancel trigger server"
     );
@@ -366,19 +329,9 @@ describe("ACP session client", () => {
     });
     const { result } = await runOwnedAcpSession(
       folders,
-      {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [process.execPath, script],
-        args: ["acp"],
-        env: { ...process.env },
-      },
-      {
-        ...request(),
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      },
-      { controller: stop }
+      testAcpSessionOptions(root, [process.execPath, script]),
+      { ...request(), workspace: acpWorkspace(root) },
+      stop
     );
     expect(result).toEqual({
       stopReason: "cancelled",
@@ -554,19 +507,8 @@ describe("ACP session client", () => {
     });
     const { result } = await runOwnedAcpSession(
       folders,
-      {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [process.execPath, script],
-        args: ["acp"],
-        env: { ...process.env },
-      },
-      {
-        ...request(),
-        model: "m1",
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
-      }
+      testAcpSessionOptions(root, [process.execPath, script]),
+      { ...request(), model: "m1", workspace: acpWorkspace(root) }
     );
     expect(result).toEqual({
       stopReason: "failed",
@@ -687,11 +629,11 @@ describe("Host CLI parsing and login classification helpers", () => {
     expect(isExplicitlySignedOut("\u001b[31mNot signed in\u001b[0m")).toBe(
       true
     );
-    expect(isAcpAuthProblem("\u001b[31mNot signed in\u001b[0m")).toBe(true);
+    expect(isAuthProblem("\u001b[31mNot signed in\u001b[0m")).toBe(true);
     expect(
-      isAcpAuthProblem("Authenticated with IAM Identity Center\nNetwork error")
+      isAuthProblem("Authenticated with IAM Identity Center\nNetwork error")
     ).toBe(false);
-    expect(isAcpAuthProblem("Authenticated with IAM: 401 Unauthorized")).toBe(
+    expect(isAuthProblem("Authenticated with IAM: 401 Unauthorized")).toBe(
       true
     );
   });
@@ -743,12 +685,14 @@ describe("Host CLI parsing and login classification helpers", () => {
         [
           "  - Help",
           "  - Help (show usage)",
+          "  - Help   Show usage",
           "  - login   Sign in",
           "  - 1. Run login first",
           "  - non-interactive mode",
           "  - v2 API enabled",
           "  * auto  Automatic selection",
           "  * grok-fast  Fast coding model",
+          "  * Grok-4.9  Latest reasoning model",
           "  * grok-fast (default)",
           "  * claude-opus (default) - Fast reasoning model",
           "  * Grok-4.8 (default)",
@@ -758,6 +702,7 @@ describe("Host CLI parsing and login classification helpers", () => {
     ).toEqual([
       { id: "auto", label: "auto" },
       { id: "grok-fast", label: "grok-fast" },
+      { id: "Grok-4.9", label: "Grok-4.9" },
       { id: "claude-opus", label: "claude-opus" },
       { id: "Grok-4.8", label: "Grok-4.8" },
       { id: "grok-4.5", label: "grok-4.5" },

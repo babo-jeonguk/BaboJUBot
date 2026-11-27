@@ -33,6 +33,30 @@ export const acpOpening = [
   acpRpc(2, { result: { sessionId: "saved" } }),
 ];
 
+/** 시험용 임시 작업 폴더 구성을 만든다. */
+export const acpWorkspace = (
+  root: string,
+  cwd = root
+): NonNullable<RunRequest["workspace"]> => ({
+  cwd,
+  organization: root,
+  personal: root,
+  peers: [],
+});
+
+/** 공용 `TestAcp` 세션 실행 옵션을 만든다. */
+export const testAcpSessionOptions = (
+  root: string,
+  command: readonly [string, ...string[]]
+): AcpSessionOptions => ({
+  logName: "TestAcp",
+  dataDir: root,
+  connectionId: "test-acp",
+  command,
+  args: ["acp"],
+  env: { ...process.env },
+});
+
 /**
  * `runAcpSession`을 실행하면서 `folders.own`에 중단·종료 대기를 등록한다.
  * 시험이 실패하거나 중단돼도 자식이 끝난 뒤에만 임시 폴더를 지운다(CODING_STANDARDS.md#정리).
@@ -41,18 +65,14 @@ export async function runOwnedAcpSession(
   folders: ReturnType<typeof testFolders>,
   options: AcpSessionOptions,
   runRequest: RunRequest,
-  control?: {
-    controller?: AbortController;
-    onEmit?: (activity: unknown, abort: () => void) => void;
-  }
+  controller?: AbortController
 ): Promise<{ result: RunResult; activity: unknown[] }> {
   const activity: unknown[] = [];
-  const stop = control?.controller ?? new AbortController();
+  const stop = controller ?? new AbortController();
   const running = runAcpSession(options, runRequest, {
     signal: stop.signal,
     emit: async (item) => {
       activity.push(item);
-      control?.onEmit?.(item, () => stop.abort());
     },
   });
   folders.own(async () => {
@@ -129,7 +149,6 @@ export async function runAcpSessionReplay(
           runRequest: RunRequest;
         }) => Record<string, unknown>[]);
     patch?: Partial<RunRequest>;
-    onEmit?: (activity: unknown, abort: () => void) => void;
   }
 ): Promise<{
   result: RunResult;
@@ -142,7 +161,7 @@ export async function runAcpSessionReplay(
   const realRoot = await realpath(root);
   const runRequest: RunRequest = {
     ...request(),
-    workspace: { cwd: root, organization: root, personal: root, peers: [] },
+    workspace: acpWorkspace(root),
     ...options.patch,
   };
   const steps =
@@ -153,20 +172,12 @@ export async function runAcpSessionReplay(
   await writeFile(fixture, JSON.stringify({ argv: { acp: true }, steps }));
   const { result, activity } = await runOwnedAcpSession(
     folders,
-    {
-      logName: "TestAcp",
-      dataDir: root,
-      connectionId: "test-acp",
-      command: [
-        process.execPath,
-        path.resolve("test-fixtures/replay.mjs"),
-        fixture,
-      ],
-      args: ["acp"],
-      env: { ...process.env },
-    },
-    runRequest,
-    options.onEmit ? { onEmit: options.onEmit } : undefined
+    testAcpSessionOptions(root, [
+      process.execPath,
+      path.resolve("test-fixtures/replay.mjs"),
+      fixture,
+    ]),
+    runRequest
   );
   return { result, activity, root, realRoot, runRequest };
 }
@@ -203,7 +214,7 @@ export async function runProviderAcpReplay(
     {
       ...request(),
       ...options.patch,
-      workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      workspace: acpWorkspace(root),
     },
     {
       signal: new AbortController().signal,

@@ -6,6 +6,7 @@ import {
   acpOpening,
   acpOrganizationMcp,
   acpRpc,
+  acpWorkspace,
   readRecordedFrames,
   runProviderAcpReplay,
   writeRecordingAcpPeer,
@@ -174,7 +175,7 @@ describe("Kiro ACP", () => {
       {
         ...request(),
         model: "claude-haiku-5.5",
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+        workspace: acpWorkspace(root),
       },
       { signal: new AbortController().signal, emit: async () => {} }
     );

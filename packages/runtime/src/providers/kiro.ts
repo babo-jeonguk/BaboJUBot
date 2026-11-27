@@ -14,7 +14,7 @@ import {
   extractJsonObject,
   hasPositiveLoginLine,
   hostProviderEnvironment,
-  isAcpAuthProblem,
+  isAuthProblem,
   isExplicitlySignedOut,
   parseCliModels,
   probeErrorFields,
@@ -53,7 +53,7 @@ function classifyWhoamiJson(
     parsed.logged_in === false ||
     parsed.loggedIn === false ||
     parsed.authenticated === false ||
-    (typeof parsed.error === "string" && isAcpAuthProblem(parsed.error))
+    (typeof parsed.error === "string" && isAuthProblem(parsed.error))
   )
     return "signed_out";
   if ("error" in parsed && parsed.error !== null && parsed.error !== undefined)
@@ -98,7 +98,7 @@ function classifyProbeFailure(
   if (parsed && classifyWhoamiJson(parsed) === "signed_out")
     return { status: "not_ready", reason: "product_login_missing" };
   const text = `${detail.stdout}\n${detail.stderr}`;
-  if (isAcpAuthProblem(text))
+  if (isAuthProblem(text))
     return { status: "not_ready", reason: "product_login_missing" };
   console.warn(
     `[provider] the ${connectionId} readiness check failed (${probeEnding(error)})`
