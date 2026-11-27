@@ -55,6 +55,7 @@ import {
   removeContainer,
   runDocker,
 } from "./container.ts";
+import { callArming } from "@babojubot/process/call-arming";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { lifelineHolder } from "@babojubot/process/test-cleanup";
 import {
@@ -65,8 +66,8 @@ import {
 import { relaySockets } from "./relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
 import {
+  failingConnectsDuring,
   failingRelayClosesDuring,
-  refusing,
   resetRefusing,
 } from "./connect-failure-support.ts";
 import { startProcess } from "./process.ts";
@@ -161,19 +162,20 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 /**
- * 중계의 목적지 판정을 갈음한다. 비어 있으면 실제 판정이다. 격리 확인은 중계의 주소 확인이 금지 목적지를 막는지 보는 검사이므로,
- * 그 확인이 고장 난 중계(금지 목적지를 열어 주거나 다른 이유로 거부함)를 만들어 확인이 그것을 알아보는지 본다.
+ * 중계의 목적지 판정을 갈음한다. 격리 확인은 중계의 주소 확인이 금지 목적지를 막는지 보는 검사이므로, 그 확인이 고장 난 중계(금지
+ * 목적지를 열어 주거나 다른 이유로 거부함)를 만들어 확인이 그것을 알아보는지 본다. 판정에는 그 시험만의 경로가 없으므로 그 시험이 부른
+ * 확인 호출에 묶고(`policyCalls`), 갈음한 판정마다 그 목적지를 `decided`에 남긴다. 무장이 없으면 실제 판정이다.
  */
-const policy = vi.hoisted(() => ({
-  decide: undefined as
-    | undefined
-    | ((
-        host: string,
-        port: number
-      ) =>
-        | { allowed: true; addresses: string[] }
-        | { allowed: false; reason: EgressRefusal }),
-}));
+type PolicyFault = {
+  decide: (
+    host: string,
+    port: number
+  ) =>
+    | { allowed: true; addresses: string[] }
+    | { allowed: false; reason: EgressRefusal };
+  decided: [string, number][];
+};
+const policyCalls = callArming<PolicyFault>();
 // 중계가 허용된 목적지로 붙는 연결(`relay.ts`의 `net.connect`)을 정한 오류로 실패시킨다(connect-failure-support.ts). 정한 포트가
 // 없으면 모든 연결이 진짜로 간다.
 vi.mock("node:net", async (importOriginal) =>
@@ -194,10 +196,12 @@ vi.mock("./egress-policy.ts", async (importOriginal) => {
     ...actual,
     decideDestination: (
       ...args: Parameters<typeof actual.decideDestination>
-    ) =>
-      policy.decide
-        ? Promise.resolve(policy.decide(args[1], args[2]))
-        : actual.decideDestination(...args),
+    ) => {
+      const fault = policyCalls.current();
+      if (!fault) return actual.decideDestination(...args);
+      fault.decided.push([args[1], args[2]]);
+      return Promise.resolve(fault.decide(args[1], args[2]));
+    },
   };
 });
 
@@ -233,7 +237,6 @@ afterEach(() => {
   resetRefusing();
   refusal = null;
   locked.folder = null;
-  policy.decide = undefined;
   opening.beforeWal = undefined;
   opening.beforeNameCheck = undefined;
   opening.missMain = false;
@@ -3452,25 +3455,39 @@ describe.skipIf(process.platform === "win32")(
     }
 
     /**
-     * 금지 목적지. 중계가 그 주소로 붙으면 그 연결은 정한 오류(EHOSTUNREACH)로 실패하고 붙은 주소·포트가 남는다
-     * (connect-failure-support.ts). 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 번호를 잡으면 결함 없이 실패한다
-     * (#294 외부 리뷰 2회차 STD-2).
+     * 금지 목적지. 아무도 열지 않은 포트라 그 시험만의 자원이 아니다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 번호를
+     * 잡으면 결함 없이 실패한다(#294 외부 리뷰 2회차 STD-2).
      */
-    function forbiddenTarget() {
-      const target = { host: "127.0.0.1", port: 40_125 };
-      refusing.refuse = { port: target.port, code: "EHOSTUNREACH" };
-      return target;
+    const forbiddenTarget = () => ({ host: "127.0.0.1", port: 40_125 });
+    /**
+     * 그 시험의 확인 하나를 부른다. 그 호출 안에서만(그것이 연 중계의 처리기 포함) 금지 목적지로 붙는 연결이 정한 오류(EHOSTUNREACH)로
+     * 실패하고(connect-failure-support.ts) 붙은 주소·포트가 `dialed`에 남는다. `decide`를 주면 그 호출 안의 목적지 판정을 갈음하고
+     * 판정한 목적지를 `decided`에 남긴다.
+     */
+    function probing(
+      environment: Awaited<ReturnType<typeof probeEnvironmentWith>>,
+      target: { host: string; port: number },
+      decide?: PolicyFault["decide"]
+    ) {
+      const fault: PolicyFault | undefined = decide && { decide, decided: [] };
+      const probe = () =>
+        environment.probe(
+          { blocked: [], forbidden: [target] },
+          AbortSignal.timeout(20_000)
+        );
+      const { dialed, result } = failingConnectsDuring(
+        onTestFinished,
+        { port: target.port, code: "EHOSTUNREACH" },
+        () => (fault ? policyCalls.run(fault, probe, onTestFinished) : probe())
+      );
+      return { dialed, decided: fault?.decided ?? [], result };
     }
 
     it("finds a forbidden destination blocked only when the relay refuses its address", async () => {
       const target = forbiddenTarget();
       const environment = await probeEnvironmentWith();
-      await expect(
-        environment.probe(
-          { blocked: [], forbidden: [target] },
-          AbortSignal.timeout(20_000)
-        )
-      ).resolves.toEqual({
+      const { dialed, result } = probing(environment, target);
+      await expect(result).resolves.toEqual({
         interfaces: [],
         reached: [],
         proxied: [],
@@ -3478,25 +3495,24 @@ describe.skipIf(process.platform === "win32")(
         unverified: [],
       });
       // 주소 확인이 거부했으므로 중계는 목적지로 붙지 않았다.
-      expect(refusing.dialed).not.toHaveBeenCalled();
+      expect(dialed).toEqual([]);
     });
 
     // 중계가 502로 답한 것은 정책이 그 목적지를 열고 연결만 실패한 것이다. 주소 확인이 막지 못했으므로 막혔다고 세지 않는다
     // (#286 항목 1).
     it("counts a forbidden destination the relay let through as reached, even when the connection behind it failed", async () => {
       const target = forbiddenTarget();
-      policy.decide = () => ({ allowed: true, addresses: ["127.0.0.1"] });
       const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
       onTestFinished(() => warned.mockRestore());
       const environment = await probeEnvironmentWith();
-      await expect(
-        environment.probe(
-          { blocked: [], forbidden: [target] },
-          AbortSignal.timeout(20_000)
-        )
-      ).resolves.toMatchObject({ proxied: [target] });
-      // 정책이 연 주소로 붙었고 그 연결이 실패했다(502).
-      expect(refusing.dialed.mock.calls).toEqual([[target]]);
+      const { dialed, decided, result } = probing(environment, target, () => ({
+        allowed: true,
+        addresses: ["127.0.0.1"],
+      }));
+      await expect(result).resolves.toMatchObject({ proxied: [target] });
+      // 갈음한 판정이 그 목적지에 걸렸고, 정책이 연 주소로 붙은 연결이 실패했다(502).
+      expect(decided).toContainEqual([target.host, target.port]);
+      expect(dialed).toEqual([target]);
     });
 
     // 주소 확인이 아닌 이유의 거부(정책을 읽지 못함·목록에 없음·이름을 풀지 못함)로는 주소 확인이 막는지 알 수 없다. 확인 불가다.
@@ -3508,17 +3524,23 @@ describe.skipIf(process.platform === "win32")(
       "reports the relay check as unverified when the relay refuses for %s instead of the address",
       async (reason) => {
         const target = forbiddenTarget();
-        policy.decide = () => ({ allowed: false, reason });
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
         const environment = await probeEnvironmentWith();
-        await expect(
-          environment.probe(
-            { blocked: [], forbidden: [target] },
-            AbortSignal.timeout(20_000)
-          )
-        ).resolves.toMatchObject({ proxied: [], unverified: ["proxied"] });
-        expect(refusing.dialed).not.toHaveBeenCalled();
+        const { dialed, decided, result } = probing(
+          environment,
+          target,
+          () => ({
+            allowed: false,
+            reason,
+          })
+        );
+        await expect(result).resolves.toMatchObject({
+          proxied: [],
+          unverified: ["proxied"],
+        });
+        expect(decided).toContainEqual([target.host, target.port]);
+        expect(dialed).toEqual([]);
       }
     );
 
@@ -3633,14 +3655,12 @@ describe.skipIf(process.platform === "win32")(
           {},
           { [port]: "SSH-2.0-OpenSSH_9.9\r\n\r\n" }
         );
-        const result = await environment.probe(
-          { blocked: [], forbidden: [target] },
-          AbortSignal.timeout(20_000)
-        );
+        const probed = probing(environment, target);
+        const result = await probed.result;
         expect(result.unverified).toEqual([probe]);
         expect(result.proxied).toEqual([]);
         // 답을 바꿔 넣은 확인은 중계에 닿지 않아 목적지로 붙지 않았다.
-        expect(refusing.dialed).not.toHaveBeenCalled();
+        expect(probed.dialed).toEqual([]);
         expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
           `[provider] the isolation probe's ${probe} check failed (HPE_INVALID_CONSTANT)`,
         ]);

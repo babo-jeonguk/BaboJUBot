@@ -16,19 +16,20 @@ import {
   awaitedLater,
   removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
-import { resetOsFaults } from "./os-failure-support.ts";
 
-// 시험이 정한 포트로 가는 연결 하나를 정한 오류로 실패시킨다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 그
+// 시험이 정한 포트로 가는 연결을 정한 오류로 실패시킨다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 그
 // 번호를 잡으면 제품 결함 없이 실패한다(#294 외부 리뷰 2회차 STD-2). 저장소가 OS 호출 실패를 넣는 방식(`vi.mock`의 모듈 대역)으로
-// 연결 경계(`net.connect`, `http.request`)를 감싼다. 정한 포트(`refusing.port`)로 오는 연결만 대역하고, 불린 주소·포트를
-// `refusing.dialed`에 남긴다. 그 밖의 연결(시험이 띄운 listener, 파일 소켓)은 진짜로 간다.
+// 연결 경계(`net.connect`, `http.request`)를 감싼다. 아무도 열지 않은 포트는 그 시험만의 자원이 아니므로, 결함은 그 시험이 부른
+// 제품 호출의 문맥에 묶고(`failingConnectsDuring`) 실패시킨 대상을 그 결함에 남긴다. 그 밖의 연결(시험이 띄운 listener, 파일 소켓)은
+// 진짜로 간다.
 //
 // 시험 파일에서: `vi.mock("node:net", async (importOriginal) => (await import("./connect-failure-support.ts")).failingNet(await importOriginal()))`
-// (`http.request`로 붙는 코드면 `node:http`와 `failingHttp`). 시험마다 `refusing.refuse`를 정하고 끝나면 `resetRefusing()`으로 푼다.
+// (`http.request`로 붙는 코드면 `node:http`와 `failingHttp`). 시험이 끝나면 `resetRefusing()`으로 푼다.
 //
-// 같은 대역은 서버 경계(`net.createServer`·`http.createServer`)도 감싼다. 시험이 `serverFaults`를 정하면, 대역이 만든 서버의 다음 듣기
-// 하나나 정한 파일 소켓 경로에서 듣는 서버의 닫기가 그 오류로 실패한다(객체·prototype의 메서드를 바꾸지 않고, 대역이 만든 서버만 다르게 답한다).
-// 정한 것이 없으면 진짜 서버와 같다. 시험이 끝나면 `resetRefusing()`이 함께 푼다.
+// 같은 대역은 서버 경계(`net.createServer`·`http.createServer`)도 감싼다. 정한 파일 소켓 경로에서 듣는 서버의 닫기(`serverFaults`, 그
+// 시험이 연 중계의 경로), 그 시험이 부른 호출 안의 듣기(`failingListensDuring`)·닫기(`failingRelayClosesDuring`)가 그 오류로 실패하고,
+// 그 호출 안의 듣기를 관찰할 수 있다(`watchingListensDuring`). 객체·prototype의 메서드를 바꾸지 않고 대역이 만든 서버만 다르게
+// 답한다. 정한 것이 없으면 진짜 서버와 같다.
 //
 // 시험이 붙잡는 순간(닫기, 조회)과 콜백 안 기다림은 그 시험의 소유자에 건다(`holds.gate()`·`holds.until`). 소유자는 시험 문맥으로만
 // 받는다(`holdsTest`의 `holds`).
@@ -216,13 +217,9 @@ export const refusing = {
    * 지금의 묶음을 잡고 그 묶음에만 넣고 뺀다.
    */
   held: { sockets: new Set<netModule.Socket>() },
-  /** 실패시킬 포트와 오류 코드. 없으면 아무 연결도 대역하지 않는다. */
-  refuse: undefined as { port: number; code: string } | undefined,
-  /** 대역한 연결마다 `{ host, port }`로 불린다. */
-  dialed: vi.fn<(target: { host: unknown; port: number }) => void>(),
   /**
    * 이 포트로 가는 연결을 붙지 않은 채 붙잡는다(연결 중인 소켓). 그 소켓은 부른 쪽이 끊거나 `resetRefusing()`이 ECONNABORTED로
-   * 포기시킬 때까지 연결 중으로 남는다. `refuse`보다 먼저 본다.
+   * 포기시킬 때까지 연결 중으로 남는다. 연결 실패(`failingConnectsDuring`)보다 먼저 본다.
    */
   holdConnect: undefined as { port: number } | undefined,
   /** 붙잡은 연결마다 그 소켓으로 불린다. */
@@ -254,13 +251,6 @@ export const serverFaults = {
       }
     | undefined,
   /**
-   * 대역이 만든 서버가 실패시키지 않은 듣기를 시작한 직후(진짜 `listen`을 부른 같은 동기 구간) 그 첫 인수(주소·포트)와 서버로 부른다.
-   * 시험이 듣기 시도가 끝나기 전의 순간을 상태로 잡거나, 제품이 만든 서버를 시험의 정리에 맡길 때 쓴다. 제품의 `listen` 호출 안에서
-   * 불리므로 던지지 않는다(던지면 제품의 듣기 오류로 잡힌다).
-   */
-  listening: undefined as
-    ((address: unknown, server: netModule.Server) => void) | undefined,
-  /**
    * 파일 소켓 경로가 `at`에 맞는 서버의 닫기를 `held`가 풀릴 때까지 미룬다(그 뒤에는 위 `close` 결함까지 그대로). 시험이 닫기가
    * 시작된 뒤의 순간을 상태로 붙잡을 때 쓴다. 미룬 닫기마다 `heldClose`가 그 주소로 불린다.
    */
@@ -281,17 +271,13 @@ export function resetRefusing() {
     socket.destroy(
       Object.assign(givenUpAtReset("a held connect"), { code: "ECONNABORTED" })
     );
-  refusing.refuse = undefined;
-  refusing.dialed.mockReset();
   refusing.holdConnect = undefined;
   refusing.heldConnect.mockReset();
   nameFaults.lookup = undefined;
   nameFaults.looked.mockReset();
   serverFaults.close = undefined;
-  serverFaults.listening = undefined;
   serverFaults.holdClose = undefined;
   serverFaults.heldClose.mockReset();
-  resetOsFaults();
 }
 
 function codeError(message: string, code: string) {
@@ -315,8 +301,9 @@ function faultyServer(Base: typeof netModule.Server) {
         return this;
       }
       this.listenedAt = typeof address === "string" ? address : undefined;
+      const watching = listenWatchCalls.current();
       const listening = (super.listen as (...args: unknown[]) => this)(...args);
-      serverFaults.listening?.(address, this);
+      watching?.watch(address, this);
       return listening;
     }
     override close(callback?: (error?: Error) => void) {
@@ -391,7 +378,7 @@ function connectTarget(
  * 같은 모양(`code`·`syscall`)이다. 기록(`dialed`)은 부른 대역이 잡아 둔 것으로 남긴다.
  */
 function refusal(
-  refuse: (typeof refusing)["refuse"],
+  refuse: ConnectFault | undefined,
   options: unknown
 ): { target: { host: unknown; port: number }; error: Error } | undefined {
   const target = connectTarget(options);
@@ -433,12 +420,13 @@ export function failingNet(real: typeof netModule) {
   const passThrough = real.connect as (...args: unknown[]) => netModule.Socket;
   const connect = ((...args: unknown[]) => {
     // 설정과 기록 칸은 불린 순간 잡는다(tests/hoisted-state-at-call).
-    const { holdConnect: hold, refuse, dialed, held, heldConnect } = refusing;
+    const { holdConnect: hold, held, heldConnect } = refusing;
+    const refuse = connectCalls.current();
     if (hold && connectTarget(args[0])?.port === hold.port)
       return heldSocket(real, held, heldConnect);
     const refused = refusal(refuse, args[0]);
     if (!refused) return passThrough(...args);
-    dialed(refused.target);
+    refuse?.dialed.push(refused.target);
     return failedSocket(real, refused.error);
   }) as typeof real.connect;
   const Server = faultyServer(real.Server);
@@ -459,11 +447,11 @@ export function failingHttp(real: typeof httpModule, net: typeof netModule) {
   ) => httpModule.ClientRequest;
   const request = ((...args: unknown[]) => {
     // 설정과 기록 칸은 불린 순간 잡는다(tests/hoisted-state-at-call).
-    const { refuse, dialed } = refusing;
+    const refuse = connectCalls.current();
     const [options, ...rest] = args;
     const refused = refusal(refuse, options);
     if (!refused) return passThrough(...args);
-    dialed(refused.target);
+    refuse?.dialed.push(refused.target);
     return passThrough(
       {
         ...(options as httpModule.RequestOptions),
@@ -527,6 +515,18 @@ function keptByDouble(failure: unknown, code: string): boolean {
 }
 
 type CloseFault = NonNullable<(typeof serverFaults)["close"]>;
+/** 연결 실패: 그 호출이 이 포트로 붙는 연결을 이 코드로 실패시키고, 실패시킨 대상을 `dialed`에 남긴다. */
+type ConnectFault = {
+  port: number;
+  code: string;
+  dialed: { host: unknown; port: number }[];
+};
+/** 그 시험만의 자원이 아닌 목적지(아무도 열지 않은 포트)로 가는 연결 실패는 그 시험이 부른 제품 호출에 묶는다. */
+const connectCalls = callArming<ConnectFault>();
+/** 듣기 관찰: 그 호출이 실패시키지 않은 듣기를 시작한 직후(같은 동기 구간) 그 첫 인수와 서버로 부른다. */
+const listenWatchCalls = callArming<{
+  watch: (address: unknown, server: netModule.Server) => void;
+}>();
 /** 듣기 결함: 그 호출이 파일 소켓 경로로 듣는 자리 가운데 `at`에 맞는 것을 이 코드로 실패시키고, 실패시킨 주소를 `refused`에 남긴다. */
 type ListenFault = {
   code: string;
@@ -543,6 +543,37 @@ const listenCalls = callArming<ListenFault>();
  * (`failingRelayClosesDuring`). 닫기 대역은 불린 순간 `serverFaults.close`(경로로 고른 결함)가 없으면 이 문맥의 결함을 잡는다.
  */
 const closeCalls = callArming<CloseFault>();
+
+/**
+ * 제품 호출 `call`(그 시험이 부른 것, 그것이 만든 중계의 처리기 포함)이 `port`로 붙는 연결(`net.connect`·`createConnection`·
+ * `http.request`)을 `code`의 연결 오류로 실패시킨다. 실패는 실제 연결에서 나오는 오류와 같은 모양(`code`·`syscall`)이다. 무장의 끝은
+ * `own`(그 시험의 정리)에 맡긴다. 실패시킨 대상(`dialed`)과 호출의 결과를 돌려준다.
+ */
+export function failingConnectsDuring<T>(
+  own: (step: () => Promise<void>) => void,
+  { port, code }: { port: number; code: string },
+  call: () => T
+) {
+  const fault: ConnectFault = { port, code, dialed: [] };
+  const result = connectCalls.run(fault, call, own);
+  return {
+    dialed: fault.dialed as ReadonlyArray<ConnectFault["dialed"][number]>,
+    result,
+  };
+}
+
+/**
+ * 제품 호출 `call`(그 시험이 부른 것)이 실패시키지 않은 듣기를 시작할 때마다 그 직후(진짜 `listen`을 부른 같은 동기 구간) 그 첫
+ * 인수(주소·포트)와 서버로 `watch`를 부른다. 시험이 듣기 시도가 끝나기 전의 순간을 상태로 잡거나 그 서버를 정리에 맡길 때 쓴다.
+ * 제품의 `listen` 호출 안에서 불리므로 던지지 않는다. 무장의 끝은 `own`에 맡긴다.
+ */
+export function watchingListensDuring<T>(
+  own: (step: () => Promise<void>) => void,
+  watch: (address: unknown, server: netModule.Server) => void,
+  call: () => T
+): T {
+  return listenWatchCalls.run({ watch }, call, own);
+}
 
 /**
  * 제품 호출 `call`(그 시험이 부른 것)이 파일 소켓 경로로 듣는 자리 가운데 `at`에 맞는 것의 듣기를 `code`의 오류(`error` 이벤트)로
