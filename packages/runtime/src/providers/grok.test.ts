@@ -6,8 +6,11 @@ import {
   acpOpening,
   acpOrganizationMcp,
   acpRpc,
+  readRecordedFrames,
   runProviderAcpReplay,
+  writeRecordingAcpPeer,
 } from "./acp-test-support.ts";
+import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // `grok agent --no-leader stdio` 대화를 재생한다. 프레임 순서는 ACP v1의 initialize, session/new(또는 session/load), session/prompt다.
@@ -57,9 +60,16 @@ async function createProbeFixture(root: string): Promise<string> {
       "} else if (mode === 'unknown-help') {",
       "  console.log('Usage: grok [options]');",
       "  console.log('  - Help');",
+      "  console.log('  - Help (show usage)');",
+      "  console.log('  - login   Sign in');",
       "  console.log('  - 1. Run diagnostics');",
       "  console.log('  - non-interactive mode');",
       "  console.log('  - v2 API enabled');",
+      "} else if (mode === 'expired-line') {",
+      "  console.log('Session expired (previously logged in as alice)');",
+      "} else if (mode === 'ready-stderr-warn') {",
+      "  console.log('You are logged in with grok.com.');",
+      "  console.error('warning: telemetry failed');",
       "} else if (mode === 'broken') {",
       "  console.error('internal failure');",
       "  process.exitCode = 2;",
@@ -129,11 +139,9 @@ describe("Grok Build ACP", () => {
       usage: null,
       nextSession: { id: "saved" },
     });
-    expect(activity).toContainEqual({
-      type: "tool_use",
-      tool: "send_message",
-      summary: "send_message",
-    });
+    expect(activity).toEqual([
+      { type: "progress", text: "프로바이더가 작업을 시작했습니다." },
+    ]);
   });
 
   it("loads the previous session with organization MCP servers instead of starting another", async () => {
@@ -165,22 +173,26 @@ describe("Grok Build ACP", () => {
   });
 
   it("fails the run without sending session/prompt when the chosen model is refused", async () => {
-    const { result } = await runProviderAcpReplay(folders, createGrokProvider, {
-      prefix: "grok-model-refused-",
-      argv: { agent: true, "--no-leader": true, stdio: true },
-      steps: [
-        ...acpOpening,
-        {
-          input: {
-            method: "session/set_config_option",
-            params: { configId: "model", value: "grok-4.5" },
-          },
-        },
-        acpRpc(3, { error: { message: "model unavailable" } }),
-        { inputEnd: true },
-      ],
-      patch: { model: "grok-4.5" },
+    const root = await folders.make("grok-model-refused-");
+    const { script, logFile } = await writeRecordingAcpPeer(root, {
+      expectedArgs: ["agent", "--no-leader", "stdio"],
+      body: [
+        "  if (msg.method === 'initialize') out({ id: msg.id, result: { protocolVersion: 1 } });",
+        "  else if (msg.method === 'session/new') out({ id: msg.id, result: { sessionId: 'saved' } });",
+        "  else if (msg.method === 'session/set_config_option') out({ id: msg.id, error: { message: 'model unavailable' } });",
+      ].join("\n"),
     });
+    const result = await createGrokProvider({
+      dataDir: root,
+      command: [process.execPath, script],
+    }).adapter.execute(
+      {
+        ...request(),
+        model: "grok-4.5",
+        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      },
+      { signal: new AbortController().signal, emit: async () => {} }
+    );
     expect(result).toEqual({
       stopReason: "failed",
       error: "고른 모델을 쓸 수 없어 실행하지 않았습니다.",
@@ -188,6 +200,12 @@ describe("Grok Build ACP", () => {
       usage: null,
       nextSession: null,
     });
+    const received = await readRecordedFrames(logFile);
+    expect(received.map((frame) => frame.method)).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_config_option",
+    ]);
   });
 });
 
@@ -241,6 +259,16 @@ describe("Grok readiness and models", () => {
       { id: "grok-fast", label: "grok-fast" },
     ]);
 
+    const warned = createGrokProvider({
+      dataDir: root,
+      id: "grok-ready-warn",
+      command: [process.execPath, program, "ready-stderr-warn"],
+    });
+    await expect(warned.adapter.checkReadiness(signal)).resolves.toEqual({
+      status: "ready",
+      reason: null,
+    });
+
     const jsonArray = createGrokProvider({
       dataDir: root,
       id: "grok-json-array",
@@ -278,6 +306,7 @@ describe("Grok readiness and models", () => {
     const signal = new AbortController().signal;
     for (const [id, mode] of [
       ["grok-unknown", "unknown-help"],
+      ["grok-expired", "expired-line"],
       ["grok-broken", "broken"],
     ] as const) {
       const provider = createGrokProvider({

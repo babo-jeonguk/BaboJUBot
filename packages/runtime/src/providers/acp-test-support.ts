@@ -1,4 +1,4 @@
-import { realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -7,6 +7,7 @@ import type {
 } from "@babojubot/contracts";
 import { settled } from "@babojubot/contracts";
 import { runAcpSession, type AcpSessionOptions } from "./acp-session.ts";
+import { record } from "./record.ts";
 import { request } from "./test-support.ts";
 import type { testFolders } from "./test-folders.ts";
 
@@ -40,15 +41,18 @@ export async function runOwnedAcpSession(
   folders: ReturnType<typeof testFolders>,
   options: AcpSessionOptions,
   runRequest: RunRequest,
-  onEmit?: (activity: unknown, abort: () => void) => void
+  control?: {
+    controller?: AbortController;
+    onEmit?: (activity: unknown, abort: () => void) => void;
+  }
 ): Promise<{ result: RunResult; activity: unknown[] }> {
   const activity: unknown[] = [];
-  const stop = new AbortController();
+  const stop = control?.controller ?? new AbortController();
   const running = runAcpSession(options, runRequest, {
     signal: stop.signal,
     emit: async (item) => {
       activity.push(item);
-      onEmit?.(item, () => stop.abort());
+      control?.onEmit?.(item, () => stop.abort());
     },
   });
   folders.own(async () => {
@@ -57,6 +61,59 @@ export async function runOwnedAcpSession(
   }, "an ACP session run");
   const result = await running;
   return { result, activity };
+}
+
+/**
+ * 수신한 모든 JSON-RPC 프레임을 파일에 기록하는 합성 ACP peer 스크립트를 만든다.
+ * 실패·취소 경로에서도 peer가 실제로 받은 메서드와 응답을 직접 단언할 수 있게 한다.
+ */
+export async function writeRecordingAcpPeer(
+  root: string,
+  options: {
+    expectedArgs?: readonly string[];
+    body: string;
+  }
+): Promise<{ script: string; logFile: string }> {
+  const script = path.join(root, "recording-acp-peer.mjs");
+  const logFile = path.join(root, "received-frames.jsonl");
+  const argCheck = options.expectedArgs
+    ? [
+        `if (JSON.stringify(process.argv.slice(2)) !== ${JSON.stringify(JSON.stringify(options.expectedArgs))}) {`,
+        "  process.exitCode = 24;",
+        "  throw new Error('unexpected argv');",
+        "}",
+      ]
+    : [];
+  await writeFile(
+    script,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      "import { createInterface } from 'node:readline';",
+      ...argCheck,
+      `const logFile = ${JSON.stringify(logFile)};`,
+      "const out = (v) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...v }) + '\\n');",
+      "let promptId;",
+      "for await (const line of createInterface({ input: process.stdin })) {",
+      "  if (!line.trim()) continue;",
+      "  appendFileSync(logFile, line + '\\n');",
+      "  const msg = JSON.parse(line);",
+      options.body,
+      "}",
+      "",
+    ].join("\n")
+  );
+  return { script, logFile };
+}
+
+/** `writeRecordingAcpPeer`가 기록한 JSON-RPC 프레임 목록을 읽는다. */
+export async function readRecordedFrames(
+  logFile: string
+): Promise<Record<string, unknown>[]> {
+  const text = await readFile(logFile, "utf8");
+  return text
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => record(JSON.parse(line)));
 }
 
 /** 공용 ACP replay 실행기. `runOwnedAcpSession`으로 자식 수명을 소유한다. */
@@ -109,7 +166,7 @@ export async function runAcpSessionReplay(
       env: { ...process.env },
     },
     runRequest,
-    options.onEmit
+    options.onEmit ? { onEmit: options.onEmit } : undefined
   );
   return { result, activity, root, realRoot, runRequest };
 }

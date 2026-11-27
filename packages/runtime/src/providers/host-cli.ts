@@ -63,20 +63,28 @@ export const isExplicitlySignedOut = (text: string): boolean =>
   );
 
 /**
- * 종료 코드 0인 평문 출력이 명확한 로그인 확인 문구를 담았는지 판단한다.
- * 빈 출력, 부정·요구 문맥, 또는 `401`·`unauthorized`·`failed`·`error`가 같은 줄에 섞인 오류 문장은 거짓이다.
+ * 종료 코드 0인 평문 한 줄이 명확한 로그인 확인 문구를 담았는지 판단한다.
+ * 빈 줄, 부정·요구·만료 문맥, 또는 `401`·`unauthorized`·`failed`·`error`가 같은 줄에 섞인 오류 문장은 거짓이다.
  */
 export const isPositiveLoginLine = (text: string): boolean => {
   const clean = stripAnsi(text);
   if (
     isExplicitlySignedOut(clean) ||
-    /\b(?:401|unauthori[sz]ed|failed|error)\b/i.test(clean)
+    /\b(?:401|unauthori[sz]ed|failed|error|expired|invalid|revoked|previously)\b/i.test(
+      clean
+    )
   )
     return false;
   return /\b(?:you are logged in|you are signed in|logged in (?:with|as|to)\b|signed in (?:with|as|to)\b|authenticated (?:with|as)\b)/i.test(
     clean
   );
 };
+
+/** 여러 줄 출력 중 하나라도 명확한 로그인 확인 줄을 담았는지 줄 단위로 판단한다. */
+export const hasPositiveLoginLine = (text: string): boolean =>
+  stripAnsi(text)
+    .split("\n")
+    .some((line) => isPositiveLoginLine(line));
 
 /**
  * 실패 응답·stderr·오류 문구가 로그인 문제인지 줄 단위로 판단한다.
@@ -251,9 +259,10 @@ export function extractJsonModels(text: string): ModelOption[] | undefined {
 
 /**
  * 평문 글머리 줄에서 모델 목록을 읽는다.
- * 번호 목록(`1.`), 구두점으로 끝나는 토큰, 일반 영문 문장(`- Help`, `- v2 API enabled`, `- non-interactive mode`)을 배제하고,
- * 단독 버전 ID(`- grok-4.5`), 괄호 메타데이터 줄(`* grok-fast (default)`, `* claude-opus (default) - desc`),
- * 또는 2칸 이상 공백 열 설명(`* auto  Automatic selection`)을 읽는다.
+ * 번호 목록(`1.`), 구두점으로 끝나는 토큰, 일반 영문 문장·도움말(`- Help`, `- Help (show usage)`,
+ * `- login   Sign in`, `- v2 API enabled`, `- non-interactive mode`)을 배제하고,
+ * 단독 버전 ID(`- grok-4.5`), 구조화된 모델 ID의 괄호 메타데이터 줄(`* grok-fast (default)`,
+ * `* claude-opus (default) - desc`), 또는 2칸 이상 공백 열 설명(`* auto  Automatic selection`)을 읽는다.
  */
 export function parsePlainBulletModels(stdout: string): ModelOption[] {
   const seen = new Set<string>();
@@ -268,11 +277,13 @@ export function parsePlainBulletModels(stdout: string): ModelOption[] {
     const hasNoTrailing = trimmedRest === "";
     const hasParenthetical = /^\([^)]*\)/.test(trimmedRest);
     const hasColumnDescription = /^\s{2,}\S/.test(rest);
+    const isStructuredModelId = id === "auto" || /[0-9._:/-]/.test(id);
     const valid =
       (hasNoTrailing && (/\d/.test(id) || id === "auto")) ||
-      hasParenthetical ||
+      (hasParenthetical && isStructuredModelId) ||
       (hasColumnDescription &&
-        (id === "auto" || /^[a-z][a-z0-9._:/-]*$/.test(id)));
+        (id === "auto" ||
+          (/^[a-z][a-z0-9._:/-]*$/.test(id) && /[0-9._:/-]/.test(id))));
     if (!valid) continue;
     seen.add(id);
     models.push({ id, label: id });

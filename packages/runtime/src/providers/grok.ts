@@ -7,10 +7,10 @@ import {
   runProbe,
 } from "./process.ts";
 import {
+  hasPositiveLoginLine,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
-  isPositiveLoginLine,
   parseCliModels,
   probeErrorFields,
 } from "./host-cli.ts";
@@ -54,10 +54,9 @@ export function createGrokProvider(options: {
     async checkReadiness(signal) {
       try {
         const { stdout, stderr } = await probe(["models"], signal);
-        const combined = `${stdout}\n${stderr}`;
-        if (isExplicitlySignedOut(combined))
+        if (isExplicitlySignedOut(`${stdout}\n${stderr}`))
           return { status: "not_ready", reason: "product_login_missing" };
-        if (parseCliModels(stdout).length > 0 || isPositiveLoginLine(combined))
+        if (parseCliModels(stdout).length > 0 || hasPositiveLoginLine(stdout))
           return { status: "ready", reason: null };
         console.warn(
           `[provider] the ${connectionId} readiness check returned an unexpected response`
