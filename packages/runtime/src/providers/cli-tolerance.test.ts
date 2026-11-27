@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import {
   cliAdapters,
@@ -18,11 +18,7 @@ const folders = testFolders();
 const createClaudeProvider = folders.owning(unownedClaudeProvider);
 const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 const adapters = cliAdapters(folders);
-async function home() {
-  return createCliHome((root) => {
-    folders.adopt(root);
-  });
-}
+const home = () => createCliHome(folders);
 
 describe.each(Object.keys(adapters) as (keyof typeof adapters)[])(
   "%s keeps a finished result",
@@ -76,24 +72,40 @@ describe("unknown output", () => {
 describe("failures around the run", () => {
   it("finishes the run when recording an activity fails", async () => {
     const { adapter } = adapters.claude(await home(), "plain");
+    const recorded: unknown[] = [];
     const result = await adapter.execute(
       request(),
-      control(async () => {
+      control(async (activity) => {
+        recorded.push(activity);
         throw new Error("activity store is down");
       })
     );
     expect(result.stopReason).toBe("completed");
+    // 실행이 남기려던 활동(시작 알림)의 기록이 실제로 실패했다. 한 번 실패한 뒤로는 활동을 더 남기려 하지 않았다.
+    expect(recorded).toEqual([
+      { type: "progress", text: "프로바이더가 작업을 시작했습니다." },
+    ]);
   }, 20_000);
 
-  it.each(["codex app-server", "antigravity"] as const)(
-    "%s runs when only the version probe fails",
-    async (name) => {
-      const { adapter } = adapters[name](await home(), "version-fails");
-      const result = await adapter.execute(request(), control());
-      expect(result.stopReason).toBe("completed");
-    },
-    20_000
-  );
+  // 실행은 버전을 묻지 않는다. 버전을 묻는 곳은 준비 확인뿐이라, 실행이 끝난 뒤 준비 확인으로 이 변형의 버전 확인이 실제로 실패함을
+  // 본다(실행 전에 부르면 준비 확인이 실행의 길을 바꿀 수 있다).
+  it("codex app-server runs when only the version probe fails, which the readiness check shows", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warned.mockRestore());
+    const { adapter } = adapters["codex app-server"](
+      await home(),
+      "version-fails"
+    );
+    const result = await adapter.execute(request(), control());
+    expect(result.stopReason).toBe("completed");
+    expect(await adapter.checkReadiness(new AbortController().signal)).toEqual({
+      status: "not_ready",
+      reason: "check_failed",
+    });
+    expect(warned.mock.calls).toEqual([
+      ["[provider] the codex readiness check failed (exit 3)"],
+    ]);
+  }, 20_000);
 
   it("still reports nothing as success when the program ends without a result", async () => {
     const dataDir = await home();

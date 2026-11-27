@@ -56,6 +56,7 @@ contracts ← files ← runtime, server
 | `/remove-folder` | 폴더 지우기(Windows의 일시적인 잠김만 다시 시도) | 제품 코드·개발 스크립트·시험 |
 | `/test-cleanup` | 시험의 프로세스·폴더 정리(`withCleanup`·`killUnlessGone`·`awaitedLater` 등) | 개발 스크립트·시험 |
 | `/lifelines`·`/testing`·`/test-support`·`/launcher-setup` | 연결로 본 프로세스 종료, vitest 시험 도움(`testFolders`·`killAndWait` 등), vitest 없이 쓰는 바깥 환경 확인·시험 시계(`probeEnvironment`·`permissionDenial`·`commandFailure`·`manualClock`), 시험 파일마다의 감독 실행기 준비 | 시험 |
+| `/call-arming`·`/fs-swap` | 시험의 제품 호출에만 거는 결함과 실행 시도 귀속: 호출 문맥으로 그 호출의 결함을 가르는 `callArming`(끝은 그 시험의 정리), 호출 문맥으로 띄운 것을 실행 시도에 귀속하는 `callAttribution`(끝 없음), 시험이 고른 경로에서만 파일 작업을 바꾸는 `armSwap`·`swapAfter` | 시험 |
 | `/recovery` | 감독 실행기를 통한 정리(`cleanThroughSupervisor`: 표식을 가진 프로그램과 기록한 프로세스), 기록한 프로세스와 그 그룹의 신원·생존 확인(신호 없음) | runtime의 재시작 복구(`providers/recovery.ts`)와 시험만 |
 
 그 밖의 곳은 띄울 때 받은 `stop()`으로 끕니다. runtime의 패키지 입구는 `@babojubot/runtime`(과 시험의 `/testing`·`/runtime-contract`)뿐이고, db는 시험까지 runtime을 가져오지 않습니다.

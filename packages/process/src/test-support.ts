@@ -1,42 +1,39 @@
 // node:net·node:http는 값으로 불러오지 않는다(runtime `connect-failure-support.ts` 머리의 대역 경로 제약).
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { symlinkSync, unlinkSync } from "node:fs";
+import { readlinkSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
 
-// 모듈을 불러올 때의 진짜 타이머. 시험이 가짜 시계를 켜도(`vi.useFakeTimers`) `within`의 상한은 실제 시간으로 잰다.
-const realSetTimeout = setTimeout;
-const realClearTimeout = clearTimeout;
+/**
+ * 파일 `file`이 폴더 `folder` 안(그 자신 포함)인가. 결함을 그 시험의 폴더로 고르는 대역이 쓴다. 제품은 확인한 폴더 handle을 거친
+ * 경로(`/proc/self/fd/<n>/…`, `@babojubot/files`)로 다루기도 하므로, 그 경로는 handle이 붙든 폴더의 경로로 바꿔 본다. `folder`는
+ * 실제 경로(`realpath`)로 준다.
+ */
+export function insideFolder(folder: string, file: string): boolean {
+  const handle = /^\/proc\/self\/fd\/(\d+)(\/.*)?$/.exec(file);
+  const spelled = handle
+    ? readlinkSync(`/proc/self/fd/${handle[1]}`) + (handle[2] ?? "")
+    : file;
+  const relative = path.relative(folder, spelled);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+}
 
 /**
- * `promise`를 `ms` 안에 기다린다. 넘기면 무엇을 기다리다 실패했는지(`what`, 예: "the server did not start")와 상한을 밝혀
- * 던진다. 시험의 대기마다 상한과 실패 원인을 두는 공용 도움이다(CODING_STANDARDS 「시간」). vi를 불러오지 않아 vitest·node:test·
- * Playwright 모두에서 쓴다. 상한은 시험이 가짜 시계를 켜도 실제 시간으로 잰다. 상한이 지나도 `promise`가 쥔 자원은 그대로이므로
- * 정리는 부른 쪽이 맡는다(`withCleanup` 등).
- * 제품 코드는 시험 도움을 부르지 않아 같은 모양을 따로 둔다(supervised.ts `within`).
+ * 자리 `file`의 폴더를 실제 경로로 푼 그 자리(자리 자체는 따라가지 않는다). 대역이 받은 경로가 handle을 거친 경로(`/proc/self/fd/<n>/…`)나
+ * 링크 뒤 임시 폴더(macOS `/var` → `/private/var`)여도, 시험이 그 handle이 닫힌 뒤에 그 시험의 폴더와 견줄 수 있게 남길 때 쓴다.
+ * 폴더가 있어야 한다.
  */
-export async function within<T>(
-  promise: Promise<T>,
-  ms: number,
-  what: string
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = realSetTimeout(
-          () => reject(new Error(`${what} within ${ms} ms`)),
-          ms
-        );
-      }),
-    ]);
-  } finally {
-    realClearTimeout(timer);
-  }
+export function realPlace(file: string): string {
+  return path.join(realpathSync(path.dirname(file)), path.basename(file));
 }
+
+// 시험의 대기 상한(`within`)은 node 기본 모듈을 불러오지 않는 파일 하나에 둔다(모듈 대역의 factory가 불러오는 지원 파일도 쓴다).
+export { settledWithin, within } from "./within-support.ts";
 
 /**
  * A clock that moves only when the test says (#215). Limits on it measure only the step under test (starting a program takes

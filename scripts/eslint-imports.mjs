@@ -40,7 +40,7 @@ const literalPath = (node) =>
   node?.type === "Literal" && typeof node.value === "string";
 
 /** 속성 이름. 계산한 이름이면 `undefined`, 문자열 그대로면 그 값. */
-function propertyName(member) {
+export function propertyName(member) {
   if (!member.computed) return member.property.name;
   return member.property.type === "Literal"
     ? String(member.property.value)
@@ -339,9 +339,29 @@ function originOfVariable(variable, name, depth = 0) {
   return origin;
 }
 
-/** 부른 함수가 불러오는 함수면 그 이름(메시지용): `require`, createRequire가 만든 함수를 담은 이름·`createRequire(…)`, `getBuiltinModule`. */
+/**
+ * vitest의 함수 이름(`vi.<이름>`)이면 그 이름. `vi`는 vitest에서 가져왔거나 가려지지 않은 전역(globals 설정)이다. 아니면 undefined.
+ */
+function vitestFunction(origin) {
+  if (origin?.module === "vitest" && origin.path.length === 2)
+    return origin.path[0] === "vi" ? origin.path[1] : undefined;
+  if (origin?.global === "vi" && origin.path.length === 1)
+    return origin.path[0];
+  return undefined;
+}
+/** 모듈 값을 돌려주는 vitest 함수. */
+const vitestLoaders = new Set(["importActual", "importMock"]);
+/** 대역을 거는 vitest 함수. factory가 받는 `importOriginal`(factory가 없으면 자동 대역)이 원래 모듈을 불러온다. */
+const vitestMocks = new Set(["mock", "doMock"]);
+
+/**
+ * 부른 함수가 불러오는 함수면 그 이름(메시지용): `require`, createRequire가 만든 함수를 담은 이름·`createRequire(…)`, `getBuiltinModule`,
+ * `vi.importActual`·`vi.importMock`.
+ */
 export function loaderOf(scope, callee, depth = 0) {
   const origin = originOf(scope, callee, depth);
+  const vitest = vitestFunction(origin);
+  if (vitestLoaders.has(vitest)) return `vi.${vitest}`;
   if (same(origin, { global: "require", path: [] })) return "require";
   if (same(origin, madeRequire))
     return callee.type === "Identifier" ? callee.name : "createRequire(…)";
@@ -538,12 +558,27 @@ export function importSites(context, onSite) {
           typeOnly: false,
           names: namesOfValue(node),
         });
+      const mock = vitestFunction(originOf(scope, callee));
+      if (vitestMocks.has(mock))
+        return onSite({
+          node,
+          source: first.value,
+          sourceNode: first,
+          kind: "require",
+          loader: `vi.${mock}`,
+          typeOnly: false,
+          names: [{ imported: "*", node }],
+        });
       if (
         callee.type === "MemberExpression" &&
         propertyName(callee) === "resolve"
       ) {
         const base = loaderOf(scope, callee.object);
-        if (base !== undefined && base !== "getBuiltinModule")
+        if (
+          base !== undefined &&
+          base !== "getBuiltinModule" &&
+          !base.startsWith("vi.")
+        )
           onSite({
             node,
             source: first.value,

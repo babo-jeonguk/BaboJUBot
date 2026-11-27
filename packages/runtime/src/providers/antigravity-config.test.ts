@@ -26,18 +26,28 @@ import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 /**
- * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
- * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
+ * 그 시험의 작업 폴더(`cwd`)에서 도는 설정 스크립트(`script`)의 공용 실행(`runTree`) 결과를 `result`로 갈음한다. 갈음한 실행의 작업
+ * 폴더를 `ran`에 남긴다(시험이 그 실행에서 실제로 갈음했는지 본다, #286). 그 밖의 실행은 실제로 돈다. 상한에 닿아 끈 명령은 끈
+ * 이유(`stopped`)와 그 트리를 끝낸 신호를 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
  */
-const tree = vi.hoisted(() => ({
-  run: undefined as undefined | (() => unknown),
-}));
+let tree:
+  { cwd: string; script: string; result: unknown; ran: string[] } | undefined;
 vi.mock("@babojubot/process", async (importOriginal) => {
   const real = await importOriginal<typeof import("@babojubot/process")>();
   return {
     ...real,
-    runTree: (...args: Parameters<typeof real.runTree>) =>
-      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+    runTree: (...args: Parameters<typeof real.runTree>) => {
+      // 갈음은 불린 순간(대역 몸 안) 읽는다.
+      const [options] = args;
+      if (
+        !tree ||
+        options.cwd !== tree.cwd ||
+        options.args?.[0] !== tree.script
+      )
+        return real.runTree(...args);
+      tree.ran.push(options.cwd);
+      return Promise.resolve(tree.result);
+    },
   };
 });
 /** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
@@ -50,7 +60,7 @@ const stoppedBySignal = () => ({
   stopped: "limit",
 });
 afterEach(() => {
-  tree.run = undefined;
+  tree = undefined;
 });
 
 // 예전 판이 작업 폴더에 둔 설정의 남은 것만 서버 시작 때 지운다(#148부터 실행은 설정 파일을 쓰지 않는다). 우리 표시가 없는 파일은
@@ -306,10 +316,16 @@ it("keeps the reasons given before the configuration script was stopped, with wh
     name: ".babojubot-left.tmp",
     keptAs: ".babojubot-left.tmp.kept.removing",
   };
-  tree.run = () => ({
-    ...stoppedBySignal(),
-    stderr: Buffer.from(`${JSON.stringify(given)}\n`),
-  });
+  const faked = {
+    cwd,
+    script: configScriptFile,
+    result: {
+      ...stoppedBySignal(),
+      stderr: Buffer.from(`${JSON.stringify(given)}\n`),
+    },
+    ran: [] as string[],
+  };
+  tree = faked;
   const failed = await clearOwnedConfig(cwd).then(
     () => {
       throw new Error("expected the configuration not to be cleared");
@@ -329,6 +345,8 @@ it("keeps the reasons given before the configuration script was stopped, with wh
   expect(describeCleanup(failed.reasons)).toBe(
     'kept_aside ".babojubot-left.tmp" as ".babojubot-left.tmp.kept.removing"; the script did not finish (stopped: limit, signal SIGKILL)'
   );
+  // 갈음은 그 시험의 작업 폴더에서 돈 설정 스크립트 하나에서 났다.
+  expect(faked.ran).toEqual([cwd]);
 });
 
 // 설정 자리가 일반 파일이 아니면(폴더·링크) 우리 것인지 확인하지 못한 것이다. "표시 없음"과 다른 까닭으로 남긴다(#286 리뷰 1회차 SPEC-2 같은 모양).
@@ -528,13 +546,19 @@ it.skipIf(process.platform === "win32" || !permissionDenial())(
       missOnce
     );
     expect(ended.status).toBe(1);
-    tree.run = () => ({
-      started: true,
-      code: 1,
-      signal: null,
-      stdout: Buffer.alloc(0),
-      stderr: Buffer.from(ended.stderr),
-    });
+    const faked = {
+      cwd,
+      script: configScriptFile,
+      result: {
+        started: true,
+        code: 1,
+        signal: null,
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.from(ended.stderr),
+      },
+      ran: [] as string[],
+    };
+    tree = faked;
     const failed = await clearOwnedConfig(cwd).then(
       () => {
         throw new Error("expected the configuration not to be cleared");
@@ -554,5 +578,6 @@ it.skipIf(process.platform === "win32" || !permissionDenial())(
       { reason: "unreadable_output", name: "" },
       { reason: "incomplete_run", name: "", code: "exit 1" },
     ]);
+    expect(faked.ran).toEqual([cwd]);
   }
 );

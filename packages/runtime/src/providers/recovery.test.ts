@@ -60,10 +60,12 @@ function testStart(): string {
 
 // 감독 실행기의 표식 정리 실패를 주입하고, 정리를 청한 표식을 기록한다. 기록 칸은 afterEach가 새로 연다(시험이 본문에서 바꿔 끼우기도
 // 한다). 대역은 불린 순간(첫 `await` 전)의 칸을 잡고 그 칸에만 쓴다: 그 뒤에 칸이 바뀌어도 그 호출의 늦은 기록은 잡아 둔 칸에 남는다
-// (#286 PR #300 외부 리뷰 2회차 종류 A', 감독 결정). `fails`도 불린 순간에 읽는다. 시험이 시한을 넘겨 본문이 afterEach 뒤에도 돌면,
-// 그 뒤에 불린 호출은 다음 시험의 칸을 잡는다(그 시험은 이미 실패했다).
+// (#286 PR #300 외부 리뷰 2회차 종류 A', 감독 결정). 시험이 시한을 넘겨 본문이 afterEach 뒤에도 돌면, 그 뒤에 불린 호출은 다음 시험의
+// 기록 칸을 잡는다(그 시험은 이미 실패했다). 정리 실패(`fails`)는 그 시험이 기록에 쓴 무작위 표식으로 고른다: 그 표식을 실은 요청만
+// 실패하므로 다른 시험의 늦은 요청은 걸리지 않는다.
 const lease = vi.hoisted(() => ({
-  fails: false,
+  /** 이 표식(`lease`)을 실은 정리 요청이 실패하고, 실패시킨 표식을 `failedAt`에 남긴다. */
+  fails: undefined as { lease: string; failedAt: string[] } | undefined,
   stopped: [] as unknown[],
   /** 실제 실행기 정리가 성공한(남은 것 없음을 실행기가 확인한) 요청. */
   cleaned: [] as {
@@ -83,7 +85,10 @@ vi.mock("@babojubot/process/recovery", async (original) => {
       const { requests, stopped, cleaned, fails } = lease;
       requests.push(request);
       if (request.lease !== undefined) stopped.push(request.lease);
-      if (fails) throw new Error("the supervisor's cleanup failed");
+      if (fails !== undefined && request.lease === fails.lease) {
+        fails.failedAt.push(request.lease);
+        throw new Error("the supervisor's cleanup failed");
+      }
       const result = await real.cleanThroughSupervisor(request);
       cleaned.push(request);
       return result;
@@ -98,7 +103,7 @@ const folders = testFolders();
 // 연결을 쥐고 돌며, 연결이 열려 있음을 본 직후에만 그 번호로 끈다(`leavingMember`). 거둔 대표의 번호(그룹 번호)로는 신호하지도
 // 판정하지도 않는다.
 afterEach(() => {
-  lease.fails = false;
+  lease.fails = undefined;
   lease.stopped = [];
   lease.cleaned = [];
   lease.requests = [];
@@ -331,18 +336,27 @@ it("stops a process it recorded itself", async () => {
   folders.own(async () => {
     if (!recoveredBySupervisor) await tree.stop();
   }, "the recorded tree");
-  expect((await tree.started).kind).toBe("running");
+  // 감독 실행기가 뜨고 첫 메시지를 보내는 데 걸리는 시간을 담는 상한(느린 Windows 실행기). 앞서 기록을 다시 읽던 대기의 상한과 같다.
+  const startMs = 20_000;
+  expect(
+    (await within(tree.started, startMs, "the recorded tree did not start"))
+      .kind
+  ).toBe("running");
   const file = path.join(home, "processes", `${tree.pid}.json`);
   recordProcess(home, {
     pid: tree.pid!,
     lease: tree.lease,
     supervisorStart: tree.supervisorStart,
   });
-  await vi.waitFor(
-    async () => expect(await readFile(file, "utf8")).toMatch(/"start"/),
-    { timeout: 20_000, interval: 50 }
+  // 기록의 시작 시각은 이미 쓰였다: Linux는 `recordProcess`가 그 자리에서 쓰고, 그 밖의 OS는 `recordProcess`가 먼저 건
+  // `tree.supervisorStart`의 이행 반응 안에서 동기로 다시 쓴다(같은 Promise의 반응은 건 차례로 돈다). 쓰기가 실패해 타이머로 미뤄졌으면
+  // 기록 내용과 함께 여기서 실패한다(시간 간격으로 다시 읽지 않는다).
+  const supervisorStart = await within(
+    tree.supervisorStart,
+    startMs,
+    "the supervisor did not report the tree's start"
   );
-  const supervisorStart = await tree.supervisorStart;
+  expect(await readFile(file, "utf8")).toMatch(/"start"/);
   await recoverProviderProcesses(root);
   recoveredBySupervisor = lease.cleaned.some(
     (request) =>
@@ -534,10 +548,14 @@ it.skipIf(process.platform === "win32")(
   async () => {
     const { root, directory } = await records();
     const finished = spawnSync(process.execPath, ["-e", ""]).pid;
-    await recordFor(directory, finished, "lease");
-    lease.fails = true;
+    const marker = crypto.randomUUID();
+    await recordFor(directory, finished, marker);
+    const fails = { lease: marker, failedAt: [] as string[] };
+    lease.fails = fails;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await recoverProviderProcesses(root);
+    // 주입한 정리 실패는 그 기록의 표식을 실은 요청에서 났다.
+    expect(fails.failedAt).toEqual([marker]);
     expect(await readdir(directory)).toEqual([`${finished}.json`]);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("it stays for the next start")

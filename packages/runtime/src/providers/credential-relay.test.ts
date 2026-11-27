@@ -10,10 +10,12 @@ import {
   credentialResidue,
   type RelayProfile,
 } from "./credential-relay.ts";
-import { refusing, resetRefusing } from "./connect-failure-support.ts";
+import {
+  failingConnectsDuring,
+  resetRefusing,
+} from "./connect-failure-support.ts";
 import { relayIdentityHeaders } from "./relay.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { attemptAll } from "@babojubot/contracts";
 import { permissionDenial, within } from "@babojubot/process/test-support";
 
 // 인증 중계(#148)를 실제 HTTP로 시험한다. 상류는 이 컴퓨터의 모의 서버이며 받은 요청을 남긴다.
@@ -30,31 +32,26 @@ afterEach(() => {
 });
 
 type Seen = { method: string; url: string; headers: http.IncomingHttpHeaders };
-const servers: http.Server[] = [];
-const wires: { server: net.Server; sockets: Set<net.Socket> }[] = [];
 /** 서버를 닫는다. 닫기 실패(이미 닫힘 등)는 거절로 알린다. */
 const closeServer = (server: net.Server) =>
   new Promise<void>((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve()))
   );
-// 한 서버를 닫지 못해도 나머지를 닫는다.
-afterEach(() =>
-  attemptAll([
-    ...wires.splice(0).map((wire) => () => {
-      for (const socket of wire.sockets) socket.destroy();
-      return closeServer(wire.server);
-    }),
-    ...servers.splice(0).map((server) => () => {
-      server.closeAllConnections();
-      return closeServer(server);
-    }),
-  ])
-);
+/**
+ * 시험이 띄운 HTTP 서버를 듣기 전에(만든 순간) 그 시험의 정리에 맡기고 듣는다. 정리는 받은 연결을 끊고 닫는다. 서버와 주소를
+ * 돌려준다(모듈 목록에 넣었다가 "방금 것"을 다시 찾지 않는다).
+ */
 async function listen(handler: http.RequestListener) {
   const server = http.createServer(handler);
-  servers.push(server);
+  onTestFinished(() => {
+    server.closeAllConnections();
+    return closeServer(server);
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+  return {
+    url: `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`,
+    server,
+  };
 }
 /** 서버에 열린 연결 수. */
 const connections = (server: http.Server) =>
@@ -70,7 +67,7 @@ async function upstream() {
   const closed: string[] = [];
   /** 열려 있는 `/v1/stream` 응답(도착 순서). 시험이 조각을 더 보낼 수 있다. */
   const streams: http.ServerResponse[] = [];
-  const url = await listen((req, res) => {
+  const { url, server } = await listen((req, res) => {
     seen.push({ method: req.method!, url: req.url!, headers: req.headers });
     req.resume();
     if (req.url?.startsWith("/base/v1/rejected")) {
@@ -136,7 +133,6 @@ async function upstream() {
     });
     res.end(JSON.stringify({ ok: true }));
   });
-  const server = servers.at(-1)!;
   /** 상류가 받은 연결 수(닫힌 것 포함). */
   let opened = 0;
   server.on("connection", () => opened++);
@@ -217,8 +213,12 @@ async function holdingTransport(target: string, parkedTag: string) {
       outbound.write(head);
     });
   });
+  // 만든 순간 그 시험의 정리에 맡긴다(듣기를 기다리는 사이 시험이 끝나도 정리가 닫는다).
+  onTestFinished(() => {
+    for (const socket of sockets) socket.destroy();
+    return closeServer(server);
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  wires.push({ server, sockets });
   return {
     url: `http://127.0.0.1:${(server.address() as net.AddressInfo).port}${to.pathname}`,
     parked,
@@ -271,8 +271,8 @@ async function setup(
       return options.credential ? options.credential() : "real-account-secret";
     },
   });
-  const url = await listen((req, res) => relay.handle(req, res));
-  return { up, relay, url, server: servers.at(-1)!, reads: () => reads };
+  const { url, server } = await listen((req, res) => relay.handle(req, res));
+  return { up, relay, url, server, reads: () => reads };
 }
 
 const send = (
@@ -316,10 +316,17 @@ describe("the credential relay", () => {
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
     const port = 40_124;
-    refusing.refuse = { port, code: "EHOSTUNREACH" };
-    const { relay, url } = await setup({
-      through: async (up) => `http://127.0.0.1:${port}${new URL(up).pathname}`,
-    });
+    // 아무도 열지 않은 포트는 이 시험만의 자원이 아니므로, 연결 실패를 이 시험이 띄운 중계(의 처리기)에 묶는다.
+    const { dialed, result: settingUp } = failingConnectsDuring(
+      onTestFinished,
+      { port, code: "EHOSTUNREACH" },
+      () =>
+        setup({
+          through: async (up) =>
+            `http://127.0.0.1:${port}${new URL(up).pathname}`,
+        })
+    );
+    const { relay, url } = await settingUp;
     const grant = relay.grant({
       ...scope(),
       organizationId: "organization-id",
@@ -328,7 +335,7 @@ describe("the credential relay", () => {
     const response = await send(url, grant.token);
     expect(response.status).toBe(502);
     await response.body?.cancel();
-    expect(refusing.dialed.mock.calls).toEqual([[{ host: "127.0.0.1", port }]]);
+    expect(dialed).toEqual([{ host: "127.0.0.1", port }]);
     expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
       "[provider] the credential relay could not reach the upstream; it answered 502 (EHOSTUNREACH)",
     ]);
@@ -384,15 +391,16 @@ describe("the credential relay", () => {
         )
       );
     });
-    await new Promise<void>((resolve) =>
-      malformed.listen(0, "127.0.0.1", resolve)
-    );
+    // 만든 순간 그 시험의 정리에 맡긴다(듣기를 기다리는 사이 시험이 끝나도 정리가 닫는다).
     onTestFinished(
       () =>
         new Promise<void>((resolve, reject) => {
           for (const socket of answering) socket.destroy();
           malformed.close((error) => (error ? reject(error) : resolve()));
         })
+    );
+    await new Promise<void>((resolve) =>
+      malformed.listen(0, "127.0.0.1", resolve)
     );
     const port = (malformed.address() as net.AddressInfo).port;
     const { relay, url } = await setup({
@@ -427,15 +435,16 @@ describe("the credential relay", () => {
         )
       );
     });
-    await new Promise<void>((resolve) =>
-      switching.listen(0, "127.0.0.1", resolve)
-    );
+    // 만든 순간 그 시험의 정리에 맡긴다(듣기를 기다리는 사이 시험이 끝나도 정리가 닫는다).
     onTestFinished(
       () =>
         new Promise<void>((resolve, reject) => {
           for (const socket of answering) socket.destroy();
           switching.close((error) => (error ? reject(error) : resolve()));
         })
+    );
+    await new Promise<void>((resolve) =>
+      switching.listen(0, "127.0.0.1", resolve)
     );
     const port = (switching.address() as net.AddressInfo).port;
     const { relay, url } = await setup({
@@ -589,7 +598,7 @@ describe("the credential relay", () => {
       verified: true,
       credential: async () => "real-account-secret",
     });
-    const url = await listen((req, res) => after.handle(req, res));
+    const { url } = await listen((req, res) => after.handle(req, res));
     expect((await send(url, kept.token)).status).toBe(401);
   });
 
@@ -602,7 +611,7 @@ describe("the credential relay", () => {
       credential: async () => "real-account-secret",
       now: () => time,
     });
-    const url = await listen((req, res) => relay.handle(req, res));
+    const { url } = await listen((req, res) => relay.handle(req, res));
     const grant = relay.grant(scope());
     time = 13 * 60 * 60 * 1000;
     expect((await send(url, grant.token)).status).toBe(401);

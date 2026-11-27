@@ -21,7 +21,6 @@ afterEach(() => {
 async function run(stopFails: boolean) {
   const stateDir = await folders.make("babojubot-record-");
   // 실패 장면은 제품에 실제로 끈 뒤 실패로 답하는 끄기를 돌려준다(제품이 그것을 인수 없이 불렀는지는 장면의 정리가 본다).
-  if (stopFails) folders.treeScene({ failProductStop: "after-stopping" });
   const start = () =>
     startProcess({
       stateDir,
@@ -34,7 +33,9 @@ async function run(stopFails: boolean) {
   // 끄기가 실패로 답하는 실행 시도는 그 끝이 `broken`이라 `ownBrokenRun`에 맡긴다(정리는 실행 시도를 끝내고 기록 쓰기가 끝나기를
   // 기다리고, 트리의 끝은 대역이 맡은 실제 끄기가 확인한다). 끄기가 성공하는 실행 시도는 `ownRun`이 끝을 확인한다.
   const attempt = stopFails
-    ? folders.ownBrokenRun(start())
+    ? folders.treeScene({ failProductStop: "after-stopping" }, () =>
+        folders.ownBrokenRun(start())
+      )
     : folders.ownRun(start());
   const exit = await within(attempt.done, 30_000, "the run did not finish");
   return { exit, records: await readdir(path.join(stateDir, "processes")) };

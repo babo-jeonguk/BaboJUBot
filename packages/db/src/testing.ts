@@ -73,7 +73,7 @@ declare module "vitest" {
 }
 const templateName = "babojubot_template";
 // 서버 테스트 파일들이 동시에 연결을 연다. 임시 cluster라 디스크 확정 기록은 startEmbeddedCluster가 끈다.
-const testSettings = ["max_connections=500"];
+const testSettings: readonly string[] = ["max_connections=500"];
 
 /**
  * 테스트 실행 하나가 같이 쓰는 embedded Postgres를 띄우고, migration을 적용한 원본 DB를 만든다.
@@ -83,7 +83,7 @@ export async function startTestCluster(
   project: Pick<TestProject, "provide">
 ): Promise<() => Promise<void>> {
   const options = await ephemeralCluster();
-  const { port, stop } = await startEmbeddedCluster(options, testSettings);
+  const { port, stop } = await startEmbeddedCluster(options, [...testSettings]);
   try {
     await withClient(clusterUrl(port, "postgres"), (client) =>
       client.query(`create database ${templateName}`)
@@ -234,16 +234,23 @@ export async function insertLegacyOrganization(
 
 /**
  * 그 실행 시도의 종료 Event 기록이 실패하게 한다. 종료 저장 transaction의 마지막 쓰기가 실패하는 경우다.
- * 돌려준 함수가 되돌린다. 한 DB에 하나만 걸 수 있다.
+ * `failed`는 트리거가 실패시킨 그 실행 시도의 종료 기록 수다: 실패한 transaction이 되돌려져도 남도록 sequence로 센다(Postgres는
+ * sequence 증가를 되돌리지 않는다). 시험은 이 수로 결함이 실제로 그 실행 시도의 종료 기록에서 났는지 본다(`failArtifactRecord`와 같은
+ * 모양). `remove`가 되돌린다. 한 DB에 하나만 걸 수 있다.
  */
 export async function failRunEnd(
   db: Database,
   runId: string
-): Promise<() => Promise<void>> {
+): Promise<{
+  failed: () => Promise<number>;
+  remove: () => Promise<void>;
+}> {
   await db.execute(`
+    create sequence fail_run_end_failed;
     create function fail_run_end() returns trigger as $$
     begin
       if new.type = 'run.finished' and new.payload->>'runId' = '${runId}' then
+        perform nextval('fail_run_end_failed');
         raise exception 'run end could not be saved';
       end if;
       return new;
@@ -251,24 +258,37 @@ export async function failRunEnd(
     create trigger fail_run_end before insert on events
       for each row execute function fail_run_end();
   `);
-  return async () => {
-    await db.execute(
-      "drop trigger fail_run_end on events; drop function fail_run_end();"
-    );
+  return {
+    failed: async () => {
+      const result = await db.execute(
+        sql`select case when is_called then last_value else 0 end::int as n from fail_run_end_failed`
+      );
+      return (result.rows[0] as { n: number }).n;
+    },
+    remove: async () => {
+      await db.execute(
+        "drop trigger fail_run_end on events; drop function fail_run_end(); drop sequence fail_run_end_failed;"
+      );
+    },
   };
 }
 
 /**
  * 산출물 기록 Event(`artifact.recorded`) 저장이 실패하게 한다. 산출물 행을 넣은 뒤 같은 정산 transaction이 실패하는 실제 DB 실패다.
- * 돌려준 함수가 되돌린다. 한 DB에 하나만 걸 수 있다.
+ * DB는 시험마다 복제하므로 그 시험의 DB에만 걸린다. `failed`는 트리거가 실패시킨 기록 수다: 실패한 transaction이 되돌려져도 남도록
+ * sequence로 센다(Postgres는 sequence 증가를 되돌리지 않는다). 시험은 이 수로 결함이 실제로 그 기록에서 났는지 본다. `remove`가
+ * 되돌린다. 한 DB에 하나만 걸 수 있다.
  */
-export async function failArtifactRecord(
-  db: Database
-): Promise<() => Promise<void>> {
+export async function failArtifactRecord(db: Database): Promise<{
+  failed: () => Promise<number>;
+  remove: () => Promise<void>;
+}> {
   await db.execute(`
+    create sequence fail_artifact_record_failed;
     create function fail_artifact_record() returns trigger as $$
     begin
       if new.type = 'artifact.recorded' then
+        perform nextval('fail_artifact_record_failed');
         raise exception 'artifact record could not be saved';
       end if;
       return new;
@@ -276,10 +296,18 @@ export async function failArtifactRecord(
     create trigger fail_artifact_record before insert on events
       for each row execute function fail_artifact_record();
   `);
-  return async () => {
-    await db.execute(
-      "drop trigger fail_artifact_record on events; drop function fail_artifact_record();"
-    );
+  return {
+    failed: async () => {
+      const result = await db.execute(
+        sql`select case when is_called then last_value else 0 end::int as n from fail_artifact_record_failed`
+      );
+      return (result.rows[0] as { n: number }).n;
+    },
+    remove: async () => {
+      await db.execute(
+        "drop trigger fail_artifact_record on events; drop function fail_artifact_record(); drop sequence fail_artifact_record_failed;"
+      );
+    },
   };
 }
 

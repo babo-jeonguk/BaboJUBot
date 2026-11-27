@@ -4,6 +4,7 @@ import {
   readFile,
   readdir,
   readlink,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -13,40 +14,67 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loginLink } from "./login-link.ts";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./antigravity.ts";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
-import { permissionDenial } from "@babojubot/process/test-support";
+import {
+  insideFolder,
+  permissionDenial,
+  realPlace,
+} from "@babojubot/process/test-support";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 링크를 만들 수 없는 컴퓨터에서는 실행이 연결 폴더로 대신 돈다. 그때도 연결의 로그인 하나를 읽어야 한다.
 // 로그인 원본이 이미 로그인 전용 폴더로 옮겨진 뒤(다른 컴퓨터에서 옮긴 제품 폴더, 링크만 사라진 경우)도 같다(PR #135 SPEC-1).
 
-let refusal: string | null = null;
-// 임시 링크(`….link`)를 제자리로 옮기기와 그 정리가 이 오류로 실패한다.
-const linkFailures = vi.hoisted(() => ({
-  rename: undefined as Error | undefined,
-  rm: undefined as Error | undefined,
-}));
+/**
+ * 이 폴더(`in`, 그 시험의 폴더) 안의 링크 만들기를 이 오류 코드로 거절한다(권한 없는 Windows(EPERM)·링크를 모르는 파일
+ * 시스템(ENOTSUP·EOPNOTSUPP)). 거절한 링크 자리를 `refused`에 남긴다(시험이 거절이 실제로 그 시험의 자리에서 났는지 본다, #286).
+ */
+let refusal: { in: string; code: string; refused: string[] } | undefined;
+/**
+ * 이 폴더(`in`, 그 시험의 조직 자리 폴더) 안에서 옮기기(`rename`)와 지우기(`rm`)가 이 오류로 실패한다. 실패시킨 옮기기의
+ * 출발·도착 경로를 `renamed`에, 지우기 경로를 `removed`에 남긴다.
+ */
+let linkFailures:
+  | {
+      in: string;
+      rename: Error;
+      rm: Error;
+      renamed: { from: string; to: string }[];
+      removed: string[];
+    }
+  | undefined;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    rename: (...args: Parameters<typeof actual.rename>) =>
-      linkFailures.rename && String(args[0]).endsWith(".link")
-        ? Promise.reject(linkFailures.rename)
-        : actual.rename(...args),
-    rm: (...args: Parameters<typeof actual.rm>) =>
-      linkFailures.rm && String(args[0]).endsWith(".link")
-        ? Promise.reject(linkFailures.rm)
-        : actual.rm(...args),
-    // 권한 없는 Windows(EPERM)·링크를 모르는 파일 시스템(ENOTSUP·EOPNOTSUPP)처럼 링크 만들기를 거절한다.
-    symlink: (...args: Parameters<typeof actual.symlink>) =>
-      refusal
-        ? Promise.reject(
-            Object.assign(new Error(`${refusal}: cannot link`), {
-              code: refusal,
-            })
-          )
-        : actual.symlink(...args),
+    // 결함은 불린 순간(대역 몸 안, 기다리기 전) 읽는다.
+    rename: (...args: Parameters<typeof actual.rename>) => {
+      if (!linkFailures || !insideFolder(linkFailures.in, String(args[0])))
+        return actual.rename(...args);
+      linkFailures.renamed.push({
+        from: String(args[0]),
+        to: String(args[1]),
+      });
+      return Promise.reject(linkFailures.rename);
+    },
+    rm: (...args: Parameters<typeof actual.rm>) => {
+      if (!linkFailures || !insideFolder(linkFailures.in, String(args[0])))
+        return actual.rm(...args);
+      linkFailures.removed.push(String(args[0]));
+      return Promise.reject(linkFailures.rm);
+    },
+    symlink: (...args: Parameters<typeof actual.symlink>) => {
+      if (!refusal || !insideFolder(refusal.in, String(args[1])))
+        return actual.symlink(...args);
+      // handle을 거친 경로(`/proc/self/fd/<n>/…`)는 시험이 handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다.
+      const link = String(args[1]);
+      refusal.refused.push(realPlace(link));
+      return Promise.reject(
+        Object.assign(new Error(`${refusal.code}: cannot link`), {
+          code: refusal.code,
+        })
+      );
+    },
   };
 });
 
@@ -55,9 +83,8 @@ const folders = testFolders();
 const createCodexProvider = folders.owning(unownedCodexProvider);
 const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 afterEach(async () => {
-  refusal = null;
-  linkFailures.rename = undefined;
-  linkFailures.rm = undefined;
+  refusal = undefined;
+  linkFailures = undefined;
   vi.restoreAllMocks();
 });
 const control = () => ({
@@ -67,7 +94,8 @@ const control = () => ({
 const fixture = (name: string) => path.resolve("test-fixtures", name);
 
 async function setup() {
-  const root = await folders.make("babojubot-login-link-");
+  // 제품이 확인한 폴더 handle로 다루는 경로도 이 폴더로 가를 수 있게 실제 경로로 둔다(`insideFolder`).
+  const root = await realpath(await folders.make("babojubot-login-link-"));
   const requestFor = async (
     organizationId = crypto.randomUUID()
   ): Promise<RunRequest> => {
@@ -86,6 +114,17 @@ async function setup() {
   return { root, requestFor };
 }
 
+/** 그 시험의 폴더 안 링크 만들기를 `code`로 거절하기 시작한다. 거절한 자리는 돌려준 무장의 `refused`에 남는다. */
+function refuseLinks(folder: string, code: string) {
+  const armed = { in: folder, code, refused: [] as string[] };
+  refusal = armed;
+  return armed;
+}
+/** 링크 만들기가 거절된 폴더들(처음 거절된 차례). 제품은 링크를 그 자리의 폴더에 임시 이름으로 먼저 만든다. */
+const refusedFolders = (refused: string[]) => [
+  ...new Set(refused.map(path.dirname)),
+];
+
 const antigravityToken = (home: string) =>
   path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
 
@@ -100,7 +139,7 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         path.join(connection, "login", "antigravity-oauth-token"),
         '{"synthetic":1}'
       );
-      refusal = code;
+      const refused = refuseLinks(env.root, code);
       const provider = createAntigravityProvider({
         dataDir: env.root,
         command: [process.execPath, fixture("antigravity-simulator.mjs")],
@@ -108,15 +147,26 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
       expect(
         await provider.adapter.checkReadiness(new AbortController().signal)
       ).toEqual({ status: "ready", reason: null });
-      const result = await provider.adapter.execute(
-        await env.requestFor(),
-        control()
-      );
+      const input = await env.requestFor();
+      const result = await provider.adapter.execute(input, control());
       // 이 시험의 도구 주소는 닿지 않아 실행은 실패하지만, 로그인은 보여야 한다.
       expect(result.errorCode).toBeUndefined();
       expect(await readFile(antigravityToken(connection), "utf8")).toBe(
         '{"synthetic":1}'
       );
+      // 거절은 준비 확인과 실행이 연결 자리에, 실행이 그 조직 자리에 링크를 만들려 할 때 났다.
+      expect(refusedFolders(refused.refused)).toEqual([
+        path.dirname(antigravityToken(connection)),
+        path.dirname(
+          antigravityToken(
+            path.join(
+              connection,
+              "organizations",
+              input.identity.organizationId
+            )
+          )
+        ),
+      ]);
     }, 20000);
 
     it("runs Codex with the connection's login that was already moved to the login folder", async () => {
@@ -134,15 +184,20 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         script,
         `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(dump)}, (() => { try { return fs.readFileSync(require("node:path").join(process.env.CODEX_HOME, "auth.json"), "utf8"); } catch { return "missing"; } })() + "\\n");`
       );
-      refusal = code;
+      const refused = refuseLinks(env.root, code);
       const provider = createCodexProvider({
         dataDir: env.root,
         command: [process.execPath, script],
       });
-      await provider.adapter.execute(await env.requestFor(), control());
+      const input = await env.requestFor();
+      await provider.adapter.execute(input, control());
       expect((await readFile(dump, "utf8")).trim().split("\n").at(-1)).toBe(
         '{"synthetic":1}'
       );
+      expect(refusedFolders(refused.refused)).toEqual([
+        connection,
+        path.join(connection, "organizations", input.identity.organizationId),
+      ]);
     }, 20000);
 
     it.skipIf(!permissionDenial())(
@@ -155,13 +210,16 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         });
         await writeFile(antigravityToken(connection), '{"synthetic":1}');
         await chmod(antigravityToken(connection), 0o400);
-        refusal = code;
+        const refused = refuseLinks(env.root, code);
         expect(
           await createAntigravityProvider({
             dataDir: env.root,
             command: [process.execPath, fixture("antigravity-simulator.mjs")],
           }).adapter.checkReadiness(new AbortController().signal)
         ).toEqual({ status: "not_ready", reason: "check_failed" });
+        expect(refused.refused.map(path.dirname)).toEqual([
+          path.dirname(antigravityToken(connection)),
+        ]);
       },
       20000
     );
@@ -269,7 +327,7 @@ describe("a machine that stops being able to create links", () => {
       b = crypto.randomUUID();
     // 링크를 만들 수 있을 때 조직 A가 먼저 돌아 링크가 생겼다.
     await provider.adapter.execute(await env.requestFor(a), control());
-    refusal = "EPERM";
+    const refused = refuseLinks(env.root, "EPERM");
     const signal = new AbortController().signal;
     for (const organizationId of [b, a]) {
       const result = await provider.adapter.execute(
@@ -282,8 +340,17 @@ describe("a machine that stops being able to create links", () => {
       status: "ready",
       reason: null,
     });
+    const organization = (id: string) =>
+      path.dirname(
+        antigravityToken(path.join(connection, "organizations", id))
+      );
+    expect(refusedFolders(refused.refused)).toEqual([
+      path.dirname(antigravityToken(connection)),
+      organization(b),
+      organization(a),
+    ]);
     // 다시 링크를 만들 수 있게 되어도 두 조직 모두 같은 로그인을 읽는다.
-    refusal = null;
+    refusal = undefined;
     for (const organizationId of [a, b]) {
       const result = await provider.adapter.execute(
         await env.requestFor(organizationId),
@@ -306,16 +373,24 @@ describe("a machine that stops being able to create links", () => {
     const a = crypto.randomUUID();
     await provider.adapter.execute(await env.requestFor(a), control());
     expect(await reader.last()).toBe('{"old":1}');
-    refusal = "EPERM";
+    const refused = refuseLinks(env.root, "EPERM");
     // 링크를 만들 수 없는 컴퓨터에서 다시 로그인하면 연결 폴더에 보통 파일로 남는다. 이것이 가장 최근 로그인이다.
     await rm(path.join(connection, "auth.json"));
     await writeFile(path.join(connection, "auth.json"), '{"new":1}');
     await provider.adapter.execute(await env.requestFor(a), control());
     expect(await reader.last()).toBe('{"new":1}');
-    await provider.adapter.execute(await env.requestFor(), control());
+    const other = await env.requestFor();
+    await provider.adapter.execute(other, control());
     expect(await reader.last()).toBe('{"new":1}');
+    const organization = (id: string) =>
+      path.join(connection, "organizations", id);
+    expect(refusedFolders(refused.refused)).toEqual([
+      connection,
+      organization(a),
+      organization(other.identity.organizationId),
+    ]);
     // 다시 링크를 만들 수 있게 되면 가장 최근 로그인이 원본이 되어 모든 조직이 그것을 읽는다.
-    refusal = null;
+    refusal = undefined;
     await provider.adapter.execute(await env.requestFor(a), control());
     expect(await reader.last()).toBe('{"new":1}');
   }, 30000);
@@ -326,7 +401,7 @@ describe("a machine that stops being able to create links", () => {
 it.skipIf(process.platform === "win32")(
   "throws the failure to place the link, not the failure to remove the temporary link",
   async () => {
-    const root = await folders.make("babojubot-login-link-");
+    const root = await realpath(await folders.make("babojubot-login-link-"));
     const original = path.join(root, "login", "auth.json");
     await mkdir(path.dirname(original), { recursive: true });
     await writeFile(original, "{}");
@@ -338,11 +413,19 @@ it.skipIf(process.platform === "win32")(
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const busy = Object.assign(new Error("busy"), { code: "EBUSY" });
-    linkFailures.rename = busy;
-    linkFailures.rm = Object.assign(new Error("io"), { code: "EIO" });
-    await expect(
-      share(path.join(root, "organization", "auth.json"))
-    ).rejects.toBe(busy);
+    const at = path.join(root, "organization", "auth.json");
+    const failing = {
+      in: path.dirname(at),
+      rename: busy,
+      rm: Object.assign(new Error("io"), { code: "EIO" }),
+      renamed: [] as { from: string; to: string }[],
+      removed: [] as string[],
+    };
+    linkFailures = failing;
+    await expect(share(at)).rejects.toBe(busy);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("EIO"));
+    // 옮기기는 그 자리로 옮기는 하나에서 실패했고, 지우기는 그때 옮기려던 임시 링크에서 실패했다.
+    expect(failing.renamed.map(({ to }) => to)).toEqual([at]);
+    expect(failing.removed).toEqual(failing.renamed.map(({ from }) => from));
   }
 );

@@ -1,4 +1,11 @@
-import { lstat, mkdir, readFile, readlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  realpath,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import {
   hasErrorCode,
@@ -11,34 +18,40 @@ import { loginLink } from "./login-link.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { insideFolder, realPlace } from "@babojubot/process/test-support";
 
 // Codex 로그인 하나를 연결의 모든 조직이 링크로 같이 쓴다(docs/research/org-product-folders-references.md 사용자 결정).
 // 링크를 만들 수 없는 컴퓨터와 여러 조직이 한꺼번에 시작하는 장면에서도 로그인이 남아야 한다.
 
-let refuseLinks = false;
+/**
+ * 이 폴더(`in`, 그 시험의 폴더) 안의 링크 만들기를 거절한다(권한 없는 Windows·링크를 모르는 파일 시스템). 거절한 링크 자리를
+ * `refused`에 남긴다(시험이 거절이 실제로 그 시험의 자리에서 났는지 본다, #286).
+ */
+let refusal: { in: string; refused: string[] } | undefined;
 // 원본 로그인을 옮기는 rename 하나를 붙잡아 둔다. 링크를 임시 이름에서 제자리로 옮기는 rename은 세지 않는다.
 let gatedOriginal: string | undefined;
-let enteredOriginalRename: (() => void) | undefined;
 let heldOriginalRename: Promise<void> | undefined;
 let originalRenames = 0;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    // 권한 없는 Windows·링크를 모르는 파일 시스템처럼 링크 만들기를 거절한다.
-    symlink: (...args: Parameters<typeof actual.symlink>) =>
-      refuseLinks
-        ? Promise.reject(
-            Object.assign(new Error("EPERM: operation not permitted"), {
-              code: "EPERM",
-            })
-          )
-        : actual.symlink(...args),
+    symlink: (...args: Parameters<typeof actual.symlink>) => {
+      // 결함은 불린 순간(대역 몸 안, 기다리기 전) 읽는다.
+      if (!refusal || !insideFolder(refusal.in, String(args[1])))
+        return actual.symlink(...args);
+      // handle을 거친 경로(`/proc/self/fd/<n>/…`)는 시험이 handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다.
+      const link = String(args[1]);
+      refusal.refused.push(realPlace(link));
+      return Promise.reject(
+        Object.assign(new Error("EPERM: operation not permitted"), {
+          code: "EPERM",
+        })
+      );
+    },
     rename: (...args: Parameters<typeof actual.rename>) => {
       if (gatedOriginal && String(args[1]) === gatedOriginal) {
         originalRenames += 1;
-        enteredOriginalRename?.();
-        enteredOriginalRename = undefined;
         if (heldOriginalRename)
           return heldOriginalRename.then(() => actual.rename(...args));
       }
@@ -48,9 +61,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 afterEach(() => {
-  refuseLinks = false;
+  refusal = undefined;
   gatedOriginal = undefined;
-  enteredOriginalRename = undefined;
   heldOriginalRename = undefined;
   originalRenames = 0;
 });
@@ -64,7 +76,8 @@ const control = () => ({
 });
 
 async function setup() {
-  const root = await folders.make("babojubot-codex-login-");
+  // 제품이 확인한 폴더 handle로 다루는 경로도 이 폴더로 가를 수 있게 실제 경로로 둔다(`insideFolder`).
+  const root = await realpath(await folders.make("babojubot-codex-login-"));
   const dump = path.join(root, "env.jsonl");
   const script = path.join(root, "dump-env.cjs");
   // 받은 환경을 한 줄로 남기고 끝나는 프로그램. 실행은 실패하지만 어느 폴더로 띄웠는지는 남는다.
@@ -100,13 +113,14 @@ async function setup() {
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as NodeJS.ProcessEnv);
-  return { connection, provider, requestFor, dumps };
+  return { root, connection, provider, requestFor, dumps };
 }
 
 describe("Codex login link", () => {
   it("leaves the login in the connection folder when this machine cannot create file links", async () => {
     const env = await setup();
-    refuseLinks = true;
+    const refused = { in: env.root, refused: [] as string[] };
+    refusal = refused;
     await env.provider.adapter.checkReadiness(new AbortController().signal);
     const input = await env.requestFor(crypto.randomUUID());
     await env.provider.adapter.execute(input, control());
@@ -120,6 +134,12 @@ describe("Codex login link", () => {
     const dumped = await env.dumps();
     expect(dumped.length).toBeGreaterThan(0);
     for (const one of dumped) expect(one.CODEX_HOME).toBe(env.connection);
+    // 거절은 준비 확인과 실행이 연결 자리에, 실행이 그 조직 자리에 링크를 만들려 할 때 났다(제품은 링크를 그 자리의 폴더에
+    // 임시 이름으로 먼저 만든다. 대역이 받은 정확한 경로의 폴더로 본다).
+    expect([...new Set(refused.refused.map(path.dirname))]).toEqual([
+      env.connection,
+      path.join(env.connection, "organizations", input.identity.organizationId),
+    ]);
   });
 
   it("moves the connection's login once when several organizations start together", async () => {
@@ -167,7 +187,8 @@ describe("Codex login link", () => {
   });
 
   it("serializes concurrent link calls for one login at the original migration", async () => {
-    const root = await folders.make("babojubot-codex-login-");
+    // 제품이 확인한 폴더 handle로 다루는 경로도 이 폴더로 가를 수 있게 실제 경로로 둔다(`insideFolder`).
+    const root = await realpath(await folders.make("babojubot-codex-login-"));
     const connection = path.join(root, "providers/codex");
     const original = path.join(connection, "login", "auth.json");
     const fallback = path.join(connection, "auth.json");

@@ -4,14 +4,21 @@ import { testFolders } from "@babojubot/process/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConfirmFailed, removeConfirmed } from "./remove-confirmed.ts";
 
-// 링크를 만들 수 없는 디스크(#209)를 흉내 낸다. 이 코드가 있으면 hard link 만들기가 그 오류로 실패한다.
-const disk = vi.hoisted(() => ({ linkFails: undefined as string | undefined }));
+// 링크를 만들 수 없는 디스크(#209)를 흉내 낸다. 결함이 있으면 정확히 그 경로(`at`, 그 시험 폴더의 파일)로 hard link를 만들 때 그
+// 코드의 오류로 실패하고, 실패시킨 경로를 `failedAt`에 남긴다. 다른 경로의 link는 그대로 한다(#286).
+type LinkFault = { at: string; code: string; failedAt: string[] };
+const disk = vi.hoisted(() => ({
+  linkFails: undefined as LinkFault | undefined,
+}));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
-  const link: typeof real.link = async (...args) => {
-    if (disk.linkFails)
-      throw Object.assign(new Error("cannot link"), { code: disk.linkFails });
-    return real.link(...args);
+  const link: typeof real.link = async (existing, target) => {
+    const fault = disk.linkFails;
+    if (fault?.at === String(target)) {
+      fault.failedAt.push(String(target));
+      throw Object.assign(new Error("cannot link"), { code: fault.code });
+    }
+    return real.link(existing, target);
   };
   return { ...real, link, default: { ...real, link } };
 });
@@ -102,7 +109,10 @@ describe("removing a file in a place others can change, only the one confirmed",
       const root = await folders.make("babojubot-remove-");
       const file = path.join(root, "config.json");
       await writeFile(file, "first save");
-      disk.linkFails = linkFails;
+      const fault: LinkFault | undefined = linkFails
+        ? { at: file, code: linkFails, failedAt: [] }
+        : undefined;
+      disk.linkFails = fault;
       const result = await removeConfirmed(file, async () => {
         if (taken) await takeName(root, file);
         return false;
@@ -116,6 +126,7 @@ describe("removing a file in a place others can change, only the one confirmed",
       expect((await readdir(root)).sort()).toEqual(
         (taken ? ["config.json", result.keptAs] : [result.keptAs]).sort()
       );
+      expect(fault?.failedAt).toEqual(linkFails ? [file] : undefined);
     }
   );
 
@@ -128,7 +139,10 @@ describe("removing a file in a place others can change, only the one confirmed",
       const root = await folders.make("babojubot-remove-");
       const file = path.join(root, "config.json");
       await writeFile(file, "first save");
-      disk.linkFails = linkFails;
+      const fault: LinkFault | undefined = linkFails
+        ? { at: file, code: linkFails, failedAt: [] }
+        : undefined;
+      disk.linkFails = fault;
       const failed = await confirmFailure(
         removeConfirmed(file, async () => {
           if (taken) await takeName(root, file);
@@ -142,6 +156,7 @@ describe("removing a file in a place others can change, only the one confirmed",
       expect(await readFile(path.join(root, failed.kept.keptAs), "utf8")).toBe(
         "first save"
       );
+      expect(fault?.failedAt).toEqual(linkFails ? [file] : undefined);
     }
   );
 

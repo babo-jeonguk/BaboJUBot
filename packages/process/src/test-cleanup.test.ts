@@ -20,6 +20,35 @@ import { removeFolder } from "./remove-folder.ts";
 import { within } from "./test-support.ts";
 import { attemptAll, isDisconnect } from "@babojubot/contracts";
 
+/** `process.kill`의 신호(번호 또는 이름). */
+type Signal = string | number | undefined;
+/** 보낸 신호 하나: `[번호, 신호]`. */
+type Sent = [number, Signal];
+// 이 모듈은 신호를 `node:process`의 `kill`로 보낸다. 그 모듈 경계에서 대역하고, 전역 `process.kill`은 바꾸지 않는다(#286).
+const signals = vi.hoisted(() => ({
+  /**
+   * 정확히 이 번호(`pid`, 그 시험이 띄운 프로그램)에 이 신호(`signal`)를 보내면 `cause`로 실패하고 그 `[번호, 신호]`를 `failedAt`에
+   * 남긴다.
+   */
+  fault: undefined as
+    { pid: number; signal: Signal; cause: Error; failedAt: Sent[] } | undefined,
+  /** 그 시험이 듣는 보낸 신호(실패시키지 않고 실제로 보낸 것). */
+  heard: undefined as ((...sent: Sent) => void) | undefined,
+}));
+vi.mock("node:process", async (original) => {
+  const real = await original<typeof import("node:process")>();
+  const kill = ((pid: number, signal?: string | number) => {
+    const fault = signals.fault;
+    if (fault?.pid === pid && fault.signal === signal) {
+      fault.failedAt.push([pid, signal]);
+      throw fault.cause;
+    }
+    signals.heard?.(pid, signal);
+    return real.kill(pid, signal);
+  }) as typeof real.kill;
+  return { ...real, kill };
+});
+
 // 정리 실패가 시험의 원래 실패를 가리지 않고, 한 정리가 실패해도 나머지 정리를 한다.
 describe("withCleanup", () => {
   it("returns what the body returns after running its cleanups in reverse order", async () => {
@@ -221,16 +250,28 @@ describe("folderCleanup", () => {
   });
 });
 
-/** `process.kill`이 `code` 오류로 실패하게 한다. 시험이 끝나면 되돌린다. */
-function failKill(code: string) {
-  const failure = Object.assign(new Error(`kill ${code}`), { code });
-  vi.spyOn(process, "kill").mockImplementation(() => {
-    throw failure;
+/** 시험이 끝날 때까지 도는 프로그램의 번호. 시험이 끝나면 끄고 끝날 때까지 기다린다. */
+function running() {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    stdio: "ignore",
   });
+  onTestFinished(() => endChild(child));
+  return child.pid!;
+}
+
+/** 그 시험의 프로그램(`pid`)에 보내는 신호 `signal`이 `code` 오류로 실패하게 한다. 시험이 끝나면 푼다. */
+function failKill(pid: number, signal: Signal, code: string) {
+  const fault = {
+    pid,
+    signal,
+    cause: Object.assign(new Error(`kill ${code}`), { code }),
+    failedAt: [] as Sent[],
+  };
+  signals.fault = fault;
   onTestFinished(() => {
-    vi.restoreAllMocks();
+    signals.fault = undefined;
   });
-  return failure;
+  return fault;
 }
 
 // 종료 확인은 "프로세스 없음"(ESRCH)만 끝난 것으로 본다. 권한·I/O 오류를 끝남으로 보면 남은 프로그램의 폴더를 지운다(#243).
@@ -246,18 +287,21 @@ describe("processAlive", () => {
   it.each(["EPERM", "EIO"])(
     "fails with the pid and the cause when the lookup fails with %s",
     (code) => {
-      const failure = failKill(code);
+      const pid = running();
+      const fault = failKill(pid, 0, code);
       let error: unknown;
       try {
-        processAlive(4242);
+        processAlive(pid);
       } catch (thrown) {
         error = thrown;
       }
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toBe(
-        "프로세스 4242가 있는지 확인하지 못했다"
+        `프로세스 ${pid}가 있는지 확인하지 못했다`
       );
-      expect((error as Error).cause).toBe(failure);
+      expect((error as Error).cause).toBe(fault.cause);
+      // 실패는 그 시험의 프로그램에 보낸 신호 0 하나에서 났다.
+      expect(fault.failedAt).toEqual([[pid, 0]]);
     }
   );
 });
@@ -277,24 +321,30 @@ describe("killUnlessGone", () => {
   // 끝난 대상(ESRCH)은 넘어간다. 끝난 프로세스의 번호에 실제로 신호하면 그 번호를 받은 다른 프로그램에 갈 수 있어(#288 parent 점검),
   // "없음" 답을 주입해 본다.
   it("passes over a finished process", () => {
-    failKill("ESRCH");
-    expect(killUnlessGone(4242)).toBe(false);
+    const pid = running();
+    const fault = failKill(pid, "SIGKILL", "ESRCH");
+    expect(killUnlessGone(pid)).toBe(false);
+    // "없음" 답은 그 시험의 프로그램에 보낸 SIGKILL 하나에서 났다.
+    expect(fault.failedAt).toEqual([[pid, "SIGKILL"]]);
   });
 
   it.each(["EPERM", "EIO"])(
     "fails with the pid, the signal and the cause when the signal fails with %s",
     (code) => {
-      const failure = failKill(code);
+      const pid = running();
+      const fault = failKill(pid, "SIGTERM", code);
       let error: unknown;
       try {
-        killUnlessGone(4242, "SIGTERM");
+        killUnlessGone(pid, "SIGTERM");
       } catch (thrown) {
         error = thrown;
       }
       expect((error as Error).message).toBe(
-        "프로세스 4242에 SIGTERM을 보내지 못했다"
+        `프로세스 ${pid}에 SIGTERM을 보내지 못했다`
       );
-      expect((error as Error).cause).toBe(failure);
+      expect((error as Error).cause).toBe(fault.cause);
+      // 실패는 그 시험의 프로그램에 보낸 SIGTERM 하나에서 났다.
+      expect(fault.failedAt).toEqual([[pid, "SIGTERM"]]);
     }
   );
 });
@@ -334,19 +384,18 @@ describe("lifelineHolder", () => {
       "holder",
       pidFile
     );
-    const kill = process.kill.bind(process);
-    const openAtSignal: boolean[] = [];
-    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-      if (pid === program.pid) openAtSignal.push(open);
-      return kill(pid, signal);
-    });
+    // 그 프로그램에 보낸 신호마다 그 순간 연결이 열려 있었는지 남긴다.
+    const sentToProgram: [...Sent, boolean][] = [];
+    signals.heard = (pid, signal) => {
+      if (pid === program.pid) sentToProgram.push([pid, signal, open]);
+    };
     onTestFinished(() => {
-      vi.restoreAllMocks();
+      signals.heard = undefined;
     });
 
     await holder.end();
 
-    expect(openAtSignal).toEqual([true]);
+    expect(sentToProgram).toEqual([[program.pid, "SIGKILL", true]]);
   });
 });
 

@@ -805,7 +805,7 @@ describe("server start recovery barrier", () => {
     database = await createTestDatabase();
     const [early, late] = await leftRunning(database.db, 2);
     const runtime = countingRuntime();
-    const restore = await failRunEnd(database.db, late!.runId);
+    const runEnd = await failRunEnd(database.db, late!.runId);
     // 거절을 기대한다(뒤쪽 복구 저장이 실패한다). 시작 실패 뒤 정리가 모두 됐으면 그 시작 동안의 진단은 아래 목록뿐이다. 진단 전체가
     // 그와 같을 때만 정리를 확인한 것으로 본다.
     const diagnostics = startDiagnostics();
@@ -823,8 +823,9 @@ describe("server start recovery barrier", () => {
     expect(await runStatus(early!.runId)).toBe("server_restart");
     expect(await runStatus(late!.runId)).toBe("running");
     expect(runtime.executions()).toEqual([]);
+    expect(await runEnd.failed()).toBe(1);
 
-    await restore();
+    await runEnd.remove();
     server = await startOwned({
       db: database.db,
       port: 0,

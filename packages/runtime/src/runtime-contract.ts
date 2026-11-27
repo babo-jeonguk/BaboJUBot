@@ -306,17 +306,38 @@ export function describeRuntimeContract(
       const controller = new AbortController();
       const owner = newOwner(name);
       const { activities, late } = owner;
-      // 활동 기록을 붙잡아 두면 풀어 줄 때까지 `emit`이 돌아오지 않는다. 기록은 그대로 한다.
-      let gate: Promise<void> | undefined;
-      let open: (() => void) | undefined;
+      /**
+       * 이 실행 시도의 활동 기록을 붙잡는다: 풀어 줄 때까지 `emit`이 돌아오지 않는다(기록은 그대로 한다). 붙잡힌 활동마다 그 활동과
+       * `emit`이 돌아왔는지(`released`)를 `held`에 남기고, 처음 붙잡은 때 `firstHeld`가 이행한다. `release`가 풀고 붙잡기를 끝낸다(그
+       * 뒤의 활동은 붙잡지 않는다).
+       */
+      let holding:
+        | {
+            gate: Promise<void>;
+            held: { activity: unknown; released: boolean }[];
+            reached: () => void;
+          }
+        | undefined;
       const holdActivities = () => {
-        gate ??= new Promise<void>((resolve) => {
-          open = resolve;
-        });
-        return () => {
-          open?.();
-          gate = undefined;
-          open = undefined;
+        if (holding) throw new Error("the activities are already held");
+        const gate = Promise.withResolvers<void>();
+        const reached = Promise.withResolvers<void>();
+        const hold = {
+          gate: gate.promise,
+          held: [] as { activity: unknown; released: boolean }[],
+          reached: reached.resolve,
+        };
+        holding = hold;
+        return {
+          held: hold.held as readonly {
+            readonly activity: unknown;
+            readonly released: boolean;
+          }[],
+          firstHeld: reached.promise,
+          release: () => {
+            if (holding === hold) holding = undefined;
+            gate.resolve();
+          },
         };
       };
       // 도구 호출이나 활동이 일을 시작했다는 신호다. 시한을 재는 검사는 이 신호를 `startWithinMs` 안에 기다린 뒤 잰다.
@@ -335,7 +356,14 @@ export function describeRuntimeContract(
           emit: async (activity) => {
             owner.record(activity);
             markWorking();
-            await gate;
+            // 붙잡기는 불린 순간(기다리기 전) 잡는다.
+            const hold = holding;
+            if (!hold) return;
+            const entry = { activity, released: false };
+            hold.held.push(entry);
+            hold.reached();
+            await hold.gate;
+            entry.released = true;
           },
         })
       ).finally(() => {
@@ -380,7 +408,6 @@ export function describeRuntimeContract(
         /** 이 실행 시도가 띄운 것과 낸 활동. */
         owner,
         started,
-        working,
         holdActivities,
         get returned() {
           return owner.returned;
@@ -596,11 +623,8 @@ export function describeRuntimeContract(
         "takes a steered message into the run it is working on so that the run's result reflects it, and refuses one for an unknown or returned run",
         async () => {
           const attempt = run(steers!.scene);
-          await within(
-            attempt.working,
-            startWithinMs,
-            "did not show that it started working"
-          );
+          // 활동 기록을 실행 시작 전부터 붙잡는다. 끼워 넣기는 붙잡힌 활동의 기록을 기다리지 않고 결정돼야 한다.
+          const hold = attempt.holdActivities();
           const steer = (runId: string, body: string) =>
             adapter.steer!({
               runId,
@@ -609,9 +633,13 @@ export function describeRuntimeContract(
               body,
             });
           const body = `끼워 넣는 말 ${crypto.randomUUID().slice(0, 8)}`;
-          expect(await steer(crypto.randomUUID(), body)).toBe("rejected");
-          const release = attempt.holdActivities();
           try {
+            await within(
+              hold.firstHeld,
+              startWithinMs,
+              "did not record an activity, so a held activity cannot show the steer did not wait for one"
+            );
+            expect(await steer(crypto.randomUUID(), body)).toBe("rejected");
             expect(
               await within(
                 steer(attempt.runId, body),
@@ -619,8 +647,11 @@ export function describeRuntimeContract(
                 "did not decide the steer without waiting for an activity to be recorded"
               )
             ).toBe("accepted");
+            // 끼워 넣기가 결정된 때 붙잡힌 활동의 `emit`은 아직 돌아오지 않았다.
+            expect(hold.held.length).toBeGreaterThan(0);
+            expect(hold.held.filter((entry) => entry.released)).toEqual([]);
           } finally {
-            release();
+            hold.release();
           }
           const result = await within(
             attempt.result,

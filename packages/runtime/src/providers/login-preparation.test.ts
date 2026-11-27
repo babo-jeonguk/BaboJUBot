@@ -10,7 +10,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { readlinkSync } from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -22,9 +21,14 @@ import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
-import { within } from "@babojubot/process/test-support";
+import {
+  insideFolder,
+  realPlace,
+  settledWithin,
+} from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { releaseAcquired, withCleanup } from "@babojubot/process/test-cleanup";
+import { callArming } from "@babojubot/process/call-arming";
 import { attemptAll, hasErrorCode, orIfMissing } from "@babojubot/contracts";
 
 // 로그인을 파일로 같이 쓰는 Codex·Antigravity의 실행 준비(#146). 조직 신원 확인 → 연결 로그인 준비 → 격리 실행이면 흔적 검사·
@@ -45,12 +49,13 @@ vi.mock("@babojubot/process", async (importOriginal) => {
   return { ...actual, launchTree };
 });
 
-/** 붙잡아 둘 파일 작업 하나. 그 작업에 들어오면 알리고, 풀어 줄 때까지 기다린 뒤 실제로 한다. */
+type Operation = "symlink" | "writeFile" | "rename";
+/**
+ * 붙잡아 둘 파일 작업 하나. 그 작업에 들어오면 알리고, 풀어 줄 때까지 기다린 뒤 실제로 한다. 한 번만 붙잡는다: 그 표시는 이 객체가
+ * 가진다(`claim`이 맞으면 표시하고 기다릴 것을 돌려준다). 대역은 불린 순간 지금의 gate를 잡고 그 객체에만 묻는다.
+ */
 type Gate = {
-  operation: "symlink" | "writeFile" | "rename";
-  matches: (file: string) => boolean;
-  entered: (file: string) => void;
-  held: Promise<void>;
+  claim: (operation: Operation, file: string) => Promise<void> | undefined;
 };
 let gate: Gate | undefined;
 /**
@@ -63,41 +68,47 @@ let race:
       onRead?: (file: string) => void;
     }
   | undefined;
-/** 링크 만들기를 거절하는 오류 코드(권한 없는 Windows·링크를 모르는 파일 시스템). */
-let refusal: string | null = null;
+/**
+ * 이 폴더(`in`, 그 시험의 연결 폴더) 안의 링크 만들기를 이 오류 코드로 거절한다(권한 없는 Windows·링크를 모르는 파일 시스템).
+ * 그 시험의 폴더로 고르고, 거절한 링크의 경로를 `refused`에 남긴다(시험이 거절이 실제로 그 자리에서 났는지 본다, #286). handle을
+ * 거친 경로(`/proc/self/fd/<n>/…`)는 시험이 handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다.
+ */
+let refusal: { in: string; code: string; refused: string[] } | undefined;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const hold = (operation: Gate["operation"], file: unknown) => {
-    const current = gate;
-    if (current?.operation !== operation || !current.matches(String(file)))
-      return undefined;
-    gate = undefined;
-    current.entered(String(file));
-    return current.held;
-  };
   return {
     ...actual,
     symlink: (...args: Parameters<typeof actual.symlink>) => {
-      if (refusal)
+      // 결함과 gate는 불린 순간(기다리기 전) 읽는다.
+      const current = gate;
+      if (refusal && insideFolder(refusal.in, String(args[1]))) {
+        const link = String(args[1]);
+        refusal.refused.push(realPlace(link));
         return Promise.reject(
-          Object.assign(new Error(`${refusal}: cannot link`), { code: refusal })
+          Object.assign(new Error(`${refusal.code}: cannot link`), {
+            code: refusal.code,
+          })
         );
-      const held = hold("symlink", args[1]);
+      }
+      const held = current?.claim("symlink", String(args[1]));
       return held
         ? held.then(() => actual.symlink(...args))
         : actual.symlink(...args);
     },
     rename: async (...args: Parameters<typeof actual.rename>) => {
-      await hold("rename", args[0]);
+      // 끼움·gate는 불린 순간 잡는다. 기다린 뒤 칸을 다시 찾으면 그 사이 afterEach·다음 시험이 바꾼 것을 부른다.
+      const afterRename = race?.afterRename;
+      const held = gate?.claim("rename", String(args[0]));
+      await held;
       await actual.rename(...args);
-      await race?.afterRename?.(String(args[0]), String(args[1]));
+      await afterRename?.(String(args[0]), String(args[1]));
     },
     readFile: ((...args: Parameters<typeof actual.readFile>) => {
       race?.onRead?.(String(args[0]));
       return actual.readFile(...args);
     }) as typeof actual.readFile,
     writeFile: (...args: Parameters<typeof actual.writeFile>) => {
-      const held = hold("writeFile", args[0]);
+      const held = gate?.claim("writeFile", String(args[0]));
       return held
         ? held.then(() => actual.writeFile(...args))
         : actual.writeFile(...args);
@@ -105,7 +116,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const roots: string[] = [];
+/** 시험이 만들기 시작한 폴더. 만들기를 시작 순간 넣고, 정리는 그 끝을 시한 안에서 확인한 뒤 만든 폴더를 지운다. */
+const roots: Promise<string>[] = [];
 const servers: http.Server[] = [];
 /** 시험이 붙잡은 작업을 푸는 함수. 단언이 실패해 시험이 풀지 못한 것도 정리가 푼다. */
 const holds: (() => void)[] = [];
@@ -131,19 +143,24 @@ afterEach(async () => {
       )
     );
     defer(() => {
-      refusal = null;
+      refusal = undefined;
       spawned.length = 0;
       race = undefined;
     });
-    await within(
-      Promise.allSettled(runs.splice(0)),
+    await settledWithin(
+      runs.splice(0),
       10_000,
       "a run did not return after cleanup"
     );
   });
   // 실행이 모두 돌아왔을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 돌아오지 않은 실행이
   // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다. 프로그램의 끝은 확인하지 못한다(위 `runs`).
-  await attemptAll(folders.map((root) => () => removeFolder(root)));
+  // 만들고 있던 폴더는 그 끝을 시한 안에서 확인한 뒤 지운다. 끝을 확인하지 못하면 그 폴더를 남기고 실패한다.
+  await attemptAll(
+    folders.map(
+      (making) => () => releaseAcquired(making, (made) => removeFolder(made))
+    )
+  );
 });
 /** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
 function hold() {
@@ -231,10 +248,9 @@ const connections: {
 ];
 
 async function setup(connection: (typeof connections)[number]) {
-  const root = await realpath(
-    await mkdtemp(path.join(tmpdir(), "babojubot-login-prep-"))
-  );
-  roots.push(root);
+  const making = mkdtemp(path.join(tmpdir(), "babojubot-login-prep-"));
+  roots.push(making);
+  const root = await realpath(await making);
   // 받은 환경을 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 프로세스를 띄웠는지·어느 폴더로 띄웠는지는 남는다.
   // 컨테이너 안에서 돌면(가짜 docker가 붙인 자리를 FAKE_DOCKER_MOUNTS로 준다) 붙인 자리를 그때 모두 훑어 로그인 내용이 든 파일을
   // 남긴다(`test-fixtures/mount-scan.ts`). 실행 시도의 임시 자리는 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다.
@@ -272,17 +288,24 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
     req.resume();
     res.writeHead(200, { "content-type": "application/json" }).end("{}");
   });
-  const provider = connection.create({
+  const created = connection.create({
     dataDir: root,
     command: dumper,
     container,
     relay: { upstream, verified: true },
   });
-  const execute = provider.adapter.execute.bind(provider.adapter);
-  provider.adapter.execute = (...args) => {
-    const run = execute(...args);
-    runs.push(run);
-    return run;
+  // 시험이 시작한 실행을 정리가 기다리게 `runs`에 남긴다. 만든 연결을 바꾸지 않고, 실행만 감싼 새 연결을 시험에 넘긴다(adapter는
+  // 메서드가 `this`를 쓰지 않는 일반 객체다).
+  const provider: ProviderConnection = {
+    ...created,
+    adapter: {
+      ...created.adapter,
+      execute: (...args) => {
+        const run = created.adapter.execute(...args);
+        runs.push(run);
+        return run;
+      },
+    },
   };
   const relay = provider.credentialRelay as CredentialRelay;
   // 발급을 바꾸지 않고 기록만 하는 관찰 spy.
@@ -373,10 +396,7 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
 }
 
 /** 그 파일 작업에 들어올 때까지 기다리게 붙잡는다. `release`를 부르면 그 작업을 실제로 한다. */
-function holdAt(
-  operation: Gate["operation"],
-  matches: (file: string) => boolean
-) {
+function holdAt(operation: Operation, matches: (file: string) => boolean) {
   const { held, release } = hold();
   let entered!: (file: string) => void;
   // 준비가 그 작업에 끝내 들어오지 않으면 시험 시한까지 기다리지 않고 바로 실패한다.
@@ -390,32 +410,23 @@ function holdAt(
       resolve(file);
     };
   });
+  let claimed = false;
   gate = {
-    operation,
-    matches,
-    entered,
-    held,
+    claim(asked, file) {
+      if (claimed || asked !== operation || !matches(file)) return undefined;
+      claimed = true;
+      entered(file);
+      return held;
+    },
   };
   return { reached, release };
 }
 
 /**
- * 조직 폴더 안은 확인한 폴더 handle을 거친 경로(`/proc/self/fd/<n>/…`, #278)로 다룬다. 그 경로는 handle이 붙든 폴더의 경로로
- * 바꿔 어느 폴더 안인지 본다.
+ * 시험이 감싼 실행 호출. 실행 시도 폴더(`babojubot-attempt-*`)는 공유 임시 폴더에 무작위 이름으로 생겨 경로로 그 시험의 것을 가를 수
+ * 없으므로, 그 폴더의 작업을 붙잡을 때는 그 시험이 감싼 실행의 문맥인지로 가른다(`@babojubot/process/call-arming`).
  */
-const spelled = (file: string) => {
-  const handle = /^\/proc\/self\/fd\/(\d+)(\/.*)?$/.exec(file);
-  return handle
-    ? readlinkSync(`/proc/self/fd/${handle[1]}`) + (handle[2] ?? "")
-    : file;
-};
-const inside = (folder: string, file: string) => {
-  const relative = path.relative(folder, spelled(file));
-  return (
-    relative === "" ||
-    (!relative.startsWith("..") && !path.isAbsolute(relative))
-  );
-};
+const runCalls = callArming<{ test: string }>();
 
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
 const noIsolation = process.platform === "win32";
@@ -424,7 +435,9 @@ describe.each(connections)("$name", (connection) => {
   it("does not start the program when cancelled while the organization's login link is being made, and finishes the link first", async () => {
     const env = await setup(connection);
     const a = crypto.randomUUID();
-    const held = holdAt("symlink", (file) => inside(env.organization(a), file));
+    const held = holdAt("symlink", (file) =>
+      insideFolder(env.organization(a), file)
+    );
     const cancel = new AbortController();
     const running = env.provider.adapter.execute(
       await env.requestFor(a),
@@ -458,13 +471,20 @@ describe.each(connections)("$name", (connection) => {
     async () => {
       const env = await setup(connection);
       const a = crypto.randomUUID();
-      const held = holdAt("writeFile", (file) =>
-        path.basename(path.dirname(file)).startsWith("babojubot-attempt-")
+      // 그 시험의 실행 호출(대역이 불린 순간의 문맥) 안에서 실행 시도 폴더에 쓰는 첫 파일을 붙잡는다.
+      const thisRun = { test: "own login file" };
+      const held = holdAt(
+        "writeFile",
+        (file) =>
+          runCalls.current() === thisRun &&
+          path.basename(path.dirname(file)).startsWith("babojubot-attempt-")
       );
       const cancel = new AbortController();
-      const running = env.provider.adapter.execute(
-        await env.requestFor(a, "container"),
-        control(cancel.signal)
+      const input = await env.requestFor(a, "container");
+      const running = runCalls.run(
+        thisRun,
+        () => env.provider.adapter.execute(input, control(cancel.signal)),
+        onTestFinished
       );
       const attemptFile = await held.reached;
       expect(env.grants()).toHaveLength(1);
@@ -504,19 +524,24 @@ describe.each(connections)("$name", (connection) => {
     "runs an isolated attempt in the organization's product folder on a machine that cannot create links, with no connection folder, login folder or login in any mount",
     async () => {
       const env = await setup(connection);
-      refusal = "EPERM";
+      const refuse = { in: env.folder, code: "EPERM", refused: [] as string[] };
+      refusal = refuse;
       const a = crypto.randomUUID();
       await env.provider.adapter.execute(
         await env.requestFor(a, "container"),
         control()
       );
+      // 거절은 연결 자리에 링크를 만들려 할 때 났다(제품은 링크를 그 자리의 폴더에 임시 이름으로 먼저 만든다).
+      expect([...new Set(refuse.refused.map(path.dirname))]).toEqual([
+        path.dirname(env.connectionPlace),
+      ]);
       const [mounts] = await env.runMounts();
       const sources = (mounts ?? []).map(
         (mount) => /source=([^,]+)/.exec(mount)![1]!
       );
-      expect(sources.filter((source) => inside(env.folder, source))).toEqual([
-        env.organization(a),
-      ]);
+      expect(
+        sources.filter((source) => insideFolder(env.folder, source))
+      ).toEqual([env.organization(a)]);
       // 붙인 자리는 실행 중에 모두 훑었고(실행이 끝나면 임시 자리는 지워진다), 로그인 내용이 든 파일은 없다.
       expect(await env.mountScans()).toEqual([{ sources, holding: [] }]);
       expect((await env.dumps()).map((one) => one.HOME)).toEqual([
@@ -619,7 +644,8 @@ describe.each(connections)("$name", (connection) => {
     await writeFile(env.original, connection.login("moving-access"), {
       mode: 0o600,
     });
-    refusal = "ENOTSUP";
+    const refuse = { in: env.folder, code: "ENOTSUP", refused: [] as string[] };
+    refusal = refuse;
     const held = holdAt("rename", (file) => file === env.original);
     const events: string[] = [];
     race = {
@@ -629,8 +655,9 @@ describe.each(connections)("$name", (connection) => {
       },
       onRead: recordReads(env, events),
     };
+    const organizationId = crypto.randomUUID();
     const running = env.provider.adapter.execute(
-      await env.requestFor(crypto.randomUUID()),
+      await env.requestFor(organizationId),
       control()
     );
     await held.reached;
@@ -646,6 +673,11 @@ describe.each(connections)("$name", (connection) => {
     expect(env.upstreamSeen).toEqual(["Bearer moving-access"]);
     expect(env.relay.failed()).toBe(false);
     await running;
+    // 거절은 연결 자리와 그 조직 자리에 링크를 만들려 할 때 났다.
+    expect([...new Set(refuse.refused.map(path.dirname))]).toEqual([
+      path.dirname(env.connectionPlace),
+      path.dirname(env.loginAt(organizationId)),
+    ]);
     expect((await lstat(env.connectionPlace)).isFile()).toBe(true);
     await expect(stat(env.original)).rejects.toThrow();
   });

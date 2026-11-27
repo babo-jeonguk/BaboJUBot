@@ -25,6 +25,7 @@ import {
   type TestServer,
 } from "./support.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { settledWithin } from "@babojubot/process/test-support";
 
 /**
  * 저장 경계에 건 실패. 실행 시도 admission(`claimNextRun`)과 종료 저장(`finishRun`) 중 대상(에이전트·실행 시도)이 맞는 호출만,
@@ -42,69 +43,69 @@ type StoreFault = {
   /** 실제로 주입한 호출마다 그 transaction 본문이 돌려준 값. 되돌렸거나 응답을 잃은 저장이다. */
   injected: unknown[];
 };
-const store = vi.hoisted(() => {
-  const faults: { admission?: StoreFault; finish?: StoreFault } = {};
-  async function guard<D extends object, T>(
-    boundary: keyof typeof faults,
-    target: string,
-    db: D,
-    save: (db: D) => Promise<T>
-  ): Promise<T> {
-    const fault = faults[boundary];
-    if (
-      !fault ||
-      fault.target !== target ||
-      fault.injected.length >= fault.times
-    )
-      return save(db);
-    const failure = new Error(`injected ${boundary} failure`);
-    type Transaction = (
-      body: (tx: unknown) => Promise<unknown>,
-      config?: unknown
-    ) => Promise<unknown>;
-    const faulty = new Proxy(db, {
-      get(real, key) {
-        if (key !== "transaction") return Reflect.get(real, key, real);
-        const transaction = (real as { transaction: Transaction }).transaction;
-        return async (
-          body: (tx: unknown) => Promise<unknown>,
-          config?: unknown
-        ) => {
-          const value = await transaction.call(
-            real,
-            async (tx) => {
-              const saved = await body(tx);
-              if (fault.mode === "rollback") {
-                fault.injected.push(saved);
-                throw failure;
-              }
-              return saved;
-            },
-            config
-          );
-          fault.injected.push(value);
-          throw failure;
-        };
-      },
-    });
-    await fault.around?.();
-    return withCleanup(async (defer) => {
-      defer(() => fault.around?.());
-      return save(faulty);
-    });
-  }
-  return { faults, guard };
-});
+/** 시험이 거는 저장 경계의 결함(데이터만). 감싸기는 대역이 부르는 `guard`가 한다. */
+const store = vi.hoisted(
+  (): { faults: { admission?: StoreFault; finish?: StoreFault } } => ({
+    faults: {},
+  })
+);
+/** 대역이 불린 순간 잡은 결함(`fault`)으로 그 저장을 감싼다. 결함 칸은 대역이 잡고 이 함수는 받은 것만 쓴다. */
+async function guard<D extends object, T>(
+  boundary: keyof typeof store.faults,
+  fault: StoreFault | undefined,
+  target: string,
+  db: D,
+  save: (db: D) => Promise<T>
+): Promise<T> {
+  if (!fault || fault.target !== target || fault.injected.length >= fault.times)
+    return save(db);
+  const failure = new Error(`injected ${boundary} failure`);
+  type Transaction = (
+    body: (tx: unknown) => Promise<unknown>,
+    config?: unknown
+  ) => Promise<unknown>;
+  const faulty = new Proxy(db, {
+    get(real, key) {
+      if (key !== "transaction") return Reflect.get(real, key, real);
+      const transaction = (real as { transaction: Transaction }).transaction;
+      return async (
+        body: (tx: unknown) => Promise<unknown>,
+        config?: unknown
+      ) => {
+        const value = await transaction.call(
+          real,
+          async (tx) => {
+            const saved = await body(tx);
+            if (fault.mode === "rollback") {
+              fault.injected.push(saved);
+              throw failure;
+            }
+            return saved;
+          },
+          config
+        );
+        fault.injected.push(value);
+        throw failure;
+      };
+    },
+  });
+  await fault.around?.();
+  return withCleanup(async (defer) => {
+    defer(() => fault.around?.());
+    return save(faulty);
+  });
+}
 vi.mock("@babojubot/db", async (original) => {
   const real = await original<typeof import("@babojubot/db")>();
   return {
     ...real,
+    // 결함 칸은 불린 순간 잡는다(tests/hoisted-state-at-call).
     claimNextRun: (...args: Parameters<typeof real.claimNextRun>) =>
-      store.guard("admission", args[1], args[0], (db) =>
+      guard("admission", store.faults.admission, args[1], args[0], (db) =>
         real.claimNextRun(db, args[1], args[2])
       ),
     finishRun: (...args: Parameters<typeof real.finishRun>) =>
-      store.guard("finish", args[1], args[0], (db) =>
+      guard("finish", store.faults.finish, args[1], args[0], (db) =>
         real.finishRun(db, args[1], args[2], args[3])
       ),
   };
@@ -152,8 +153,8 @@ function competitors() {
       }
       // 결과를 아래에서 단언하므로 성공·실패를 모두 받되, 끝나지 않는 transaction은 상한에서 그 이유로 실패한다.
       passes.push(
-        await within(
-          Promise.allSettled(pass),
+        await settledWithin(
+          pass,
           eventuallyMs,
           "the competitors' transactions did not end"
         )

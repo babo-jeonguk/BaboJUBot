@@ -54,21 +54,24 @@ describe("stopping a tree", () => {
     const leader = await holder("stuck-attempt");
     // 제품에는 아무것도 끄지 않고 실패하는 끄기를 돌려준다(제품이 그것을 인수 없이 불렀는지는 장면의 정리가 본다). 실제 끄기는
     // 정리가 부른다.
-    folders.treeScene({ failProductStop: "without-stopping" });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     onTestFinished(() => error.mockRestore());
-    const attempt = startProcess({
-      // 입력이 닫혀도 끝나지 않는다.
-      command: [
-        process.execPath,
-        "-e",
-        `process.stdin.resume(); ${leader.script}`,
-      ],
-      args: [],
-      cwd: process.cwd(),
-      env: { PATH: process.env.PATH },
-      onFrame: async () => {},
-    });
+    const attempt = folders.treeScene(
+      { failProductStop: "without-stopping" },
+      () =>
+        startProcess({
+          // 입력이 닫혀도 끝나지 않는다.
+          command: [
+            process.execPath,
+            "-e",
+            `process.stdin.resume(); ${leader.script}`,
+          ],
+          args: [],
+          cwd: process.cwd(),
+          env: { PATH: process.env.PATH },
+          onFrame: async () => {},
+        })
+    );
     // 끄기가 일부러 실패하는 실행 시도라 그 끝은 `broken`이다. 정리는 실행 시도를 끝내고 그 일이 끝나기를 기다린 뒤(`ownBrokenRun`),
     // 대역이 맡은 실제 끄기가 감독 실행기와 트리 전체의 끝을 확인하고, 마지막으로 대표의 연결(`holder`) 정리가 대표의 끝을 확인한다.
     folders.ownBrokenRun(attempt);

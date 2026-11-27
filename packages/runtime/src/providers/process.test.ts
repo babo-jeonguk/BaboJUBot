@@ -1,19 +1,21 @@
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { probeEnding, runProbe, startProcess } from "./process.ts";
 import { openLifelines } from "@babojubot/process/lifelines";
 import { awaitedLater, lifelineHolder } from "@babojubot/process/test-cleanup";
 import { manualClock, within } from "@babojubot/process/test-support";
+import { callArming } from "@babojubot/process/call-arming";
 import { testFolders } from "./test-folders.ts";
 
 /**
- * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
- * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
+ * 시험이 감싼 호출(`treeCalls.run`) 안의 공용 실행(`runTree`) 결과를 `result`로 갈음하고, 갈음한 명령을 `ran`에 남긴다(시험이 그
+ * 호출에서 실제로 갈음했는지 본다, #286). 확인 명령은 시험끼리 같은 스크립트·작업 폴더로 돌 수 있어 인수로 그 시험의 것을 가를 수
+ * 없으므로 호출 문맥으로 가른다(`@babojubot/process/call-arming`). 감싸지 않은 실행은 실제로 돈다. 상한에 닿아 끈 명령은 끈
+ * 이유(`stopped`)와 그 트리를 끝낸 신호를 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
  */
-const tree = vi.hoisted(() => ({
-  run: undefined as undefined | (() => unknown),
-}));
+type TreeFake = { result: unknown; ran: string[][] };
+const treeCalls = callArming<TreeFake>();
 // 실행 시도(`startProcess`)가 띄운 트리는 공용 실행 경계 대역(`owningLaunchTree`)이 띄운 직후 그 실제 끄기를 폴더 정리에 맡긴다.
 // 짧은 확인 명령(`runProbe`→`runTree`)의 트리는 대역을 거치지 않는다: `runTree`가 트리 전체의 끝을 확인한 뒤에만 돌려주고 확인하지
 // 못하면 던지므로, 시험은 그 결과를 기다리거나(취소한 probe는 정리가 결과를 받는다) 그 거절로 실패한다.
@@ -21,8 +23,14 @@ vi.mock("@babojubot/process", async (importOriginal) => {
   const real = await importOriginal<typeof import("@babojubot/process")>();
   return {
     ...(await import("./test-folders.ts")).owningLaunchTree(real),
-    runTree: (...args: Parameters<typeof real.runTree>) =>
-      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+    runTree: (...args: Parameters<typeof real.runTree>) => {
+      // 갈음은 불린 순간 그 호출의 무장으로 잡는다.
+      const faking = treeCalls.current();
+      if (!faking) return real.runTree(...args);
+      const [options] = args;
+      faking.ran.push([...options.command, ...options.args]);
+      return Promise.resolve(faking.result);
+    },
   };
 });
 /** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
@@ -34,10 +42,6 @@ const stoppedBySignal = () => ({
   stderr: Buffer.alloc(0),
   stopped: "limit",
 });
-afterEach(() => {
-  tree.run = undefined;
-});
-
 const folders = testFolders();
 
 const run = async (
@@ -248,10 +252,15 @@ describe("runProbe", () => {
   });
 
   it("names both why a program was stopped and the signal that ended it", async () => {
-    tree.run = stoppedBySignal;
-    await expect(probe(`setInterval(() => {}, 1000)`, 100)).rejects.toSatisfy(
+    const script = `setInterval(() => {}, 1000)`;
+    const faked: TreeFake = { result: stoppedBySignal(), ran: [] };
+    await expect(
+      treeCalls.run(faked, () => probe(script, 100), onTestFinished)
+    ).rejects.toSatisfy(
       (error) => probeEnding(error) === "stopped: limit, signal SIGKILL"
     );
+    // 갈음은 그 시험의 확인 명령 하나에서 났다.
+    expect(faked.ran).toEqual([[process.execPath, "-e", script]]);
   });
 
   // Windows에는 신호로 끝나는 프로세스가 없다.

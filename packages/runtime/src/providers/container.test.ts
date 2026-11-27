@@ -1,7 +1,6 @@
 import {
   lstat,
   mkdir,
-  mkdtemp,
   readdir,
   readFile,
   realpath,
@@ -13,7 +12,6 @@ import {
 import { execFileSync } from "node:child_process";
 import {
   copyFileSync,
-  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -55,18 +53,21 @@ import {
   removeContainer,
   runDocker,
 } from "./container.ts";
+import { callArming } from "@babojubot/process/call-arming";
 import { openLifelines, type Lifelines } from "@babojubot/process/lifelines";
 import { lifelineHolder } from "@babojubot/process/test-cleanup";
 import {
+  insideFolder,
   manualClock,
   probeEnvironment,
+  realPlace,
   within,
 } from "@babojubot/process/test-support";
 import { relaySockets } from "./relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
 import {
-  failingRelayCloses,
-  refusing,
+  failingConnectsDuring,
+  failingRelayClosesDuring,
   resetRefusing,
 } from "./connect-failure-support.ts";
 import { startProcess } from "./process.ts";
@@ -74,18 +75,22 @@ import type { CredentialRelay } from "./credential-relay.ts";
 import { testFolders } from "./test-folders.ts";
 
 /**
- * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
+ * 공용 실행(`runTree`)의 결과를 그 시험이 부른 호출의 문맥에서만 갈음한다(`treeCalls`, 문맥 밖이면 실제로 돈다). 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
  * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
  */
-const tree = vi.hoisted(() => ({
-  run: undefined as undefined | (() => unknown),
-}));
+type TreeStub = { result: () => unknown; ran: unknown[][] };
+const treeCalls = callArming<TreeStub>();
 vi.mock("@babojubot/process", async (importOriginal) => {
   const real = await importOriginal<typeof import("@babojubot/process")>();
   return {
     ...real,
-    runTree: (...args: Parameters<typeof real.runTree>) =>
-      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+    // 갈음은 그 시험이 부른 docker 호출의 문맥에서만 하고(`treeCalls`), 갈음한 호출의 인수를 `ran`에 남긴다.
+    runTree: (...args: Parameters<typeof real.runTree>) => {
+      const stub = treeCalls.current();
+      if (!stub) return real.runTree(...args);
+      stub.ran.push(args);
+      return Promise.resolve(stub.result());
+    },
   };
 });
 /** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
@@ -101,59 +106,92 @@ const stoppedBySignal = () => ({
 // 격리 실행(#102)을 실제 Docker 없이 확인한다. 가짜 docker(test-fixtures/fake-docker.mjs)는 받은 명령을 남기고,
 // `run`이면 컨테이너 안 프로그램 이름을 이 컴퓨터의 재생 프로그램으로 바꿔 컨테이너 환경 변수·작업 폴더로 실행한다.
 
-/** 링크 만들기를 거절하는 오류 코드(권한 없는 Windows·링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
-let refusal: string | null = null;
-/** 이 이름이 경로에 든 폴더 지우기가 잠긴 파일처럼(EBUSY) 계속 실패한다. 비어 있으면 실제로 지운다. */
-const locked = vi.hoisted(() => ({ folder: null as RegExp | null }));
 /**
- * 이름이 `opencode.db-wal`인 파일을 열기 바로 전(`beforeWal`), 이름이 `opencode.db`인 경로를 `lstat`으로 보기 바로 전(`beforeNameCheck`,
- * 복사를 마친 뒤 이름이 아직 읽은 파일인지 볼 때)에 한 번 부른다. 비어 있으면 그냥 연다·본다.
+ * 이 폴더(`in`, 그 시험의 연결 폴더) 안의 링크 만들기를 이 오류 코드로 거절한다(권한 없는 Windows·링크를 모르는 파일 시스템). 거절한
+ * 링크의 경로를 `refused`에 남긴다(시험이 거절이 실제로 그 자리에서 났는지 본다). handle을 거친 경로(`/proc/self/fd/<n>/…`)는 시험이
+ * handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다. 비어 있으면 실제로 만든다.
+ */
+let refusal: { in: string; code: string; refused: string[] } | undefined;
+/** 그 시험의 연결 폴더(`folder`) 안 링크 만들기를 `code`로 거절하게 하고 그 결함을 돌려준다. */
+function refuseLinksIn(folder: string, code: string) {
+  const refuse = { in: folder, code, refused: [] as string[] };
+  refusal = refuse;
+  return refuse;
+}
+/** 링크 만들기가 거절된 폴더들(처음 거절된 차례). 제품은 링크를 그 자리의 폴더에 임시 이름으로 먼저 만든다. */
+const refusedFolders = (refuse: { refused: string[] }) => [
+  ...new Set(refuse.refused.map(path.dirname)),
+];
+/**
+ * 그 시험이 부른 호출이 공유 임시 폴더에 만드는 폴더(경로를 미리 알 수 없음)의 지우기를 잠긴 파일처럼(EBUSY) 계속 실패시킨다. 무장은
+ * 그 호출의 `mkdtemp`를 시작 순간 등록하고(`made`, 끝난 무장이면 던짐), 그 폴더의 지우기만 실패시키며 실패시킨 대상을 `failedAt`에
+ * 남긴다. 무장이 없으면 실제로 만들고 지운다.
+ */
+type LockFault = { made: string[]; failedAt: string[] };
+const lockCalls = callArming<LockFault>();
+/**
+ * 그 시험의 OpenCode 저장소 파일(정확한 경로 `at`, 실제 경로)을 열기 바로 전(`beforeWal`: `opencode.db-wal`)·이름을 `lstat`으로 보기 바로
+ * 전(`beforeNameCheck`: `opencode.db`, 복사를 마친 뒤 이름이 아직 읽은 파일인지 볼 때)에 `run`을 한 번 부르고 `ran`을 켠다.
+ * `missMain`은 그 경로(`opencode.db`)의 다음 열기 한 번을 "없음"으로 실패시키고(그 자리는 그대로 있다) `missed`를 센다. 제품은 확인한
+ * 폴더 handle을 거친 경로로 열므로 `insideFolder`로 본다(파일 경로는 그 자신만 "안"이다). 비어 있으면 그냥 연다·본다.
  */
 const opening = vi.hoisted(() => ({
-  beforeWal: undefined as undefined | (() => void),
-  beforeNameCheck: undefined as undefined | (() => void),
-  /** 참이면 이름이 `opencode.db`인 파일의 다음 열기 한 번이 "없음"으로 실패한다(그 자리는 그대로 있다). */
-  missMain: false,
+  beforeWal: undefined as
+    undefined | { at: string; run: () => void; ran: boolean },
+  beforeNameCheck: undefined as
+    undefined | { at: string; run: () => void; ran: boolean },
+  missMain: undefined as undefined | { at: string; missed: number },
 }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    rm: (...args: Parameters<typeof actual.rm>) =>
-      locked.folder?.test(String(args[0]))
-        ? Promise.reject(
-            Object.assign(new Error("EBUSY: resource busy or locked, rm"), {
-              code: "EBUSY",
-            })
-          )
-        : actual.rm(...args),
-    symlink: (...args: Parameters<typeof actual.symlink>) =>
-      refusal
-        ? Promise.reject(
-            Object.assign(new Error(`${refusal}: cannot link`), {
-              code: refusal,
-            })
-          )
-        : actual.symlink(...args),
+    mkdtemp: ((...args: Parameters<typeof actual.mkdtemp>) =>
+      lockCalls.acquire(async (fault) => {
+        const made = String(await actual.mkdtemp(...args));
+        fault.made.push(made);
+        return made;
+      }) ?? actual.mkdtemp(...args)) as typeof actual.mkdtemp,
+    rm: (...args: Parameters<typeof actual.rm>) => {
+      const fault = lockCalls.current();
+      if (!fault?.made.includes(String(args[0]))) return actual.rm(...args);
+      fault.failedAt.push(String(args[0]));
+      return Promise.reject(
+        Object.assign(new Error("EBUSY: resource busy or locked, rm"), {
+          code: "EBUSY",
+        })
+      );
+    },
+    symlink: (...args: Parameters<typeof actual.symlink>) => {
+      // 결함은 불린 순간 읽는다(기다리기 전).
+      if (!refusal || !insideFolder(refusal.in, String(args[1])))
+        return actual.symlink(...args);
+      refusal.refused.push(realPlace(String(args[1])));
+      return Promise.reject(
+        Object.assign(new Error(`${refusal.code}: cannot link`), {
+          code: refusal.code,
+        })
+      );
+    },
     lstat: ((...args: Parameters<typeof actual.lstat>) => {
       const before = opening.beforeNameCheck;
-      if (before && String(args[0]).endsWith("opencode.db")) {
-        opening.beforeNameCheck = undefined;
-        before();
+      if (before && !before.ran && insideFolder(before.at, String(args[0]))) {
+        before.ran = true;
+        before.run();
       }
       return actual.lstat(...args);
     }) as typeof actual.lstat,
     open: (...args: Parameters<typeof actual.open>) => {
-      if (opening.missMain && String(args[0]).endsWith("opencode.db")) {
-        opening.missMain = false;
+      const { missMain: miss, beforeWal: before } = opening;
+      if (miss && miss.missed === 0 && insideFolder(miss.at, String(args[0]))) {
+        miss.missed += 1;
         return Promise.reject(
           Object.assign(new Error("no such file"), { code: "ENOENT" })
         );
       }
-      const before = opening.beforeWal;
-      if (before && String(args[0]).endsWith("opencode.db-wal")) {
-        opening.beforeWal = undefined;
-        before();
+      if (before && !before.ran && insideFolder(before.at, String(args[0]))) {
+        before.ran = true;
+        before.run();
       }
       return actual.open(...args);
     },
@@ -161,19 +199,20 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 
 /**
- * 중계의 목적지 판정을 갈음한다. 비어 있으면 실제 판정이다. 격리 확인은 중계의 주소 확인이 금지 목적지를 막는지 보는 검사이므로,
- * 그 확인이 고장 난 중계(금지 목적지를 열어 주거나 다른 이유로 거부함)를 만들어 확인이 그것을 알아보는지 본다.
+ * 중계의 목적지 판정을 갈음한다. 격리 확인은 중계의 주소 확인이 금지 목적지를 막는지 보는 검사이므로, 그 확인이 고장 난 중계(금지
+ * 목적지를 열어 주거나 다른 이유로 거부함)를 만들어 확인이 그것을 알아보는지 본다. 판정에는 그 시험만의 경로가 없으므로 그 시험이 부른
+ * 확인 호출에 묶고(`policyCalls`), 갈음한 판정마다 그 목적지를 `decided`에 남긴다. 무장이 없으면 실제 판정이다.
  */
-const policy = vi.hoisted(() => ({
-  decide: undefined as
-    | undefined
-    | ((
-        host: string,
-        port: number
-      ) =>
-        | { allowed: true; addresses: string[] }
-        | { allowed: false; reason: EgressRefusal }),
-}));
+type PolicyFault = {
+  decide: (
+    host: string,
+    port: number
+  ) =>
+    | { allowed: true; addresses: string[] }
+    | { allowed: false; reason: EgressRefusal };
+  decided: [string, number][];
+};
+const policyCalls = callArming<PolicyFault>();
 // 중계가 허용된 목적지로 붙는 연결(`relay.ts`의 `net.connect`)을 정한 오류로 실패시킨다(connect-failure-support.ts). 정한 포트가
 // 없으면 모든 연결이 진짜로 간다.
 vi.mock("node:net", async (importOriginal) =>
@@ -194,10 +233,12 @@ vi.mock("./egress-policy.ts", async (importOriginal) => {
     ...actual,
     decideDestination: (
       ...args: Parameters<typeof actual.decideDestination>
-    ) =>
-      policy.decide
-        ? Promise.resolve(policy.decide(args[1], args[2]))
-        : actual.decideDestination(...args),
+    ) => {
+      const fault = policyCalls.current();
+      if (!fault) return actual.decideDestination(...args);
+      fault.decided.push([args[1], args[2]]);
+      return Promise.resolve(fault.decide(args[1], args[2]));
+    },
   };
 });
 
@@ -231,13 +272,10 @@ const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
 afterEach(() => {
   resetRefusing();
-  refusal = null;
-  locked.folder = null;
-  policy.decide = undefined;
+  refusal = undefined;
   opening.beforeWal = undefined;
   opening.beforeNameCheck = undefined;
-  opening.missMain = false;
-  tree.run = undefined;
+  opening.missMain = undefined;
   vi.unstubAllEnvs();
 });
 
@@ -270,16 +308,11 @@ function expectUnverified(
   expect(error).not.toContain(leftLogin);
 }
 const fixture = (name: string) => path.resolve("test-fixtures", name);
-/** 임시 폴더 바로 아래 폴더의 실제 경로. 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) mount 원본은 실제 경로다. 폴더는 이미 지워졌을 수 있다. */
-const canonicalTemp = (folder: string) =>
-  path.join(realpathSync(path.dirname(folder)), path.basename(folder));
 
 async function setup(programs: Record<string, string[]>, base = tmpdir()) {
   // 임시 폴더가 링크 뒤에 있으면(macOS) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
-  const root = await realpath(
-    await mkdtemp(path.join(base, "babojubot-container-"))
-  );
-  folders.adopt(root);
+  // 만들기를 시작 순간 폴더 정리에 맡긴다(`folders.make`).
+  const root = await realpath(await folders.make("babojubot-container-", base));
   const state = path.join(root, "docker-state");
   await mkdir(state);
   const org = crypto.randomUUID(),
@@ -458,7 +491,7 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         `type=bind,source=${env.peerFolder},target=${env.peerFolder},readonly`,
         `type=bind,source=${home},target=${home}`,
         // 토큰이 든 이 실행 시도만의 파일 폴더(읽기만).
-        `type=bind,source=${canonicalTemp(path.dirname(valuesOf(args, "--mcp-config")[0]!))},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
+        `type=bind,source=${realPlace(path.dirname(valuesOf(args, "--mcp-config")[0]!))},target=${path.dirname(valuesOf(args, "--mcp-config")[0]!)},readonly`,
       ].sort()
     );
     expect(args.join(" ")).not.toMatch(/docker\.sock|--volume|-v /);
@@ -515,7 +548,7 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     expect(path.relative(home, config).startsWith("..")).toBe(true);
     const attempt = path.dirname(config);
     expect(valuesOf(run.args, "--mount")).toContain(
-      `type=bind,source=${canonicalTemp(attempt)},target=${attempt},readonly`
+      `type=bind,source=${realPlace(attempt)},target=${attempt},readonly`
     );
     // 지침 파일도 같은 폴더에 둔다.
     expect(
@@ -888,18 +921,31 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
     onTestFinished(() => {
       for (const spy of logged) spy.mockRestore();
     });
-    // 지우지 못하게 한 실행 시도 폴더는 시험 정리가 지운다. 컨테이너에 넣은 로그인 파일의 폴더에서 찾는다.
-    // 실패 주입은 그 전에 afterEach가 끈다.
-    folders.own(async () => {
-      for (const call of await env.calls())
-        for (const mount of valuesOf(call.args, "--mount")) {
-          const source = /source=([^,]*babojubot-attempt-[^,/\\]*)/.exec(mount);
-          if (source) folders.adopt(source[1]!);
-        }
-    }, "the attempt folder whose removal was made to fail");
-    locked.folder = /babojubot-attempt-/;
-    const result = await provider.adapter.execute(input, control());
+    // 실행 시도 폴더는 공유 임시 폴더에 무작위 이름으로 생겨 경로로 가를 수 없으므로, 지우기 실패를 이 시험이 부른 실행 시도에 묶는다.
+    // 무장의 끝은 호출 전에 폴더 정리에 맡긴다(`ownArming`): 정리의 첫 동기 단계에서 무장이 끝나고, 진행 중인 만들기를 기다린 뒤 무장이
+    // 만든 폴더를 그 정리가 지운다.
+    const fault: LockFault = { made: [], failedAt: [] };
+    const result = await lockCalls.run(
+      fault,
+      () => provider.adapter.execute(input, control()),
+      (end) =>
+        folders.ownArming(async () => {
+          await end();
+          return fault.made;
+        })
+    );
     expect(result.stopReason).toBe("completed");
+    // 지우기 실패가 그 실행 시도가 만든 폴더 하나에서 났고, 그 폴더는 그 실행 시도의 컨테이너에 붙인 로그인 파일이 든 실행 시도
+    // 폴더다.
+    expect(fault.made).toHaveLength(1);
+    expect([...new Set(fault.failedAt)]).toEqual(fault.made);
+    const attempt = realPlace(fault.made[0]!);
+    const sources = valuesOf(runCall(await env.calls()).args, "--mount").map(
+      (mount) => /source=([^,]+)/.exec(mount)![1]!
+    );
+    expect(sources.filter((source) => insideFolder(attempt, source))).toEqual([
+      path.join(attempt, "auth.json"),
+    ]);
     const lines = logged.flatMap((spy) =>
       spy.mock.calls.map((call) => call.map(String).join(" "))
     );
@@ -1605,12 +1651,9 @@ describe.skipIf(process.platform === "win32")(
       timeouts?: CodexOptions["timeouts"]
     ) {
       const log = path.join(
-        await realpath(
-          await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
-        ),
+        await realpath(await folders.make("babojubot-refresh-")),
         "refreshes.log"
       );
-      folders.adopt(path.dirname(log));
       const t = await codexSetup(
         expiringLogin(),
         [process.execPath, fixture("codex-refresh.mjs"), log, mode],
@@ -1972,18 +2015,20 @@ describe.skipIf(process.platform === "win32")(
         db.prepare(
           "insert into credential (id, integration_id, label, value, active) values (?, ?, ?, ?, 1)"
         ).run("cred_left", "opencode-go", "Go", JSON.stringify({ key: "x" }));
-        let checkpointed = false;
-        opening.beforeWal = () => {
-          db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-          checkpointed = true;
+        const beforeWal = {
+          at: path.join(store, "opencode.db-wal"),
+          run: () => db.exec("PRAGMA wal_checkpoint(TRUNCATE)"),
+          ran: false,
         };
+        opening.beforeWal = beforeWal;
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
 
         const result = await t
           .provider()
           .adapter.execute(t.input("opencode-go/glm-5.3"), control());
-        expect(checkpointed).toBe(true);
+        // 체크포인트가 그 시험 저장소의 WAL 열기 바로 전에 돌았다.
+        expect(beforeWal.ran).toBe(true);
         expect(result.stopReason).toBe("failed");
         expectUnverified(result.error, "changed");
         expect(warned).toHaveBeenCalledWith(
@@ -2000,11 +2045,16 @@ describe.skipIf(process.platform === "win32")(
     it("does not start a container when the organization's database changed place while it was opened, saying it changed", async () => {
       const t = await openCodeSetup();
       await storeLogins(path.join(t.organization, "data"), []);
-      opening.missMain = true;
+      const miss = {
+        at: path.join(t.organization, "data", "opencode", "opencode.db"),
+        missed: 0,
+      };
+      opening.missMain = miss;
       const result = await t
         .provider()
         .adapter.execute(t.input("opencode-go/glm-5.3"), control());
-      expect(opening.missMain).toBe(false);
+      // 그 시험 저장소의 DB 열기 한 번이 "없음"으로 실패했다.
+      expect(miss.missed).toBe(1);
       expect(result.stopReason).toBe("failed");
       expectUnverified(result.error, "changed");
       expect(await t.env.calls()).toEqual([]);
@@ -2020,21 +2070,24 @@ describe.skipIf(process.platform === "win32")(
       await storeLogins(replacement, [
         { integration: "opencode-go", value: { type: "key", key: "left" } },
       ]);
-      let replaced = false;
-      opening.beforeWal = () => {
-        renameSync(
-          path.join(replacement, "opencode", "opencode.db"),
-          path.join(data, "opencode", "opencode.db")
-        );
-        replaced = true;
+      const beforeWal = {
+        at: path.join(data, "opencode", "opencode.db-wal"),
+        run: () =>
+          renameSync(
+            path.join(replacement, "opencode", "opencode.db"),
+            path.join(data, "opencode", "opencode.db")
+          ),
+        ran: false,
       };
+      opening.beforeWal = beforeWal;
       const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
       onTestFinished(() => warned.mockRestore());
 
       const result = await t
         .provider()
         .adapter.execute(t.input("opencode-go/glm-5.3"), control());
-      expect(replaced).toBe(true);
+      // 바꿔치기가 그 시험 저장소의 WAL 열기 바로 전에 돌았다.
+      expect(beforeWal.ran).toBe(true);
       expect(result.stopReason).toBe("failed");
       expectUnverified(result.error, "changed");
       expect(await t.env.calls()).toEqual([]);
@@ -2078,18 +2131,20 @@ describe.skipIf(process.platform === "win32")(
         expect(statSync(wal, { throwIfNoEntry: false }) !== undefined).toBe(
           withLog
         );
-        let changed = false;
-        opening.beforeNameCheck = () => {
-          change(wal);
-          changed = true;
+        const beforeNameCheck = {
+          at: path.join(store, "opencode.db"),
+          run: () => change(wal),
+          ran: false,
         };
+        opening.beforeNameCheck = beforeNameCheck;
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
 
         const result = await t
           .provider()
           .adapter.execute(t.input("opencode-go/glm-5.3"), control());
-        expect(changed).toBe(true);
+        // 바꾸기가 그 시험 저장소의 DB 이름 확인 바로 전에 돌았다.
+        expect(beforeNameCheck.ran).toBe(true);
         expect(result.stopReason).toBe("failed");
         expectUnverified(result.error, "changed");
         expect(warned).toHaveBeenCalledWith(
@@ -2542,17 +2597,21 @@ describe.skipIf(process.platform === "win32")(
         const hub = env.container.relay;
         const opened: string[][] = [];
         const stop = new AbortController();
-        const open = hub.open.bind(hub);
-        hub.open = (input) => {
-          opened.push(input.required.map(({ host }) => host));
-          // 열린 목적지만 본다. 프로그램은 닿지 않는 중계를 계속 다시 시도해 스스로 끝나지 않으므로, 중계를 연 뒤 실행을 멈춘다.
-          const relay = open(input);
-          stop.abort();
-          return relay;
+        // 만든 hub를 바꾸지 않고, 중계 열기만 감싼 새 hub를 이 연결의 컨테이너 설정으로 넘긴다(hub는 메서드가 `this`를 쓰지 않는
+        // 일반 객체다).
+        const watched: typeof hub = {
+          ...hub,
+          open: (input) => {
+            opened.push(input.required.map(({ host }) => host));
+            // 열린 목적지만 본다. 프로그램은 닿지 않는 중계를 계속 다시 시도해 스스로 끝나지 않으므로, 중계를 연 뒤 실행을 멈춘다.
+            const relay = hub.open(input);
+            stop.abort();
+            return relay;
+          },
         };
         const provider = create({
           dataDir: env.root,
-          container: env.container,
+          container: { ...env.container, relay: watched },
           relay: { verified: true },
         });
         await provider.adapter.execute(env.isolated(), control(stop.signal));
@@ -2749,11 +2808,15 @@ describe.skipIf(process.platform === "win32")(
               connection,
               connection.login("real-access")
             );
-            refusal = code;
+            const refuse = refuseLinksIn(t.folder, code);
 
             const result = await t
               .provider()
               .adapter.execute(t.isolated(), control());
+            // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+            expect(refusedFolders(refuse)).toEqual([
+              path.dirname(t.connectionPlace),
+            ]);
             expect(result.stopReason).toBe("completed");
             expect(t.authorizations()).toEqual(["Bearer real-access"]);
             expect(t.provider().credentialRelay!.failed()).toBe(false);
@@ -2787,11 +2850,15 @@ describe.skipIf(process.platform === "win32")(
           connection,
           connection.login("first-access")
         );
-        refusal = "EPERM";
+        const refuse = refuseLinksIn(t.folder, "EPERM");
 
         const first = await t
           .provider()
           .adapter.execute(t.isolated(), control());
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(first.stopReason).toBe("completed");
         await t.logIn(connection.login("second-access"));
         const second = await t
@@ -2819,11 +2886,15 @@ describe.skipIf(process.platform === "win32")(
           connection.login("copied-access")
         );
         await t.logIn(connection.login("newer-access"));
-        refusal = "EPERM";
+        const refuse = refuseLinksIn(t.folder, "EPERM");
 
         const result = await t
           .provider()
           .adapter.execute(t.isolated(), control());
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(result.stopReason).toBe("completed");
         expect(t.authorizations()).toEqual(["Bearer newer-access"]);
         expect(await t.holding("newer-access")).toEqual([t.connectionPlace]);
@@ -2840,11 +2911,15 @@ describe.skipIf(process.platform === "win32")(
       "ends an isolated $name run as a relay failure, with nothing reaching the model, when there is no login anywhere",
       async (connection) => {
         const t = await noLinkSetup(connection, null);
-        refusal = "EPERM";
+        const refuse = refuseLinksIn(t.folder, "EPERM");
 
         const result = await t
           .provider()
           .adapter.execute(t.isolated(), control());
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(result.stopReason).toBe("failed");
         expect(result.error).toContain("인증 중계");
         expect(t.provider().credentialRelay!.failed()).toBe(true);
@@ -2857,11 +2932,15 @@ describe.skipIf(process.platform === "win32")(
       "completes the next isolated $name run after a relay failure once the login is made again at the connection folder's place and the relay is checked again",
       async (connection) => {
         const t = await noLinkSetup(connection, null);
-        refusal = "EPERM";
+        const refuse = refuseLinksIn(t.folder, "EPERM");
 
         const first = await t
           .provider()
           .adapter.execute(t.isolated(), control());
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(first.stopReason).toBe("failed");
         expect(t.provider().credentialRelay!.failed()).toBe(true);
         await t.logIn(connection.login("fixed-access"));
@@ -2878,12 +2957,9 @@ describe.skipIf(process.platform === "win32")(
 
     it("refreshes an expiring Codex login once on this machine at the connection folder's place, and the model gets the refreshed login", async () => {
       const log = path.join(
-        await realpath(
-          await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
-        ),
+        await realpath(await folders.make("babojubot-refresh-")),
         "refreshes.log"
       );
-      folders.adopt(path.dirname(log));
       const expiring = (() => {
         const jwt =
           [{ alg: "none" }, { exp: Math.floor(Date.now() / 1000) + 60 }]
@@ -2905,11 +2981,13 @@ describe.skipIf(process.platform === "win32")(
             ],
           }),
       });
-      refusal = "EPERM";
+      const refuse = refuseLinksIn(t.folder, "EPERM");
 
       const result = await t
         .provider()
         .adapter.execute(t.isolated(), control());
+      // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+      expect(refusedFolders(refuse)).toEqual([path.dirname(t.connectionPlace)]);
       expect(result.stopReason).toBe("completed");
       expect(
         (await readFile(log, "utf8")).split("\n").filter(Boolean)
@@ -2937,11 +3015,13 @@ describe.skipIf(process.platform === "win32")(
           },
         })
       );
-      refusal = "EPERM";
+      const refuse = refuseLinksIn(t.folder, "EPERM");
 
       const result = await t
         .provider()
         .adapter.execute(t.isolated(), control());
+      // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+      expect(refusedFolders(refuse)).toEqual([path.dirname(t.connectionPlace)]);
       expect(result.stopReason).toBe("completed");
       const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
         token: Record<string, string>;
@@ -2964,14 +3044,21 @@ describe.skipIf(process.platform === "win32")(
         expect(await run(t.isolated())).toBe("completed");
         expect(await run(t.onHost())).toBe("completed");
         // 링크를 모르는 디스크로 데이터 폴더를 옮기면 링크는 따라오지 않는다.
-        refusal = "EPERM";
+        const refuse = refuseLinksIn(t.folder, "EPERM");
         await rm(t.connectionPlace, { force: true });
         expect(await run(t.onHost())).toBe("completed");
+        // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+          path.dirname(
+            path.join(t.folder, "organizations", t.env.org, ...connection.place)
+          ),
+        ]);
         expect(await run(t.isolated())).toBe("completed");
         await t.logIn(connection.login("login-2"));
         expect(await run(t.isolated())).toBe("completed");
         expect(await run(t.onHost())).toBe("completed");
-        refusal = null;
+        refusal = undefined;
         expect(await run(t.onHost())).toBe("completed");
         expect(await run(t.isolated())).toBe("completed");
         await t.logIn(connection.login("login-3"));
@@ -3011,8 +3098,7 @@ describe.skipIf(process.platform === "win32")(
     });
     describe.skipIf(!volume)("on a real disk that refuses links", () => {
       it("refuses a file link in that folder", async () => {
-        const probe = await mkdtemp(path.join(volume!, "babojubot-probe-"));
-        folders.adopt(probe);
+        const probe = await folders.make("babojubot-probe-", volume!);
         await writeFile(path.join(probe, "target"), "");
         const code = await symlink(
           path.join(probe, "target"),
@@ -3114,17 +3200,39 @@ describe("docker failures during container cleanup", () => {
   );
 
   it("keeps both why a docker command was stopped and the signal that ended it", async () => {
-    tree.run = stoppedBySignal;
-    await expect(runDocker(failing, ["ps"])).resolves.toMatchObject({
+    // 공용 실행의 결과는 그 시험이 부른 docker 호출 안에서만 갈음한다.
+    const stub: TreeStub = { result: stoppedBySignal, ran: [] };
+    await expect(
+      treeCalls.run(stub, () => runDocker(failing, ["ps"]), onTestFinished)
+    ).resolves.toMatchObject({
       code: null,
       stopped: "limit",
       signal: "SIGKILL",
     });
     await expect(
-      createDockerEnvironment(failing).removeOrphans()
+      treeCalls.run(
+        stub,
+        () => createDockerEnvironment(failing).removeOrphans(),
+        onTestFinished
+      )
     ).rejects.toThrow(
       "leftover containers could not be listed (stopped: limit, signal SIGKILL)"
     );
+    // 갈음이 그 두 호출의 docker 명령에 걸렸다.
+    expect(stub.ran).toEqual([
+      [expect.objectContaining({ command: failing.docker, args: ["ps"] })],
+      [
+        expect.objectContaining({
+          command: failing.docker,
+          args: [
+            "ps",
+            "-aq",
+            "--filter",
+            `label=babojubot.owner=${failing.owner}`,
+          ],
+        }),
+      ],
+    ]);
   });
 
   it("fails leftover cleanup with the output limit as the cause when docker prints too much", async () => {
@@ -3261,16 +3369,17 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
   // (#264 외부 리뷰 5회차 STD-4). 확인이 실패하면 관문은 격리 환경 없음으로 본다.
   it("still removes its container when the relay does not close, and fails the check", async () => {
     const { environment, removals } = await cleanProbe();
-    // 확인이 연 중계의 egress 서버 닫기가 실패를 알린다(서버는 실제로 닫힌다). 닫힘을 확인하지 못한 중계는 폴더를 남기므로, 그
-    // 폴더는 확인(그 중계 닫기 전부)이 끝난 뒤 정리가 지운다(`failingRelayCloses`). 확인을 시작한 직후(사이에 기다림 없이) 맡긴다.
-    const probing = environment.probe(
-      { blocked: [], forbidden: [] },
-      AbortSignal.timeout(10_000)
-    );
-    const { failedAt } = failingRelayCloses(
+    // 확인이 연 중계의 egress 서버 닫기가 실패를 알린다(서버는 실제로 닫힌다). 중계 폴더는 공유 임시 폴더에 무작위 이름으로 생겨 이
+    // 시험만의 경로로 고를 수 없으므로, 결함을 이 시험이 부른 확인 호출에 묶는다(`failingRelayClosesDuring`). 닫힘을 확인하지 못한
+    // 중계는 폴더를 남기므로, 그 폴더는 확인(그 중계 닫기 전부)이 끝난 뒤 정리가 지운다.
+    const { failedAt, result: probing } = failingRelayClosesDuring(
       onTestFinished,
       (address) => path.basename(address) === relaySockets.egress,
-      () => probing
+      () =>
+        environment.probe(
+          { blocked: [], forbidden: [] },
+          AbortSignal.timeout(10_000)
+        )
     );
     // 거절을 먼저 받는다. 남긴 폴더의 위치는 대역이 실패시킨 닫기 뒤에야 안다.
     const failure = await probing.then(
@@ -3363,11 +3472,12 @@ describe.skipIf(process.platform === "win32")("the isolation probe", () => {
  * 실제 확인 스크립트를 이 컴퓨터에서 돌린다. 가짜 docker가 `node`를 이 프로그램으로 바꿔 띄우고, 먼저 읽히는 모듈이 컨테이너의
  * 네트워크를 대신한다: 네트워크 장치는 loopback뿐이고, 컨테이너 안 중계 포트(이미지의 relay.mjs가 잇는 127.0.0.1:39280·39281)는 이 확인이 연 실제 중계의 파일
  * 소켓으로 잇고, `HTTPS_PROXY`는 이미지의 시작 프로그램처럼 둔다. 직접 연결은 옆 파일 `direct.json`에 적은 주소만 정한 결과
- * (연결됨·연결 오류 코드·답 없음)를 내고, 그 밖은 이 컴퓨터에서 실제로 연결한다. 옆 파일 `answers.json`에 중계 포트의 답을 적으면
+ * (연결됨·연결 오류 코드·답 없음)를 내고 낸 결과를 옆 파일 `direct-answered.log`에 `<주소>:<포트> <결과>` 한 줄로 남기며, 그 밖은
+ * 이 컴퓨터에서 실제로 연결한다. 옆 파일 `answers.json`에 중계 포트의 답을 적으면
  * 그 포트는 중계 대신 그 글자를 답하고 열어 둔다(HTTP가 아닌 것이 답한 경우).
  */
 const containerNetwork = `
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -3409,6 +3519,7 @@ const connect = (options, ...rest) => {
     return real({ path: path.join(relay, relayed[options.port]) }, ...rest);
   const outcome = typeof options === "object" ? outcomes[options.host + ":" + options.port] : undefined;
   if (outcome === undefined) return real(options, ...rest);
+  appendFileSync(new URL("./direct-answered.log", import.meta.url), options.host + ":" + options.port + " " + outcome + "\\n");
   const socket = new net.Socket();
   setImmediate(() => {
     if (outcome === "connected") socket.emit("connect");
@@ -3432,12 +3543,36 @@ describe.skipIf(process.platform === "win32")(
       direct: Record<string, string> = {},
       answers: Record<string, string> = {}
     ) {
+      return (await probeSetup(direct, answers)).environment;
+    }
+
+    /**
+     * 직접 연결의 정한 결과(`direct`)만 주는 확인 환경. `answered`는 가짜 네트워크가 실제로 낸 직접 연결 결과(`<주소>:<포트> <결과>`)를
+     * 겹치지 않게 돌려준다(그 시험 폴더의 `direct-answered.log`).
+     */
+    async function directProbeEnvironment(direct: Record<string, string>) {
+      const { root, environment } = await probeSetup(direct, {});
+      const answered = async () => [
+        ...new Set(
+          (await readFile(path.join(root, "direct-answered.log"), "utf8"))
+            .trim()
+            .split("\n")
+        ),
+      ];
+      return { environment, answered };
+    }
+
+    /** 확인 스크립트를 돌릴 가짜 docker와 그 시험 폴더(`root`). */
+    async function probeSetup(
+      direct: Record<string, string>,
+      answers: Record<string, string>
+    ) {
       const root = await folders.make("babojubot-probe-");
       const network = path.join(root, "container-network.mjs");
       await writeFile(network, containerNetwork);
       await writeFile(path.join(root, "direct.json"), JSON.stringify(direct));
       await writeFile(path.join(root, "answers.json"), JSON.stringify(answers));
-      return createDockerEnvironment({
+      const environment = createDockerEnvironment({
         docker: [
           process.execPath,
           fixture("fake-docker.mjs"),
@@ -3448,28 +3583,43 @@ describe.skipIf(process.platform === "win32")(
         owner: "owner-test",
         relay: attachedRelayHub(),
       });
+      return { root, environment };
     }
 
     /**
-     * 금지 목적지. 중계가 그 주소로 붙으면 그 연결은 정한 오류(EHOSTUNREACH)로 실패하고 붙은 주소·포트가 남는다
-     * (connect-failure-support.ts). 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 번호를 잡으면 결함 없이 실패한다
-     * (#294 외부 리뷰 2회차 STD-2).
+     * 금지 목적지. 아무도 열지 않은 포트라 그 시험만의 자원이 아니다. 닫은 포트에 다시 붙는 실제 연결은 그 사이 다른 프로그램이 번호를
+     * 잡으면 결함 없이 실패한다(#294 외부 리뷰 2회차 STD-2).
      */
-    function forbiddenTarget() {
-      const target = { host: "127.0.0.1", port: 40_125 };
-      refusing.refuse = { port: target.port, code: "EHOSTUNREACH" };
-      return target;
+    const forbiddenTarget = () => ({ host: "127.0.0.1", port: 40_125 });
+    /**
+     * 그 시험의 확인 하나를 부른다. 그 호출 안에서만(그것이 연 중계의 처리기 포함) 금지 목적지로 붙는 연결이 정한 오류(EHOSTUNREACH)로
+     * 실패하고(connect-failure-support.ts) 붙은 주소·포트가 `dialed`에 남는다. `decide`를 주면 그 호출 안의 목적지 판정을 갈음하고
+     * 판정한 목적지를 `decided`에 남긴다.
+     */
+    function probing(
+      environment: Awaited<ReturnType<typeof probeEnvironmentWith>>,
+      target: { host: string; port: number },
+      decide?: PolicyFault["decide"]
+    ) {
+      const fault: PolicyFault | undefined = decide && { decide, decided: [] };
+      const probe = () =>
+        environment.probe(
+          { blocked: [], forbidden: [target] },
+          AbortSignal.timeout(20_000)
+        );
+      const { dialed, result } = failingConnectsDuring(
+        onTestFinished,
+        { port: target.port, code: "EHOSTUNREACH" },
+        () => (fault ? policyCalls.run(fault, probe, onTestFinished) : probe())
+      );
+      return { dialed, decided: fault?.decided ?? [], result };
     }
 
     it("finds a forbidden destination blocked only when the relay refuses its address", async () => {
       const target = forbiddenTarget();
       const environment = await probeEnvironmentWith();
-      await expect(
-        environment.probe(
-          { blocked: [], forbidden: [target] },
-          AbortSignal.timeout(20_000)
-        )
-      ).resolves.toEqual({
+      const { dialed, result } = probing(environment, target);
+      await expect(result).resolves.toEqual({
         interfaces: [],
         reached: [],
         proxied: [],
@@ -3477,25 +3627,24 @@ describe.skipIf(process.platform === "win32")(
         unverified: [],
       });
       // 주소 확인이 거부했으므로 중계는 목적지로 붙지 않았다.
-      expect(refusing.dialed).not.toHaveBeenCalled();
+      expect(dialed).toEqual([]);
     });
 
     // 중계가 502로 답한 것은 정책이 그 목적지를 열고 연결만 실패한 것이다. 주소 확인이 막지 못했으므로 막혔다고 세지 않는다
     // (#286 항목 1).
     it("counts a forbidden destination the relay let through as reached, even when the connection behind it failed", async () => {
       const target = forbiddenTarget();
-      policy.decide = () => ({ allowed: true, addresses: ["127.0.0.1"] });
       const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
       onTestFinished(() => warned.mockRestore());
       const environment = await probeEnvironmentWith();
-      await expect(
-        environment.probe(
-          { blocked: [], forbidden: [target] },
-          AbortSignal.timeout(20_000)
-        )
-      ).resolves.toMatchObject({ proxied: [target] });
-      // 정책이 연 주소로 붙었고 그 연결이 실패했다(502).
-      expect(refusing.dialed.mock.calls).toEqual([[target]]);
+      const { dialed, decided, result } = probing(environment, target, () => ({
+        allowed: true,
+        addresses: ["127.0.0.1"],
+      }));
+      await expect(result).resolves.toMatchObject({ proxied: [target] });
+      // 갈음한 판정이 그 목적지에 걸렸고, 정책이 연 주소로 붙은 연결이 실패했다(502).
+      expect(decided).toEqual([[target.host, target.port]]);
+      expect(dialed).toEqual([target]);
     });
 
     // 주소 확인이 아닌 이유의 거부(정책을 읽지 못함·목록에 없음·이름을 풀지 못함)로는 주소 확인이 막는지 알 수 없다. 확인 불가다.
@@ -3507,17 +3656,23 @@ describe.skipIf(process.platform === "win32")(
       "reports the relay check as unverified when the relay refuses for %s instead of the address",
       async (reason) => {
         const target = forbiddenTarget();
-        policy.decide = () => ({ allowed: false, reason });
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
         const environment = await probeEnvironmentWith();
-        await expect(
-          environment.probe(
-            { blocked: [], forbidden: [target] },
-            AbortSignal.timeout(20_000)
-          )
-        ).resolves.toMatchObject({ proxied: [], unverified: ["proxied"] });
-        expect(refusing.dialed).not.toHaveBeenCalled();
+        const { dialed, decided, result } = probing(
+          environment,
+          target,
+          () => ({
+            allowed: false,
+            reason,
+          })
+        );
+        await expect(result).resolves.toMatchObject({
+          proxied: [],
+          unverified: ["proxied"],
+        });
+        expect(decided).toEqual([[target.host, target.port]]);
+        expect(dialed).toEqual([]);
       }
     );
 
@@ -3534,7 +3689,7 @@ describe.skipIf(process.platform === "win32")(
         const target = { host: "192.0.2.10", port: 5432 };
         const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
         onTestFinished(() => warned.mockRestore());
-        const environment = await probeEnvironmentWith({
+        const { environment, answered } = await directProbeEnvironment({
           "192.0.2.10:5432": outcome,
         });
         await expect(
@@ -3549,6 +3704,8 @@ describe.skipIf(process.platform === "win32")(
           toolsReached: true,
           unverified,
         });
+        // 가짜 네트워크가 그 목적지의 직접 연결에 정한 결과를 실제로 냈다.
+        expect(await answered()).toEqual([`192.0.2.10:5432 ${outcome}`]);
       }
     );
 
@@ -3607,7 +3764,7 @@ describe.skipIf(process.platform === "win32")(
 
     it("counts a direct connection that opened as reached", async () => {
       const target = { host: "192.0.2.10", port: 5432 };
-      const environment = await probeEnvironmentWith({
+      const { environment, answered } = await directProbeEnvironment({
         "192.0.2.10:5432": "connected",
       });
       await expect(
@@ -3616,6 +3773,8 @@ describe.skipIf(process.platform === "win32")(
           AbortSignal.timeout(20_000)
         )
       ).resolves.toMatchObject({ reached: [target], unverified: [] });
+      // 가짜 네트워크가 그 목적지의 직접 연결을 실제로 열었다.
+      expect(await answered()).toEqual(["192.0.2.10:5432 connected"]);
     });
 
     // HTTP가 아닌 것이 답하면 닿았는지 막혔는지 알 수 없다. HTTP 파서가 알린 원인을 남기고 확인 불가로 넘긴다(#286).
@@ -3632,14 +3791,12 @@ describe.skipIf(process.platform === "win32")(
           {},
           { [port]: "SSH-2.0-OpenSSH_9.9\r\n\r\n" }
         );
-        const result = await environment.probe(
-          { blocked: [], forbidden: [target] },
-          AbortSignal.timeout(20_000)
-        );
+        const probed = probing(environment, target);
+        const result = await probed.result;
         expect(result.unverified).toEqual([probe]);
         expect(result.proxied).toEqual([]);
         // 답을 바꿔 넣은 확인은 중계에 닿지 않아 목적지로 붙지 않았다.
-        expect(refusing.dialed).not.toHaveBeenCalled();
+        expect(probed.dialed).toEqual([]);
         expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
           `[provider] the isolation probe's ${probe} check failed (HPE_INVALID_CONSTANT)`,
         ]);
@@ -3649,21 +3806,28 @@ describe.skipIf(process.platform === "win32")(
 );
 
 describe("the Docker engine check", () => {
+  /** 그 시험 폴더의 파일로 답하는 가짜 docker 환경과, 가짜 docker가 받은 호출의 인수(`calls`, 받은 차례대로). */
   async function engine(files: Record<string, string> = {}) {
     const root = await folders.make("babojubot-engine-");
     for (const [name, value] of Object.entries(files))
       await writeFile(path.join(root, name), value);
-    return createDockerEnvironment({
+    const environment = createDockerEnvironment({
       docker: [process.execPath, fixture("fake-docker.mjs"), root, "{}"],
       image,
       owner: "owner-test",
       relay: attachedRelayHub(),
     });
+    const calls = async () =>
+      (await readFile(path.join(root, "calls.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => (JSON.parse(line) as Call).args);
+    return { environment, calls };
   }
 
   it("accepts a local Linux engine with the current runner image", async () => {
     await expect(
-      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+      (await engine()).environment.checkDaemon(AbortSignal.timeout(10_000))
     ).resolves.toBeUndefined();
   });
 
@@ -3677,6 +3841,8 @@ describe("the Docker engine check", () => {
           SecurityOptions: [],
         }),
       },
+      "Docker Desktop is not supported for isolated runs",
+      ["info"],
     ],
     [
       "rootless Docker",
@@ -3687,6 +3853,8 @@ describe("the Docker engine check", () => {
           SecurityOptions: ["name=rootless"],
         }),
       },
+      "rootless Docker is not supported for isolated runs",
+      ["info"],
     ],
     [
       "a Windows engine",
@@ -3697,22 +3865,36 @@ describe("the Docker engine check", () => {
           SecurityOptions: [],
         }),
       },
+      "docker daemon is not a Linux engine",
+      ["info"],
     ],
-    ["an image without the relay start program", { "runner-version": "" }],
+    [
+      "an image without the relay start program",
+      { "runner-version": "" },
+      "runner image is outdated; rebuild it with pnpm runner:build",
+      ["image", "inspect"],
+    ],
     [
       "a Docker context on another computer",
       { "context-host": "ssh://user@build-box" },
+      "docker daemon is not on this computer",
+      ["context", "inspect"],
     ],
-  ])("refuses %s", async (_case, files) => {
+  ])("refuses %s", async (_case, files, refusal, answeredBy) => {
+    const { environment, calls } = await engine(files);
     await expect(
-      (await engine(files)).checkDaemon(AbortSignal.timeout(10_000))
-    ).rejects.toThrow();
+      environment.checkDaemon(AbortSignal.timeout(10_000))
+    ).rejects.toThrow(new Error(refusal));
+    // 거절은 그 시험 폴더의 파일로 답한 가짜 docker 호출 바로 뒤에 났다(그 뒤로 묻지 않았다).
+    expect((await calls()).at(-1)?.slice(0, answeredBy.length)).toEqual(
+      answeredBy
+    );
   });
 
   it("refuses a daemon on another computer, whose folders this computer cannot check", async () => {
     vi.stubEnv("DOCKER_HOST", "tcp://10.0.0.9:2375");
     await expect(
-      (await engine()).checkDaemon(AbortSignal.timeout(10_000))
+      (await engine()).environment.checkDaemon(AbortSignal.timeout(10_000))
     ).rejects.toThrow(/not on this computer/);
   });
 });

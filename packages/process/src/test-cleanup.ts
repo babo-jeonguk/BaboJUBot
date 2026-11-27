@@ -8,6 +8,9 @@
 import { readFile } from "node:fs/promises";
 // node:net·node:http는 형으로만 불러온다(runtime `connect-failure-support.ts` 머리의 대역 경로 제약).
 import type net from "node:net";
+// 신호는 `node:process`의 `kill`로 보낸다. 시험은 이 모듈 경계에서 대역하고(`vi.mock("node:process")`), 전역 `process.kill`을
+// 바꾸지 않는다(#286).
+import { kill } from "node:process";
 import {
   attemptAll,
   attemptEach,
@@ -17,7 +20,7 @@ import {
 import type { Lifelines } from "./lifeline-support.ts";
 import { removeFolder } from "./remove-folder.ts";
 import { listenAttempt } from "./listen-attempt.ts";
-import { reportedPid, within } from "./test-support.ts";
+import { reportedPid, settledWithin, within } from "./test-support.ts";
 
 /** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. 모두 시도하기는 `attemptAll`(`@babojubot/contracts`)이 한다. */
 export type CleanupStep = () => unknown;
@@ -114,7 +117,7 @@ const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code;
  */
 export function processAlive(pid: number) {
   try {
-    process.kill(pid, 0);
+    kill(pid, 0);
     return true;
   } catch (error) {
     if (errorCode(error) === "ESRCH") return false;
@@ -134,7 +137,7 @@ export function killUnlessGone(
   signal: NodeJS.Signals = "SIGKILL"
 ) {
   try {
-    process.kill(pid, signal);
+    kill(pid, signal);
     return true;
   } catch (error) {
     if (errorCode(error) === "ESRCH") return false;
@@ -142,6 +145,24 @@ export function killUnlessGone(
       cause: error,
     });
   }
+}
+
+/**
+ * 시작한 획득(`acquiring`: 만들기를 시작한 순간 정리에 등록한 그 promise)의 끝을 상한 안에서 확인하고, 얻었으면 `release`로 놓는다.
+ * 끝을 확인하지 못하면 놓지 않고(자원을 남기고) 실패한다. 얻지 못했으면(거절) 놓을 것이 없다. 획득 결과를 기다린 뒤에야 정리에
+ * 넣으면, 그 사이 정리가 돌 때(시험이 시한으로 끊김) 그 자원을 놓친다(#286 PR 3b-3b-2 외부 리뷰 2회차 STD-1-R2).
+ */
+export async function releaseAcquired<T>(
+  acquiring: Promise<T>,
+  release: (acquired: T) => Promise<unknown>,
+  withinMs = 10_000
+) {
+  const [acquired] = await settledWithin(
+    [acquiring],
+    withinMs,
+    "a test resource being acquired did not finish"
+  );
+  if (acquired.status === "fulfilled") await release(acquired.value);
 }
 
 /**

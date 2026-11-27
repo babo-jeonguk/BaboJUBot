@@ -6,9 +6,11 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { isDisconnect } from "@babojubot/contracts";
+import { callArming } from "@babojubot/process/call-arming";
 import {
   awaitedLater,
   folderCleanup,
+  releaseAcquired,
   removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 import { within } from "@babojubot/process/test-support";
@@ -23,61 +25,89 @@ import {
 // 내장 DB 폴더 주인의 연결(#268, #275 외부 리뷰 1·2회차). 주인 연결은 이 사용자 전용 폴더에만 두고, 다른 프로세스는 기록의 자리로
 // 연결만 해 볼 뿐 지우지 않는다. 연 연결은 실패한 길에서도 닫는다. 소켓 경로 한도는 바이트로 잰다. Windows는 named pipe라
 // 파일·경로 한도가 없어 이 파일의 시험은 POSIX에서만 돈다.
+/**
+ * 시험끼리 같은 자리(제품의 고정 후보 `/tmp`)의 듣기 실패는 경로로 그 시험의 것을 가를 수 없다. 시험은 제품 호출을
+ * `listenCalls.run({ fails }, () => 제품 호출, onTestFinished)`로 감싸고(끝은 그 시험의 정리가 정함), 대역은 불린 순간 그 호출의 무장을 잡는다. 다른 시험의 호출이나 문맥 밖
+ * 호출은 무장이 없어 실패하지 않는다(#286).
+ */
+const listenCalls = callArming<{
+  fails: (handle: string) => Error | undefined;
+}>();
 const inject = vi.hoisted(() => ({
-  /** 주인 기록(`<dataDir>.owner/<번호>`)을 붙이는 hard link가 이 오류로 실패한다. */
-  recordFails: undefined as Error | undefined,
-  /** 임시 cluster 폴더(`babojubot-pg-…`)를 지우면 이 오류로 실패한다. */
-  removeFails: undefined as Error | undefined,
-  /** 주인 연결을 그 자리(경로)에서 듣지 못하게 한다. 오류를 돌려주면 듣기가 그 오류로 실패한다. */
+  /** 이 폴더(`in`, 그 시험의 `<dataDir>.owner`) 안의 주인 기록을 붙이는 hard link가 이 오류로 실패한다(#286). */
+  recordFails: undefined as { in: string; error: Error } | undefined,
+  /** 정확히 이 경로(`at`, 그 시험의 임시 cluster 폴더)를 지우면 이 오류로 실패하고 그 경로를 `failedAt`에 남긴다(#286). */
+  removeFails: undefined as
+    { at: string; error: Error; failedAt: string[] } | undefined,
+  /**
+   * 주인 연결을 그 자리(경로)에서 듣지 못하게 한다. 오류를 돌려주면 듣기가 그 오류로 실패한다. 그 시험의 폴더 안 자리만 고른다.
+   * 시험끼리 같은 자리(제품의 고정 후보 `/tmp`)는 `listenCalls`로 그 시험의 호출에만 건다.
+   */
   listenFails: undefined as ((handle: string) => Error | undefined) | undefined,
   /** 제품이 경로에서 듣기를 시도한 자리와 그 결과. 주입한 실패도 여기 남는다. */
   listens: [] as { handle: string; failure?: Error }[],
   /** 제품이 경로에서 실제로 듣기 시작한 자리(듣기가 성공해 알린 뒤에 남긴다). 그 자리가 닫혔는지는 이 목록으로 본다. */
   listened: [] as string[],
-  /** 경로에서 들은 서버의 닫기가 실제로 닫힌 뒤 이 오류로 끝난다(#286). */
-  closeFails: undefined as Error | undefined,
+  /**
+   * 이 폴더(`in`)의 경로에서 들은 서버의 닫기가 실제로 닫힌 뒤 이 오류로 끝나고, 그 서버가 들은 경로를 `failedAt`에 남긴다(#286).
+   * 그 시험이 만든 폴더로 고른다.
+   */
+  closeFails: undefined as
+    { in: string; error: Error; failedAt: string[] } | undefined,
 }));
 vi.mock("node:net", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:net")>();
-  // 경로(소켓·pipe)에서 듣는 서버만 본다. 번호로 듣는 서버(빈 port 고르기)는 그대로 둔다.
-  const createServer = ((...args: Parameters<typeof real.createServer>) => {
-    const server = real.createServer(...args);
-    const listen = server.listen.bind(server);
-    const listenAt = (...listenArgs: unknown[]) => {
+  // 대역이 만든 서버만 다르게 답한다(서버 객체의 메서드를 대입으로 바꾸지 않는다). 경로(소켓·pipe)에서 듣는 서버만 본다. 번호로 듣는
+  // 서버(빈 port 고르기)는 진짜와 같다.
+  class OwnerServer extends real.Server {
+    /** 이 서버가 들은 경로. 닫기 결함은 경로에서 들은 서버에만 건다. */
+    listenedAt: string | undefined;
+    override listen(...listenArgs: unknown[]) {
       const [handle, callback] = listenArgs;
       if (typeof handle !== "string")
-        return listen(...(listenArgs as Parameters<typeof listen>));
+        return (super.listen as (...args: unknown[]) => this)(...listenArgs);
       if (listenArgs.length !== 2 || typeof callback !== "function")
         throw new Error(
           `the owner connection was listened in an unexpected way: ${JSON.stringify(listenArgs)}`
         );
-      const failure = inject.listenFails?.(handle);
+      // 기록 칸은 불린 순간 잡는다. 듣기 콜백은 나중에 돌므로 그 안에서 칸을 다시 찾지 않는다(그 사이 beforeEach가 새 칸을 연다).
+      const { listened } = inject;
+      const failure =
+        inject.listenFails?.(handle) ?? listenCalls.current()?.fails(handle);
       inject.listens.push({ handle, ...(failure && { failure }) });
       if (failure) {
-        process.nextTick(() => server.emit("error", failure));
-        return server;
+        process.nextTick(() => this.emit("error", failure));
+        return this;
       }
-      // 이 서버의 닫기는 실제로 닫은 뒤, 실패를 주입했으면 그 오류로 답한다.
-      const close = server.close.bind(server);
-      server.close = ((done?: (error?: Error) => void) =>
-        close((error) =>
-          done?.(inject.closeFails ?? error)
-        )) as typeof server.close;
-      return listen(handle, () => {
-        inject.listened.push(handle);
+      this.listenedAt = handle;
+      return super.listen(handle, () => {
+        listened.push(handle);
         (callback as () => void)();
       });
-    };
-    server.listen = listenAt as typeof server.listen;
-    return server;
-  }) as typeof real.createServer;
-  return { ...real, createServer, default: { ...real, createServer } };
+    }
+    /** 경로에서 들은 서버의 닫기는 실제로 닫은 뒤, 부른 순간 그 경로의 폴더에 주입한 실패가 있으면 그 오류로 답한다. */
+    override close(done?: (error?: Error) => void) {
+      const fault = inject.closeFails;
+      const at = this.listenedAt;
+      if (at === undefined || fault?.in !== path.dirname(at))
+        return super.close(done);
+      fault.failedAt.push(at);
+      return super.close((error) => done?.(error ?? fault.error));
+    }
+  }
+  const createServer = ((...args: ConstructorParameters<typeof real.Server>) =>
+    new OwnerServer(...args)) as typeof real.createServer;
+  const replaced = { Server: OwnerServer, createServer };
+  return { ...real, ...replaced, default: { ...real, ...replaced } };
 });
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
-    if (inject.removeFails && String(target).includes("babojubot-pg-"))
-      throw inject.removeFails;
+    const fault = inject.removeFails;
+    if (fault?.at === String(target)) {
+      fault.failedAt.push(String(target));
+      throw fault.error;
+    }
     return real.rm(target, options);
   };
   return { ...real, rm, default: { ...real, rm } };
@@ -85,8 +115,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 vi.mock("node:fs", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs")>();
   const linkSync = ((existing, target) => {
-    if (inject.recordFails && /\.owner[\\/]\d+$/.test(String(target)))
-      throw inject.recordFails;
+    const fault = inject.recordFails;
+    if (fault?.in === path.dirname(String(target))) throw fault.error;
     return real.linkSync(existing, target);
   }) as typeof real.linkSync;
   return { ...real, linkSync, default: { ...real, linkSync } };
@@ -103,12 +133,15 @@ beforeEach(() => {
 /**
  * 이 시험만 쓰는 임시 폴더를 이 프로세스의 임시 폴더로 둔다(제품은 그 아래 `babojubot-<uid>`에 주인 연결을 둔다). 사용자 실행
  * 폴더(`XDG_RUNTIME_DIR`)는 비워 임시 폴더를 쓰게 한다. 그 안에서 띄운 cluster는 `cleanup.own`으로 맡겨, 멈춘 것을 확인한 뒤에만
- * 폴더를 지운다(STD-4).
+ * 폴더를 지운다(STD-4). 폴더는 만들기를 시작한 순간 정리에 맡긴다.
  */
 async function ownTemporaryFolder(name = "babojubot-owner-tmp-") {
-  const base = await fsp.mkdtemp(path.join(os.tmpdir(), name));
-  const cleanup = folderCleanup(() => removeFolderWithin(base));
+  const making = fsp.mkdtemp(path.join(os.tmpdir(), name));
+  const cleanup = folderCleanup(() =>
+    releaseAcquired(making, (made) => removeFolderWithin(made))
+  );
   onTestFinished(cleanup.cleanUp);
+  const base = await making;
   vi.stubEnv("TMPDIR", base);
   vi.stubEnv("XDG_RUNTIME_DIR", "");
   onTestFinished(() => {
@@ -118,17 +151,19 @@ async function ownTemporaryFolder(name = "babojubot-owner-tmp-") {
 }
 
 /**
- * cluster를 띄우고 바로 그 멈춤을 폴더 정리에 맡긴다. 돌려준 `stop`은 한 번만 멈춘다(시험이 멈춰도 정리가 다시 멈추지 않는다).
+ * cluster를 띄우기 시작한 순간 그 멈춤을 폴더 정리에 맡긴다(시작이 끝나면 멈추고, 실패했으면 멈출 것이 없다). 돌려준 `stop`은 한
+ * 번만 멈춘다(시험이 멈춰도 정리가 다시 멈추지 않는다).
  */
 async function startOwned(
   cleanup: ReturnType<typeof folderCleanup>,
   options: EmbeddedOptions
 ) {
-  const cluster = await startEmbeddedCluster(options);
+  const starting = startEmbeddedCluster(options);
   let stopping: Promise<void> | undefined;
-  const stop = () => (stopping ??= cluster.stop());
-  cleanup.own(stop);
-  return { cluster, stop };
+  const stopOnce = (cluster: EmbeddedCluster) => (stopping ??= cluster.stop());
+  cleanup.own(() => releaseAcquired(starting, stopOnce));
+  const cluster = await starting;
+  return { cluster, stop: () => stopOnce(cluster) };
 }
 
 /**
@@ -166,18 +201,19 @@ describe.runIf(posix)(
   () => {
     // STD-2: 주인 연결을 연 뒤 기록을 쓰지 못하면, 이번에 연 연결을 닫고 실패한다. 연결이 남으면 주인이 아닌 프로세스가 주인처럼 보인다.
     it("closes the connection it opened when its owner record cannot be written", async () => {
-      const { base } = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const failure = Object.assign(
         new Error("injected: the owner record could not be written"),
         { code: "EIO" }
       );
-      inject.recordFails = failure;
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      inject.recordFails = { in: `${dataDir}.owner`, error: failure };
       onTestFinished(() => {
         inject.recordFails = undefined;
       });
-      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      // 실패를 기대하는 시작도 시작하는 순간 그 멈춤을 맡긴다(잘못 켜지면 정리가 멈춘다).
       await expect(
-        startEmbeddedCluster({ dataDir, persistent: true })
+        startOwned(cleanup, { dataDir, persistent: true })
       ).rejects.toBe(failure);
       inject.recordFails = undefined;
       expect(await listenedStates()).toEqual(["closed"]);
@@ -220,13 +256,21 @@ describe.runIf(posix)(
         new Error("injected: the temporary folder could not be removed"),
         { code: "EBUSY" }
       );
-      const cluster: EmbeddedCluster = await startEmbeddedCluster(options);
-      // 시험의 멈춤이 기대한 대로 실패하면, 정리는 남은 폴더만 지운다(Postgres는 이미 멈췄다).
+      // 멈춤은 시작하는 순간 정리에 맡긴다. 시험의 멈춤이 기대한 대로 실패하면, 정리는 남은 폴더만 지운다(Postgres는 이미 멈췄다).
+      const starting = startEmbeddedCluster(options);
       let stopping: Promise<void> | undefined;
-      cleanup.own(() => (stopping ??= cluster.stop()));
+      cleanup.own(() =>
+        releaseAcquired(starting, (started) => (stopping ??= started.stop()))
+      );
+      const cluster: EmbeddedCluster = await starting;
       // 실패를 주입하기 전에 주인 연결이 실제로 열려 있음을 본다.
       expect(await listenedStates()).toEqual(["open"]);
-      inject.removeFails = failure;
+      const removeFails = {
+        at: options.dataDir,
+        error: failure,
+        failedAt: [] as string[],
+      };
+      inject.removeFails = removeFails;
       onTestFinished(() => {
         inject.removeFails = undefined;
       });
@@ -234,6 +278,8 @@ describe.runIf(posix)(
       await expect(stopping).rejects.toThrow(failure.message);
       stopping = Promise.resolve();
       inject.removeFails = undefined;
+      // 지우기 실패는 그 시험의 임시 cluster 폴더에서 났다.
+      expect([...new Set(removeFails.failedAt)]).toEqual([options.dataDir]);
       expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
@@ -242,14 +288,25 @@ describe.runIf(posix)(
     it("fails a persistent stop with the owner connection's close failure", async () => {
       const { base, cleanup } = await ownTemporaryFolder();
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
-      const cluster = await startEmbeddedCluster({ dataDir, persistent: true });
+      // 멈춤은 시작하는 순간 정리에 맡긴다. 시험이 멈췄으면 정리는 다시 멈추지 않는다.
+      const starting = startEmbeddedCluster({ dataDir, persistent: true });
       let stopped = false;
-      cleanup.own(() => (stopped ? undefined : cluster.stop()));
+      cleanup.own(() =>
+        releaseAcquired(starting, (started) =>
+          stopped ? Promise.resolve() : started.stop()
+        )
+      );
+      const cluster = await starting;
       const failure = Object.assign(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = failure;
+      const closeFails = {
+        in: privateFolder(base),
+        error: failure,
+        failedAt: [] as string[],
+      };
+      inject.closeFails = closeFails;
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -257,6 +314,9 @@ describe.runIf(posix)(
         cause: failure,
       });
       inject.closeFails = undefined;
+      // 닫기 실패는 이 cluster가 연 그 주인 연결에서 났다.
+      expect(inject.listened).toHaveLength(1);
+      expect(closeFails.failedAt).toEqual(inject.listened);
       expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
@@ -293,16 +353,27 @@ describe.runIf(posix)(
     }, 60_000);
 
     it("fails a temporary stop with the owner connection's close failure", async () => {
-      const { cleanup } = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const options = await ephemeralCluster();
-      const cluster = await startEmbeddedCluster(options);
+      // 멈춤은 시작하는 순간 정리에 맡긴다. 시험이 멈췄으면 정리는 다시 멈추지 않는다.
+      const starting = startEmbeddedCluster(options);
       let stopped = false;
-      cleanup.own(() => (stopped ? undefined : cluster.stop()));
+      cleanup.own(() =>
+        releaseAcquired(starting, (started) =>
+          stopped ? Promise.resolve() : started.stop()
+        )
+      );
+      const cluster = await starting;
       const failure = Object.assign(
         new Error("injected: the owner connection could not be closed"),
         { code: "EIO" }
       );
-      inject.closeFails = failure;
+      const closeFails = {
+        in: privateFolder(base),
+        error: failure,
+        failedAt: [] as string[],
+      };
+      inject.closeFails = closeFails;
       const stopping = cluster.stop();
       stopped = true;
       await expect(stopping).rejects.toMatchObject({
@@ -310,34 +381,46 @@ describe.runIf(posix)(
         cause: failure,
       });
       inject.closeFails = undefined;
+      // 닫기 실패는 이 cluster가 연 그 주인 연결에서 났다.
+      expect(inject.listened).toHaveLength(1);
+      expect(closeFails.failedAt).toEqual(inject.listened);
       expect(await listenedStates()).toEqual(["closed"]);
     }, 60_000);
 
     // 주인 기록을 쓰지 못해 이번에 연 연결을 닫을 때 그 닫기도 실패하면, 원래 실패를 그대로 던지고 닫기 실패는 원인 코드로 남긴다.
     it("keeps the record failure and logs the close failure of the connection it opened", async () => {
-      const { base } = await ownTemporaryFolder();
+      const { base, cleanup } = await ownTemporaryFolder();
       const failure = Object.assign(
         new Error("injected: the owner record could not be written"),
         { code: "EIO" }
       );
-      inject.recordFails = failure;
-      inject.closeFails = Object.assign(
-        new Error("injected: the owner connection could not be closed"),
-        { code: "EIO" }
-      );
+      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      inject.recordFails = { in: `${dataDir}.owner`, error: failure };
+      const closeFails = {
+        in: privateFolder(base),
+        error: Object.assign(
+          new Error("injected: the owner connection could not be closed"),
+          { code: "EIO" }
+        ),
+        failedAt: [] as string[],
+      };
+      inject.closeFails = closeFails;
       onTestFinished(() => {
         inject.recordFails = undefined;
       });
       const logged = vi.spyOn(console, "error").mockImplementation(() => {});
       onTestFinished(() => logged.mockRestore());
-      const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
+      // 실패를 기대하는 시작도 시작하는 순간 그 멈춤을 맡긴다(잘못 켜지면 정리가 멈춘다).
       await expect(
-        startEmbeddedCluster({ dataDir, persistent: true })
+        startOwned(cleanup, { dataDir, persistent: true })
       ).rejects.toBe(failure);
       expect(logged.mock.calls).toEqual([
         [expect.stringContaining("(EMBEDDED_OWNER_CLOSE_FAILED)")],
       ]);
       inject.closeFails = undefined;
+      // 닫기 실패는 이번에 연 그 연결에서 났다.
+      expect(inject.listened).toHaveLength(1);
+      expect(closeFails.failedAt).toEqual(inject.listened);
       expect(await listenedStates()).toEqual(["closed"]);
     });
 
@@ -372,26 +455,32 @@ describe.runIf(posix)(
 
     // 모든 후보에서 듣기가 실패하면 후보마다 그 원인을 함께 남기고 실패한다.
     it("names the failure of every folder when listening fails in all of them", async () => {
-      const { base } = await ownTemporaryFolder();
-      inject.listenFails = (handle) =>
-        Object.assign(new Error(`injected: cannot listen at ${handle}`), {
-          code: "EOPNOTSUPP",
-        });
-      onTestFinished(() => {
-        inject.listenFails = undefined;
-      });
+      const { base, cleanup } = await ownTemporaryFolder();
+      // 실패는 제품의 두 후보 폴더에서만 낸다. 둘째 후보 `/tmp`는 제품의 고정 후보라 시험끼리 같은 폴더여서 경로로 이 시험의 것을
+      // 가를 수 없으므로, 이 시험의 제품 호출에만 건다.
+      const candidates = [privateFolder(base), privateFolder("/tmp")];
+      const fails = (handle: string) =>
+        candidates.includes(path.dirname(handle))
+          ? Object.assign(new Error(`injected: cannot listen at ${handle}`), {
+              code: "EOPNOTSUPP",
+            })
+          : undefined;
       const dataDir = await fsp.mkdtemp(path.join(base, "babojubot-pg-"));
-      const refused: unknown = await startEmbeddedCluster({
-        dataDir,
-        persistent: true,
-      }).then(
-        () => new Error("the cluster started although no folder could listen"),
-        (error: unknown) => error
+      const refused: unknown = await listenCalls
+        .run(
+          { fails },
+          // 잘못 켜지면 정리가 멈추도록 시작하는 순간 그 멈춤을 맡긴다.
+          () => startOwned(cleanup, { dataDir, persistent: true }),
+          onTestFinished
+        )
+        .then(
+          () =>
+            new Error("the cluster started although no folder could listen"),
+          (error: unknown) => error
+        );
+      expect(inject.listens.map(({ handle }) => path.dirname(handle))).toEqual(
+        candidates
       );
-      expect(inject.listens.map(({ handle }) => path.dirname(handle))).toEqual([
-        privateFolder(base),
-        privateFolder("/tmp"),
-      ]);
       expect(refused).toMatchObject({ code: "EMBEDDED_NO_OWNER_FOLDER" });
       const cause = (refused as Error).cause;
       // 듣기 실패는 그 자리를 이름에 담는다(Node의 listen 오류도 그렇다). 후보마다 그 실패가 그대로 남는다.

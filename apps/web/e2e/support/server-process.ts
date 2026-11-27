@@ -26,7 +26,7 @@ import { attemptAll, attemptEach, combinedFailure } from "@babojubot/contracts";
 //   실패가 여럿이면 모두 모아 알린다.
 
 /** apps/server/src/stop-request.ts의 `stopRequest`와 같은 모양. 서버 패키지 코드를 화면 시험에 들이지 않으려고 따로 적는다. */
-const stopRequest = { type: "babojubot:stop" };
+const stopRequest = { type: "babojubot:stop" } as const;
 const readyTimeoutMs = 60_000;
 /** 서버가 끝난 뒤 그 출력이 끝나기를 기다리는 상한(시작 줄이 늦게 닿을 수 있다). */
 const readyOutputEndMs = 10_000;
@@ -59,7 +59,7 @@ export type ServerProcess = {
  * 부모 셸과 공용 설정의 서버 설정이 이 서버에 새지 않게 지운다. 서버가 읽는 설정은 `BABOJUBOT_*`와 아래 이름이다.
  * Windows는 환경 변수 이름의 대소문자를 가리지 않으므로 대문자로 비교한다.
  */
-const serverSettings = [
+const serverSettings: readonly string[] = [
   "DATABASE_URL",
   "HOST",
   "PORT",

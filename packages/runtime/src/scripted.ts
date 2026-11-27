@@ -287,8 +287,8 @@ export function parseGoalMessage(
  * - 어느 단계든 사용자가 `실패 연습`을 부탁함: 아무것도 쓰지 않고 실행 시도를 실패로 끝낸다(Inbox·알림의 실패 항목 확인용).
  * - 어느 단계든 사용자가 `실행 유지 연습`을 부탁함: 맥락을 읽은 뒤(일을 시작했다는 신호) 아무것도 쓰지 않고 취소될 때까지 실행 시도를
  *   끝내지 않는다(대시보드의 실행 중 확인용).
- * - 어느 단계든 사용자가 `끼워 넣기 연습`을 부탁함: 실행 중에 끼워 넣은 말을 받을 때까지 끝내지 않는다. 받은 말은 끝날 때 반영했다고
- *   답한다(실행 중에 받은 말은 어느 시나리오든 이렇게 답한다).
+ * - 어느 단계든 사용자가 `끼워 넣기 연습`을 부탁함: 맥락을 읽고 끼워 넣을 말을 기다린다는 진행 활동을 남긴 뒤, 실행 중에 끼워 넣은
+ *   말을 받을 때까지 끝내지 않는다. 받은 말은 끝날 때 반영했다고 답한다(실행 중에 받은 말은 어느 시나리오든 이렇게 답한다).
  * - `메모해 주세요: <말>`: 그 말을 세션 메모에 담고 답한다. `세션 메모를 알려 주세요`: 이어 간 세션의 메모를 알린다(세션 이어가기 확인용).
  * - heartbeat로만 깨어남: 맥락만 읽고 답장하지 않는다(`heartbeatScript`).
  * - 그 밖(하위 작업 완료, 결과 검토 중의 메시지 등): 받은 깨우기 사유에 답장한다.
@@ -336,7 +336,14 @@ export function demoLeadScript(request: RunRequest): Script {
     };
   if (messages.some((m) => steerDrill.test(m)))
     return {
-      steps: [{ do: "read_context" }, { do: "until_steered" }],
+      steps: [
+        { do: "read_context" },
+        {
+          do: "emit",
+          activity: { type: "progress", text: "끼워 넣을 말을 기다립니다." },
+        },
+        { do: "until_steered" },
+      ],
       summary: () => "실행 중에 끼워 넣은 말을 받아 반영했습니다.",
     };
   const notes = messages.flatMap((m) => {

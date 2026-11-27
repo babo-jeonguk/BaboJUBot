@@ -56,7 +56,10 @@ export const onlyCreationWake = (request: RunRequest) =>
 export function quietCreation(
   inner: RuntimeAdapter = createScriptedRuntime()
 ): RuntimeAdapter {
-  const quiet = createScriptedRuntime({ select: () => idle });
+  // 실행 시도마다 바뀌지 않는 단계로 새 스크립트를 만들어 넘긴다(제품은 바꿀 수 있는 스크립트를 받는다).
+  const quiet = createScriptedRuntime({
+    select: () => ({ steps: [...idleSteps] }),
+  });
   return {
     ...inner,
     execute: (request, control) =>
@@ -118,7 +121,7 @@ export function scriptedAgents({
 export const goal = {
   goal: "음성 인식 오류율을 절반으로 줄인다",
   completionCriteria: "공개 평가셋 WER 10% 이하",
-};
+} as const;
 /** 연구원 두 명과 기본 연구 흐름 템플릿의 초기 연구 승인 요청. 조직에 완료 기준이 있을 때의 요청이다. */
 export const initialRequest = {
   plan: "# 계획",
@@ -149,8 +152,10 @@ export const calls = (
     allowRefusal: true,
   })),
 });
+/** 맥락만 읽고 끝나는 단계. 바뀌지 않는 값이라 스크립트를 만들 때마다 새 목록으로 담는다. */
+const idleSteps = [{ do: "read_context" }] as const;
 /** 아무 도구도 부르지 않고 읽기만 하는 시나리오. */
-export const idle: Script = { steps: [{ do: "read_context" }] };
+export const idle: Script = { steps: [...idleSteps] };
 
 export const reasons = (runs: { request: Pick<RunRequest, "wakeReasons"> }[]) =>
   runs.flatMap((r) => r.request.wakeReasons);

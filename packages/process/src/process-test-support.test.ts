@@ -18,24 +18,79 @@ import {
   untilExited,
 } from "./process-test-support.ts";
 
-// 종료 확인에 조회 실패를 넣는 자리. 넣지 않으면 실제 함수를 그대로 부른다.
+// 종료 확인에 조회 실패를 넣는 자리. 시험마다 그 시험이 띄운 프로그램의 번호·상태 파일로 고르고, 고른 호출을 기록한다. 그 밖의
+// 호출은 실제 함수를 그대로 부른다(#286).
 const injected = vi.hoisted(() => ({
-  read: undefined as Error | undefined,
-  ps: undefined as Partial<SpawnSyncReturns<string>> | undefined,
+  /** 정확히 이 파일(`at`, 그 시험이 띄운 프로그램의 `/proc/<pid>/stat`)을 읽으면 `cause`로 실패하고 그 파일을 `failedAt`에 남긴다. */
+  read: undefined as
+    { at: string; cause: Error; failedAt: string[] } | undefined,
+  /**
+   * 이 번호(`pid`, 그 시험이 띄운 프로그램)를 묻는 `ps` 실행의 명령·인수를 `asked`에 남긴다. `reply`가 있으면 띄우지 않고 그 답을
+   * 준다.
+   */
+  ps: undefined as
+    | {
+        pid: number;
+        reply?: Partial<SpawnSyncReturns<string>>;
+        asked: unknown[][];
+      }
+    | undefined,
+  /**
+   * 정확히 이 번호(`pid`, 그 시험이 띄운 프로그램)에 이 신호(`signal`)를 보내면 `cause`로 실패하고 그 `[번호, 신호]`를 `failedAt`에
+   * 남긴다.
+   */
+  kill: undefined as
+    { pid: number; signal: Signal; cause: Error; failedAt: Sent[] } | undefined,
+  /** 그 시험이 듣는 보낸 신호(실패시키지 않고 실제로 보낸 것). */
+  heard: undefined as ((...sent: Sent) => void) | undefined,
 }));
+/** `process.kill`의 신호(번호 또는 이름). */
+type Signal = string | number | undefined;
+/** 보낸 신호 하나: `[번호, 신호]`. */
+type Sent = [number, Signal];
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
   const readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => {
-    if (injected.read && String(args[0]).startsWith("/proc/"))
-      throw injected.read;
+    const fault = injected.read;
+    if (fault?.at === String(args[0])) {
+      fault.failedAt.push(String(args[0]));
+      throw fault.cause;
+    }
     return fs.readFileSync(...args);
   }) as typeof fs.readFileSync;
   return { ...fs, readFileSync };
 });
+// 시험 지원 모듈(test-cleanup의 `processAlive`·`killUnlessGone`)은 신호를 `node:process`의 `kill`로 보낸다. 그 모듈 경계에서
+// 대역하고, 전역 `process.kill`은 바꾸지 않는다(#286).
+vi.mock("node:process", async (original) => {
+  const real = await original<typeof import("node:process")>();
+  const kill = ((pid: number, signal?: string | number) => {
+    const fault = injected.kill;
+    if (fault?.pid === pid && fault.signal === signal) {
+      fault.failedAt.push([pid, signal]);
+      throw fault.cause;
+    }
+    injected.heard?.(pid, signal);
+    return real.kill(pid, signal);
+  }) as typeof real.kill;
+  return { ...real, kill };
+});
 vi.mock("node:child_process", async (original) => {
   const cp = await original<typeof import("node:child_process")>();
-  const spawnSync = ((...args: Parameters<typeof cp.spawnSync>) =>
-    injected.ps ?? cp.spawnSync(...args)) as typeof cp.spawnSync;
+  const spawnSync = ((...args: Parameters<typeof cp.spawnSync>) => {
+    const asking = injected.ps;
+    const [command, argv] = args;
+    if (
+      asking &&
+      command === "ps" &&
+      Array.isArray(argv) &&
+      argv.includes(String(asking.pid))
+    ) {
+      asking.asked.push([command, [...argv]]);
+      if (asking.reply) return asking.reply;
+    }
+    return cp.spawnSync(...args);
+  }) as typeof cp.spawnSync;
   return { ...cp, spawnSync };
 });
 
@@ -133,14 +188,12 @@ it("keeps reading after the program exits until its output ends", async () => {
 // #288 parent 점검(번호 신원): 자손이 준비 줄을 쓰고 스스로 끝났으면, 정리는 그 번호에 신호하지 않는다. 끝난 프로세스의 번호는 다른
 // 프로그램이 받을 수 있다.
 it("does not signal the descendant after it ended by itself", async () => {
-  const kill = process.kill.bind(process);
-  const sent: [number, string | number | undefined][] = [];
-  vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-    sent.push([pid, signal]);
-    return kill(pid, signal);
-  });
+  const sent: Sent[] = [];
+  injected.heard = (...signal) => {
+    sent.push(signal);
+  };
   onTestFinished(() => {
-    vi.restoreAllMocks();
+    injected.heard = undefined;
   });
   const descendant = await lateReadyLine(answering);
   expect(
@@ -385,16 +438,21 @@ describe("exited", () => {
 
   it("fails with the pid and the cause when signal 0 is refused", () => {
     const pid = running();
-    const cause = failure("EPERM");
-    vi.spyOn(process, "kill").mockImplementationOnce(() => {
-      throw cause;
-    });
+    const fault = {
+      pid,
+      signal: 0,
+      cause: failure("EPERM"),
+      failedAt: [] as Sent[],
+    };
+    injected.kill = fault;
     onTestFinished(() => {
-      vi.restoreAllMocks();
+      injected.kill = undefined;
     });
     const error = thrown(() => exited(pid));
     expect(error.message).toBe(`프로세스 ${pid}가 있는지 확인하지 못했다`);
-    expect(error.cause).toBe(cause);
+    expect(error.cause).toBe(fault.cause);
+    // 거절은 그 시험이 띄운 프로그램에 보낸 신호 0 하나에서 났다.
+    expect(fault.failedAt).toEqual([[pid, 0]]);
   });
 
   // `/proc`는 Linux에만 있다.
@@ -402,7 +460,12 @@ describe("exited", () => {
     "fails with the pid, the file and the cause when /proc cannot be read",
     () => {
       const pid = running();
-      injected.read = failure("EACCES");
+      const fault = {
+        at: `/proc/${pid}/stat`,
+        cause: failure("EACCES"),
+        failedAt: [] as string[],
+      };
+      injected.read = fault;
       onTestFinished(() => {
         injected.read = undefined;
       });
@@ -410,7 +473,9 @@ describe("exited", () => {
       expect(error.message).toBe(
         `프로세스 ${pid}의 상태(/proc/${pid}/stat)를 읽지 못했다`
       );
-      expect(error.cause).toBe(injected.read);
+      expect(error.cause).toBe(fault.cause);
+      // 읽기 실패는 그 시험이 띄운 프로그램의 상태 파일 하나에서 났다.
+      expect(fault.failedAt).toEqual([`/proc/${pid}/stat`]);
     }
   );
 
@@ -425,7 +490,16 @@ describe("exited", () => {
       );
       const exit = once(child, "exit");
       onTestFinished(() => endChild(child));
+      const asking = { pid: child.pid!, asked: [] as unknown[][] };
+      injected.ps = asking;
+      onTestFinished(() => {
+        injected.ps = undefined;
+      });
       expect(exited(child.pid!)).toBe(false);
+      // 살아 있는 동안의 답은 그 프로그램을 물은 ps에서 왔다.
+      expect(asking.asked).toEqual([
+        ["ps", ["-o", "stat=", "-p", String(child.pid)]],
+      ]);
       child.kill("SIGKILL");
       await exit;
       expect(exited(child.pid!)).toBe(true);
@@ -434,31 +508,45 @@ describe("exited", () => {
     it("fails with the pid and what ps reported when ps fails", () => {
       const pid = running();
       pretendPlatform("darwin");
-      injected.ps = {
-        status: 1,
-        stdout: "",
-        stderr: "ps: injected failure",
-        signal: null,
+      const asking = {
+        pid,
+        reply: {
+          status: 1,
+          stdout: "",
+          stderr: "ps: injected failure",
+          signal: null,
+        },
+        asked: [] as unknown[][],
       };
+      injected.ps = asking;
       onTestFinished(() => {
         injected.ps = undefined;
       });
       expect(thrown(() => exited(pid)).message).toBe(
         `ps could not read stat of process ${pid} (exit 1): ps: injected failure`
       );
+      // 가짜 답은 그 시험이 띄운 프로그램을 물은 ps 한 번에 갔다.
+      expect(asking.asked).toEqual([
+        ["ps", ["-o", "stat=", "-p", String(pid)]],
+      ]);
     });
 
     it("fails with the pid and the cause when ps cannot start", () => {
       const pid = running();
       pretendPlatform("darwin");
       const cause = failure("ENOENT");
-      injected.ps = {
-        status: null,
-        stdout: undefined,
-        stderr: undefined,
-        signal: null,
-        error: cause,
+      const asking = {
+        pid,
+        reply: {
+          status: null,
+          stdout: undefined,
+          stderr: undefined,
+          signal: null,
+          error: cause,
+        },
+        asked: [] as unknown[][],
       };
+      injected.ps = asking;
       onTestFinished(() => {
         injected.ps = undefined;
       });
@@ -467,6 +555,10 @@ describe("exited", () => {
         `ps could not read stat of process ${pid} (ENOENT)`
       );
       expect(error.cause).toBe(cause);
+      // 띄우지 못한 답은 그 시험이 띄운 프로그램을 물은 ps 한 번에 갔다.
+      expect(asking.asked).toEqual([
+        ["ps", ["-o", "stat=", "-p", String(pid)]],
+      ]);
     });
   });
 });
@@ -490,14 +582,14 @@ describe("untilExited", () => {
     const lookedUpAgain = new Promise<void>(
       (resolve) => (lookedAgain = resolve)
     );
-    const kill = process.kill.bind(process);
-    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-      if (signal === 0 && pid === refused) throw cause;
+    const fault = { pid: refused, signal: 0, cause, failedAt: [] as Sent[] };
+    injected.kill = fault;
+    injected.heard = (pid, signal) => {
       if (signal === 0 && pid === child.pid && ++lookups === 2) lookedAgain();
-      return kill(pid, signal);
-    });
+    };
     onTestFinished(() => {
-      vi.restoreAllMocks();
+      injected.kill = undefined;
+      injected.heard = undefined;
     });
     const waiting = untilExited([refused, child.pid!], 30_000).then(
       () => undefined,
@@ -515,5 +607,9 @@ describe("untilExited", () => {
       message: `프로세스 ${refused}가 있는지 확인하지 못했다`,
       cause,
     });
+    // 거절은 조회가 실패하게 한 그 프로그램에 보낸 신호 0에서만 났다(대기가 다시 확인하면 여러 번이다).
+    expect([
+      ...new Set(fault.failedAt.map(([pid, signal]) => `${pid} ${signal}`)),
+    ]).toEqual([`${refused} 0`]);
   });
 });

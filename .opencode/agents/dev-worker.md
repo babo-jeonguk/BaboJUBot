@@ -697,6 +697,12 @@ permissions:
     resource: "*/packages/process/src/test-support.ts"
     effect: deny
   - action: edit
+    resource: "packages/process/src/within-support.ts"
+    effect: deny
+  - action: edit
+    resource: "*/packages/process/src/within-support.ts"
+    effect: deny
+  - action: edit
     resource: "scripts/eslint-imports.mjs"
     effect: deny
   - action: edit

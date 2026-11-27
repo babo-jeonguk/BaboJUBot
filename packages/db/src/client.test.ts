@@ -38,56 +38,104 @@ import {
 import { reportedPid, within } from "@babojubot/process/test-support";
 
 /**
- * 붙잡을 단계(#286). 놓기 전까지 그 단계는 끝나지 않는다. `stop`은 다음 `pg_ctl stop` 호출, `remove`는 그 폴더의 다음 지우기다.
- * 붙잡지 않으면 실제 함수를 그대로 부른다.
+ * 붙잡을 단계(#286). 놓기 전까지 그 단계는 끝나지 않는다. `stop`은 그 폴더(`target`, 그 시험의 dataDir)의 다음 `pg_ctl stop` 호출,
+ * `remove`는 그 폴더의 다음 지우기다. 붙잡지 않으면 실제 함수를 그대로 부른다.
  */
+type Hold = {
+  target: string;
+  reached: () => void;
+  released: Promise<void>;
+  /** 붙잡은 대상. 붙잡기가 실제로 그 시험의 대상에서 났는지 시험이 본다. */
+  heldAt: string[];
+};
 const holds = vi.hoisted(() => ({
-  stop: undefined as
-    { reached: () => void; released: Promise<void> } | undefined,
-  remove: undefined as
-    | { target: string; reached: () => void; released: Promise<void> }
-    | undefined,
+  stop: undefined as Hold | undefined,
+  remove: undefined as Hold | undefined,
 }));
 vi.mock("@babojubot/process", async (original) => {
   const real = await original<typeof import("@babojubot/process")>();
   const runCommand = (async (...args: Parameters<typeof real.runCommand>) => {
-    const hold = holds.stop;
-    if (hold && args[1][0] === "stop") {
+    // 칸은 불린 순간(첫 await를 담은 문장 앞) 읽고 비운다. 기다림은 잡아 둔 것만 본다(tests/hoisted-state-at-call).
+    // 인수는 `["stop", "-D", dataDir, …]`다(embedded.ts).
+    const [verb, , dataDir] = args[1];
+    const hold =
+      verb === "stop" && dataDir !== undefined && holds.stop?.target === dataDir
+        ? holds.stop
+        : undefined;
+    if (hold && dataDir !== undefined) {
       holds.stop = undefined;
+      hold.heldAt.push(dataDir);
       hold.reached();
-      await hold.released;
     }
+    await hold?.released;
     return real.runCommand(...args);
   }) as typeof real.runCommand;
   return { ...real, runCommand };
 });
+/** `process.kill`의 신호(번호 또는 이름). */
+type Signal = string | number | undefined;
+/** 보낸 신호 하나: `[번호, 신호]`. */
+type Sent = [number, Signal];
+// 시험 정리 도움(`@babojubot/process/test-cleanup`의 `killUnlessGone`·`processAlive`)은 신호를 `node:process`의 `kill`로 보낸다.
+// 그 모듈 경계에서 대역하고, 전역 `process.kill`은 바꾸지 않는다(#286).
+const signals = vi.hoisted(() => ({
+  /**
+   * 정확히 이 번호(`pid`, 그 시험이 띄운 프로그램)에 이 신호(`signal`)를 보내면 `cause`로 실패하고 그 `[번호, 신호]`를 `failedAt`에
+   * 남긴다.
+   */
+  fault: undefined as
+    { pid: number; signal: Signal; cause: Error; failedAt: Sent[] } | undefined,
+  /** 그 시험이 듣는 보낸 신호(실패시키지 않고 실제로 보낸 것). */
+  heard: undefined as ((...sent: Sent) => void) | undefined,
+}));
+vi.mock("node:process", async (original) => {
+  const real = await original<typeof import("node:process")>();
+  const kill = ((pid: number, signal?: string | number) => {
+    const fault = signals.fault;
+    if (fault?.pid === pid && fault.signal === signal) {
+      fault.failedAt.push([pid, signal]);
+      throw fault.cause;
+    }
+    signals.heard?.(pid, signal);
+    return real.kill(pid, signal);
+  }) as typeof real.kill;
+  return { ...real, kill };
+});
 vi.mock("node:fs/promises", async (original) => {
   const real = await original<typeof import("node:fs/promises")>();
   const rm: typeof real.rm = async (target, options) => {
-    const hold = holds.remove;
-    if (hold && String(target) === hold.target) {
+    // 칸은 불린 순간(첫 await를 담은 문장 앞) 읽고 비운다. 기다림은 잡아 둔 것만 본다(tests/hoisted-state-at-call).
+    const hold =
+      holds.remove && String(target) === holds.remove.target
+        ? holds.remove
+        : undefined;
+    if (hold) {
       holds.remove = undefined;
+      hold.heldAt.push(String(target));
       hold.reached();
-      await hold.released;
     }
+    await hold?.released;
     return real.rm(target, options);
   };
   return { ...real, rm, default: { ...real, rm } };
 });
 
-/** 다음 그 단계를 붙잡는다. `reached`는 그 단계에 닿았을 때, `release`는 놓는다(여러 번 불러도 된다). */
-function holdNext(step: "stop" | "remove", target = "") {
+/**
+ * 그 폴더(`target`)의 다음 그 단계를 붙잡는다. `reached`는 그 단계에 닿았을 때, `release`는 놓는다(여러 번 불러도 된다). `heldAt`은
+ * 붙잡은 대상이다.
+ */
+function holdNext(step: "stop" | "remove", target: string) {
   let reach!: () => void;
   let release!: () => void;
   const reached = new Promise<void>((resolve) => (reach = resolve));
   const released = new Promise<void>((resolve) => (release = resolve));
-  if (step === "stop") holds.stop = { reached: reach, released };
-  else holds.remove = { target, reached: reach, released };
+  const heldAt: string[] = [];
+  holds[step] = { target, reached: reach, released, heldAt };
   onTestFinished(() => {
     holds[step] = undefined;
     release();
   });
-  return { reached, release };
+  return { reached, release, heldAt };
 }
 
 describe("embedded Postgres lifetime", () => {
@@ -101,7 +149,7 @@ describe("embedded Postgres lifetime", () => {
     const handle = await openDatabase({
       embedded: { dataDir, persistent: false },
     });
-    const stop = holdNext("stop");
+    const stop = holdNext("stop", dataDir);
     const remove = holdNext("remove", dataDir);
     // 닫기는 이 시험의 대상이다. 시험이 닫기 전에 실패해도 정리가 붙잡은 단계를 놓고 닫은 뒤에 폴더를 지운다(한 번만 닫는다).
     let closing: Promise<void> | undefined;
@@ -137,6 +185,7 @@ describe("embedded Postgres lifetime", () => {
     );
     await within(stop.reached, 30_000, "closing did not stop Postgres");
     expect(handle.progress()).toBe("stopping Postgres (fast)");
+    expect(stop.heldAt).toEqual([dataDir]);
     stop.release();
     await within(
       remove.reached,
@@ -144,6 +193,7 @@ describe("embedded Postgres lifetime", () => {
       "closing did not remove its temporary folder"
     );
     expect(handle.progress()).toBe("removing its temporary folder");
+    expect(remove.heldAt).toEqual([dataDir]);
     remove.release();
     await within(closed, 30_000, "closing the database did not finish");
     expect(handle.progress()).toBe("closed");
@@ -557,23 +607,21 @@ describe("a Postgres left by a killed process", () => {
       path.join(dataDir, "postmaster.pid"),
       `${unrelated.pid}\n${dataDir}\n0\n${await candidatePort()}\n`
     );
-    const kill = process.kill.bind(process);
-    const sent: [number, string | number | undefined][] = [];
-    vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-      sent.push([pid, signal]);
-      return kill(pid, signal);
-    });
+    // 무관한 프로그램의 번호로 간 것은 조회(신호 0)까지 모두 남긴다.
+    const sentToUnrelated: Sent[] = [];
+    signals.heard = (pid, signal) => {
+      if (pid === unrelated.pid) sentToUnrelated.push([pid, signal]);
+    };
     onTestFinished(() => {
-      vi.restoreAllMocks();
+      signals.heard = undefined;
     });
     const stopping: unknown = await (async () =>
       stopPostgres(await postgresIn(dataDir, undefined)))().then(
       () => new Error("the cleanup passed without confirming the Postgres"),
       (error: unknown) => error
     );
-    expect(
-      sent.filter(([pid, signal]) => pid === unrelated.pid && signal !== 0)
-    ).toEqual([]);
+    // 정리 도움이 보내는 신호는 이 대역이 듣는다(같은 파일 "signals every leftover Postgres…"가 그 목록을 정확히 단언한다).
+    expect(sentToUnrelated).toEqual([]);
     expect(stopping).toMatchObject({
       message: expect.stringContaining("could not be confirmed"),
     });
@@ -1277,30 +1325,46 @@ it("signals every leftover Postgres even when one of them refuses its signal", a
   );
   const otherExit = watchExit(other);
   const targets = [identified(refused.pid!), identified(other.pid!)];
-  // `refused`에 대한 신호는 권한 거부로 실패한다. 다른 대상의 신호는 그대로 보낸다.
-  const kill = process.kill.bind(process);
-  const sent: [number, string | number | undefined][] = [];
+  // `refused`에 보내는 첫 신호는 권한 거부로 실패한다. 다른 대상의 신호는 그대로 보낸다.
+  const first = process.platform === "win32" ? "SIGKILL" : "SIGCONT";
   const failure = Object.assign(new Error("kill EPERM"), { code: "EPERM" });
-  vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-    sent.push([pid, signal]);
-    if (pid === refused.pid) throw failure;
-    return kill(pid, signal);
-  });
+  const fault = {
+    pid: refused.pid!,
+    signal: first,
+    cause: failure,
+    failedAt: [] as Sent[],
+  };
+  signals.fault = fault;
+  // 두 대상에 보낸 신호를 남긴다. 끝을 확인하는 조회(신호 0)는 끝나는 때에 따라 횟수가 달라 남기지 않는다.
+  const sent: Sent[] = [];
+  signals.heard = (pid, signal) => {
+    if ((pid === refused.pid || pid === other.pid) && signal !== 0)
+      sent.push([pid, signal]);
+  };
   onTestFinished(() => {
-    vi.restoreAllMocks();
+    signals.fault = undefined;
+    signals.heard = undefined;
   });
 
   const outcome = await killPostgres(...targets).then(
     () => undefined,
     (error: unknown) => error
   );
-  expect(sent).toContainEqual([other.pid, "SIGKILL"]);
+  // 거절은 `refused`에 보낸 첫 신호 하나에서 났고, 다른 대상에는 신호를 끝까지 보냈다.
+  expect(fault.failedAt).toEqual([[refused.pid, first]]);
+  expect(sent).toEqual(
+    process.platform === "win32"
+      ? [[other.pid, "SIGKILL"]]
+      : [
+          [other.pid, "SIGCONT"],
+          [other.pid, "SIGKILL"],
+        ]
+  );
   expect(await otherExit.within(10_000)).toEqual({
     code: null,
     signal: "SIGKILL",
   });
   // 보내지 못한 첫 신호와, 그 대상이 시한 안에 끝나지 않은 것을 함께 알린다.
-  const first = process.platform === "win32" ? "SIGKILL" : "SIGCONT";
   expect(outcome).toBeInstanceOf(AggregateError);
   expect(
     (outcome as AggregateError).errors.map((error: Error) => [

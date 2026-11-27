@@ -259,10 +259,20 @@ it("ends with the HTTP start error and records the database close failure when b
     "the port-taking server"
   );
   const { port } = taken.address() as { port: number };
+  // 결함이 실패시킨 닫기의 기록은 이 시험의 폴더에 남는다. 폴더는 만든 직후 정리에 맡기고, 서버의 끝을 확인한 뒤에만 지운다.
+  const records = mkdtempSync(path.join(tmpdir(), "babojubot-main-test-"));
+  const recordFolder = folderCleanup(() => removeFolderWithin(records));
+  onTestFinished(recordFolder.cleanUp);
+  const closeRecord = path.join(records, "failed-closes.txt");
   const child = startMain(
-    { DATABASE_URL: external.url, PORT: String(port) },
+    {
+      DATABASE_URL: external.url,
+      PORT: String(port),
+      FAIL_DATABASE_CLOSE_RECORD: closeRecord,
+    },
     { preload: failDatabaseClose }
   );
+  recordFolder.own(child.stop);
   const { code } = await waitExit(child, shutdownWaitMs);
   expect(code, child.stderrText()).toBe(1);
   expect(child.stderrText()).toContain("EADDRINUSE");
@@ -270,6 +280,8 @@ it("ends with the HTTP start error and records the database close failure when b
   expect(stderrLines(child)).toContain(
     "[server] closing the database after a failed start failed (Error)"
   );
+  // 그 실패는 이 시험의 DB를 닫은 pool 하나에서 났다.
+  expect(readFileSync(closeRecord, "utf8")).toBe(`pool end ${external.url}\n`);
   expect(child.stderrText()).not.toContain(
     "injected: closing the database failed"
   );

@@ -9,6 +9,8 @@
     "./remove-folder": "./src/remove-folder.ts",
     "./test-cleanup": "./src/test-cleanup.ts",
     "./lifelines": "./src/lifeline-support.ts",
+    "./fs-swap": "./src/fs-swap-support.ts",
+    "./call-arming": "./src/call-arming-support.ts",
     "./testing": "./src/testing.ts",
     "./test-support": "./src/test-support.ts",
     "./launcher-setup": "./src/launcher-setup-support.ts"

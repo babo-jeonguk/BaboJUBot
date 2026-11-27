@@ -1,5 +1,6 @@
 import { hasErrorCode, type RuntimeAdapter } from "@babojubot/contracts";
 import type { LaunchedTree } from "@babojubot/process";
+import { callArming } from "@babojubot/process/call-arming";
 import { testFolders as processFolders } from "@babojubot/process/testing";
 
 /** 경계 대역이 보는 트리의 면: 실제 끄기만 쓴다. */
@@ -60,8 +61,11 @@ type Provider = {
  */
 export function testFolders(...args: Parameters<typeof processFolders>) {
   const folders = processFolders(...args);
-  /** 이 시험의 트리 장면. 정한 시험의 정리가 끝나면 비운다(다음 시험에 남지 않는다). */
-  let scene: TreeScene = {};
+  /**
+   * 트리 장면은 그 시험이 부른 호출의 문맥에 묶는다(`treeScene`): 그 호출 안에서 띄운 트리만 그 장면으로 맡고, 장면이 실패로 답하게 한
+   * 끄기의 인수를 그 무장의 `calls`에 남긴다. 문맥 밖에서 띄운 트리(앞 시험의 늦은 띄우기 등)는 장면 없이 맡는다.
+   */
+  const sceneCalls = callArming<{ scene: TreeScene; calls: unknown[][] }>();
   /** 공용 실행 경계 대역이 띄운 트리. 실제 끄기를 띄운 직후 폴더 정리에 맡기고, 장면(`scene`)으로 판정한다. */
   const ownLaunchedTree = <T extends StoppableTree>(
     tree: T,
@@ -93,10 +97,10 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
       },
     };
   };
-  /** 이 시험의 장면에서 제품이 실패로 답하는 끄기에 넘긴 인수. */
-  let sceneCalls: unknown[][] = [];
-  const ownTree = <T extends StoppableTree>(tree: T): T =>
-    ownLaunchedTree(tree, scene, sceneCalls);
+  const ownTree = <T extends StoppableTree>(tree: T): T => {
+    const armed = sceneCalls.current();
+    return ownLaunchedTree(tree, armed?.scene ?? {}, armed?.calls);
+  };
   // 경계 대역을 건 파일(대역은 시험 파일이 공용 실행을 처음 가져올 때 걸린다)에서만 트리를 맡는다. 그런 파일의 둘째 `testFolders`는 던진다.
   if (boundary) {
     if (treeOwner)
@@ -105,9 +109,11 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
       );
     treeOwner = ownTree;
   }
+  // 트리를 맡는지는 만들 때 정해진다: 경계 대역을 건 파일의 정리는 위에서 자신을 걸고, 그 뒤 다른 정리가 걸려 하면 던진다.
+  const owning = boundary;
   /** 이 폴더 정리가 공용 실행 경계 대역의 트리를 맡는가. 아니면 트리 장면과 `ownBrokenRun`은 던진다. */
   const ownsTrees = () => {
-    if (treeOwner !== ownTree)
+    if (!owning)
       throw new Error(
         "this testFolders() does not own launched trees: the file needs the launchTree boundary double (owningLaunchTree) and one testFolders()"
       );
@@ -218,17 +224,15 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
     ownBrokenRun,
     /** 공용 실행 경계 대역이 띄운 트리를 장면과 함께 맡는 정리(대역은 이 시험의 장면으로 부른다). 판정 시험이 전역 상태 없이 부르도록 내보낸다. */
     ownLaunchedTree,
-    /** 이 시험에서 띄우는 트리의 장면(위 `TreeScene`). 띄우기 전에 정한다. 시험이 끝나면 정리가 되돌린다. */
-    treeScene(next: TreeScene) {
+    /**
+     * 그 시험이 부른 호출(`call`) 안에서 띄우는 트리의 장면(위 `TreeScene`). 그 호출의 결과를 돌려준다. 무장의 끝은 호출 전에 폴더
+     * 정리에 맡겨(`ownArming`) 정리의 첫 동기 단계에서 끝나고, 장면의 판정은 맡긴 멈춤으로 그 뒤에 돈다. 실패하는 끄기를 넣은
+     * 장면이면 제품이 그것을 불렀고, 인수 없이 불렀는지 본다(받은 인수를 확인하는 결함 주입).
+     */
+    treeScene<T>(next: TreeScene, call: () => T): T {
       ownsTrees();
-      scene = next;
       const calls: unknown[][] = [];
-      sceneCalls = calls;
-      // 트리 정리보다 먼저 등록해 그 뒤에 돈다. 실패하는 끄기를 넣은 장면이면 제품이 그것을 불렀고, 인수 없이 불렀는지 본다(받은
-      // 인수를 확인하는 결함 주입).
       folders.own(async () => {
-        scene = {};
-        sceneCalls = [];
         if (!next.failProductStop) return;
         if (calls.length === 0)
           throw new Error("the product never called the failing tree stop");
@@ -238,6 +242,7 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
             `the product called the failing tree stop with arguments: ${JSON.stringify(withArguments)}`
           );
       }, "tree scene");
+      return sceneCalls.run({ scene: next, calls }, call, folders.ownArming);
     },
     /** 시험이 만든 프로바이더 연결을 정리에 맡긴다(위 `ownProvider`). */
     ownProvider,

@@ -538,9 +538,11 @@ describe("run termination", () => {
     };
     const eventsBefore = await runEventCount(runId);
 
-    await failingRunFinishedEvents(runId, async () => {
-      await expect(finishRun(t.db, runId, ending, source)).rejects.toThrow();
-    });
+    expect(
+      await failingRunFinishedEvents(runId, async () => {
+        await expect(finishRun(t.db, runId, ending, source)).rejects.toThrow();
+      })
+    ).toBe(1);
     const [kept] = await t.db
       .select({
         status: runs.status,
@@ -643,9 +645,11 @@ describe("run termination", () => {
     const early = (await first.claim())!.run.id;
     const late = (await second.claim())!.run.id;
 
-    await failingRunFinishedEvents(late, async () => {
-      await expect(recoverInterruptedRuns(t.db, source)).rejects.toThrow();
-    });
+    expect(
+      await failingRunFinishedEvents(late, async () => {
+        await expect(recoverInterruptedRuns(t.db, source)).rejects.toThrow();
+      })
+    ).toBe(1);
     const status = async (runId: string) =>
       (
         await t.db
@@ -675,14 +679,16 @@ async function runEventCount(runId: string) {
   return rows[0]!.count;
 }
 
-/** 그 실행 시도의 종료 Event 기록이 실패하는 동안 `during`을 한다. */
+/** 그 실행 시도의 종료 Event 기록이 실패하는 동안 `during`을 하고, 그동안 결함이 실패시킨 그 실행 시도의 종료 기록 수를 돌려준다. */
 async function failingRunFinishedEvents(
   runId: string,
   during: () => Promise<void>
-) {
-  await withCleanup(async (defer) => {
-    defer(await failRunEnd(t.db, runId));
+): Promise<number> {
+  return withCleanup(async (defer) => {
+    const fault = await failRunEnd(t.db, runId);
+    defer(fault.remove);
     await during();
+    return fault.failed();
   });
 }
 
