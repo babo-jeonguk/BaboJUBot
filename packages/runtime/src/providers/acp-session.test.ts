@@ -1,7 +1,7 @@
 import { access, realpath, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
-import { within } from "@babojubot/process/test-support";
+import { ownedListener } from "@babojubot/process/test-cleanup";
 import { describe, expect, it } from "vitest";
 import {
   acpOrganizationMcp,
@@ -21,7 +21,6 @@ import {
   isExplicitlySignedOut,
   isPositiveLoginLine,
   parsePlainBulletModels,
-  stripAnsi,
 } from "./host-cli.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -282,31 +281,13 @@ describe("ACP session client", () => {
   it("sends session/cancel and answers in-flight permission requests with cancelled once aborted", async () => {
     const root = await folders.make("acp-cancel-perm-");
     const stop = new AbortController();
-    const trigger = createServer((socket) => {
-      stop.abort();
-      socket.end();
-    });
-    await within(
-      new Promise<void>((resolve, reject) => {
-        const onError = (error: Error) => reject(error);
-        trigger.once("error", onError);
-        trigger.listen(0, "127.0.0.1", () => {
-          trigger.off("error", onError);
-          resolve();
-        });
+    const { server: trigger } = await ownedListener(
+      createServer((socket) => {
+        stop.abort();
+        socket.end();
       }),
-      5_000,
-      "the cancel trigger server did not listen"
-    );
-    folders.own(
-      () =>
-        within(
-          new Promise<void>((resolve, reject) =>
-            trigger.close((error) => (error ? reject(error) : resolve()))
-          ),
-          5_000,
-          "the cancel trigger server did not close"
-        ),
+      { port: 0, host: "127.0.0.1" },
+      (close) => folders.own(close, "the cancel trigger server"),
       "the cancel trigger server"
     );
     const address = trigger.address();
@@ -620,15 +601,13 @@ describe("ACP session client", () => {
 });
 
 describe("Host CLI parsing and login classification helpers", () => {
-  it("strips ANSI CSI and OSC sequences and evaluates auth errors per line excluding positive lines", () => {
-    expect(stripAnsi("\u001b[32m* grok-4.7\u001b[0m")).toBe("* grok-4.7");
-    expect(stripAnsi("\u001b]0;window title\u0007Logged in")).toBe("Logged in");
-    expect(
-      stripAnsi("\u001b]8;;https://example.com\u001b\\link\u001b]8;;\u001b\\")
-    ).toBe("link");
+  it("strips ANSI escape sequences and evaluates auth errors per line excluding positive lines", () => {
     expect(isExplicitlySignedOut("\u001b[31mNot signed in\u001b[0m")).toBe(
       true
     );
+    expect(
+      isPositiveLoginLine("\u001b]0;window title\u0007Logged in with IAM")
+    ).toBe(true);
     expect(isAuthProblem("\u001b[31mNot signed in\u001b[0m")).toBe(true);
     expect(
       isAuthProblem("Authenticated with IAM Identity Center\nNetwork error")

@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import type { ModelOption } from "@babojubot/contracts";
 import { orIfUnreadable } from "@babojubot/contracts";
 import { providerEnvironment, saysLoginProblem } from "./process.ts";
@@ -13,53 +14,13 @@ const hostLoginVariables = [
   "DBUS_SESSION_BUS_ADDRESS",
 ] as const;
 
-/** ANSI CSI(`ESC [`)와 OSC(`ESC ]`) 이스케이프 시퀀스를 제거한다. 정규식에 제어 문자를 두지 않는다. */
-export function stripAnsi(text: string): string {
-  let out = "";
-  for (let i = 0; i < text.length;) {
-    if (text.charCodeAt(i) === 0x1b) {
-      const next = text[i + 1];
-      if (next === "[") {
-        let end = i + 2;
-        while (end < text.length) {
-          const code = text.charCodeAt(end);
-          end += 1;
-          if (code >= 0x40 && code <= 0x7e) break;
-        }
-        i = end;
-        continue;
-      }
-      if (next === "]") {
-        let end = i + 2;
-        while (end < text.length) {
-          const code = text.charCodeAt(end);
-          if (code === 0x07) {
-            end += 1;
-            break;
-          }
-          if (code === 0x1b && text[end + 1] === "\\") {
-            end += 2;
-            break;
-          }
-          end += 1;
-        }
-        i = end;
-        continue;
-      }
-    }
-    out += text[i] ?? "";
-    i += 1;
-  }
-  return out;
-}
-
 /**
  * 종료 코드 0인 정상 출력에서도 로그인 없음·로그인 요구를 확실히 가른다.
  * 내부에서 ANSI 코드를 먼저 걷어내므로 호출자가 전처리를 빠뜨려도 단어 경계(`\b`)가 어긋나지 않는다.
  */
 export const isExplicitlySignedOut = (text: string): boolean =>
   /\b(?:not logged in|not signed in|not authenticated|logged out|signed out|must be logged in|must be signed in|please (?:log ?in|sign ?in)|log ?in required|sign ?in required|authentication required)\b/i.test(
-    stripAnsi(text)
+    stripVTControlCharacters(text)
   );
 
 /**
@@ -67,7 +28,7 @@ export const isExplicitlySignedOut = (text: string): boolean =>
  * 빈 줄, 부정·요구·만료 문맥, 또는 `401`·`unauthorized`·`failed`·`error`가 같은 줄에 섞인 오류 문장은 거짓이다.
  */
 export const isPositiveLoginLine = (text: string): boolean => {
-  const clean = stripAnsi(text);
+  const clean = stripVTControlCharacters(text);
   if (
     isExplicitlySignedOut(clean) ||
     /\b(?:401|unauthori[sz]ed|failed|error|expired|invalid|revoked|previously)\b/i.test(
@@ -82,7 +43,7 @@ export const isPositiveLoginLine = (text: string): boolean => {
 
 /** 여러 줄 출력 중 하나라도 명확한 로그인 확인 줄을 담았는지 줄 단위로 판단한다. */
 export const hasPositiveLoginLine = (text: string): boolean =>
-  stripAnsi(text)
+  stripVTControlCharacters(text)
     .split("\n")
     .some((line) => isPositiveLoginLine(line));
 
@@ -91,7 +52,7 @@ export const hasPositiveLoginLine = (text: string): boolean =>
  * `"Authenticated with ..."` 같은 정상 로그인 안내 줄은 제외해 `saysLoginProblem`의 `authenticat` 오탐을 막는다.
  */
 export const isAuthProblem = (text: string): boolean => {
-  const clean = stripAnsi(text);
+  const clean = stripVTControlCharacters(text);
   for (const line of clean.split("\n")) {
     if (!line.trim() || isPositiveLoginLine(line)) continue;
     if (saysLoginProblem(line) || isExplicitlySignedOut(line)) return true;
@@ -161,7 +122,7 @@ function findJsonMatch<T>(
   openers: readonly ("{" | "[")[],
   accept: (value: unknown) => T | undefined
 ): T | undefined {
-  const trimmed = stripAnsi(text).trim();
+  const trimmed = stripVTControlCharacters(text).trim();
   const whole = parseJsonContainer(trimmed);
   if (whole !== undefined) {
     const accepted = accept(whole);
@@ -267,7 +228,7 @@ export function extractJsonModels(text: string): ModelOption[] | undefined {
 export function parsePlainBulletModels(stdout: string): ModelOption[] {
   const seen = new Set<string>();
   const models: ModelOption[] = [];
-  for (const row of stripAnsi(stdout).split("\n")) {
+  for (const row of stripVTControlCharacters(stdout).split("\n")) {
     const match = /^\s*[*+-]\s+(\S+)(.*)$/.exec(row);
     const id = match?.[1];
     if (!id || seen.has(id)) continue;

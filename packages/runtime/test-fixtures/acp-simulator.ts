@@ -126,9 +126,20 @@ async function handlePrompt(id: number, text: string): Promise<void> {
     out({ id, error: { code: -32602, message: "Missing request payload" } });
     return;
   }
-  const parsed = asRecord(
-    orIfUnreadable((): unknown => JSON.parse(text.slice(marker)), {})
+  const parsedPayload = orIfUnreadable(
+    (): unknown => JSON.parse(text.slice(marker)),
+    undefined
   );
+  if (
+    parsedPayload === undefined ||
+    parsedPayload === null ||
+    typeof parsedPayload !== "object" ||
+    Array.isArray(parsedPayload)
+  ) {
+    out({ id, error: { code: -32602, message: "Malformed request payload" } });
+    return;
+  }
+  const parsed = asRecord(parsedPayload);
   const wakeReasons = Array.isArray(parsed.wakeReasons)
     ? parsed.wakeReasons.map(asRecord)
     : [];

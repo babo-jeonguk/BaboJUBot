@@ -394,10 +394,6 @@ export async function runAcpSession(
     }
     if (control.signal.aborted)
       return { ...acpFailed(null), stopReason: "cancelled" };
-    if (sessionError !== undefined && isAuthProblem(sessionError))
-      return { ...acpFailed(), errorCode: "login_required" };
-    if (modelRefused)
-      return acpFailed("고른 모델을 쓸 수 없어 실행하지 않았습니다.");
     if (outcome?.stopReason === "end_turn" && activeSessionId)
       return {
         stopReason: "completed",
@@ -406,8 +402,12 @@ export async function runAcpSession(
         usage: null,
         nextSession: { id: activeSessionId },
       };
+    if (sessionError !== undefined && isAuthProblem(sessionError))
+      return { ...acpFailed(), errorCode: "login_required" };
     if (done !== undefined && isAuthProblem(done.stderr))
       return { ...acpFailed(), errorCode: "login_required" };
+    if (modelRefused)
+      return acpFailed("고른 모델을 쓸 수 없어 실행하지 않았습니다.");
     return acpFailed();
   } catch (error) {
     if (error instanceof TreeLaunchRefused) throw error;
