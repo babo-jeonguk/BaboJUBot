@@ -1,5 +1,4 @@
 import os from "node:os";
-import path from "node:path";
 import type {
   ModelOption,
   ProviderConnection,
@@ -11,28 +10,84 @@ import {
   probeEnding,
   probeTimeoutMs,
   runProbe,
-  saysLoginProblem,
 } from "./process.ts";
 import {
   extractJsonObject,
+  extractJsonValue,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
+  isPositiveLoginLine,
   probeErrorFields,
   runAcpSession,
+  stripAnsi,
 } from "./acp-session.ts";
 
 /** 구버전 Kiro CLI가 `--format` 옵션을 알지 못해 거절했는지 판단한다. */
-const rejectedFormatFlag = (text: string): boolean =>
-  /--format\b/i.test(text) &&
-  /unexpected|unknown|unrecognized|invalid/i.test(text);
+const rejectedFormatFlag = (text: string): boolean => {
+  const clean = stripAnsi(text);
+  return (
+    /--format\b/i.test(clean) &&
+    /unexpected|unknown|unrecognized|invalid/i.test(clean)
+  );
+};
 
-/** `kiro-cli whoami --format json`의 JSON 객체가 로그인됨을 뜻하는지. */
-function whoamiJsonLoggedIn(parsed: Record<string, unknown>): boolean {
-  if ("account" in parsed && parsed.account === null) return false;
-  if (parsed.logged_in === false || parsed.authenticated === false)
-    return false;
-  return true;
+function hasNonEmptyValue(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (value !== null && typeof value === "object")
+    return Object.keys(record(value)).length > 0;
+  return false;
+}
+
+/**
+ * `kiro-cli whoami --format json`의 JSON 객체를 3상태로 판정한다(fail-closed).
+ * 명시적 양성 증거가 있을 때만 `"ready"`, 명시적 로그아웃이면 `"signed_out"`,
+ * 빈 객체(`{}`)나 알 수 없는 형식은 `"unknown"`(`check_failed`)이다.
+ */
+function classifyWhoamiJson(
+  parsed: Record<string, unknown>
+): "ready" | "signed_out" | "unknown" {
+  if (
+    ("account" in parsed && parsed.account === null) ||
+    parsed.logged_in === false ||
+    parsed.loggedIn === false ||
+    parsed.authenticated === false ||
+    (typeof parsed.error === "string" && isAcpAuthProblem(parsed.error))
+  )
+    return "signed_out";
+  if ("error" in parsed && parsed.error !== null && parsed.error !== undefined)
+    return "unknown";
+  if (
+    hasNonEmptyValue(parsed.account) ||
+    parsed.logged_in === true ||
+    parsed.loggedIn === true ||
+    parsed.authenticated === true ||
+    hasNonEmptyValue(parsed.user) ||
+    hasNonEmptyValue(parsed.username) ||
+    hasNonEmptyValue(parsed.email) ||
+    hasNonEmptyValue(parsed.profile)
+  )
+    return "ready";
+  return "unknown";
+}
+
+function classifyProbeFailure(
+  error: unknown,
+  connectionId: string
+): ProviderReadinessCheck {
+  const detail = probeErrorFields(error);
+  if (detail.code === "ENOENT")
+    return { status: "not_ready", reason: "program_missing" };
+  const parsed = extractJsonObject(detail.stdout);
+  if (parsed && classifyWhoamiJson(parsed) === "signed_out")
+    return { status: "not_ready", reason: "product_login_missing" };
+  const text = `${detail.stdout}\n${detail.stderr}`;
+  if (isAcpAuthProblem(text))
+    return { status: "not_ready", reason: "product_login_missing" };
+  console.warn(
+    `[provider] the ${connectionId} readiness check failed (${probeEnding(error)})`
+  );
+  return { status: "not_ready", reason: "check_failed" };
 }
 
 /**
@@ -50,7 +105,6 @@ export function createKiroProvider(options: {
   const connectionId = options.id ?? "kiro";
   const command = options.command ?? commandFor(connectionId, "kiro-cli");
   const env = () => hostProviderEnvironment(connectionId);
-  const stateDir = path.join(options.dataDir, "providers", connectionId);
   const probe = async (args: string[], signal: AbortSignal) =>
     (
       await runProbe(command, args, {
@@ -69,18 +123,13 @@ export function createKiroProvider(options: {
       const output = await probe(["whoami"], signal);
       if (isExplicitlySignedOut(output))
         return { status: "not_ready", reason: "product_login_missing" };
-      return { status: "ready", reason: null };
-    } catch (error) {
-      const detail = probeErrorFields(error);
-      if (detail.code === "ENOENT")
-        return { status: "not_ready", reason: "program_missing" };
-      const text = `${detail.stdout}\n${detail.stderr}`;
-      if (isAcpAuthProblem(text))
-        return { status: "not_ready", reason: "product_login_missing" };
+      if (isPositiveLoginLine(output)) return { status: "ready", reason: null };
       console.warn(
-        `[provider] the ${connectionId} readiness check failed (${probeEnding(error)})`
+        `[provider] the ${connectionId} readiness check returned an unexpected response`
       );
       return { status: "not_ready", reason: "check_failed" };
+    } catch (error) {
+      return classifyProbeFailure(error, connectionId);
     }
   }
 
@@ -99,35 +148,38 @@ export function createKiroProvider(options: {
       try {
         const output = await probe(["whoami", "--format", "json"], signal);
         const parsed = extractJsonObject(output);
-        if (parsed)
-          return whoamiJsonLoggedIn(parsed)
-            ? { status: "ready", reason: null }
-            : { status: "not_ready", reason: "product_login_missing" };
+        if (parsed) {
+          const verdict = classifyWhoamiJson(parsed);
+          if (verdict === "ready") return { status: "ready", reason: null };
+          if (verdict === "signed_out")
+            return { status: "not_ready", reason: "product_login_missing" };
+          console.warn(
+            `[provider] the ${connectionId} readiness check returned an unexpected JSON shape`
+          );
+          return { status: "not_ready", reason: "check_failed" };
+        }
         if (isExplicitlySignedOut(output))
           return { status: "not_ready", reason: "product_login_missing" };
-        return { status: "ready", reason: null };
-      } catch (error) {
-        const detail = probeErrorFields(error);
-        if (detail.code === "ENOENT")
-          return { status: "not_ready", reason: "program_missing" };
-        const parsed = extractJsonObject(detail.stdout);
-        if (parsed && !whoamiJsonLoggedIn(parsed))
-          return { status: "not_ready", reason: "product_login_missing" };
-        const text = `${detail.stdout}\n${detail.stderr}`;
-        if (rejectedFormatFlag(text)) return checkPlainWhoami(signal);
-        if (saysLoginProblem(text) || isAcpAuthProblem(text))
-          return { status: "not_ready", reason: "product_login_missing" };
+        if (isPositiveLoginLine(output))
+          return { status: "ready", reason: null };
         console.warn(
-          `[provider] the ${connectionId} readiness check failed (${probeEnding(error)})`
+          `[provider] the ${connectionId} readiness check returned an unexpected response`
         );
         return { status: "not_ready", reason: "check_failed" };
+      } catch (error) {
+        const detail = probeErrorFields(error);
+        const text = `${detail.stdout}\n${detail.stderr}`;
+        if (detail.code !== "ENOENT" && rejectedFormatFlag(text))
+          return checkPlainWhoami(signal);
+        return classifyProbeFailure(error, connectionId);
       }
     },
     execute(request, control) {
       return runAcpSession(
         {
           logName: "Kiro",
-          stateDir,
+          dataDir: options.dataDir,
+          connectionId,
           command,
           // `--agent-engine`과 `--auth-method`는 Kiro CLI 기본값(v3·cli)을 그대로 따라 특정 버전에 묶지 않는다.
           args: ["acp"],
@@ -146,10 +198,18 @@ export function createKiroProvider(options: {
     adapter,
     models: [],
     async listModels(signal) {
-      const stdout = await probe(
-        ["chat", "--list-models", "--format", "json"],
-        signal
-      );
+      let stdout: string;
+      try {
+        stdout = await probe(
+          ["chat", "--list-models", "--format", "json"],
+          signal
+        );
+      } catch (error) {
+        const detail = probeErrorFields(error);
+        const text = `${detail.stdout}\n${detail.stderr}`;
+        if (detail.code === "ENOENT" || !rejectedFormatFlag(text)) throw error;
+        stdout = await probe(["chat", "--list-models"], signal);
+      }
       const parsed = modelsFrom(stdout);
       if (parsed.length === 0) throw new Error("Kiro returned no models");
       return parsed;
@@ -157,35 +217,56 @@ export function createKiroProvider(options: {
   };
 }
 
-/** 목록 JSON. 한 줄·여러 줄 JSON과 앞뒤 안내 줄을 모두 읽는다. */
+/** 목록 JSON(객체 `{ models }` 또는 최상위 배열)과 구버전 평문 글머리 출력을 모두 읽는다. */
 function modelsFrom(stdout: string): ModelOption[] {
-  const parsed = extractJsonObject(stdout);
-  if (!parsed) return [];
-  const models = parsed.models;
-  if (!Array.isArray(models)) return [];
   const seen = new Set<string>();
   const result: ModelOption[] = [];
-  for (const item of models) {
-    const row = record(item);
-    const rawId =
-      typeof row.model_id === "string"
-        ? row.model_id
-        : typeof row.id === "string"
-          ? row.id
-          : "";
+  const push = (rawId: string, rawLabel?: string) => {
     const id = rawId.trim();
-    if (!id || seen.has(id)) continue;
+    if (!id || seen.has(id)) return;
     seen.add(id);
-    const rawLabel =
-      typeof row.model_name === "string"
-        ? row.model_name
-        : typeof row.name === "string"
-          ? row.name
-          : typeof row.label === "string"
-            ? row.label
+    result.push({ id, label: rawLabel?.trim() || id });
+  };
+  const json = extractJsonValue(stdout);
+  const items = Array.isArray(json)
+    ? json
+    : json !== null && typeof json === "object"
+      ? record(json).models
+      : undefined;
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      if (typeof item === "string") {
+        push(item);
+        continue;
+      }
+      const row = record(item);
+      const rawId =
+        typeof row.model_id === "string"
+          ? row.model_id
+          : typeof row.id === "string"
+            ? row.id
             : "";
-    const label = rawLabel.trim() || id;
-    result.push({ id, label });
+      const rawLabel =
+        typeof row.model_name === "string"
+          ? row.model_name
+          : typeof row.name === "string"
+            ? row.name
+            : typeof row.label === "string"
+              ? row.label
+              : undefined;
+      if (rawId) push(rawId, rawLabel);
+    }
+    return result;
+  }
+  for (const row of stripAnsi(stdout).split("\n")) {
+    const match =
+      /^\s*[*+-]\s+([A-Za-z0-9][A-Za-z0-9._:/-]*)(?:\s+(.*))?$/.exec(row);
+    const id = match?.[1];
+    if (!id) continue;
+    const trailing = (match?.[2] ?? "").trim();
+    const looksLikeModelId =
+      /[-.:/0-9]/.test(id) || trailing === "" || /^\([^)]*\)$/.test(trailing);
+    if (looksLikeModelId) push(id);
   }
   return result;
 }
