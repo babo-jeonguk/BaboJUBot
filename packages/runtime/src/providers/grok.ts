@@ -9,7 +9,7 @@ import {
 import {
   hasPositiveLoginLine,
   hostProviderEnvironment,
-  isAcpAuthProblem,
+  isAuthProblem,
   isExplicitlySignedOut,
   parseCliModels,
   probeErrorFields,
@@ -67,7 +67,7 @@ export function createGrokProvider(options: {
         if (detail.code === "ENOENT")
           return { status: "not_ready", reason: "program_missing" };
         const text = `${detail.stdout}\n${detail.stderr}`;
-        if (isAcpAuthProblem(text))
+        if (isAuthProblem(text))
           return { status: "not_ready", reason: "product_login_missing" };
         console.warn(
           `[provider] the ${connectionId} readiness check failed (${probeEnding(error)})`

@@ -6,6 +6,7 @@ import {
   acpOpening,
   acpOrganizationMcp,
   acpRpc,
+  acpWorkspace,
   readRecordedFrames,
   runProviderAcpReplay,
   writeRecordingAcpPeer,
@@ -189,7 +190,7 @@ describe("Grok Build ACP", () => {
       {
         ...request(),
         model: "grok-4.5",
-        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+        workspace: acpWorkspace(root),
       },
       { signal: new AbortController().signal, emit: async () => {} }
     );

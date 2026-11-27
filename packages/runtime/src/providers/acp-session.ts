@@ -3,7 +3,7 @@ import type { RunRequest, RunResult } from "@babojubot/contracts";
 import { failureCode } from "@babojubot/contracts";
 import { TreeLaunchRefused } from "@babojubot/process";
 import { connectionFolders } from "./folders.ts";
-import { isAcpAuthProblem } from "./host-cli.ts";
+import { isAuthProblem } from "./host-cli.ts";
 import { startProcess, startupLimitMs } from "./process.ts";
 import { record } from "./record.ts";
 
@@ -14,7 +14,7 @@ const jsonRpcMethodNotFound = -32601;
 const jsonRpcInvalidParams = -32602;
 
 /** JSON-RPC로 거절한 요청. 문구는 공개 기록에 넣지 않고 로그인 문제·오류 코드만 가른다. */
-export class AcpRejection extends Error {
+class AcpRejection extends Error {
   readonly code: number | undefined;
   constructor(message: string, code?: number) {
     super(message);
@@ -23,7 +23,7 @@ export class AcpRejection extends Error {
   }
 }
 
-export const acpFailed = (
+const acpFailed = (
   error: string | null = "프로바이더 실행이 실패했습니다."
 ): RunResult => ({
   stopReason: "failed",
@@ -272,7 +272,7 @@ export async function runAcpSession(
       } catch (error) {
         if (
           error instanceof AcpRejection &&
-          !isAcpAuthProblem(error.message) &&
+          !isAuthProblem(error.message) &&
           error.code !== undefined &&
           fallbackCodes.includes(error.code)
         ) {
@@ -320,7 +320,7 @@ export async function runAcpSession(
           [jsonRpcMethodNotFound, jsonRpcInvalidParams]
         );
       } catch (error) {
-        if (error instanceof AcpRejection && !isAcpAuthProblem(error.message))
+        if (error instanceof AcpRejection && !isAuthProblem(error.message))
           modelRefused = true;
         throw error;
       }
@@ -347,7 +347,7 @@ export async function runAcpSession(
               configOptions = loaded.configOptions;
           } catch (error) {
             if (!(error instanceof AcpRejection)) throw error;
-            if (isAcpAuthProblem(error.message)) throw error;
+            if (isAuthProblem(error.message)) throw error;
             // 실패한 session/load 도중 받은 configOptions가 새 세션으로 누출되지 않게 초기화한다.
             configOptions = undefined;
           }
@@ -394,7 +394,7 @@ export async function runAcpSession(
     }
     if (control.signal.aborted)
       return { ...acpFailed(null), stopReason: "cancelled" };
-    if (sessionError !== undefined && isAcpAuthProblem(sessionError))
+    if (sessionError !== undefined && isAuthProblem(sessionError))
       return { ...acpFailed(), errorCode: "login_required" };
     if (modelRefused)
       return acpFailed("고른 모델을 쓸 수 없어 실행하지 않았습니다.");
@@ -406,7 +406,7 @@ export async function runAcpSession(
         usage: null,
         nextSession: { id: activeSessionId },
       };
-    if (done !== undefined && isAcpAuthProblem(done.stderr))
+    if (done !== undefined && isAuthProblem(done.stderr))
       return { ...acpFailed(), errorCode: "login_required" };
     return acpFailed();
   } catch (error) {

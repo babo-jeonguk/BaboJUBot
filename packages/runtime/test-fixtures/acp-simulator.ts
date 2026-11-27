@@ -175,9 +175,17 @@ async function handlePrompt(id: number, text: string): Promise<void> {
 
 for await (const line of createInterface({ input: process.stdin })) {
   if (!line.trim()) continue;
-  const frame = asRecord(
-    orIfUnreadable((): unknown => JSON.parse(line), undefined)
-  );
+  const parsedLine = orIfUnreadable((): unknown => JSON.parse(line), undefined);
+  if (
+    parsedLine === undefined ||
+    parsedLine === null ||
+    typeof parsedLine !== "object" ||
+    Array.isArray(parsedLine)
+  ) {
+    console.error(`acp-simulator: malformed JSON-RPC frame: ${line}`);
+    process.exit(await afterOutput(23));
+  }
+  const frame = asRecord(parsedLine);
   if (typeof frame.id === "string" && typeof frame.method !== "string") {
     const waiter = pendingPermissions.get(frame.id);
     if (waiter) {
@@ -265,6 +273,11 @@ for await (const line of createInterface({ input: process.stdin })) {
       waitingPromptId = undefined;
       out({ id: pendingId, result: { stopReason: "cancelled" } });
     }
+  } else if (typeof id === "number" || typeof id === "string") {
+    out({
+      id,
+      error: { code: -32601, message: `Method not found: ${method}` },
+    });
   }
 }
 

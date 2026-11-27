@@ -90,7 +90,7 @@ export const hasPositiveLoginLine = (text: string): boolean =>
  * 실패 응답·stderr·오류 문구가 로그인 문제인지 줄 단위로 판단한다.
  * `"Authenticated with ..."` 같은 정상 로그인 안내 줄은 제외해 `saysLoginProblem`의 `authenticat` 오탐을 막는다.
  */
-export const isAcpAuthProblem = (text: string): boolean => {
+export const isAuthProblem = (text: string): boolean => {
   const clean = stripAnsi(text);
   for (const line of clean.split("\n")) {
     if (!line.trim() || isPositiveLoginLine(line)) continue;
@@ -280,10 +280,7 @@ export function parsePlainBulletModels(stdout: string): ModelOption[] {
     const isStructuredModelId = id === "auto" || /[0-9._:/-]/.test(id);
     const valid =
       (hasNoTrailing && (/\d/.test(id) || id === "auto")) ||
-      (hasParenthetical && isStructuredModelId) ||
-      (hasColumnDescription &&
-        (id === "auto" ||
-          (/^[a-z][a-z0-9._:/-]*$/.test(id) && /[0-9._:/-]/.test(id))));
+      ((hasParenthetical || hasColumnDescription) && isStructuredModelId);
     if (!valid) continue;
     seen.add(id);
     models.push({ id, label: id });
