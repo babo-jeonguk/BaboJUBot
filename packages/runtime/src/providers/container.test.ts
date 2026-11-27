@@ -1,7 +1,6 @@
 import {
   lstat,
   mkdir,
-  mkdtemp,
   readdir,
   readFile,
   realpath,
@@ -310,10 +309,8 @@ const canonicalTemp = (folder: string) =>
 
 async function setup(programs: Record<string, string[]>, base = tmpdir()) {
   // 임시 폴더가 링크 뒤에 있으면(macOS) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
-  const root = await realpath(
-    await mkdtemp(path.join(base, "babojubot-container-"))
-  );
-  folders.adopt(root);
+  // 만들기를 시작 순간 폴더 정리에 맡긴다(`folders.make`).
+  const root = await realpath(await folders.make("babojubot-container-", base));
   const state = path.join(root, "docker-state");
   await mkdir(state);
   const org = crypto.randomUUID(),
@@ -1643,12 +1640,9 @@ describe.skipIf(process.platform === "win32")(
       timeouts?: CodexOptions["timeouts"]
     ) {
       const log = path.join(
-        await realpath(
-          await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
-        ),
+        await realpath(await folders.make("babojubot-refresh-")),
         "refreshes.log"
       );
-      folders.adopt(path.dirname(log));
       const t = await codexSetup(
         expiringLogin(),
         [process.execPath, fixture("codex-refresh.mjs"), log, mode],
@@ -2938,12 +2932,9 @@ describe.skipIf(process.platform === "win32")(
 
     it("refreshes an expiring Codex login once on this machine at the connection folder's place, and the model gets the refreshed login", async () => {
       const log = path.join(
-        await realpath(
-          await mkdtemp(path.join(tmpdir(), "babojubot-refresh-"))
-        ),
+        await realpath(await folders.make("babojubot-refresh-")),
         "refreshes.log"
       );
-      folders.adopt(path.dirname(log));
       const expiring = (() => {
         const jwt =
           [{ alg: "none" }, { exp: Math.floor(Date.now() / 1000) + 60 }]
@@ -3077,8 +3068,7 @@ describe.skipIf(process.platform === "win32")(
     });
     describe.skipIf(!volume)("on a real disk that refuses links", () => {
       it("refuses a file link in that folder", async () => {
-        const probe = await mkdtemp(path.join(volume!, "babojubot-probe-"));
-        folders.adopt(probe);
+        const probe = await folders.make("babojubot-probe-", volume!);
         await writeFile(path.join(probe, "target"), "");
         const code = await symlink(
           path.join(probe, "target"),

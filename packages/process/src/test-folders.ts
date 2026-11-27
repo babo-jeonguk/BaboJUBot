@@ -33,8 +33,16 @@ export function testFolders(
   } = {}
 ) {
   const folders: string[] = [];
+  /** 만들고 있는 폴더(`make`가 시작 순간 등록). 정리는 이것이 끝나 폴더가 목록에 들어온 뒤 지운다. */
+  const making: Promise<unknown>[] = [];
   const stops: { stop: () => Promise<unknown>; what: string }[] = [];
   hook(async () => {
+    // 진행 중인 만들기의 끝을 상한 안에서 먼저 확인한다. 끝을 확인하지 못하면 만든 폴더가 목록에 없을 수 있으므로 지우지 않고 실패한다.
+    await within(
+      Promise.allSettled(making.splice(0)),
+      stopTimeoutMs,
+      "a test folder being made did not finish"
+    );
     const failures = await attemptEach(
       stops
         .splice(0)
@@ -63,11 +71,17 @@ export function testFolders(
     );
   });
   return {
-    /** 새 임시 폴더. 정리 때 지운다. */
-    async make(prefix: string) {
-      const folder = await mkdtemp(path.join(tmpdir(), prefix));
-      folders.push(folder);
-      return folder;
+    /**
+     * 새 임시 폴더(`base` 아래, 기본은 이 컴퓨터의 임시 폴더). 만들기를 시작 순간 정리에 등록하고(정리가 그 끝을 기다린다), 만든 폴더를
+     * 정리 때 지운다.
+     */
+    make(prefix: string, base = tmpdir()) {
+      const made = mkdtemp(path.join(base, prefix)).then((folder) => {
+        folders.push(folder);
+        return folder;
+      });
+      making.push(made);
+      return made;
     },
     /** 다른 곳(다른 기준 폴더·realpath)에서 만든 폴더의 정리를 맡는다. */
     adopt(folder: string) {
