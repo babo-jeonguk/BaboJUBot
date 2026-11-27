@@ -9,6 +9,7 @@ import {
   createClaudeProvider,
   createCodexProvider,
   createOpenCodeProvider,
+  createKiroProvider,
   createGrokProvider,
 } from "@babojubot/runtime";
 import { openEphemeralDatabase } from "@babojubot/db";
@@ -33,6 +34,7 @@ const factories = {
   codex: createCodexProvider,
   opencode: createOpenCodeProvider,
   antigravity: createAntigravityProvider,
+  kiro: createKiroProvider,
   grok: createGrokProvider,
 };
 const defaultCommand = {
@@ -40,6 +42,7 @@ const defaultCommand = {
   codex: "codex",
   opencode: "opencode",
   antigravity: "agy",
+  kiro: "kiro-cli",
   grok: "grok",
 };
 if (
@@ -49,7 +52,7 @@ if (
   !process.env.BABOJUBOT_HOME
 ) {
   console.error(
-    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-live.mjs <claude|codex|opencode|antigravity|grok> --allow-live [--record] [--scenes=a,b]"
+    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-live.mjs <claude|codex|opencode|antigravity|kiro|grok> --allow-live [--record] [--scenes=a,b]"
   );
   process.exit(await afterOutput(2));
 }

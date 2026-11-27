@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterAll, vi } from "vitest";
 import { describeRuntimeContract } from "./runtime-contract.ts";
 import { createAntigravityProvider as unownedAntigravityProvider } from "./providers/antigravity.ts";
+import { createKiroProvider as unownedKiroProvider } from "./providers/kiro.ts";
 import { createGrokProvider as unownedGrokProvider } from "./providers/grok.ts";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./providers/opencode.ts";
 import { saying } from "./providers/test-support.ts";
@@ -25,6 +26,7 @@ const folders = testFolders(afterAll);
 // 이 파일이 만드는 프로바이더 연결은 모두 정리가 실행을 맡는다(시험 표에 담아 넘긴 factory도 같다).
 const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 const createAntigravityProvider = folders.owning(unownedAntigravityProvider);
+const createKiroProvider = folders.owning(unownedKiroProvider);
 const createGrokProvider = folders.owning(unownedGrokProvider);
 const root = await folders.make("other-provider-contract-");
 // `pnpm provider:login antigravity`가 남기는 자리(연결 폴더)에만 로그인이 있다. 실행 시도는 조직 폴더로 돌므로
@@ -122,6 +124,37 @@ describeRuntimeContract(
       scene: saying("끼워 넣기 연습"),
       took: ({ messages }, body) =>
         messages.some((message) => message.includes(body)),
+    },
+  }
+);
+
+describeRuntimeContract(
+  "kiro synthetic process (not recorded model evidence)",
+  {
+    launches: "programs",
+    adapter: createKiroProvider({
+      dataDir: root,
+      command: [
+        process.execPath,
+        path.resolve("test-fixtures/acp-simulator.ts"),
+        "--acp-args",
+        "acp",
+        "--probe-args",
+        "whoami,--format,json",
+        "--probe-stdout",
+        JSON.stringify({ account: { id: "synthetic-user" } }),
+        "--store",
+        root,
+      ],
+    }).adapter,
+    finishes: saying("진행 상황을 알려 주세요"),
+    worksUntilCancelled: saying("실행 유지 연습"),
+    unusableSession: { id: "expired" },
+    resumes: {
+      plant: (note) => saying(`메모해 주세요: ${note}`),
+      recall: saying("세션 메모를 알려 주세요"),
+      recalled: ({ messages }, note) =>
+        messages.some((message) => message.includes(note)),
     },
   }
 );

@@ -5,6 +5,7 @@ import {
   createCodexProvider,
   createOpenCodeProvider,
   createAntigravityProvider,
+  createKiroProvider,
   createGrokProvider,
 } from "@babojubot/runtime";
 import {
@@ -23,6 +24,7 @@ const factories = {
   codex: createCodexProvider,
   opencode: createOpenCodeProvider,
   antigravity: createAntigravityProvider,
+  kiro: createKiroProvider,
   grok: createGrokProvider,
 };
 if (
@@ -32,7 +34,7 @@ if (
   !process.env.BABOJUBOT_HOME
 ) {
   console.error(
-    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-smoke.mjs <claude|codex|opencode|antigravity|grok> --allow-live"
+    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-smoke.mjs <claude|codex|opencode|antigravity|kiro|grok> --allow-live"
   );
   console.error(
     "Requires product login and explicit permission to use subscription/model quota."
