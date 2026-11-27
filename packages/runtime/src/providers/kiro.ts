@@ -1,4 +1,5 @@
 import os from "node:os";
+import { stripVTControlCharacters } from "node:util";
 import type {
   ProviderConnection,
   ProviderReadinessCheck,
@@ -18,7 +19,6 @@ import {
   isExplicitlySignedOut,
   parseCliModels,
   probeErrorFields,
-  stripAnsi,
 } from "./host-cli.ts";
 import { runAcpSession } from "./acp-session.ts";
 
@@ -26,7 +26,7 @@ import { runAcpSession } from "./acp-session.ts";
 const rejectedFormatFlag = (error: unknown): boolean => {
   const detail = probeErrorFields(error);
   if (detail.code === "ENOENT") return false;
-  const clean = stripAnsi(`${detail.stdout}\n${detail.stderr}`);
+  const clean = stripVTControlCharacters(`${detail.stdout}\n${detail.stderr}`);
   return (
     /--format\b/i.test(clean) &&
     /unexpected|unknown|unrecognized|invalid/i.test(clean)
