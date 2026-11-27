@@ -225,8 +225,8 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
     /** 공용 실행 경계 대역이 띄운 트리를 장면과 함께 맡는 정리(대역은 이 시험의 장면으로 부른다). 판정 시험이 전역 상태 없이 부르도록 내보낸다. */
     ownLaunchedTree,
     /**
-     * 그 시험이 부른 호출(`call`) 안에서 띄우는 트리의 장면(위 `TreeScene`). 그 호출의 결과를 돌려준다. 정리는 호출 전에 폴더 정리의
-     * 단계로 맡긴다(늦게 맡긴 단계부터 돈다): 장면의 판정을 먼저, 무장의 끝을 그 뒤에 등록해 무장이 먼저 끝난다. 실패하는 끄기를 넣은
+     * 그 시험이 부른 호출(`call`) 안에서 띄우는 트리의 장면(위 `TreeScene`). 그 호출의 결과를 돌려준다. 무장의 끝은 호출 전에 폴더
+     * 정리에 맡겨(`ownArming`) 정리의 첫 동기 단계에서 끝나고, 장면의 판정은 맡긴 멈춤으로 그 뒤에 돈다. 실패하는 끄기를 넣은
      * 장면이면 제품이 그것을 불렀고, 인수 없이 불렀는지 본다(받은 인수를 확인하는 결함 주입).
      */
     treeScene<T>(next: TreeScene, call: () => T): T {
@@ -242,9 +242,7 @@ export function testFolders(...args: Parameters<typeof processFolders>) {
             `the product called the failing tree stop with arguments: ${JSON.stringify(withArguments)}`
           );
       }, "tree scene");
-      return sceneCalls.run({ scene: next, calls }, call, (end) =>
-        folders.own(end, "the tree scene's call arming")
-      );
+      return sceneCalls.run({ scene: next, calls }, call, folders.ownArming);
     },
     /** 시험이 만든 프로바이더 연결을 정리에 맡긴다(위 `ownProvider`). */
     ownProvider,

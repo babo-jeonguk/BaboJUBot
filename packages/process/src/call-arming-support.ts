@@ -6,7 +6,7 @@
 // (https://nodejs.org/api/async_context.html#class-asynclocalstorage). 그래서 앞 시험이 시작한 늦은 일은 앞 시험의 값(또는 없음)을
 // 보고, 이 시험의 값에 걸리지 않는다.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { within } from "./within-support.ts";
+import { settledWithin } from "./within-support.ts";
 
 /** 무장의 끝이 진행 중인 획득을 기다리는 상한. 넘기면 획득한 자원을 남기고 정리가 실패한다. */
 const acquisitionsEndWithinMs = 10_000;
@@ -37,8 +37,8 @@ export function callArming<A extends object>() {
       const slot: Slot = { arming, ended: false, acquiring: [] };
       own(async () => {
         slot.ended = true;
-        await within(
-          Promise.allSettled(slot.acquiring),
+        await settledWithin(
+          slot.acquiring,
           acquisitionsEndWithinMs,
           "the acquisitions started in the call arming did not end"
         );

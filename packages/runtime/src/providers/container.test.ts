@@ -920,16 +920,17 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
       for (const spy of logged) spy.mockRestore();
     });
     // 실행 시도 폴더는 공유 임시 폴더에 무작위 이름으로 생겨 경로로 가를 수 없으므로, 지우기 실패를 이 시험이 부른 실행 시도에 묶는다.
-    // 정리는 호출 전에 폴더 정리의 단계로 맡긴다(늦게 맡긴 단계부터 돈다): 무장이 만든 폴더 맡기기를 먼저, 무장의 끝(`run`이 호출 전에
-    // 맡김)을 그 뒤에 등록해 무장이 먼저 끝나고(진행 중인 만들기를 기다림) 그 폴더를 맡은 뒤 지운다.
+    // 무장의 끝은 호출 전에 폴더 정리에 맡긴다(`ownArming`): 정리의 첫 동기 단계에서 무장이 끝나고, 진행 중인 만들기를 기다린 뒤 무장이
+    // 만든 폴더를 그 정리가 지운다.
     const fault: LockFault = { made: [], failedAt: [] };
-    folders.own(async () => {
-      for (const made of fault.made) folders.adopt(made);
-    }, "the folders whose removal was made to fail");
     const result = await lockCalls.run(
       fault,
       () => provider.adapter.execute(input, control()),
-      (end) => folders.own(end, "the call arming")
+      (end) =>
+        folders.ownArming(async () => {
+          await end();
+          return fault.made;
+        })
     );
     expect(result.stopReason).toBe("completed");
     // 지우기 실패가 그 실행 시도가 만든 폴더에서 났다.

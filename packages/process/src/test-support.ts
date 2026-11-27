@@ -24,7 +24,7 @@ export function insideFolder(folder: string, file: string): boolean {
 }
 
 // 시험의 대기 상한(`within`)은 node 기본 모듈을 불러오지 않는 파일 하나에 둔다(모듈 대역의 factory가 불러오는 지원 파일도 쓴다).
-export { within } from "./within-support.ts";
+export { settledWithin, within } from "./within-support.ts";
 
 /**
  * A clock that moves only when the test says (#215). Limits on it measure only the step under test (starting a program takes

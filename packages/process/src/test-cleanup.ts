@@ -17,7 +17,7 @@ import {
 import type { Lifelines } from "./lifeline-support.ts";
 import { removeFolder } from "./remove-folder.ts";
 import { listenAttempt } from "./listen-attempt.ts";
-import { reportedPid, within } from "./test-support.ts";
+import { reportedPid, settledWithin, within } from "./test-support.ts";
 
 /** 정리 단계. 동기로 던지든 거절하든 실패로 모은다. 모두 시도하기는 `attemptAll`(`@babojubot/contracts`)이 한다. */
 export type CleanupStep = () => unknown;
@@ -154,8 +154,8 @@ export async function releaseAcquired<T>(
   release: (acquired: T) => Promise<unknown>,
   withinMs = 10_000
 ) {
-  const [acquired] = await within(
-    Promise.allSettled([acquiring]),
+  const [acquired] = await settledWithin(
+    [acquiring],
     withinMs,
     "a test resource being acquired did not finish"
   );

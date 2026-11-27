@@ -37,3 +37,16 @@ export async function within<T>(
     realClearTimeout(timer);
   }
 }
+
+/**
+ * 시작한 획득들(`acquiring`)이 모두 끝나기를 `ms` 안에 기다리고 각각의 결과를 돌려준다. 시험 자원의 공용 소유 계약에서 정리가
+ * 진행 중인 획득의 끝을 확인하는 한 모양이다(호출 무장의 끝, `testFolders`의 만들기, `releaseAcquired`). 넘기면 던지고, 획득한 자원은
+ * 그대로 남는다(정리는 그것을 놓지 않고 실패한다).
+ */
+export function settledWithin<T extends readonly unknown[] | []>(
+  acquiring: T,
+  ms: number,
+  what: string
+): Promise<{ -readonly [K in keyof T]: PromiseSettledResult<Awaited<T[K]>> }> {
+  return within(Promise.allSettled(acquiring), ms, what);
+}
