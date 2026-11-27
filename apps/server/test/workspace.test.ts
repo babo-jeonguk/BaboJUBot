@@ -2,7 +2,6 @@ import {
   cp,
   link,
   mkdir,
-  mkdtemp,
   readFile,
   realpath,
   rename,
@@ -11,12 +10,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { keepAppending } from "./appending-writer.ts";
-import { featureGaps, filesBase, remove } from "./files-volume.ts";
+import { featureGaps, filesBase, removeRetries } from "./files-volume.ts";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { WorkspaceIdentityError, Workspaces } from "../src/workspace.ts";
 import { unused } from "./stand-ins.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
+import { testFolders } from "@babojubot/process/testing";
 
 /**
  * 공용 실행(`runTree`)의 결과를 갈음한다. 정확히 그 폴더(`at`, 그 시험 root의 `organizations` 실제 경로)에서 도는 실행만 `result`로
@@ -56,24 +56,15 @@ const lacks = await featureGaps();
 const withLinks = it.skipIf(lacks.symlink !== "");
 const withHardLinks = it.skipIf(lacks.hardLink !== "");
 
-const roots: string[] = [];
-const writers: ReturnType<typeof keepAppending>[] = [];
-afterEach(async () => {
+// 진행 중인 덧붙이기(`own`)가 모두 끝난 것을 확인한 뒤에만 폴더를 지운다. 확인하지 못하면 폴더를 남기고 그 실패를 알린다. 정리 실패는
+// hook 오류로 따로 보고되어 시험의 단언 실패를 가리지 않는다.
+const folders = testFolders(afterEach, removeRetries);
+afterEach(() => {
   tree.fault = undefined;
-  // 진행 중인 덧붙이기가 모두 끝난 것을 확인한 뒤에만 폴더를 지운다. 확인하지 못하면 폴더를 남기고 그 실패를 알린다. 정리 실패는
-  // hook 오류로 따로 보고되어 시험의 단언 실패를 가리지 않는다.
-  const folders = roots.splice(0);
-  const stopped = await Promise.allSettled(
-    writers.splice(0).map((w) => w.stop())
-  );
-  const failed = stopped.find((result) => result.status === "rejected");
-  if (failed) throw failed.reason;
-  await Promise.all(folders.map(remove));
 });
 const org = "organization-one";
 async function folder() {
-  const root = await mkdtemp(path.join(filesBase(), "babojubot-workspace-"));
-  roots.push(root);
+  const root = await folders.make("babojubot-workspace-", filesBase());
   const shared = path.join(root, "organizations", org, "shared");
   await mkdir(shared, { recursive: true });
   await writeFile(
@@ -96,7 +87,7 @@ withLinks("accepts a data folder reached through a symbolic link", async () => {
   const { root, shared } = await folder();
   await writeFile(path.join(shared, "a.md"), "내용");
   const linked = `${root}-link`;
-  roots.push(linked);
+  folders.adopt(linked);
   await symlink(root, linked);
   expect(await content(linked, "a.md")).toBe("내용");
 });
@@ -107,7 +98,7 @@ withLinks(
     const { root, shared } = await folder();
     await writeFile(path.join(shared, "a.md"), "내용");
     const moved = `${root}-moved`;
-    roots.push(moved);
+    folders.adopt(moved);
     await rename(path.join(root, "organizations"), moved);
     await symlink(moved, path.join(root, "organizations"));
     expect(await content(root, "a.md")).toBe("내용");
@@ -209,7 +200,7 @@ it("accepts a folder restored by copying, and a data folder that moved", async (
   await removeFolder(organizations);
   await rename(`${organizations}-copy`, organizations);
   const moved = `${root}-moved`;
-  roots.push(moved);
+  folders.adopt(moved);
   await rename(root, moved);
   expect(await content(moved, "a.md")).toBe("내용");
 });
@@ -244,7 +235,8 @@ it("takes what a file holds now even if it is still being written", async () => 
   const { root, shared } = await folder();
   const file = path.join(shared, "run.log");
   await writeFile(file, "시작\n");
-  writers.push(keepAppending(file, "더\n"));
+  const writer = keepAppending(file, "더\n");
+  folders.own(() => writer.stop(), "appending to the file");
   for (let i = 0; i < 20; i++)
     expect((await content(root, "run.log")).length).toBeGreaterThan(0);
 });
@@ -280,7 +272,7 @@ withLinks(
     );
     // 데이터 폴더를 링크로 가리켜도 작업 폴더 경로는 그 링크 아래로 보인다.
     const linked = `${root}-link`;
-    roots.push(linked);
+    folders.adopt(linked);
     await symlink(root, linked);
     expect(
       await content(

@@ -37,11 +37,15 @@ export function testFolders(
   const making: Promise<unknown>[] = [];
   const stops: { stop: () => Promise<unknown>; what: string }[] = [];
   hook(async () => {
-    // 진행 중인 만들기의 끝을 상한 안에서 먼저 확인한다. 끝을 확인하지 못하면 만든 폴더가 목록에 없을 수 있으므로 지우지 않고 실패한다.
-    await within(
+    // 진행 중인 만들기의 끝을 상한 안에서 먼저 확인한다. 끝을 확인하지 못하면 만든 폴더가 목록에 없을 수 있으므로, 맡은 것은 멈추되
+    // 폴더는 하나도 지우지 않고(목록에서 빼 다음 시험의 정리가 가져가지 않게) 실패한다.
+    const unconfirmedMaking = await within(
       Promise.allSettled(making.splice(0)),
       stopTimeoutMs,
       "a test folder being made did not finish"
+    ).then(
+      () => undefined,
+      (error: unknown) => error
     );
     const failures = await attemptEach(
       stops
@@ -54,9 +58,14 @@ export function testFolders(
         )
     );
     // 끝나지 않은 것이 있으면 폴더는 지우지 않고 남긴다.
-    if (failures.length) {
+    if (unconfirmedMaking !== undefined || failures.length) {
       folders.splice(0);
-      throw combinedFailure(failures, "test cleanup failed");
+      throw combinedFailure(
+        unconfirmedMaking === undefined
+          ? failures
+          : [unconfirmedMaking, ...failures],
+        "test cleanup failed"
+      );
     }
     // 한 폴더를 지우지 못해도 나머지를 지우고, 지우지 못한 폴더를 모두 알린다.
     await attemptAll(

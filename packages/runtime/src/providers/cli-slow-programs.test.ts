@@ -13,9 +13,6 @@ import { testFolders } from "./test-folders.ts";
 
 // 서로 독립인 실제 자식 프로세스 시나리오라 겹쳐 돌린다. 지연은 줄이지 않고, 홈은 테스트마다 하나씩 만들어 그 테스트가 끝날 때 지운다.
 // 시험마다 정리를 따로 둔다(onTestFinished). 그 시험의 실행이 끝난 뒤 그 홈만 지운다.
-const home = (folders: ReturnType<typeof testFolders>) =>
-  createCliHome((root) => void folders.adopt(root));
-
 describe.concurrent("slow programs", () => {
   it("lets Claude take longer than a few seconds to start", async ({
     expect,
@@ -23,7 +20,10 @@ describe.concurrent("slow programs", () => {
   }) => {
     const folders = testFolders(onTestFinished);
     const adapters = cliAdapters(folders);
-    const { adapter } = adapters.claude(await home(folders), "slow-start");
+    const { adapter } = adapters.claude(
+      await createCliHome(folders),
+      "slow-start"
+    );
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 30_000);
@@ -34,7 +34,10 @@ describe.concurrent("slow programs", () => {
   }) => {
     const folders = testFolders(onTestFinished);
     const adapters = cliAdapters(folders);
-    const { adapter } = adapters.antigravity(await home(folders), "slow-start");
+    const { adapter } = adapters.antigravity(
+      await createCliHome(folders),
+      "slow-start"
+    );
     const result = await adapter.execute(request(), control());
     expect(result.stopReason).toBe("completed");
   }, 30_000);
@@ -46,7 +49,7 @@ describe.concurrent("slow programs", () => {
     const folders = testFolders(onTestFinished);
     const adapters = cliAdapters(folders);
     const { adapter } = adapters["codex app-server"](
-      await home(folders),
+      await createCliHome(folders),
       "slow-answer"
     );
     const result = await adapter.execute(request(), control());
@@ -60,7 +63,7 @@ describe.concurrent("slow programs", () => {
     const folders = testFolders(onTestFinished);
     const adapters = cliAdapters(folders);
     const { adapter } = adapters["codex app-server"](
-      await home(folders),
+      await createCliHome(folders),
       "ignores-steer"
     );
     // 프로그램은 받은 끼워 넣기를 작업 폴더에 남긴다.
@@ -107,7 +110,7 @@ describe.concurrent("slow programs", () => {
     const folders = testFolders(onTestFinished);
     const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
     const provider = createOpenCodeProvider({
-      dataDir: await home(folders),
+      dataDir: await createCliHome(folders),
       command: [
         process.execPath,
         path.resolve("test-fixtures/opencode-simulator.mjs"),

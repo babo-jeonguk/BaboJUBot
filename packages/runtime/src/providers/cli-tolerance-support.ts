@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createAntigravityProvider } from "./antigravity.ts";
 import { createClaudeProvider } from "./claude.ts";
@@ -44,11 +43,14 @@ export const cliAdapters = (
   ),
 });
 
+/**
+ * 로그인이 든 CLI 홈. 시험의 폴더 정리(`make`)가 만들기를 시작 순간 맡으므로, 시험이 만들기 도중 끝나도 정리가 그 끝을 확인한 뒤
+ * 지운다.
+ */
 export async function createCliHome(
-  onCreated: (root: string) => void
+  folders: Pick<ReturnType<typeof testFolders>, "make">
 ): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "babojubot-tolerance-"));
-  onCreated(root);
+  const root = await folders.make("babojubot-tolerance-");
   await mkdir(path.join(root, "providers/claude"), { recursive: true });
   await writeFile(path.join(root, "providers/claude/setup-token"), "login");
   return root;

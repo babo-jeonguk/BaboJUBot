@@ -110,7 +110,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const roots: string[] = [];
+/** 시험이 만들기 시작한 폴더. 만들기를 시작 순간 넣고, 정리는 그 끝을 시한 안에서 확인한 뒤 만든 폴더를 지운다. */
+const roots: Promise<string>[] = [];
 const servers: http.Server[] = [];
 /** 시험이 붙잡은 작업을 푸는 함수. 단언이 실패해 시험이 풀지 못한 것도 정리가 푼다. */
 const holds: (() => void)[] = [];
@@ -148,7 +149,17 @@ afterEach(async () => {
   });
   // 실행이 모두 돌아왔을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 돌아오지 않은 실행이
   // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다. 프로그램의 끝은 확인하지 못한다(위 `runs`).
-  await attemptAll(folders.map((root) => () => removeFolder(root)));
+  // 만들고 있던 폴더는 그 끝을 시한 안에서 확인한 뒤 지운다. 끝을 확인하지 못하면 폴더를 남기고 실패한다.
+  const made = await within(
+    Promise.allSettled(folders),
+    10_000,
+    "a test folder being made did not finish"
+  );
+  await attemptAll(
+    made.flatMap((folder) =>
+      folder.status === "fulfilled" ? [() => removeFolder(folder.value)] : []
+    )
+  );
 });
 /** 붙잡아 둘 것 하나. `release`를 부르거나 정리가 풀 때까지 `held`가 기다린다. */
 function hold() {
@@ -236,10 +247,9 @@ const connections: {
 ];
 
 async function setup(connection: (typeof connections)[number]) {
-  const root = await realpath(
-    await mkdtemp(path.join(tmpdir(), "babojubot-login-prep-"))
-  );
-  roots.push(root);
+  const making = mkdtemp(path.join(tmpdir(), "babojubot-login-prep-"));
+  roots.push(making);
+  const root = await realpath(await making);
   // 받은 환경을 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 프로세스를 띄웠는지·어느 폴더로 띄웠는지는 남는다.
   // 컨테이너 안에서 돌면(가짜 docker가 붙인 자리를 FAKE_DOCKER_MOUNTS로 준다) 붙인 자리를 그때 모두 훑어 로그인 내용이 든 파일을
   // 남긴다(`test-fixtures/mount-scan.ts`). 실행 시도의 임시 자리는 실행이 끝나면 지워지므로 끝난 뒤에는 볼 수 없다.

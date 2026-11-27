@@ -18,11 +18,7 @@ const folders = testFolders();
 const createClaudeProvider = folders.owning(unownedClaudeProvider);
 const createOpenCodeProvider = folders.owning(unownedOpenCodeProvider);
 const adapters = cliAdapters(folders);
-async function home() {
-  return createCliHome((root) => {
-    folders.adopt(root);
-  });
-}
+const home = () => createCliHome(folders);
 
 describe.each(Object.keys(adapters) as (keyof typeof adapters)[])(
   "%s keeps a finished result",

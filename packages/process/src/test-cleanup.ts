@@ -145,6 +145,24 @@ export function killUnlessGone(
 }
 
 /**
+ * 시작한 획득(`acquiring`: 만들기를 시작한 순간 정리에 등록한 그 promise)의 끝을 상한 안에서 확인하고, 얻었으면 `release`로 놓는다.
+ * 끝을 확인하지 못하면 놓지 않고(자원을 남기고) 실패한다. 얻지 못했으면(거절) 놓을 것이 없다. 획득 결과를 기다린 뒤에야 정리에
+ * 넣으면, 그 사이 정리가 돌 때(시험이 시한으로 끊김) 그 자원을 놓친다(#286 PR 3b-3b-2 외부 리뷰 2회차 STD-1-R2).
+ */
+export async function releaseAcquired<T>(
+  acquiring: Promise<T>,
+  release: (acquired: T) => Promise<unknown>,
+  withinMs = 10_000
+) {
+  const [acquired] = await within(
+    Promise.allSettled([acquiring]),
+    withinMs,
+    "a test resource being acquired did not finish"
+  );
+  if (acquired.status === "fulfilled") await release(acquired.value);
+}
+
+/**
  * 시험이 나중에 기다리는 Promise를 표시하고 그대로 돌려준다. 기다리기 전에 거절돼도 러너가 그 거절을 처리되지 않은 거절로
  * 알리지 않는다. 거절은 나중에 기다리는 곳이 받는다(그 전에 시험이 실패해 정리로 끝나면 시험의 실패가 보고된다).
  * 시작하자마자 거절될 수 있는 대기(자식 프로그램의 `exit`·`error`, 붙잡은 요청의 응답)를 먼저 만들고 다른 단계를 거쳐 기다릴 때

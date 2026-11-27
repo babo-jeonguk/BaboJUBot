@@ -14,6 +14,7 @@ import { armSwap, resetSwap } from "@babojubot/process/fs-swap";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import {
   folderCleanup,
+  releaseAcquired,
   removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
 
@@ -21,8 +22,12 @@ import {
 // 그 사이 바뀐 파일(다른 곳을 가리키는 링크, 상한보다 큰 파일)의 내용으로 조직을 판정한다.
 // 서버가 표식 경로에 처음 닿은 바로 뒤에 그 자리를 다른 것으로 바꿔 그 사이를 만든다. 판정은 처음 닿은 파일의 것이어야 한다.
 const swap = vi.hoisted(() => ({
-  /** 이 폴더(`in`)에 쓰는 표식 쓰기가 파일을 만든 뒤 이 오류로 실패한다(디스크가 찬 경우처럼). 그 시험의 조직 폴더로 고른다. */
-  failWrite: undefined as { in: string; error: Error } | undefined,
+  /**
+   * 이 폴더(`in`)에 쓰는 표식 쓰기가 파일을 만든 뒤 이 오류로 실패한다(디스크가 찬 경우처럼). 그 시험의 조직 폴더로 고르고, 실패시킨
+   * 파일을 `failedAt`에 남긴다(시험이 결함이 그 폴더에서 실제로 났는지 본다).
+   */
+  failWrite: undefined as
+    { in: string; error: Error; failedAt: string[] } | undefined,
 }));
 // 경로에 처음 닿은 호출이 끝난 직후 그 자리를 바꾸는 것은 공용 바꿔치기 대역(`@babojubot/process/fs-swap`)이 한다. 시험은 `armSwap`으로
 // 무장한다.
@@ -40,6 +45,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     const failure = swap.failWrite;
     if (failure && path.dirname(String(args[0])) === failure.in) {
       await real.writeFile(args[0], "", args[2]);
+      failure.failedAt.push(String(args[0]));
       throw failure.error;
     }
     return real.writeFile(...args);
@@ -64,8 +70,8 @@ const markOf = (organizationId: string, padding = 0) =>
 
 /** 표식을 둘 조직 폴더가 있는, 아직 표식 기록이 없는 조직 하나. */
 async function organization() {
-  // DB와 폴더는 만든 직후 정리에 맡긴다. 둘 다 그것을 쓰는 폴더 준비(`ensure`)가 끝난 것을 확인한 뒤에만 닫거나 지운다. 시한이 지나도
-  // 준비는 멈추지 않으므로, 끝을 확인하지 못하면 둘 다 남기고 실패한다.
+  // DB와 폴더는 만들기를 시작한 순간 정리에 맡긴다. 둘 다 만들기의 끝과 그것을 쓰는 폴더 준비(`ensure`)의 끝을 확인한 뒤에만 닫거나
+  // 지운다. 시한이 지나도 만들기·준비는 멈추지 않으므로, 끝을 확인하지 못하면 둘 다 남기고 실패한다.
   const preparations = new Set<Promise<unknown>>();
   const prepared = () =>
     within(
@@ -73,14 +79,20 @@ async function organization() {
       10_000,
       "a folder preparation did not end"
     );
-  const database = await createTestDatabase();
-  const users = folderCleanup(() => database.close());
+  const opening = createTestDatabase();
+  const users = folderCleanup(() =>
+    releaseAcquired(opening, (database) => database.close())
+  );
   cleanups.push(users.cleanUp);
   users.own(prepared);
-  const root = await mkdtemp(path.join(tmpdir(), "identity-swap-"));
-  const owned = folderCleanup(() => removeFolderWithin(root));
+  const database = await opening;
+  const making = mkdtemp(path.join(tmpdir(), "identity-swap-"));
+  const owned = folderCleanup(() =>
+    releaseAcquired(making, (root) => removeFolderWithin(root))
+  );
   cleanups.push(owned.cleanUp);
   owned.own(prepared);
+  const root = await making;
   const org = await insertLegacyOrganization(database.db, "표식 바꿔치기");
   const folder = path.join(root, "organizations", org.id);
   await mkdir(folder, { recursive: true });
@@ -189,10 +201,20 @@ describe("refusing what is not a mark", () => {
 // 표식을 쓰다 실패하면 조직 폴더에 임시 파일을 남기지 않고, 그 실패를 알린다(#280 리뷰 2회차 STD-2와 같은 모양).
 it("leaves no temporary file in the organization folder when writing the mark fails", async () => {
   const org = await organization();
-  swap.failWrite = {
+  const failure = {
     in: org.folder,
     error: Object.assign(new Error("disk full"), { code: "ENOSPC" }),
+    failedAt: [] as string[],
   };
-  await expect(org.ensure()).rejects.toThrow(/ENOSPC/);
+  swap.failWrite = failure;
+  const refused = org.ensure();
+  await expect(refused).rejects.toThrow(/ENOSPC/);
+  // 결함이 그 조직 폴더의 쓰기에서 실제로 났다: 주입한 오류 그대로가 실패의 원인이고, 실패시킨 쓰기는 그 폴더 안의 한 파일이다.
+  expect(await refused.catch((refusal: Error) => refusal.cause)).toBe(
+    failure.error
+  );
+  expect(failure.failedAt.map((file) => path.dirname(file))).toEqual([
+    org.folder,
+  ]);
   expect(await readdir(org.folder)).toEqual([]);
 });
