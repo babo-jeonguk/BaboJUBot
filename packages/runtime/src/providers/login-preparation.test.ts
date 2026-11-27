@@ -10,7 +10,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { realpathSync } from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -22,7 +21,11 @@ import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
-import { insideFolder, settledWithin } from "@babojubot/process/test-support";
+import {
+  insideFolder,
+  realPlace,
+  settledWithin,
+} from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { releaseAcquired, withCleanup } from "@babojubot/process/test-cleanup";
 import { callArming } from "@babojubot/process/call-arming";
@@ -80,9 +83,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       const current = gate;
       if (refusal && insideFolder(refusal.in, String(args[1]))) {
         const link = String(args[1]);
-        refusal.refused.push(
-          path.join(realpathSync(path.dirname(link)), path.basename(link))
-        );
+        refusal.refused.push(realPlace(link));
         return Promise.reject(
           Object.assign(new Error(`${refusal.code}: cannot link`), {
             code: refusal.code,

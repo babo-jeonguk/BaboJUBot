@@ -8,7 +8,6 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { realpathSync } from "node:fs";
 import path from "node:path";
 import type { RunRequest } from "@babojubot/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +17,7 @@ import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import {
   insideFolder,
   permissionDenial,
+  realPlace,
 } from "@babojubot/process/test-support";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -68,9 +68,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         return actual.symlink(...args);
       // handle을 거친 경로(`/proc/self/fd/<n>/…`)는 시험이 handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다.
       const link = String(args[1]);
-      refusal.refused.push(
-        path.join(realpathSync(path.dirname(link)), path.basename(link))
-      );
+      refusal.refused.push(realPlace(link));
       return Promise.reject(
         Object.assign(new Error(`${refusal.code}: cannot link`), {
           code: refusal.code,

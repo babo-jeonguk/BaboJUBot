@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import {
   lstat,
   mkdir,
@@ -19,7 +18,7 @@ import { loginLink } from "./login-link.ts";
 import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
-import { insideFolder } from "@babojubot/process/test-support";
+import { insideFolder, realPlace } from "@babojubot/process/test-support";
 
 // Codex 로그인 하나를 연결의 모든 조직이 링크로 같이 쓴다(docs/research/org-product-folders-references.md 사용자 결정).
 // 링크를 만들 수 없는 컴퓨터와 여러 조직이 한꺼번에 시작하는 장면에서도 로그인이 남아야 한다.
@@ -43,9 +42,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         return actual.symlink(...args);
       // handle을 거친 경로(`/proc/self/fd/<n>/…`)는 시험이 handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다.
       const link = String(args[1]);
-      refusal.refused.push(
-        path.join(realpathSync(path.dirname(link)), path.basename(link))
-      );
+      refusal.refused.push(realPlace(link));
       return Promise.reject(
         Object.assign(new Error("EPERM: operation not permitted"), {
           code: "EPERM",

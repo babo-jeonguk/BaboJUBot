@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -21,6 +20,7 @@ import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts
 import {
   insideFolder,
   permissionDenial,
+  realPlace,
 } from "@babojubot/process/test-support";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
@@ -39,10 +39,7 @@ vi.mock("./regular-file.ts", async (importOriginal) => {
     readRegularFile: async (file: string) => {
       // 결함은 불린 순간(첫 await 전) 읽는다.
       if (reading && insideFolder(path.dirname(reading.at), file)) {
-        const spelled = path.join(
-          realpathSync(path.dirname(file)),
-          path.basename(file)
-        );
+        const spelled = realPlace(file);
         if (
           path.dirname(spelled) === path.dirname(reading.at) &&
           spelled !== reading.at

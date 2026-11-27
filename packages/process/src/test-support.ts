@@ -1,7 +1,7 @@
 // node:net·node:http는 값으로 불러오지 않는다(runtime `connect-failure-support.ts` 머리의 대역 경로 제약).
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { readlinkSync, realpathSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { hasErrorCode } from "@babojubot/contracts";
@@ -21,6 +21,15 @@ export function insideFolder(folder: string, file: string): boolean {
     relative === "" ||
     (!relative.startsWith("..") && !path.isAbsolute(relative))
   );
+}
+
+/**
+ * 자리 `file`의 폴더를 실제 경로로 푼 그 자리(자리 자체는 따라가지 않는다). 대역이 받은 경로가 handle을 거친 경로(`/proc/self/fd/<n>/…`)나
+ * 링크 뒤 임시 폴더(macOS `/var` → `/private/var`)여도, 시험이 그 handle이 닫힌 뒤에 그 시험의 폴더와 견줄 수 있게 남길 때 쓴다.
+ * 폴더가 있어야 한다.
+ */
+export function realPlace(file: string): string {
+  return path.join(realpathSync(path.dirname(file)), path.basename(file));
 }
 
 // 시험의 대기 상한(`within`)은 node 기본 모듈을 불러오지 않는 파일 하나에 둔다(모듈 대역의 factory가 불러오는 지원 파일도 쓴다).

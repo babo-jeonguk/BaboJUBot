@@ -1,10 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, openSync, realpathSync } from "node:fs";
+import { closeSync, constants, openSync } from "node:fs";
 import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { hasErrorCode } from "@babojubot/contracts";
-import { fileLinks, insideFolder } from "@babojubot/process/test-support";
+import {
+  fileLinks,
+  insideFolder,
+  realPlace,
+} from "@babojubot/process/test-support";
 import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
 
@@ -19,9 +23,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     // 결함은 불린 순간(첫 await 전) 읽는다. 제품은 확인한 폴더 handle을 거친 경로(`/proc/self/fd/<n>/…`)로 열기도 한다(`insideFolder`).
     const file = String(args[0]);
     if (missing && insideFolder(missing.at, file)) {
-      missing.missed.push(
-        path.join(realpathSync(path.dirname(file)), path.basename(file))
-      );
+      missing.missed.push(realPlace(file));
       throw Object.assign(new Error("no such file"), { code: "ENOENT" });
     }
     return real.open(...args);
