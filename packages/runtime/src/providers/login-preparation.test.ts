@@ -24,6 +24,7 @@ import { attachedRelayHub, request } from "./test-support.ts";
 import { insideFolder, within } from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { callArming } from "@babojubot/process/call-arming";
 import { attemptAll, hasErrorCode, orIfMissing } from "@babojubot/contracts";
 
 // 로그인을 파일로 같이 쓰는 Codex·Antigravity의 실행 준비(#146). 조직 신원 확인 → 연결 로그인 준비 → 격리 실행이면 흔적 검사·
@@ -403,6 +404,12 @@ function holdAt(operation: Operation, matches: (file: string) => boolean) {
   return { reached, release };
 }
 
+/**
+ * 시험이 감싼 실행 호출. 실행 시도 폴더(`babojubot-attempt-*`)는 공유 임시 폴더에 무작위 이름으로 생겨 경로로 그 시험의 것을 가를 수
+ * 없으므로, 그 폴더의 작업을 붙잡을 때는 그 시험이 감싼 실행의 문맥인지로 가른다(`@babojubot/process/call-arming`).
+ */
+const runCalls = callArming<{ test: string }>();
+
 // Windows는 Docker 격리를 지원하지 않는다(docs/providers.md 격리 실행).
 const noIsolation = process.platform === "win32";
 
@@ -446,13 +453,20 @@ describe.each(connections)("$name", (connection) => {
     async () => {
       const env = await setup(connection);
       const a = crypto.randomUUID();
-      const held = holdAt("writeFile", (file) =>
-        path.basename(path.dirname(file)).startsWith("babojubot-attempt-")
+      // 그 시험의 실행 호출(대역이 불린 순간의 문맥) 안에서 실행 시도 폴더에 쓰는 첫 파일을 붙잡는다.
+      const thisRun = { test: "own login file" };
+      const held = holdAt(
+        "writeFile",
+        (file) =>
+          runCalls.current() === thisRun &&
+          path.basename(path.dirname(file)).startsWith("babojubot-attempt-")
       );
       const cancel = new AbortController();
-      const running = env.provider.adapter.execute(
-        await env.requestFor(a, "container"),
-        control(cancel.signal)
+      const input = await env.requestFor(a, "container");
+      const running = runCalls.run(
+        thisRun,
+        () => env.provider.adapter.execute(input, control(cancel.signal)),
+        onTestFinished
       );
       const attemptFile = await held.reached;
       expect(env.grants()).toHaveLength(1);

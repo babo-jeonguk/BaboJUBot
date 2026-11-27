@@ -1,23 +1,27 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, openSync } from "node:fs";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { closeSync, constants, openSync, realpathSync } from "node:fs";
+import { mkdir, realpath, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { hasErrorCode } from "@babojubot/contracts";
-import { fileLinks } from "@babojubot/process/test-support";
+import { fileLinks, insideFolder } from "@babojubot/process/test-support";
 import { claudeSessionCost, claudeSessionFacts } from "./claude-transcript.ts";
 import { testFolders } from "./test-folders.ts";
 
-/** 참이면 이름이 세션 기록 파일인 다음 열기 한 번이 "없음"으로 실패한다(그 자리는 그대로 있다: 여는 사이 바뀐 장면). */
-const opening = vi.hoisted(() => ({
-  missTranscript: undefined as string | undefined,
-}));
+/**
+ * 그 시험의 세션 기록 파일(`at`, 실제 경로) 열기가 "없음"으로 실패한다(그 자리는 그대로 있다: 여는 사이 바뀐 장면). 실패시킨 자리를
+ * `missed`에 남긴다(시험이 그 기록에서 실제로 났는지 본다, #286).
+ */
+let missing: { at: string; missed: string[] } | undefined;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const real = await importOriginal<typeof import("node:fs/promises")>();
   const open: typeof real.open = async (...args) => {
-    const name = opening.missTranscript;
-    if (name && String(args[0]).endsWith(name)) {
-      opening.missTranscript = undefined;
+    // 결함은 불린 순간(첫 await 전) 읽는다. 제품은 확인한 폴더 handle을 거친 경로(`/proc/self/fd/<n>/…`)로 열기도 한다(`insideFolder`).
+    const file = String(args[0]);
+    if (missing && insideFolder(missing.at, file)) {
+      missing.missed.push(
+        path.join(realpathSync(path.dirname(file)), path.basename(file))
+      );
       throw Object.assign(new Error("no such file"), { code: "ENOENT" });
     }
     return real.open(...args);
@@ -25,7 +29,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return { ...real, open, default: { ...real, open } };
 });
 afterEach(() => {
-  opening.missTranscript = undefined;
+  missing = undefined;
 });
 
 const folders = testFolders();
@@ -111,15 +115,17 @@ describe.each(readers)(
 
     // 기록을 여는 사이 자리가 바뀌었으면 읽지 못한 것이다. 건너뛰되 그 까닭을 남긴다(#286 리뷰 2회차 SPEC-3 같은 모양).
     it("skips a transcript that changed while it was opened, saying so", async () => {
-      const home = await folders.make("babojubot-transcript-");
+      const home = await realpath(await folders.make("babojubot-transcript-"));
       const projects = path.join(home, "config", "projects", "project");
       await mkdir(projects, { recursive: true });
-      await writeFile(path.join(projects, `${session}.jsonl`), transcript);
+      const file = path.join(projects, `${session}.jsonl`);
+      await writeFile(file, transcript);
       const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
       onTestFinished(() => warned.mockRestore());
-      opening.missTranscript = `${session}.jsonl`;
+      const failing = { at: file, missed: [] as string[] };
+      missing = failing;
       expect(await readTranscript(home, session)).toBeUndefined();
-      expect(opening.missTranscript).toBeUndefined();
+      expect(failing.missed).toEqual([file]);
       expect(warned.mock.calls.map(([line]) => String(line))).toEqual([
         "[provider] a Claude session transcript changed while it was opened",
       ]);

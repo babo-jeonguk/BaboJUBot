@@ -19,23 +19,42 @@ import { createClaudeProvider as unownedClaudeProvider } from "./claude.ts";
 import { createCodexProvider as unownedCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import { createOpenCodeProvider as unownedOpenCodeProvider } from "./opencode.ts";
-import { permissionDenial } from "@babojubot/process/test-support";
+import {
+  insideFolder,
+  permissionDenial,
+} from "@babojubot/process/test-support";
 import { attachedRelayHub, request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
-// 로그인 파일 읽기(`./regular-file.ts` `readRegularFile`)를 정한 오류로 실패시킨다. 옮긴 이름(`….removing`)의 파일만 실패시키고, 그 밖은
-// 진짜로 읽는다. 비어 있으면 아무것도 바꾸지 않는다.
-const reading = vi.hoisted(() => ({
-  failMovedWith: undefined as string | undefined,
-}));
+/**
+ * 그 시험의 로그인 자리(`at`, 실제 경로)에서 지우려고 옮겨 둔 파일(`@babojubot/files` `removeConfirmed`가 같은 폴더에 두는
+ * `.<이름>.<uuid>.removing`)의 읽기(`./regular-file.ts` `readRegularFile`)를 이 오류 코드로 실패시킨다. 제품은 그 폴더를 handle을
+ * 거친 경로(`/proc/self/fd/<n>/…`)로 다루므로 읽는 자리의 폴더를 실제 경로로 바꿔 본다. 실패시킨 파일을 `failedAt`에 남긴다(시험이
+ * 그 자리에서 실제로 났는지 본다, #286). 그 밖은 진짜로 읽는다.
+ */
+let reading: { at: string; code: string; failedAt: string[] } | undefined;
+/** `file`이 로그인 자리 `at`의 파일을 지우려고 옮겨 둔 이름이면 그 실제 경로. */
+function movedAside(at: string, file: string) {
+  const name = path.basename(file);
+  return name.startsWith(`.${path.basename(at)}.`) && name.endsWith(".removing")
+    ? path.join(path.dirname(at), name)
+    : undefined;
+}
 vi.mock("./regular-file.ts", async (importOriginal) => {
   const real = await importOriginal<typeof import("./regular-file.ts")>();
   return {
     ...real,
     readRegularFile: async (file: string) => {
-      const code = reading.failMovedWith;
-      if (code !== undefined && file.endsWith(".removing"))
-        throw Object.assign(new Error(`${code}: cannot read`), { code });
+      // 결함은 불린 순간(첫 await 전) 읽는다.
+      if (reading && insideFolder(path.dirname(reading.at), file)) {
+        const moved = movedAside(reading.at, file);
+        if (moved) {
+          reading.failedAt.push(moved);
+          throw Object.assign(new Error(`${reading.code}: cannot read`), {
+            code: reading.code,
+          });
+        }
+      }
       return real.readRegularFile(file);
     },
   };
@@ -556,9 +575,14 @@ describe("Antigravity", () => {
         auth_method: "consumer",
       })
     );
-    reading.failMovedWith = "EIO";
+    const failing = {
+      at: place,
+      code: "EIO",
+      failedAt: [] as string[],
+    };
+    reading = failing;
     onTestFinished(() => {
-      reading.failMovedWith = undefined;
+      reading = undefined;
     });
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     onTestFinished(() => warned.mockRestore());
@@ -570,6 +594,10 @@ describe("Antigravity", () => {
     expect(warned.mock.calls.map(([line]) => String(line))).toContain(
       "[provider] the Antigravity run failed (EIO)"
     );
+    // 읽기 실패는 그 조직 자리에서 옮겨 둔 파일 하나에서 났다(대역은 그 자리의 옮긴 이름만 실패시킨다).
+    expect([...new Set(failing.failedAt)]).toEqual([
+      expect.stringMatching(/\.removing$/),
+    ]);
   }, 20000);
 
   it("reports a run without the connection's login as needing one", async () => {
