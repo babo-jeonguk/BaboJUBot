@@ -8,6 +8,9 @@
 import { readFile } from "node:fs/promises";
 // node:net·node:http는 형으로만 불러온다(runtime `connect-failure-support.ts` 머리의 대역 경로 제약).
 import type net from "node:net";
+// 신호는 `node:process`의 `kill`로 보낸다. 시험은 이 모듈 경계에서 대역하고(`vi.mock("node:process")`), 전역 `process.kill`을
+// 바꾸지 않는다(#286).
+import { kill } from "node:process";
 import {
   attemptAll,
   attemptEach,
@@ -114,7 +117,7 @@ const errorCode = (error: unknown) => (error as NodeJS.ErrnoException).code;
  */
 export function processAlive(pid: number) {
   try {
-    process.kill(pid, 0);
+    kill(pid, 0);
     return true;
   } catch (error) {
     if (errorCode(error) === "ESRCH") return false;
@@ -134,7 +137,7 @@ export function killUnlessGone(
   signal: NodeJS.Signals = "SIGKILL"
 ) {
   try {
-    process.kill(pid, signal);
+    kill(pid, signal);
     return true;
   } catch (error) {
     if (errorCode(error) === "ESRCH") return false;

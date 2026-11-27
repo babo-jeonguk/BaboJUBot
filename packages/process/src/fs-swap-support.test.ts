@@ -3,7 +3,7 @@ import { open, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { armSwap, resetSwap, swapAfter } from "./fs-swap-support.ts";
-import { awaitedLater } from "./test-cleanup.ts";
+import { awaitedLater, releaseAcquired } from "./test-cleanup.ts";
 import { testFolders } from "./test-folders.ts";
 import { within } from "./test-support.ts";
 
@@ -61,13 +61,13 @@ it("closes what open returned and throws the swap's failure when the swap fails"
   const recording = {
     ...fsPromises,
     open: async (...args: Parameters<typeof open>) => {
-      // 열기를 시작 순간 정리에 맡긴다. 대역이 닫지 못하거나 바꾸기가 뜻밖에 성공해도 시험이 끝날 때, 열기의 끝을 확인한 뒤 연 handle을
+      // 열기를 시작 순간 정리에 맡긴다. 대역이 닫지 못하거나 바꾸기가 뜻밖에 성공해도 시험이 끝날 때, 열기의 끝을 상한 안에서 확인한 뒤 연 handle을
       // 닫는다(이미 닫힌 handle의 close는 이행한다. 열기가 실패했으면 닫을 것이 없다).
       const opening = open(...args);
-      folders.own(async () => {
-        const [opened] = await Promise.allSettled([opening]);
-        if (opened.status === "fulfilled") await opened.value.close();
-      }, "the handle the swap should close");
+      folders.own(
+        () => releaseAcquired(opening, (handle) => handle.close()),
+        "the handle the swap should close"
+      );
       const handle = await opening;
       handles.push(handle);
       return handle;
