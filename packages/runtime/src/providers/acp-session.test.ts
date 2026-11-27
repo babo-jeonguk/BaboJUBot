@@ -2,11 +2,12 @@ import { realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  extractJsonModels,
   extractJsonObject,
-  extractJsonValue,
   isAcpAuthProblem,
   isExplicitlySignedOut,
   isPositiveLoginLine,
+  parsePlainBulletModels,
   runAcpSession,
   stripAnsi,
 } from "./acp-session.ts";
@@ -28,7 +29,7 @@ describe("ACP session client", () => {
         logName: "TestAcp",
         dataDir: root,
         connectionId: "test-acp",
-        command: [path.join(root, "must-not-run")],
+        command: [process.execPath, "-e", "process.exitCode = 99"],
         args: ["acp"],
         env: { ...process.env },
       },
@@ -46,71 +47,40 @@ describe("ACP session client", () => {
   });
 
   it("places workspace-less planning runs in an organization folder separate from recovery records", async () => {
-    const runRequest = request();
-    const root = await folders.make("acp-planning-cwd-");
-    const expectedOrgDir = path.join(
-      root,
-      "providers",
-      "test-acp",
-      "organizations",
-      runRequest.identity.organizationId
-    );
-    const fixture = path.join(root, "fixture.json");
-    // replay가 받은 session/new.params.cwd를 정확히 조직 폴더로 대조해 연결 폴더(processes 기록 위치)와 분리됨을 확인한다.
-    const realRoot = await realpath(root);
-    const expectedRealOrgDir = path.join(
-      realRoot,
-      "providers",
-      "test-acp",
-      "organizations",
-      runRequest.identity.organizationId
-    );
-    await writeFile(
-      fixture,
-      JSON.stringify({
-        argv: { acp: true },
-        steps: [
-          { input: { method: "initialize" } },
-          acpRpc(1, { result: { protocolVersion: 1 } }),
-          {
-            input: {
-              method: "session/new",
-              params: { cwd: expectedRealOrgDir, ...acpOrganizationMcp },
-            },
-          },
-          acpRpc(2, { result: { sessionId: "plan-1" } }),
-          {
-            input: {
-              method: "session/prompt",
-              params: { sessionId: "plan-1" },
-            },
-          },
-          acpRpc(3, { result: { stopReason: "end_turn" } }),
-        ],
-      })
-    );
-    const stop = new AbortController();
-    const running = runAcpSession(
+    const { result, root, realRoot, runRequest } = await runAcpSessionReplay(
+      folders,
       {
-        logName: "TestAcp",
-        dataDir: root,
-        connectionId: "test-acp",
-        command: [
-          process.execPath,
-          path.resolve("test-fixtures/replay.mjs"),
-          fixture,
-        ],
-        args: ["acp"],
-        env: { ...process.env },
-      },
-      { ...runRequest, workspace: null },
-      { signal: stop.signal, emit: async () => {} }
+        prefix: "acp-planning-cwd-",
+        patch: { workspace: null },
+        steps: ({ realRoot: resolvedRoot, runRequest: req }) => {
+          const expectedRealOrgDir = path.join(
+            resolvedRoot,
+            "providers",
+            "test-acp",
+            "organizations",
+            req.identity.organizationId
+          );
+          return [
+            { input: { method: "initialize" } },
+            acpRpc(1, { result: { protocolVersion: 1 } }),
+            {
+              input: {
+                method: "session/new",
+                params: { cwd: expectedRealOrgDir, ...acpOrganizationMcp },
+              },
+            },
+            acpRpc(2, { result: { sessionId: "plan-1" } }),
+            {
+              input: {
+                method: "session/prompt",
+                params: { sessionId: "plan-1" },
+              },
+            },
+            acpRpc(3, { result: { stopReason: "end_turn" } }),
+          ];
+        },
+      }
     );
-    folders.own(async () => {
-      stop.abort();
-      await running.catch(() => undefined);
-    }, "a planning ACP replay run");
-    const result = await running;
     expect(result).toEqual({
       stopReason: "completed",
       error: null,
@@ -118,18 +88,34 @@ describe("ACP session client", () => {
       usage: null,
       nextSession: { id: "plan-1" },
     });
-    await expect(realpath(expectedOrgDir)).resolves.toBe(expectedRealOrgDir);
+    const expectedOrgDir = path.join(
+      root,
+      "providers",
+      "test-acp",
+      "organizations",
+      runRequest.identity.organizationId
+    );
+    await expect(realpath(expectedOrgDir)).resolves.toBe(
+      path.join(
+        realRoot,
+        "providers",
+        "test-acp",
+        "organizations",
+        runRequest.identity.organizationId
+      )
+    );
   });
 
   it("returns a failed RunResult instead of throwing when workspace.cwd does not exist", async () => {
     const root = await folders.make("acp-missing-cwd-");
     const missing = path.join(root, "does-not-exist");
+    // 실행 가능한 명령을 넘겨 spawn 실패가 아니라 realpath 단계에서 실패로 잡히는지 확인한다.
     const result = await runAcpSession(
       {
         logName: "TestAcp",
         dataDir: root,
         connectionId: "test-acp",
-        command: [path.join(root, "must-not-run")],
+        command: [process.execPath, "-e", "process.exitCode = 99"],
         args: ["acp"],
         env: { ...process.env },
       },
@@ -184,6 +170,55 @@ describe("ACP session client", () => {
       stopReason: "failed",
       error: "프로바이더 실행이 실패했습니다.",
       errorCode: "login_required",
+      summary: null,
+      usage: null,
+      nextSession: null,
+    });
+  });
+
+  it("keeps model refusal intact even when stderr logged a normal authentication banner", async () => {
+    const root = await folders.make("acp-model-stderr-");
+    const script = path.join(root, "banner-refuse.mjs");
+    await writeFile(
+      script,
+      [
+        "import { createInterface } from 'node:readline';",
+        "console.error('Authenticated with IAM Identity Center');",
+        "const out = (v) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...v }) + '\\n');",
+        "for await (const line of createInterface({ input: process.stdin })) {",
+        "  if (!line.trim()) continue;",
+        "  const { id, method } = JSON.parse(line);",
+        "  if (method === 'initialize') out({ id, result: { protocolVersion: 1 } });",
+        "  else if (method === 'session/new') out({ id, result: { sessionId: 's-banner', configOptions: [{ id: 'model', category: 'model' }] } });",
+        "  else if (method === 'session/set_config_option') out({ id, error: { code: -32602, message: 'model unavailable' } });",
+        "}",
+        "",
+      ].join("\n")
+    );
+    const stop = new AbortController();
+    const running = runAcpSession(
+      {
+        logName: "TestAcp",
+        dataDir: root,
+        connectionId: "test-acp",
+        command: [process.execPath, script],
+        args: ["acp"],
+        env: { ...process.env },
+      },
+      {
+        ...request(),
+        model: "bad-model",
+        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      },
+      { signal: stop.signal, emit: async () => {} }
+    );
+    folders.own(async () => {
+      stop.abort();
+      await running.catch(() => undefined);
+    }, "a banner-stderr ACP run");
+    await expect(running).resolves.toEqual({
+      stopReason: "failed",
+      error: "고른 모델을 쓸 수 없어 실행하지 않았습니다.",
       summary: null,
       usage: null,
       nextSession: null,
@@ -249,6 +284,76 @@ describe("ACP session client", () => {
     });
   });
 
+  it("answers in-flight permission requests with cancelled once the run is aborted", async () => {
+    const { result } = await runAcpSessionReplay(folders, {
+      prefix: "acp-cancel-perm-",
+      onEmit: (item, abort) => {
+        if (
+          item !== null &&
+          typeof item === "object" &&
+          "type" in item &&
+          item.type === "tool_use"
+        )
+          abort();
+      },
+      steps: [
+        { input: { method: "initialize" } },
+        acpRpc(1, { result: { protocolVersion: 1 } }),
+        { input: { method: "session/new", params: acpOrganizationMcp } },
+        acpRpc(2, { result: { sessionId: "s-cancel" } }),
+        {
+          input: {
+            method: "session/prompt",
+            params: { sessionId: "s-cancel" },
+          },
+        },
+        {
+          frame: {
+            jsonrpc: "2.0",
+            method: "session/update",
+            params: {
+              sessionId: "s-cancel",
+              update: { sessionUpdate: "tool_call", title: "send_message" },
+            },
+          },
+        },
+        {
+          input: {
+            method: "session/cancel",
+            params: { sessionId: "s-cancel" },
+          },
+        },
+        {
+          frame: {
+            jsonrpc: "2.0",
+            id: "perm-after-cancel",
+            method: "session/request_permission",
+            params: {
+              sessionId: "s-cancel",
+              options: [
+                { optionId: "once", kind: "allow_once", name: "Allow once" },
+              ],
+            },
+          },
+        },
+        {
+          input: {
+            id: "perm-after-cancel",
+            result: { outcome: { outcome: "cancelled" } },
+          },
+        },
+        acpRpc(3, { result: { stopReason: "cancelled" } }),
+      ],
+    });
+    expect(result).toEqual({
+      stopReason: "cancelled",
+      error: null,
+      summary: null,
+      usage: null,
+      nextSession: null,
+    });
+  });
+
   it("discovers the model configId from config_option_update emitted during session/load", async () => {
     const { result } = await runAcpSessionReplay(folders, {
       prefix: "acp-config-update-",
@@ -300,6 +405,42 @@ describe("ACP session client", () => {
       summary: null,
       usage: null,
       nextSession: { id: "s-2" },
+    });
+  });
+
+  it("uses session/set_model directly for transitional agents whose configOptions omit a model entry", async () => {
+    const { result } = await runAcpSessionReplay(folders, {
+      prefix: "acp-transitional-model-",
+      steps: [
+        { input: { method: "initialize" } },
+        acpRpc(1, { result: { protocolVersion: 1 } }),
+        { input: { method: "session/new", params: acpOrganizationMcp } },
+        acpRpc(2, {
+          result: {
+            sessionId: "s-trans",
+            configOptions: [{ id: "mode", category: "mode" }],
+          },
+        }),
+        {
+          input: {
+            method: "session/set_model",
+            params: { sessionId: "s-trans", modelId: "trans-model" },
+          },
+        },
+        acpRpc(3, { result: {} }),
+        {
+          input: { method: "session/prompt", params: { sessionId: "s-trans" } },
+        },
+        acpRpc(4, { result: { stopReason: "end_turn" } }),
+      ],
+      patch: { model: "trans-model" },
+    });
+    expect(result).toEqual({
+      stopReason: "completed",
+      error: null,
+      summary: null,
+      usage: null,
+      nextSession: { id: "s-trans" },
     });
   });
 
@@ -410,7 +551,7 @@ describe("ACP session client", () => {
 });
 
 describe("ACP parsing and login classification helpers", () => {
-  it("strips ANSI CSI and OSC sequences and detects signed-out phrases wrapped in ANSI codes", () => {
+  it("strips ANSI CSI and OSC sequences and evaluates auth errors per line excluding positive lines", () => {
     expect(stripAnsi("\u001b[32m* grok-4.7\u001b[0m")).toBe("* grok-4.7");
     expect(stripAnsi("\u001b]0;window title\u0007Logged in")).toBe("Logged in");
     expect(
@@ -420,6 +561,9 @@ describe("ACP parsing and login classification helpers", () => {
       true
     );
     expect(isAcpAuthProblem("\u001b[31mNot signed in\u001b[0m")).toBe(true);
+    expect(
+      isAcpAuthProblem("Authenticated with IAM Identity Center\nNetwork error")
+    ).toBe(false);
   });
 
   it("distinguishes positive login confirmations from negative or ambiguous text", () => {
@@ -438,14 +582,36 @@ describe("ACP parsing and login classification helpers", () => {
     expect(isPositiveLoginLine("Unexpected banner")).toBe(false);
   });
 
-  it("extracts multi-line JSON objects and arrays even when prefix notices contain braces", () => {
+  it("ignores bracketed log prefixes like [1] or [2] when extracting JSON objects and model lists", () => {
     expect(
       extractJsonObject(
-        '\u001b[33mNotice: {update available}\u001b[0m\n{\n  "models": [\n    { "model_id": "a" }\n  ]\n}\n'
+        '[1] Loading...\n\u001b[33mNotice: {update}\u001b[0m\n{\n  "account": { "id": "u1" }\n}\n'
       )
-    ).toEqual({ models: [{ model_id: "a" }] });
+    ).toEqual({ account: { id: "u1" } });
+    expect(extractJsonModels("Available models [2]:\n  * grok-4.7")).toBe(
+      undefined
+    );
     expect(
-      extractJsonValue('Notice: ready\n[\n  { "id": "grok-4.7" }\n]\n')
-    ).toEqual([{ id: "grok-4.7" }]);
+      extractJsonModels('Notice [2]:\n[\n  { "id": "grok-4.7" }\n]\n')
+    ).toEqual([{ id: "grok-4.7", label: "grok-4.7" }]);
+  });
+
+  it("parses plain bullet models including auto with description while rejecting help and numbered lists", () => {
+    expect(
+      parsePlainBulletModels(
+        [
+          "  - Help",
+          "  - 1. Run login first",
+          "  - non-interactive mode",
+          "  * auto  Automatic selection",
+          "  * Grok-4.8 (default)",
+          "  - grok-4.5",
+        ].join("\n")
+      )
+    ).toEqual([
+      { id: "auto", label: "auto" },
+      { id: "Grok-4.8", label: "Grok-4.8" },
+      { id: "grok-4.5", label: "grok-4.5" },
+    ]);
   });
 });

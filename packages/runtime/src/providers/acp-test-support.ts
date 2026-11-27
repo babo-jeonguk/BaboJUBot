@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProviderConnection,
@@ -39,43 +39,38 @@ export async function runAcpSessionReplay(
   folders: ReturnType<typeof testFolders>,
   options: {
     prefix: string;
-    argv?: Record<string, unknown>;
-    args?: readonly string[];
-    steps: Record<string, unknown>[];
+    steps:
+      | Record<string, unknown>[]
+      | ((context: {
+          root: string;
+          realRoot: string;
+          runRequest: RunRequest;
+        }) => Record<string, unknown>[]);
     patch?: Partial<RunRequest>;
-    signal?: AbortSignal;
-    /** `true`이면 기본 workspace를 채우지 않고 `patch.workspace`(기본 `null`)를 그대로 넘긴다. */
-    keepWorkspace?: boolean;
+    onEmit?: (activity: unknown, abort: () => void) => void;
   }
-): Promise<{ result: RunResult; activity: unknown[]; root: string }> {
+): Promise<{
+  result: RunResult;
+  activity: unknown[];
+  root: string;
+  realRoot: string;
+  runRequest: RunRequest;
+}> {
   const root = await folders.make(options.prefix);
-  const fixture = path.join(root, "fixture.json");
-  await writeFile(
-    fixture,
-    JSON.stringify({
-      argv: options.argv ?? { acp: true },
-      steps: options.steps,
-    })
-  );
-  const activity: unknown[] = [];
-  const stop = new AbortController();
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, stop.signal])
-    : stop.signal;
+  const realRoot = await realpath(root);
   const runRequest: RunRequest = {
     ...request(),
-    ...(options.keepWorkspace
-      ? {}
-      : {
-          workspace: {
-            cwd: root,
-            organization: root,
-            personal: root,
-            peers: [],
-          },
-        }),
+    workspace: { cwd: root, organization: root, personal: root, peers: [] },
     ...options.patch,
   };
+  const steps =
+    typeof options.steps === "function"
+      ? options.steps({ root, realRoot, runRequest })
+      : options.steps;
+  const fixture = path.join(root, "fixture.json");
+  await writeFile(fixture, JSON.stringify({ argv: { acp: true }, steps }));
+  const activity: unknown[] = [];
+  const stop = new AbortController();
   const running = runAcpSession(
     {
       logName: "TestAcp",
@@ -86,14 +81,15 @@ export async function runAcpSessionReplay(
         path.resolve("test-fixtures/replay.mjs"),
         fixture,
       ],
-      args: options.args ?? ["acp"],
+      args: ["acp"],
       env: { ...process.env },
     },
     runRequest,
     {
-      signal,
+      signal: stop.signal,
       emit: async (item) => {
         activity.push(item);
+        options.onEmit?.(item, () => stop.abort());
       },
     }
   );
@@ -102,7 +98,7 @@ export async function runAcpSessionReplay(
     await running.catch(() => undefined);
   }, "an ACP replay run");
   const result = await running;
-  return { result, activity, root };
+  return { result, activity, root, realRoot, runRequest };
 }
 
 /** 프로바이더 factory(`folders.owning`으로 감싼 것)로 replay를 한 번 실행한다. */

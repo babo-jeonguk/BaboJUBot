@@ -10,7 +10,7 @@
 | Antigravity | 1.5.4(가짜 상류로 합성 확인) | 실행마다 `agy acp`(Agent Client Protocol) 세션 하나 | 첫 입력 앞에 추가 | 미지원 |
 | Kiro CLI | 3.6.2(단건 한 턴 확인; 도구·계약은 합성 검증) | 실행마다 `kiro-cli acp`(Agent Client Protocol) 세션 하나 | 첫 입력 앞에 추가 | 미지원 |
 
-Kiro CLI는 이 컴퓨터에 이미 있는 `kiro-cli` 로그인(`~/.kiro`)을 쓴다. HOME을 제품 폴더로 바꾸면 `~/.kiro`가 보이지 않으므로 이 연결만 사용자 HOME을 그대로 둔다(`kiro:work`처럼 별칭을 붙여도 같은 `~/.kiro` 로그인을 쓴다). 조직 도구는 작업 폴더에 토큰 파일을 쓰지 않고 ACP `session/new`와 `session/load`의 MCP 서버로 그 실행 시도에만 넘긴다. 고른 모델은 세션이 알린 `configOptions`의 모델 항목으로 `session/set_config_option`(구버전 `-32601`이면 `session/set_model`)으로 정하며, 거절되면 실행하지 않는다. 도구 허락은 그 세션에서 `allow_once`를 우선 선택한다. 이전 세션을 이어 가지 못하면 새 세션으로 시작한다. 격리 실행(컨테이너·인증 중계)은 아직 없으며, 격리 스위치를 켜면 이 컴퓨터로 우회하지 않고 `준비안됨`(`격리 실행 미지원`)으로 거부한다.
+Kiro CLI는 이 컴퓨터에 이미 있는 `kiro-cli` 로그인(`~/.kiro`)을 쓴다. HOME을 제품 폴더로 바꾸면 그 로그인이 보이지 않으므로, 이 컴퓨터의 기존 로그인을 쓰는 연결은 사용자 HOME·`XDG_CONFIG_HOME`·`XDG_DATA_HOME`·`XDG_STATE_HOME`·`DBUS_SESSION_BUS_ADDRESS`를 그대로 두고 `PATH` 앞에 `~/.local/bin`을 둔다(`kiro:work`처럼 별칭을 붙여도 같은 `~/.kiro` 로그인을 쓴다). 조직 도구는 작업 폴더에 토큰 파일을 쓰지 않고 ACP `session/new`와 `session/load`의 MCP 서버로 그 실행 시도에만 넘긴다. 고른 모델은 세션이 알린 `configOptions`의 모델 항목으로 `session/set_config_option`(과도기·구버전은 `session/set_model`)으로 정하며, 거절되면 실행하지 않는다. 도구 허락은 그 세션에서 `allow_once`를 우선 선택하며, 취소된 실행에 뒤늦게 온 요청은 `cancelled`로 거절한다. 이전 세션을 이어 가지 못하면 새 세션으로 시작한다. 격리 실행(컨테이너·인증 중계)은 아직 없으며, 격리 스위치를 켜면 이 컴퓨터로 우회하지 않고 `준비안됨`(`격리 실행 미지원`)으로 거부한다.
 
 판을 제한하지 않는다. 설치된 프로그램을 그대로 쓰며, 표의 판은 실제 호출로 시험한 기준이다. 프로토콜이 어긋나면 준비 확인이나 실행 시도가 실패로 드러난다. OpenCode 1.x는 서버 방식이 달라 동작하지 않는다.
 
@@ -46,7 +46,7 @@ pnpm provider:login claude   # codex, opencode, antigravity, kiro, claude:work
 
 로그인 여부는 파일 위치를 가정하지 않고 프로그램의 응답으로 판단한다. Claude는 `claude auth status`, Codex는 `codex login status`, Antigravity는 `agy models`를 쓰고, 그 전에 조직 실행과 같은 링크로 로그인을 읽게 맞춘 뒤 로그인 원본을 다시 쓸 수 있는지도 본다(못 쓰면 `준비안됨`). Kiro CLI는 `kiro-cli whoami --format json`(구버전에서 `--format`을 모르면 `kiro-cli whoami`)으로 판단한다. Claude와 Antigravity는 실행 시도도 파일 없이 시작하고, 거절되면 로그인 필요로 알린다. Antigravity는 로그인이 없으면 결과 없이 오류 문구만 남기고 끝나며, 이것도 로그인 필요로 알린다.
 
-제품 HOME/XDG와 환경 변수 허용 목록은 개인 설정의 자동 유입을 막는 경계다. 호스트 파일·네트워크 접근은 아래 격리 실행을 켰을 때만 막는다. 사용자 홈·자격 증명·연구 원본은 Git에 추가하지 않는다.
+제품 HOME/XDG와 환경 변수 허용 목록은 개인 설정의 자동 유입을 막는 경계다(예외로 호스트 로그인 연결인 Kiro CLI는 사용자 HOME·`XDG_*`·`DBUS_SESSION_BUS_ADDRESS`와 `~/.local/bin` `PATH`를 유지한다). 호스트 파일·네트워크 접근은 아래 격리 실행을 켰을 때만 막는다. 사용자 홈·자격 증명·연구 원본은 Git에 추가하지 않는다.
 
 ## 조직별 제품 폴더
 
@@ -109,10 +109,11 @@ Codex·Antigravity의 이 준비(조직 확인, 연결 로그인 준비, 격리 
 | Codex | ChatGPT 로그인을 유지하는 사용자 지정 provider(`requires_openai_auth`)를 `-c`로 주고 `base_url`·`chatgpt_base_url`을 중계로 둔다. 컨테이너에는 권한 값만 든 가짜 `auth.json`(갱신 값·계정 없음)을 실행 시도 전용 폴더에서 조직 폴더의 로그인 자리 위에 읽기로 넣고, 조직 폴더에는 권한 없는 자리 표시만 둔다. `POST /responses`·`GET /models`만 받고 원본의 access token과 계정 ID를 붙인다. 갱신 주소(`CODEX_REFRESH_TOKEN_URL_OVERRIDE`)도 중계의 허용하지 않은 경로라 컨테이너는 갱신하지 못한다 | 지원. 실제 컨테이너 → 중계 → ChatGPT 구독으로 모델 한 턴과 조직 도구 호출을 확인(2026-11-12, 0.167.0) |
 | OpenCode | Go 구독(`opencode-go`)과 Zen 무료 모델(`opencode`)의 `baseURL`을 중계로, 권한 값은 실행 시도의 `OPENCODE_CONFIG_CONTENT`로만 준다(조직 DB에 넣지 않음). 정책으로 그 밖의 제공자를 쓰지 않는다. Go의 OpenAI 계열은 `Authorization`, Anthropic 계열은 `x-api-key`로 연결 DB의 Go 키를 붙인다. Zen 무료 모델은 원본 없이 공개 키만 붙인다. Google 계열 Go 모델은 경로가 없어 실패한다 | 지원. 실제 컨테이너 → 중계 → Go 구독으로 모델 한 턴과 조직 도구 호출을 확인(2026-11-12, 2.2.6). Zen 무료 모델은 경로만 확인(이 컴퓨터 IP의 무료 한도), Google 계열 Go 모델은 미지원 |
 | Antigravity | `agy acp`의 Code Assist 호출(`CLOUD_CODE_URL`)을 중계로 보낸다. 컨테이너에는 권한 값만 든 가짜 로그인 파일을 Codex와 같은 방식으로 넣는다. 정해 둔 `v1internal:*` 메서드만 받고 원본 access token을 붙인다. 실행 전 Google 로그인 확인(`www.googleapis.com`)과 사용 기록은 중계로 보낼 수 없어 막히지만 ACP에서는 실행이 이어진다 | 지원. 실제 컨테이너 → 중계 → Google 계정(`daily-cloudcode-pa`)으로 모델 한 턴과 조직 도구 호출을 확인(2026-11-12, 1.5.4) |
+| Kiro CLI | 없음 | 미지원. 격리 실행을 켜면 `준비안됨`(`격리 실행 미지원`)이며 이 컴퓨터로 대신 돌리지 않는다 |
 
 갱신: Claude setup-token과 OpenCode Go 키는 갱신하지 않는다. Codex·Antigravity는 회전하는 로그인이므로 중계가 원본을 읽을 때 곧 끝나면(Codex: access token 만료 10분 전 또는 마지막 갱신 뒤 약 8일, Antigravity: 만료 10분 전) 이 컴퓨터의 공식 프로그램으로 먼저 갱신한다(Codex `app-server`의 `account/read`+`refreshToken`, Antigravity `agy models`). 프로그램이 연결 폴더의 링크를 따라 원본 자리에 새 로그인을 쓰고, 링크를 만들 수 없는 컴퓨터면 연결 폴더 자리의 보통 파일에 쓴다(Codex는 소스, agy 1.5.9는 실행으로 확인). 갱신 뒤에도 중계는 그 자리를 다시 읽는다. 연결마다 한 번에 하나만 하고 그동안 온 요청은 같은 갱신을 기다린다. 갱신한 뒤에도 끝나 가면 위 5의 장애로 처리한다. 격리를 끈 실행의 프로그램도 같은 원본을 스스로 갱신할 수 있어, 두 쪽이 같은 순간에 갱신하면 하나가 실패할 수 있다(위 표의 동시 갱신과 같은 한계).
 
-격리를 끈 실행은 지금처럼 이 컴퓨터에서 연결의 로그인을 쓴다. 이 보호는 격리 실행에만 해당한다. 컨테이너의 외부 통신은 #149의 중계를 거친다. 네 연결 모두 인증 중계에 붙어 프로바이더의 모델 서비스로 직접 나가는 목적지를 열지 않으므로, 모델 통신이 인증 중계로만 나간다. OpenCode는 공개 모델 목록(`models.opencode.ai`, 로그인 없이 받음)만 직접 받는다. 막으면 내장된 낡은 목록으로 이미 없어진 무료 모델을 골랐다(2.2.6 실제 확인). Antigravity가 실행 전에 하는 Google 로그인 확인과 사용 기록 전송은 중계로 보낼 수 없어 막히며, `agy acp`에서는 막혀도 실행이 이어진다. 실행 중 받은 권한 값 자체는 그 실행 시도 동안 허용 작업을 할 수 있으므로 민감한 값으로 다룬다.
+격리를 끈 실행은 지금처럼 이 컴퓨터에서 연결의 로그인을 쓴다. 이 보호는 격리 실행에만 해당한다. 컨테이너의 외부 통신은 #149의 중계를 거친다. 격리 지원 네 연결(Claude·Codex·OpenCode·Antigravity) 모두 인증 중계에 붙어 프로바이더의 모델 서비스로 직접 나가는 목적지를 열지 않으므로, 모델 통신이 인증 중계로만 나간다. OpenCode는 공개 모델 목록(`models.opencode.ai`, 로그인 없이 받음)만 직접 받는다. 막으면 내장된 낡은 목록으로 이미 없어진 무료 모델을 골랐다(2.2.6 실제 확인). Antigravity가 실행 전에 하는 Google 로그인 확인과 사용 기록 전송은 중계로 보낼 수 없어 막히며, `agy acp`에서는 막혀도 실행이 이어진다. 실행 중 받은 권한 값 자체는 그 실행 시도 동안 허용 작업을 할 수 있으므로 민감한 값으로 다룬다.
 
 ## 세션과 정리
 

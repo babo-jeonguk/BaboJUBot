@@ -1,6 +1,6 @@
-// Synthetic behavioral ACP v1 peer for contract tests (Kiro CLI / Grok Build).
-// No external CLI or model is invoked. Persists synthetic session notes in a test-owned folder
-// and invokes the local contract-test tool server using the MCP organization server header.
+// Synthetic behavioral ACP v1 peer for runtime contract tests.
+// No external CLI or model is invoked. CLI invocation flags and probe output are passed by the caller
+// via --acp-args / --probe-args / --probe-stdout / --store so this simulator stays provider-agnostic.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -17,65 +17,48 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function flagValue(argv: string[], flag: string): string | undefined {
-  const index = argv.indexOf(flag);
-  return index >= 0 ? argv[index + 1] : undefined;
-}
-
-const rawArgs = process.argv.slice(2);
-const mode = flagValue(rawArgs, "--mode") ?? "kiro";
-const storeDir = flagValue(rawArgs, "--store");
+const configFlags = new Set([
+  "--store",
+  "--acp-args",
+  "--probe-args",
+  "--probe-stdout",
+]);
+const options = new Map<string, string>();
 const cliArgs: string[] = [];
+const rawArgs = process.argv.slice(2);
 for (let i = 0; i < rawArgs.length; i += 1) {
   const arg = rawArgs[i];
-  if (arg === "--mode" || arg === "--store") {
+  if (arg !== undefined && configFlags.has(arg)) {
+    const value = rawArgs[i + 1];
+    if (value !== undefined) options.set(arg, value);
     i += 1;
     continue;
   }
   if (arg !== undefined) cliArgs.push(arg);
 }
 
+const splitArgs = (raw: string | undefined): string[] =>
+  raw ? raw.split(",").filter((part) => part.length > 0) : [];
+const expectedAcpArgs = splitArgs(options.get("--acp-args"));
+const expectedProbeArgs = splitArgs(options.get("--probe-args"));
+const probeStdout = options.get("--probe-stdout") ?? "";
+const storeDir = options.get("--store");
+
+const sameArgs = (actual: readonly string[], expected: readonly string[]) =>
+  expected.length > 0 &&
+  actual.length === expected.length &&
+  actual.every((part, index) => part === expected[index]);
+
+if (sameArgs(cliArgs, expectedProbeArgs)) {
+  console.log(probeStdout);
+  process.exit(await afterOutput(0));
+}
+if (!sameArgs(cliArgs, expectedAcpArgs)) process.exit(await afterOutput(24));
+if (!storeDir) throw new Error("acp-simulator: --store is required");
+
+const sessionsDir = path.join(storeDir, "acp-sessions");
 const out = (value: Record<string, unknown>) =>
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...value }) + "\n");
-
-if (mode === "kiro") {
-  if (cliArgs[0] === "whoami") {
-    if (cliArgs.includes("json"))
-      console.log(JSON.stringify({ account: { id: "synthetic-user" } }));
-    else console.log("Logged in with synthetic account");
-    process.exit(await afterOutput(0));
-  }
-  if (cliArgs[0] === "chat" && cliArgs.includes("--list-models")) {
-    console.log(
-      JSON.stringify({
-        models: [
-          { model_id: "auto", model_name: "auto" },
-          { model_id: "simulated-model", model_name: "Simulated Model" },
-        ],
-      })
-    );
-    process.exit(await afterOutput(0));
-  }
-  if (cliArgs[0] !== "acp") process.exit(await afterOutput(24));
-} else if (mode === "grok") {
-  if (cliArgs[0] === "models") {
-    console.log("You are logged in with grok.com.");
-    console.log("  * simulated-model (default)");
-    console.log("  - other-model");
-    process.exit(await afterOutput(0));
-  }
-  if (
-    cliArgs[0] !== "agent" ||
-    !cliArgs.includes("--no-leader") ||
-    !cliArgs.includes("stdio")
-  )
-    process.exit(await afterOutput(24));
-} else {
-  process.exit(await afterOutput(24));
-}
-
-if (!storeDir) throw new Error("acp-simulator: --store is required");
-const sessionsDir = path.join(storeDir, `${mode}-sessions`);
 
 type McpHeader = { name: string; value: string };
 type McpServer = { name: string; url: string; headers: McpHeader[] };
@@ -174,10 +157,8 @@ async function handlePrompt(id: number, text: string): Promise<void> {
     : [];
   const firstConversationId = conversations[0]?.id;
   if (typeof firstConversationId === "string" && server) {
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-    };
-    for (const h of server.headers) headers[h.name] = h.value;
+    const headers = new Headers({ "content-type": "application/json" });
+    for (const h of server.headers) headers.set(h.name, h.value);
     const response = await fetch(server.url.replace(/\/mcp$/, "/messages"), {
       method: "POST",
       headers,

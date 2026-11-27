@@ -1,7 +1,7 @@
 import { mkdir, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { RunRequest, RunResult } from "@babojubot/contracts";
+import type { ModelOption, RunRequest, RunResult } from "@babojubot/contracts";
 import { failureCode, orIfUnreadable } from "@babojubot/contracts";
 import { TreeLaunchRefused } from "@babojubot/process";
 import { connectionFolders } from "./folders.ts";
@@ -15,8 +15,9 @@ import {
 
 /** 취소를 알린 뒤 프로그램이 스스로 멈추기를 기다리는 한도. */
 const cancelGraceMs = 3_000;
-/** JSON-RPC Method not found 오류 코드. 구버전 ACP 에이전트의 모델 변경 메서드 fallback 판단에만 쓴다. */
+/** JSON-RPC 오류 코드: 메서드 미지원(-32601), 잘못된 매개변수(-32602). 과도기 ACP 에이전트의 모델 변경 fallback 판단에만 쓴다. */
 const jsonRpcMethodNotFound = -32601;
+const jsonRpcInvalidParams = -32602;
 
 /** 호스트 로그인(XDG 설정·Linux 데스크톱 키링)을 읽을 때 유지할 사용자 환경 변수. 격리 실행에는 쓰지 않는다. */
 const hostLoginVariables = [
@@ -26,7 +27,7 @@ const hostLoginVariables = [
   "DBUS_SESSION_BUS_ADDRESS",
 ] as const;
 
-/** JSON-RPC로 거절한 요청. 문구는 공개 기록에 넣지 않고 로그인 문제·메서드 미지원만 가른다. */
+/** JSON-RPC로 거절한 요청. 문구는 공개 기록에 넣지 않고 로그인 문제·오류 코드만 가른다. */
 export class AcpRejection extends Error {
   readonly code: number | undefined;
   constructor(message: string, code?: number) {
@@ -107,10 +108,17 @@ export const isPositiveLoginLine = (text: string): boolean => {
   );
 };
 
-/** 실패 응답·stderr·오류 문구가 로그인 문제인지 판단한다. 내부에서 ANSI 코드를 먼저 걷어낸다. */
+/**
+ * 실패 응답·stderr·오류 문구가 로그인 문제인지 줄 단위로 판단한다.
+ * `"Authenticated with ..."` 같은 정상 로그인 안내 줄은 제외해 `saysLoginProblem`의 `authenticat` 오탐을 막는다.
+ */
 export const isAcpAuthProblem = (text: string): boolean => {
   const clean = stripAnsi(text);
-  return saysLoginProblem(clean) || isExplicitlySignedOut(clean);
+  for (const line of clean.split("\n")) {
+    if (!line.trim() || isPositiveLoginLine(line)) continue;
+    if (saysLoginProblem(line) || isExplicitlySignedOut(line)) return true;
+  }
+  return false;
 };
 
 /** `runProbe`가 던진 오류에서 종료 코드·출력을 타입 단언 없이 꺼낸다. */
@@ -167,47 +175,144 @@ function parseJsonContainer(text: string): unknown {
 }
 
 /**
- * 앞뒤에 안내 줄이 섞이거나 여러 줄로 들여쓴 JSON 출력에서 최상위 JSON 객체 또는 배열 하나를 읽는다.
- * 안내 줄에 `{info}` 같은 조각이 있어도 균형 괄호 단위로 검사해 뒤따르는 실제 JSON을 놓치지 않는다.
+ * 앞뒤에 안내 줄이 섞이거나 여러 줄로 들여쓴 출력에서 `openers`로 시작하고 `accept`가 수락하는 JSON 하나를 읽는다.
+ * `[1] Loading...` 같은 무관한 브래킷 조각은 `accept`가 거르므로 뒤따르는 실제 JSON을 놓치지 않는다.
  */
-export function extractJsonValue(text: string): unknown {
+function findJsonMatch<T>(
+  text: string,
+  openers: readonly ("{" | "[")[],
+  accept: (value: unknown) => T | undefined
+): T | undefined {
   const trimmed = stripAnsi(text).trim();
   const whole = parseJsonContainer(trimmed);
-  if (whole !== undefined) return whole;
-  // 줄 시작의 `{`·`[`부터 우선 확인해 앞 안내문의 본문 조각보다 실제 JSON 블록을 먼저 잡는다.
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const ch = trimmed[i];
-    if (ch !== "{" && ch !== "[") continue;
-    const atLineStart = i === 0 || trimmed[i - 1] === "\n";
-    if (!atLineStart) continue;
-    const end = findBalancedEnd(trimmed, i);
-    if (end < 0) continue;
-    const parsed = parseJsonContainer(trimmed.slice(i, end + 1));
-    if (parsed !== undefined) return parsed;
+  if (whole !== undefined) {
+    const accepted = accept(whole);
+    if (accepted !== undefined) return accepted;
   }
-  for (let i = 0; i < trimmed.length; i += 1) {
-    const ch = trimmed[i];
-    if (ch !== "{" && ch !== "[") continue;
-    const end = findBalancedEnd(trimmed, i);
-    if (end < 0) continue;
-    const parsed = parseJsonContainer(trimmed.slice(i, end + 1));
-    if (parsed !== undefined) return parsed;
-  }
-  return undefined;
+  const scan = (lineStartOnly: boolean): T | undefined => {
+    for (let i = 0; i < trimmed.length; i += 1) {
+      const ch = trimmed[i];
+      if (ch !== "{" && ch !== "[") continue;
+      if (!openers.includes(ch)) continue;
+      if (lineStartOnly && i > 0 && trimmed[i - 1] !== "\n") continue;
+      const end = findBalancedEnd(trimmed, i);
+      if (end < 0) continue;
+      const parsed = parseJsonContainer(trimmed.slice(i, end + 1));
+      if (parsed === undefined) continue;
+      const accepted = accept(parsed);
+      if (accepted !== undefined) return accepted;
+    }
+    return undefined;
+  };
+  return scan(true) ?? scan(false);
 }
 
-/** `extractJsonValue` 결과 가운데 배열이 아닌 일반 JSON 객체만 돌려준다. */
+/** 출력에서 최상위 JSON 객체(`{...}`) 하나를 읽는다. `[1]` 같은 배열 조각은 건너뛴다. */
 export function extractJsonObject(
   text: string
 ): Record<string, unknown> | undefined {
-  const parsed = extractJsonValue(text);
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
-    return undefined;
-  return record(parsed);
+  return findJsonMatch(text, ["{"], (value) =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? record(value)
+      : undefined
+  );
+}
+
+function modelOptionsFromArray(
+  items: readonly unknown[]
+): ModelOption[] | undefined {
+  const seen = new Set<string>();
+  const models: ModelOption[] = [];
+  for (const item of items) {
+    let rawId: string;
+    let rawLabel: string | undefined;
+    if (typeof item === "string") {
+      rawId = item;
+    } else if (
+      item !== null &&
+      typeof item === "object" &&
+      !Array.isArray(item)
+    ) {
+      const row = record(item);
+      rawId =
+        typeof row.model_id === "string"
+          ? row.model_id
+          : typeof row.id === "string"
+            ? row.id
+            : "";
+      rawLabel =
+        typeof row.model_name === "string"
+          ? row.model_name
+          : typeof row.name === "string"
+            ? row.name
+            : typeof row.label === "string"
+              ? row.label
+              : undefined;
+    } else {
+      return undefined;
+    }
+    const id = rawId.trim();
+    if (!id) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    models.push({ id, label: rawLabel?.trim() || id });
+  }
+  return models;
 }
 
 /**
- * 이 컴퓨터의 로그인(`~/.kiro`, `~/.grok`, XDG·데스크톱 키링)을 그대로 읽어야 하는 호스트 연결의 환경.
+ * JSON 출력(`{ "models": [...] }` 또는 모델 문자열/객체 최상위 배열)에서 모델 목록을 읽는다.
+ * `[2]` 같은 숫자 배열은 모델 목록이 아니므로 `undefined`를 돌려줘 호출자가 평문 파서로 이어 갈 수 있게 한다.
+ */
+export function extractJsonModels(text: string): ModelOption[] | undefined {
+  return findJsonMatch(text, ["{", "["], (value) => {
+    if (Array.isArray(value)) {
+      if (value.length === 0) return undefined;
+      const parsed = modelOptionsFromArray(value);
+      return parsed && parsed.length > 0 ? parsed : undefined;
+    }
+    if (value !== null && typeof value === "object") {
+      const candidate = record(value).models;
+      if (!Array.isArray(candidate)) return undefined;
+      return modelOptionsFromArray(candidate);
+    }
+    return undefined;
+  });
+}
+
+/**
+ * 평문 글머리 줄에서 모델 목록을 읽는다.
+ * 번호 목록(`1.`), 구두점으로 끝나는 토큰, 일반 영문 안내 문장(`- Help`, `- non-interactive mode`, `- run ...`)을 배제하고,
+ * 숫자가 든 모델 ID(`grok-4.7`, `Grok-4.8`), 예약어(`auto`), 괄호 메타데이터 또는 2칸 이상 공백 설명이 붙은 식별자를 읽는다.
+ */
+export function parsePlainBulletModels(stdout: string): ModelOption[] {
+  const seen = new Set<string>();
+  const models: ModelOption[] = [];
+  for (const row of stripAnsi(stdout).split("\n")) {
+    const match = /^\s*[*+-]\s+(\S+)(.*)$/.exec(row);
+    const id = match?.[1];
+    if (!id || seen.has(id)) continue;
+    if (!/^[A-Za-z][A-Za-z0-9._:/-]*[A-Za-z0-9]$/.test(id)) continue;
+    const rest = match?.[2] ?? "";
+    const trimmedRest = rest.trim();
+    const hasDigit = /\d/.test(id);
+    const hasParenthetical = /^\([^)]*\)$/.test(trimmedRest);
+    const hasColumnDescription = /^\s{2,}\S/.test(rest);
+    const isKnownAlias = id === "auto";
+    const valid =
+      hasDigit ||
+      isKnownAlias ||
+      hasParenthetical ||
+      (hasColumnDescription && /^[a-z][a-z0-9._:/-]*$/.test(id));
+    if (!valid) continue;
+    seen.add(id);
+    models.push({ id, label: id });
+  }
+  return models;
+}
+
+/**
+ * 이 컴퓨터의 기존 CLI 로그인·XDG 설정·Linux 데스크톱 키링을 읽어야 하는 호스트 연결의 환경.
  * 격리 실행(컨테이너)에는 쓰지 않는다.
  */
 export function hostProviderEnvironment(
@@ -227,9 +332,9 @@ export function hostProviderEnvironment(
   return providerEnvironment(connectionId, userHome, extra);
 }
 
-/** ACP `configOptions` 배열에서 모델 설정 항목의 `id`를 찾는다. */
-function modelConfigId(configOptions: unknown): string {
-  if (!Array.isArray(configOptions)) return "model";
+/** ACP `configOptions` 배열에서 모델 설정 항목의 `id`를 찾는다. 없으면 `undefined`다. */
+function findModelConfigId(configOptions: unknown): string | undefined {
+  if (!Array.isArray(configOptions)) return undefined;
   const entries = configOptions.map(record);
   const byCategory = entries.find(
     (entry) =>
@@ -238,7 +343,7 @@ function modelConfigId(configOptions: unknown): string {
   if (byCategory && typeof byCategory.id === "string") return byCategory.id;
   const byId = entries.find((entry) => entry.id === "model");
   if (byId && typeof byId.id === "string") return byId.id;
-  return "model";
+  return undefined;
 }
 
 /** `session/request_permission` 선택지에서 `allow_once`를 우선 고르고, 없으면 다른 `allow*` 선택을 고른다. */
@@ -274,11 +379,11 @@ function promptText(request: RunRequest): string {
 }
 
 export type AcpSessionOptions = {
-  /** 진단 로그에 남길 연결 이름(예: `Kiro`, `Grok`). */
+  /** 진단 로그에 남길 연결 이름. */
   logName: string;
   /** 제품 데이터 폴더(`BABOJUBOT_HOME`). 연결 폴더(복구 기록)와 조직별 작업 폴더를 `connectionFolders`로 나눈다. */
   dataDir: string;
-  /** 연결 ID(`kiro`, `grok` 등). */
+  /** 연결 ID. */
   connectionId: string;
   command: readonly [string, ...string[]];
   args: readonly string[];
@@ -292,8 +397,7 @@ export type AcpSessionOptions = {
  *   조직별 폴더(`providers/<연결>/organizations/<조직>`)로 분리해 복구 기록과 다른 조직에서 격리한다.
  * - 조직 도구 bearer는 ACP `session/new`·`session/load`의 `mcpServers`로만 넘기고 디스크나 명령 인수에 쓰지 않는다.
  * - `initialize`의 `agentCapabilities.loadSession`과 세션 `configOptions`(`config_option_update` 포함)를 읽어
- *   특정 CLI 버전이나 고정 configId에 묶이지 않고 동작한다. `session/set_config_option`이 `-32601`로 거절되는 구버전은
- *   `session/set_model`로 한 번 fallback하며, 모델 자체가 거절되면 실행하지 않고 실패한다.
+ *   모델 변경 메서드(`session/set_config_option` / 과도기·구버전 `session/set_model`)를 일반화한다.
  */
 export async function runAcpSession(
   options: AcpSessionOptions,
@@ -346,6 +450,7 @@ export async function runAcpSession(
         : null;
     let sequence = 0;
     let activeSessionId: string | undefined;
+    let configOptionsKnown = false;
     let configOptions: unknown;
     let prompting = false;
     const pending = new Map<
@@ -391,6 +496,7 @@ export async function runAcpSession(
             (params.sessionId === activeSessionId ||
               (!activeSessionId && params.sessionId === previous))
           ) {
+            configOptionsKnown = true;
             configOptions = update.configOptions;
             return;
           }
@@ -414,7 +520,10 @@ export async function runAcpSession(
           return;
         if (typeof frame.method !== "string") return;
         if (frame.method === "session/request_permission") {
-          const chosen = choosePermissionOption(record(frame.params).options);
+          // 취소된 실행에 뒤늦게 도착한 권한 요청은 승인하지 않고 cancelled로 거절한다.
+          const chosen = control.signal.aborted
+            ? undefined
+            : choosePermissionOption(record(frame.params).options);
           child.write({
             jsonrpc: "2.0",
             id: frame.id,
@@ -468,6 +577,82 @@ export async function runAcpSession(
     let modelRefused = false;
     let outcome: Record<string, unknown> | undefined;
     let done: Awaited<ReturnType<typeof startProcess>["done"]> | undefined;
+
+    const selectModel = async (
+      targetSessionId: string,
+      model: string
+    ): Promise<void> => {
+      const setByConfigOption = (configId: string) =>
+        rpc("session/set_config_option", {
+          sessionId: targetSessionId,
+          configId,
+          value: model,
+        });
+      const setByLegacyMethod = () =>
+        rpc("session/set_model", {
+          sessionId: targetSessionId,
+          modelId: model,
+        });
+      const discovered = findModelConfigId(configOptions);
+      if (discovered !== undefined) {
+        try {
+          await setByConfigOption(discovered);
+          return;
+        } catch (error) {
+          if (error instanceof AcpRejection && !isAcpAuthProblem(error.message))
+            modelRefused = true;
+          throw error;
+        }
+      }
+      if (configOptionsKnown) {
+        // configOptions가 내려왔지만 모델 항목이 없는 과도기 ACP 에이전트는 session/set_model을 먼저 시도한다.
+        try {
+          await setByLegacyMethod();
+          return;
+        } catch (error) {
+          if (!(error instanceof AcpRejection)) throw error;
+          if (isAcpAuthProblem(error.message)) throw error;
+          if (error.code !== jsonRpcMethodNotFound) {
+            modelRefused = true;
+            throw error;
+          }
+        }
+        try {
+          await setByConfigOption("model");
+          return;
+        } catch (error) {
+          if (error instanceof AcpRejection && !isAcpAuthProblem(error.message))
+            modelRefused = true;
+          throw error;
+        }
+      }
+      // configOptions 자체가 없는 경우: 표준 session/set_config_option을 먼저 시도하고, 메서드·키 미지원(-32601/-32602)이면 session/set_model로 한 번 fallback한다.
+      try {
+        await setByConfigOption("model");
+      } catch (error) {
+        if (!(error instanceof AcpRejection)) throw error;
+        if (isAcpAuthProblem(error.message)) throw error;
+        if (
+          error.code === jsonRpcMethodNotFound ||
+          error.code === jsonRpcInvalidParams
+        ) {
+          try {
+            await setByLegacyMethod();
+            return;
+          } catch (fallbackError) {
+            if (
+              fallbackError instanceof AcpRejection &&
+              !isAcpAuthProblem(fallbackError.message)
+            )
+              modelRefused = true;
+            throw fallbackError;
+          }
+        }
+        modelRefused = true;
+        throw error;
+      }
+    };
+
     try {
       if (control.signal.aborted) cancel();
       else {
@@ -485,8 +670,10 @@ export async function runAcpSession(
           try {
             const loaded = await rpc("session/load", sessionParams(previous));
             activeSessionId = previous;
-            if (Array.isArray(loaded.configOptions))
+            if (Array.isArray(loaded.configOptions)) {
+              configOptionsKnown = true;
               configOptions = loaded.configOptions;
+            }
           } catch (error) {
             if (!(error instanceof AcpRejection)) throw error;
             if (isAcpAuthProblem(error.message)) throw error;
@@ -496,43 +683,17 @@ export async function runAcpSession(
           if (typeof opened.sessionId !== "string" || !opened.sessionId)
             throw new AcpRejection("session id missing");
           activeSessionId = opened.sessionId;
-          if (Array.isArray(opened.configOptions))
+          if (Array.isArray(opened.configOptions)) {
+            configOptionsKnown = true;
             configOptions = opened.configOptions;
+          }
           if (previous)
             await control.emit({
               type: "progress",
               text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
             });
         }
-        if (request.model)
-          try {
-            await rpc("session/set_config_option", {
-              sessionId: activeSessionId,
-              configId: modelConfigId(configOptions),
-              value: request.model,
-            });
-          } catch (error) {
-            if (!(error instanceof AcpRejection)) throw error;
-            if (isAcpAuthProblem(error.message)) throw error;
-            if (error.code === jsonRpcMethodNotFound) {
-              try {
-                await rpc("session/set_model", {
-                  sessionId: activeSessionId,
-                  modelId: request.model,
-                });
-              } catch (fallbackError) {
-                if (
-                  fallbackError instanceof AcpRejection &&
-                  !isAcpAuthProblem(fallbackError.message)
-                )
-                  modelRefused = true;
-                throw fallbackError;
-              }
-            } else {
-              modelRefused = true;
-              throw error;
-            }
-          }
+        if (request.model) await selectModel(activeSessionId, request.model);
         clearTimeout(startup);
         startup = undefined;
         await control.emit({
@@ -562,12 +723,7 @@ export async function runAcpSession(
     }
     if (control.signal.aborted)
       return { ...acpFailed(null), stopReason: "cancelled" };
-    if (
-      (sessionError !== undefined && isAcpAuthProblem(sessionError)) ||
-      (outcome?.stopReason !== "end_turn" &&
-        done !== undefined &&
-        isAcpAuthProblem(done.stderr))
-    )
+    if (sessionError !== undefined && isAcpAuthProblem(sessionError))
       return { ...acpFailed(), errorCode: "login_required" };
     if (modelRefused)
       return acpFailed("고른 모델을 쓸 수 없어 실행하지 않았습니다.");
@@ -579,6 +735,12 @@ export async function runAcpSession(
         usage: null,
         nextSession: { id: activeSessionId },
       };
+    if (
+      sessionError === undefined &&
+      done !== undefined &&
+      isAcpAuthProblem(done.stderr)
+    )
+      return { ...acpFailed(), errorCode: "login_required" };
     return acpFailed();
   } catch (error) {
     if (error instanceof TreeLaunchRefused) throw error;

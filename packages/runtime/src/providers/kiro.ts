@@ -12,12 +12,13 @@ import {
   runProbe,
 } from "./process.ts";
 import {
+  extractJsonModels,
   extractJsonObject,
-  extractJsonValue,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
   isPositiveLoginLine,
+  parsePlainBulletModels,
   probeErrorFields,
   runAcpSession,
   stripAnsi,
@@ -71,6 +72,19 @@ function classifyWhoamiJson(
   return "unknown";
 }
 
+function classifyPlainWhoami(
+  output: string,
+  connectionId: string
+): ProviderReadinessCheck {
+  if (isExplicitlySignedOut(output))
+    return { status: "not_ready", reason: "product_login_missing" };
+  if (isPositiveLoginLine(output)) return { status: "ready", reason: null };
+  console.warn(
+    `[provider] the ${connectionId} readiness check returned an unexpected response`
+  );
+  return { status: "not_ready", reason: "check_failed" };
+}
+
 function classifyProbeFailure(
   error: unknown,
   connectionId: string
@@ -120,14 +134,7 @@ export function createKiroProvider(options: {
     signal: AbortSignal
   ): Promise<ProviderReadinessCheck> {
     try {
-      const output = await probe(["whoami"], signal);
-      if (isExplicitlySignedOut(output))
-        return { status: "not_ready", reason: "product_login_missing" };
-      if (isPositiveLoginLine(output)) return { status: "ready", reason: null };
-      console.warn(
-        `[provider] the ${connectionId} readiness check returned an unexpected response`
-      );
-      return { status: "not_ready", reason: "check_failed" };
+      return classifyPlainWhoami(await probe(["whoami"], signal), connectionId);
     } catch (error) {
       return classifyProbeFailure(error, connectionId);
     }
@@ -158,14 +165,7 @@ export function createKiroProvider(options: {
           );
           return { status: "not_ready", reason: "check_failed" };
         }
-        if (isExplicitlySignedOut(output))
-          return { status: "not_ready", reason: "product_login_missing" };
-        if (isPositiveLoginLine(output))
-          return { status: "ready", reason: null };
-        console.warn(
-          `[provider] the ${connectionId} readiness check returned an unexpected response`
-        );
-        return { status: "not_ready", reason: "check_failed" };
+        return classifyPlainWhoami(output, connectionId);
       } catch (error) {
         const detail = probeErrorFields(error);
         const text = `${detail.stdout}\n${detail.stderr}`;
@@ -219,54 +219,5 @@ export function createKiroProvider(options: {
 
 /** 목록 JSON(객체 `{ models }` 또는 최상위 배열)과 구버전 평문 글머리 출력을 모두 읽는다. */
 function modelsFrom(stdout: string): ModelOption[] {
-  const seen = new Set<string>();
-  const result: ModelOption[] = [];
-  const push = (rawId: string, rawLabel?: string) => {
-    const id = rawId.trim();
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    result.push({ id, label: rawLabel?.trim() || id });
-  };
-  const json = extractJsonValue(stdout);
-  const items = Array.isArray(json)
-    ? json
-    : json !== null && typeof json === "object"
-      ? record(json).models
-      : undefined;
-  if (Array.isArray(items)) {
-    for (const item of items) {
-      if (typeof item === "string") {
-        push(item);
-        continue;
-      }
-      const row = record(item);
-      const rawId =
-        typeof row.model_id === "string"
-          ? row.model_id
-          : typeof row.id === "string"
-            ? row.id
-            : "";
-      const rawLabel =
-        typeof row.model_name === "string"
-          ? row.model_name
-          : typeof row.name === "string"
-            ? row.name
-            : typeof row.label === "string"
-              ? row.label
-              : undefined;
-      if (rawId) push(rawId, rawLabel);
-    }
-    return result;
-  }
-  for (const row of stripAnsi(stdout).split("\n")) {
-    const match =
-      /^\s*[*+-]\s+([A-Za-z0-9][A-Za-z0-9._:/-]*)(?:\s+(.*))?$/.exec(row);
-    const id = match?.[1];
-    if (!id) continue;
-    const trailing = (match?.[2] ?? "").trim();
-    const looksLikeModelId =
-      /[-.:/0-9]/.test(id) || trailing === "" || /^\([^)]*\)$/.test(trailing);
-    if (looksLikeModelId) push(id);
-  }
-  return result;
+  return extractJsonModels(stdout) ?? parsePlainBulletModels(stdout);
 }
