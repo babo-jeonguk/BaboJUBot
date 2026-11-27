@@ -2600,17 +2600,21 @@ describe.skipIf(process.platform === "win32")(
         const hub = env.container.relay;
         const opened: string[][] = [];
         const stop = new AbortController();
-        const open = hub.open.bind(hub);
-        hub.open = (input) => {
-          opened.push(input.required.map(({ host }) => host));
-          // 열린 목적지만 본다. 프로그램은 닿지 않는 중계를 계속 다시 시도해 스스로 끝나지 않으므로, 중계를 연 뒤 실행을 멈춘다.
-          const relay = open(input);
-          stop.abort();
-          return relay;
+        // 만든 hub를 바꾸지 않고, 중계 열기만 감싼 새 hub를 이 연결의 컨테이너 설정으로 넘긴다(hub는 메서드가 `this`를 쓰지 않는
+        // 일반 객체다).
+        const watched: typeof hub = {
+          ...hub,
+          open: (input) => {
+            opened.push(input.required.map(({ host }) => host));
+            // 열린 목적지만 본다. 프로그램은 닿지 않는 중계를 계속 다시 시도해 스스로 끝나지 않으므로, 중계를 연 뒤 실행을 멈춘다.
+            const relay = hub.open(input);
+            stop.abort();
+            return relay;
+          },
         };
         const provider = create({
           dataDir: env.root,
-          container: env.container,
+          container: { ...env.container, relay: watched },
           relay: { verified: true },
         });
         await provider.adapter.execute(env.isolated(), control(stop.signal));

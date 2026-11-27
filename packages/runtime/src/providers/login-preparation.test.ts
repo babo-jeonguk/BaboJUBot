@@ -287,17 +287,24 @@ if (process.env.FAKE_DOCKER_MOUNTS !== undefined)
     req.resume();
     res.writeHead(200, { "content-type": "application/json" }).end("{}");
   });
-  const provider = connection.create({
+  const created = connection.create({
     dataDir: root,
     command: dumper,
     container,
     relay: { upstream, verified: true },
   });
-  const execute = provider.adapter.execute.bind(provider.adapter);
-  provider.adapter.execute = (...args) => {
-    const run = execute(...args);
-    runs.push(run);
-    return run;
+  // 시험이 시작한 실행을 정리가 기다리게 `runs`에 남긴다. 만든 연결을 바꾸지 않고, 실행만 감싼 새 연결을 시험에 넘긴다(adapter는
+  // 메서드가 `this`를 쓰지 않는 일반 객체다).
+  const provider: ProviderConnection = {
+    ...created,
+    adapter: {
+      ...created.adapter,
+      execute: (...args) => {
+        const run = created.adapter.execute(...args);
+        runs.push(run);
+        return run;
+      },
+    },
   };
   const relay = provider.credentialRelay as CredentialRelay;
   // 발급을 바꾸지 않고 기록만 하는 관찰 spy.
