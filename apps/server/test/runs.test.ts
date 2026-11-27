@@ -25,6 +25,7 @@ import {
   type TestServer,
 } from "./support.ts";
 import { withCleanup } from "@babojubot/process/test-cleanup";
+import { settledWithin } from "@babojubot/process/test-support";
 
 /**
  * 저장 경계에 건 실패. 실행 시도 admission(`claimNextRun`)과 종료 저장(`finishRun`) 중 대상(에이전트·실행 시도)이 맞는 호출만,
@@ -152,8 +153,8 @@ function competitors() {
       }
       // 결과를 아래에서 단언하므로 성공·실패를 모두 받되, 끝나지 않는 transaction은 상한에서 그 이유로 실패한다.
       passes.push(
-        await within(
-          Promise.allSettled(pass),
+        await settledWithin(
+          pass,
           eventuallyMs,
           "the competitors' transactions did not end"
         )
