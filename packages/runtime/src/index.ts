@@ -3,6 +3,7 @@ import { createClaudeProvider } from "./providers/claude.ts";
 import { createCodexProvider } from "./providers/codex.ts";
 import { createOpenCodeProvider } from "./providers/opencode.ts";
 import { createAntigravityProvider } from "./providers/antigravity.ts";
+import { createGrokProvider } from "./providers/grok.ts";
 import type { ContainerSettings } from "./providers/container.ts";
 
 // Agent Runtime: 프로바이더 adapter(가짜부터), job runner adapter, 채널 adapter.
@@ -14,6 +15,7 @@ export * from "./providers/claude.ts";
 export * from "./providers/codex.ts";
 export * from "./providers/opencode.ts";
 export * from "./providers/antigravity.ts";
+export * from "./providers/grok.ts";
 // 재시작 복구와 남은 복구 기록의 목록만 연다. 그룹 끄기는 @babojubot/process의 공용 실행과 이 복구만 쓴다(lint).
 export {
   processRecordPids,
@@ -45,6 +47,7 @@ const kinds = new Map<
   ["codex", createCodexProvider],
   ["opencode", createOpenCodeProvider],
   ["antigravity", createAntigravityProvider],
+  ["grok", createGrokProvider],
 ]);
 /** `claude` 또는 `claude:work`로 연결을 만든다. 뒤의 이름은 같은 프로그램의 다른 계정을 구분한다. */
 export function createConnection(

@@ -5,6 +5,7 @@ import {
   createCodexProvider,
   createOpenCodeProvider,
   createAntigravityProvider,
+  createGrokProvider,
 } from "@babojubot/runtime";
 import {
   conversationPageSchema,
@@ -22,6 +23,7 @@ const factories = {
   codex: createCodexProvider,
   opencode: createOpenCodeProvider,
   antigravity: createAntigravityProvider,
+  grok: createGrokProvider,
 };
 if (
   provider === undefined ||
@@ -30,7 +32,7 @@ if (
   !process.env.BABOJUBOT_HOME
 ) {
   console.error(
-    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-smoke.mjs <claude|codex|opencode|antigravity> --allow-live"
+    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-smoke.mjs <claude|codex|opencode|antigravity|grok> --allow-live"
   );
   console.error(
     "Requires product login and explicit permission to use subscription/model quota."

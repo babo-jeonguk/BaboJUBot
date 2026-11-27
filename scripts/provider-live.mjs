@@ -9,6 +9,7 @@ import {
   createClaudeProvider,
   createCodexProvider,
   createOpenCodeProvider,
+  createGrokProvider,
 } from "@babojubot/runtime";
 import { openEphemeralDatabase } from "@babojubot/db";
 import { agentSessions } from "@babojubot/db/admin";
@@ -32,12 +33,14 @@ const factories = {
   codex: createCodexProvider,
   opencode: createOpenCodeProvider,
   antigravity: createAntigravityProvider,
+  grok: createGrokProvider,
 };
 const defaultCommand = {
   claude: "claude",
   codex: "codex",
   opencode: "opencode",
   antigravity: "agy",
+  grok: "grok",
 };
 if (
   provider === undefined ||
@@ -46,7 +49,7 @@ if (
   !process.env.BABOJUBOT_HOME
 ) {
   console.error(
-    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-live.mjs <claude|codex|opencode|antigravity> --allow-live [--record] [--scenes=a,b]"
+    "Usage: BABOJUBOT_HOME=/absolute/product/home node scripts/provider-live.mjs <claude|codex|opencode|antigravity|grok> --allow-live [--record] [--scenes=a,b]"
   );
   process.exit(await afterOutput(2));
 }
