@@ -108,7 +108,8 @@ const stoppedBySignal = () => ({
 
 /**
  * 이 폴더(`in`, 그 시험의 연결 폴더) 안의 링크 만들기를 이 오류 코드로 거절한다(권한 없는 Windows·링크를 모르는 파일 시스템). 거절한
- * 링크 자리를 `refused`에 남긴다(시험이 거절이 실제로 났는지 본다). 비어 있으면 실제로 만든다.
+ * 링크의 경로를 `refused`에 남긴다(시험이 거절이 실제로 그 자리에서 났는지 본다). handle을 거친 경로(`/proc/self/fd/<n>/…`)는 시험이
+ * handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다. 비어 있으면 실제로 만든다.
  */
 let refusal: { in: string; code: string; refused: string[] } | undefined;
 /** 그 시험의 연결 폴더(`folder`) 안 링크 만들기를 `code`로 거절하게 하고 그 결함을 돌려준다. */
@@ -117,6 +118,10 @@ function refuseLinksIn(folder: string, code: string) {
   refusal = refuse;
   return refuse;
 }
+/** 링크 만들기가 거절된 폴더들(처음 거절된 차례). 제품은 링크를 그 자리의 폴더에 임시 이름으로 먼저 만든다. */
+const refusedFolders = (refuse: { refused: string[] }) => [
+  ...new Set(refuse.refused.map(path.dirname)),
+];
 /**
  * 그 시험이 부른 호출이 공유 임시 폴더에 만드는 폴더(경로를 미리 알 수 없음)의 지우기를 잠긴 파일처럼(EBUSY) 계속 실패시킨다. 무장은
  * 그 호출의 `mkdtemp`를 시작 순간 등록하고(`made`, 끝난 무장이면 던짐), 그 폴더의 지우기만 실패시키며 실패시킨 대상을 `failedAt`에
@@ -161,7 +166,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       // 결함은 불린 순간 읽는다(기다리기 전).
       if (!refusal || !insideFolder(refusal.in, String(args[1])))
         return actual.symlink(...args);
-      refusal.refused.push(String(args[1]));
+      refusal.refused.push(canonicalTemp(String(args[1])));
       return Promise.reject(
         Object.assign(new Error(`${refusal.code}: cannot link`), {
           code: refusal.code,
@@ -933,9 +938,17 @@ describe.skipIf(process.platform === "win32")("an isolated attempt", () => {
         })
     );
     expect(result.stopReason).toBe("completed");
-    // 지우기 실패가 그 실행 시도가 만든 폴더에서 났다.
-    expect(fault.made).not.toEqual([]);
+    // 지우기 실패가 그 실행 시도가 만든 폴더 하나에서 났고, 그 폴더는 그 실행 시도의 컨테이너에 붙인 로그인 파일이 든 실행 시도
+    // 폴더다.
+    expect(fault.made).toHaveLength(1);
     expect([...new Set(fault.failedAt)]).toEqual(fault.made);
+    const attempt = canonicalTemp(fault.made[0]!);
+    const sources = valuesOf(runCall(await env.calls()).args, "--mount").map(
+      (mount) => /source=([^,]+)/.exec(mount)![1]!
+    );
+    expect(sources.filter((source) => insideFolder(attempt, source))).toEqual([
+      path.join(attempt, "auth.json"),
+    ]);
     const lines = logged.flatMap((spy) =>
       spy.mock.calls.map((call) => call.map(String).join(" "))
     );
@@ -2799,8 +2812,10 @@ describe.skipIf(process.platform === "win32")(
             const result = await t
               .provider()
               .adapter.execute(t.isolated(), control());
-            // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-            expect(refuse.refused).not.toEqual([]);
+            // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+            expect(refusedFolders(refuse)).toEqual([
+              path.dirname(t.connectionPlace),
+            ]);
             expect(result.stopReason).toBe("completed");
             expect(t.authorizations()).toEqual(["Bearer real-access"]);
             expect(t.provider().credentialRelay!.failed()).toBe(false);
@@ -2839,8 +2854,10 @@ describe.skipIf(process.platform === "win32")(
         const first = await t
           .provider()
           .adapter.execute(t.isolated(), control());
-        // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-        expect(refuse.refused).not.toEqual([]);
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(first.stopReason).toBe("completed");
         await t.logIn(connection.login("second-access"));
         const second = await t
@@ -2873,8 +2890,10 @@ describe.skipIf(process.platform === "win32")(
         const result = await t
           .provider()
           .adapter.execute(t.isolated(), control());
-        // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-        expect(refuse.refused).not.toEqual([]);
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(result.stopReason).toBe("completed");
         expect(t.authorizations()).toEqual(["Bearer newer-access"]);
         expect(await t.holding("newer-access")).toEqual([t.connectionPlace]);
@@ -2896,8 +2915,10 @@ describe.skipIf(process.platform === "win32")(
         const result = await t
           .provider()
           .adapter.execute(t.isolated(), control());
-        // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-        expect(refuse.refused).not.toEqual([]);
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(result.stopReason).toBe("failed");
         expect(result.error).toContain("인증 중계");
         expect(t.provider().credentialRelay!.failed()).toBe(true);
@@ -2915,8 +2936,10 @@ describe.skipIf(process.platform === "win32")(
         const first = await t
           .provider()
           .adapter.execute(t.isolated(), control());
-        // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-        expect(refuse.refused).not.toEqual([]);
+        // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+        ]);
         expect(first.stopReason).toBe("failed");
         expect(t.provider().credentialRelay!.failed()).toBe(true);
         await t.logIn(connection.login("fixed-access"));
@@ -2962,8 +2985,8 @@ describe.skipIf(process.platform === "win32")(
       const result = await t
         .provider()
         .adapter.execute(t.isolated(), control());
-      // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-      expect(refuse.refused).not.toEqual([]);
+      // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+      expect(refusedFolders(refuse)).toEqual([path.dirname(t.connectionPlace)]);
       expect(result.stopReason).toBe("completed");
       expect(
         (await readFile(log, "utf8")).split("\n").filter(Boolean)
@@ -2996,8 +3019,8 @@ describe.skipIf(process.platform === "win32")(
       const result = await t
         .provider()
         .adapter.execute(t.isolated(), control());
-      // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-      expect(refuse.refused).not.toEqual([]);
+      // 거절이 그 시험의 연결 자리에 링크를 만들려 할 때 실제로 났다.
+      expect(refusedFolders(refuse)).toEqual([path.dirname(t.connectionPlace)]);
       expect(result.stopReason).toBe("completed");
       const login = JSON.parse(await readFile(t.connectionPlace, "utf8")) as {
         token: Record<string, string>;
@@ -3024,7 +3047,12 @@ describe.skipIf(process.platform === "win32")(
         await rm(t.connectionPlace, { force: true });
         expect(await run(t.onHost())).toBe("completed");
         // 거절이 그 시험의 연결 폴더 안 링크 만들기에서 실제로 났다.
-        expect(refuse.refused).not.toEqual([]);
+        expect(refusedFolders(refuse)).toEqual([
+          path.dirname(t.connectionPlace),
+          path.dirname(
+            path.join(t.folder, "organizations", t.env.org, ...connection.place)
+          ),
+        ]);
         expect(await run(t.isolated())).toBe("completed");
         await t.logIn(connection.login("login-2"));
         expect(await run(t.isolated())).toBe("completed");
@@ -3190,7 +3218,20 @@ describe("docker failures during container cleanup", () => {
       "leftover containers could not be listed (stopped: limit, signal SIGKILL)"
     );
     // 갈음이 그 두 호출의 docker 명령에 걸렸다.
-    expect(stub.ran).toHaveLength(2);
+    expect(stub.ran).toEqual([
+      [expect.objectContaining({ command: failing.docker, args: ["ps"] })],
+      [
+        expect.objectContaining({
+          command: failing.docker,
+          args: [
+            "ps",
+            "-aq",
+            "--filter",
+            `label=babojubot.owner=${failing.owner}`,
+          ],
+        }),
+      ],
+    ]);
   });
 
   it("fails leftover cleanup with the output limit as the cause when docker prints too much", async () => {
@@ -3601,7 +3642,7 @@ describe.skipIf(process.platform === "win32")(
       }));
       await expect(result).resolves.toMatchObject({ proxied: [target] });
       // 갈음한 판정이 그 목적지에 걸렸고, 정책이 연 주소로 붙은 연결이 실패했다(502).
-      expect(decided).toContainEqual([target.host, target.port]);
+      expect(decided).toEqual([[target.host, target.port]]);
       expect(dialed).toEqual([target]);
     });
 
@@ -3629,7 +3670,7 @@ describe.skipIf(process.platform === "win32")(
           proxied: [],
           unverified: ["proxied"],
         });
-        expect(decided).toContainEqual([target.host, target.port]);
+        expect(decided).toEqual([[target.host, target.port]]);
         expect(dialed).toEqual([]);
       }
     );

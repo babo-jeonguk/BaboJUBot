@@ -13,7 +13,9 @@ export const quirky = (kind: string, variant: string) =>
     variant,
   ] as [string, ...string[]];
 
-export const control = (emit: () => Promise<void> = async () => {}) => ({
+export const control = (
+  emit: (activity: unknown) => Promise<void> = async () => {}
+) => ({
   signal: new AbortController().signal,
   emit,
 });

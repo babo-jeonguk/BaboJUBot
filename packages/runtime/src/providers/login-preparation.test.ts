@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import http from "node:http";
 import type net from "node:net";
 import { tmpdir } from "node:os";
@@ -21,9 +22,9 @@ import { createCodexProvider } from "./codex.ts";
 import type { ContainerSettings } from "./container.ts";
 import type { CredentialRelay } from "./credential-relay.ts";
 import { attachedRelayHub, request } from "./test-support.ts";
-import { insideFolder, within } from "@babojubot/process/test-support";
+import { insideFolder, settledWithin } from "@babojubot/process/test-support";
 import { removeFolder } from "@babojubot/process/remove-folder";
-import { withCleanup } from "@babojubot/process/test-cleanup";
+import { releaseAcquired, withCleanup } from "@babojubot/process/test-cleanup";
 import { callArming } from "@babojubot/process/call-arming";
 import { attemptAll, hasErrorCode, orIfMissing } from "@babojubot/contracts";
 
@@ -66,7 +67,8 @@ let race:
   | undefined;
 /**
  * 이 폴더(`in`, 그 시험의 연결 폴더) 안의 링크 만들기를 이 오류 코드로 거절한다(권한 없는 Windows·링크를 모르는 파일 시스템).
- * 그 시험의 폴더로 고르고, 거절한 링크 자리를 `refused`에 남긴다(시험이 거절이 실제로 일어났는지 본다, #286).
+ * 그 시험의 폴더로 고르고, 거절한 링크의 경로를 `refused`에 남긴다(시험이 거절이 실제로 그 자리에서 났는지 본다, #286). handle을
+ * 거친 경로(`/proc/self/fd/<n>/…`)는 시험이 handle을 닫은 뒤에도 볼 수 있게 폴더의 실제 경로로 남긴다.
  */
 let refusal: { in: string; code: string; refused: string[] } | undefined;
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -77,7 +79,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       // 결함과 gate는 불린 순간(기다리기 전) 읽는다.
       const current = gate;
       if (refusal && insideFolder(refusal.in, String(args[1]))) {
-        refusal.refused.push(String(args[1]));
+        const link = String(args[1]);
+        refusal.refused.push(
+          path.join(realpathSync(path.dirname(link)), path.basename(link))
+        );
         return Promise.reject(
           Object.assign(new Error(`${refusal.code}: cannot link`), {
             code: refusal.code,
@@ -141,23 +146,18 @@ afterEach(async () => {
       spawned.length = 0;
       race = undefined;
     });
-    await within(
-      Promise.allSettled(runs.splice(0)),
+    await settledWithin(
+      runs.splice(0),
       10_000,
       "a run did not return after cleanup"
     );
   });
   // 실행이 모두 돌아왔을 때만 지운다. 먼저 지우면 그 실행이 띄운 프로그램이 다음 시험의 기록에 남고, 돌아오지 않은 실행이
   // 폴더를 쥐고 있으면 지우기가 실패해 원인을 가리기 때문이다. 프로그램의 끝은 확인하지 못한다(위 `runs`).
-  // 만들고 있던 폴더는 그 끝을 시한 안에서 확인한 뒤 지운다. 끝을 확인하지 못하면 폴더를 남기고 실패한다.
-  const made = await within(
-    Promise.allSettled(folders),
-    10_000,
-    "a test folder being made did not finish"
-  );
+  // 만들고 있던 폴더는 그 끝을 시한 안에서 확인한 뒤 지운다. 끝을 확인하지 못하면 그 폴더를 남기고 실패한다.
   await attemptAll(
-    made.flatMap((folder) =>
-      folder.status === "fulfilled" ? [() => removeFolder(folder.value)] : []
+    folders.map(
+      (making) => () => releaseAcquired(making, (made) => removeFolder(made))
     )
   );
 });
@@ -523,7 +523,10 @@ describe.each(connections)("$name", (connection) => {
         await env.requestFor(a, "container"),
         control()
       );
-      expect(refuse.refused).not.toEqual([]);
+      // 거절은 연결 자리에 링크를 만들려 할 때 났다(제품은 링크를 그 자리의 폴더에 임시 이름으로 먼저 만든다).
+      expect([...new Set(refuse.refused.map(path.dirname))]).toEqual([
+        path.dirname(env.connectionPlace),
+      ]);
       const [mounts] = await env.runMounts();
       const sources = (mounts ?? []).map(
         (mount) => /source=([^,]+)/.exec(mount)![1]!
@@ -644,8 +647,9 @@ describe.each(connections)("$name", (connection) => {
       },
       onRead: recordReads(env, events),
     };
+    const organizationId = crypto.randomUUID();
     const running = env.provider.adapter.execute(
-      await env.requestFor(crypto.randomUUID()),
+      await env.requestFor(organizationId),
       control()
     );
     await held.reached;
@@ -661,7 +665,11 @@ describe.each(connections)("$name", (connection) => {
     expect(env.upstreamSeen).toEqual(["Bearer moving-access"]);
     expect(env.relay.failed()).toBe(false);
     await running;
-    expect(refuse.refused).not.toEqual([]);
+    // 거절은 연결 자리와 그 조직 자리에 링크를 만들려 할 때 났다.
+    expect([...new Set(refuse.refused.map(path.dirname))]).toEqual([
+      path.dirname(env.connectionPlace),
+      path.dirname(env.loginAt(organizationId)),
+    ]);
     expect((await lstat(env.connectionPlace)).isFile()).toBe(true);
     await expect(stat(env.original)).rejects.toThrow();
   });

@@ -31,15 +31,15 @@ import { testFolders } from "./test-folders.ts";
  */
 let refusal: { in: string; code: string; refused: string[] } | undefined;
 /**
- * 이 폴더(`in`, 그 시험의 조직 자리 폴더) 안에서 옮기기(`rename`)와 지우기(`rm`)가 이 오류로 실패한다. 실패시킨 자리를
- * `renamed`·`removed`에 남긴다.
+ * 이 폴더(`in`, 그 시험의 조직 자리 폴더) 안에서 옮기기(`rename`)와 지우기(`rm`)가 이 오류로 실패한다. 실패시킨 옮기기의
+ * 출발·도착 경로를 `renamed`에, 지우기 경로를 `removed`에 남긴다.
  */
 let linkFailures:
   | {
       in: string;
       rename: Error;
       rm: Error;
-      renamed: string[];
+      renamed: { from: string; to: string }[];
       removed: string[];
     }
   | undefined;
@@ -51,7 +51,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     rename: (...args: Parameters<typeof actual.rename>) => {
       if (!linkFailures || !insideFolder(linkFailures.in, String(args[0])))
         return actual.rename(...args);
-      linkFailures.renamed.push(String(args[0]));
+      linkFailures.renamed.push({
+        from: String(args[0]),
+        to: String(args[1]),
+      });
       return Promise.reject(linkFailures.rename);
     },
     rm: (...args: Parameters<typeof actual.rm>) => {
@@ -119,9 +122,10 @@ function refuseLinks(folder: string, code: string) {
   refusal = armed;
   return armed;
 }
-/** 제품이 링크를 만들어 보는 임시 자리(`<자리>.<uuid>.link`)에서 그 링크를 둘 자리. */
-const linkPlace = (temporary: string) =>
-  temporary.replace(/\.[0-9a-f-]{36}\.link$/, "");
+/** 링크 만들기가 거절된 폴더들(처음 거절된 차례). 제품은 링크를 그 자리의 폴더에 임시 이름으로 먼저 만든다. */
+const refusedFolders = (refused: string[]) => [
+  ...new Set(refused.map(path.dirname)),
+];
 
 const antigravityToken = (home: string) =>
   path.join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
@@ -153,10 +157,16 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
         '{"synthetic":1}'
       );
       // 거절은 준비 확인과 실행이 연결 자리에, 실행이 그 조직 자리에 링크를 만들려 할 때 났다.
-      expect([...new Set(refused.refused.map(linkPlace))]).toEqual([
-        antigravityToken(connection),
-        antigravityToken(
-          path.join(connection, "organizations", input.identity.organizationId)
+      expect(refusedFolders(refused.refused)).toEqual([
+        path.dirname(antigravityToken(connection)),
+        path.dirname(
+          antigravityToken(
+            path.join(
+              connection,
+              "organizations",
+              input.identity.organizationId
+            )
+          )
         ),
       ]);
     }, 20000);
@@ -186,14 +196,9 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
       expect((await readFile(dump, "utf8")).trim().split("\n").at(-1)).toBe(
         '{"synthetic":1}'
       );
-      expect([...new Set(refused.refused.map(linkPlace))]).toEqual([
-        path.join(connection, "auth.json"),
-        path.join(
-          connection,
-          "organizations",
-          input.identity.organizationId,
-          "auth.json"
-        ),
+      expect(refusedFolders(refused.refused)).toEqual([
+        connection,
+        path.join(connection, "organizations", input.identity.organizationId),
       ]);
     }, 20000);
 
@@ -214,8 +219,8 @@ describe.each(["EPERM", "ENOTSUP", "EOPNOTSUPP"])(
             command: [process.execPath, fixture("antigravity-simulator.mjs")],
           }).adapter.checkReadiness(new AbortController().signal)
         ).toEqual({ status: "not_ready", reason: "check_failed" });
-        expect(refused.refused.map(linkPlace)).toEqual([
-          antigravityToken(connection),
+        expect(refused.refused.map(path.dirname)).toEqual([
+          path.dirname(antigravityToken(connection)),
         ]);
       },
       20000
@@ -338,9 +343,11 @@ describe("a machine that stops being able to create links", () => {
       reason: null,
     });
     const organization = (id: string) =>
-      antigravityToken(path.join(connection, "organizations", id));
-    expect([...new Set(refused.refused.map(linkPlace))]).toEqual([
-      antigravityToken(connection),
+      path.dirname(
+        antigravityToken(path.join(connection, "organizations", id))
+      );
+    expect(refusedFolders(refused.refused)).toEqual([
+      path.dirname(antigravityToken(connection)),
       organization(b),
       organization(a),
     ]);
@@ -378,9 +385,9 @@ describe("a machine that stops being able to create links", () => {
     await provider.adapter.execute(other, control());
     expect(await reader.last()).toBe('{"new":1}');
     const organization = (id: string) =>
-      path.join(connection, "organizations", id, "auth.json");
-    expect([...new Set(refused.refused.map(linkPlace))]).toEqual([
-      path.join(connection, "auth.json"),
+      path.join(connection, "organizations", id);
+    expect(refusedFolders(refused.refused)).toEqual([
+      connection,
       organization(a),
       organization(other.identity.organizationId),
     ]);
@@ -413,14 +420,14 @@ it.skipIf(process.platform === "win32")(
       in: path.dirname(at),
       rename: busy,
       rm: Object.assign(new Error("io"), { code: "EIO" }),
-      renamed: [] as string[],
+      renamed: [] as { from: string; to: string }[],
       removed: [] as string[],
     };
     linkFailures = failing;
     await expect(share(at)).rejects.toBe(busy);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("EIO"));
-    // 옮기기와 지우기는 그 자리의 임시 링크 하나에서 실패했다.
-    expect(failing.renamed.map(linkPlace)).toEqual([at]);
-    expect(failing.removed).toEqual(failing.renamed);
+    // 옮기기는 그 자리로 옮기는 하나에서 실패했고, 지우기는 그때 옮기려던 임시 링크에서 실패했다.
+    expect(failing.renamed.map(({ to }) => to)).toEqual([at]);
+    expect(failing.removed).toEqual(failing.renamed.map(({ from }) => from));
   }
 );

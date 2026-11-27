@@ -137,21 +137,11 @@ describe("Codex login link", () => {
     const dumped = await env.dumps();
     expect(dumped.length).toBeGreaterThan(0);
     for (const one of dumped) expect(one.CODEX_HOME).toBe(env.connection);
-    // 거절은 준비 확인과 실행이 연결 자리에, 실행이 그 조직 자리에 링크를 만들려 할 때 났다(임시 링크 `<자리>.<uuid>.link`).
-    expect([
-      ...new Set(
-        refused.refused.map((temporary) =>
-          temporary.replace(/\.[0-9a-f-]{36}\.link$/, "")
-        )
-      ),
-    ]).toEqual([
-      path.join(env.connection, "auth.json"),
-      path.join(
-        env.connection,
-        "organizations",
-        input.identity.organizationId,
-        "auth.json"
-      ),
+    // 거절은 준비 확인과 실행이 연결 자리에, 실행이 그 조직 자리에 링크를 만들려 할 때 났다(제품은 링크를 그 자리의 폴더에
+    // 임시 이름으로 먼저 만든다. 대역이 받은 정확한 경로의 폴더로 본다).
+    expect([...new Set(refused.refused.map(path.dirname))]).toEqual([
+      env.connection,
+      path.join(env.connection, "organizations", input.identity.organizationId),
     ]);
   });
 

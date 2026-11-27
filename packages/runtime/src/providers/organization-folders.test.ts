@@ -1,8 +1,8 @@
+import { realpathSync } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
   readlink,
   realpath,
@@ -10,7 +10,6 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ProviderConnection, RunRequest } from "@babojubot/contracts";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
@@ -27,19 +26,12 @@ import { attachedRelayHub, request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 /**
- * 그 시험의 로그인 자리(`at`, 실제 경로)에서 지우려고 옮겨 둔 파일(`@babojubot/files` `removeConfirmed`가 같은 폴더에 두는
- * `.<이름>.<uuid>.removing`)의 읽기(`./regular-file.ts` `readRegularFile`)를 이 오류 코드로 실패시킨다. 제품은 그 폴더를 handle을
- * 거친 경로(`/proc/self/fd/<n>/…`)로 다루므로 읽는 자리의 폴더를 실제 경로로 바꿔 본다. 실패시킨 파일을 `failedAt`에 남긴다(시험이
- * 그 자리에서 실제로 났는지 본다, #286). 그 밖은 진짜로 읽는다.
+ * 그 시험의 로그인 자리(`at`, 실제 경로)가 있는 폴더에서 그 자리 파일이 아닌 파일의 읽기(`./regular-file.ts` `readRegularFile`)를
+ * 이 오류 코드로 실패시킨다. 그 폴더에서 제품이 자리 파일 말고 읽는 것은 지우려고 옮겨 둔 그 파일(`@babojubot/files`
+ * `removeConfirmed`)뿐이다. 제품은 그 폴더를 handle을 거친 경로(`/proc/self/fd/<n>/…`)로 다루므로 읽는 파일의 폴더를 실제 경로로
+ * 바꿔 본다. 실패시킨 파일의 실제 경로를 `failedAt`에 남긴다(시험이 그 자리에서 실제로 났는지 본다, #286). 그 밖은 진짜로 읽는다.
  */
 let reading: { at: string; code: string; failedAt: string[] } | undefined;
-/** `file`이 로그인 자리 `at`의 파일을 지우려고 옮겨 둔 이름이면 그 실제 경로. */
-function movedAside(at: string, file: string) {
-  const name = path.basename(file);
-  return name.startsWith(`.${path.basename(at)}.`) && name.endsWith(".removing")
-    ? path.join(path.dirname(at), name)
-    : undefined;
-}
 vi.mock("./regular-file.ts", async (importOriginal) => {
   const real = await importOriginal<typeof import("./regular-file.ts")>();
   return {
@@ -47,9 +39,15 @@ vi.mock("./regular-file.ts", async (importOriginal) => {
     readRegularFile: async (file: string) => {
       // 결함은 불린 순간(첫 await 전) 읽는다.
       if (reading && insideFolder(path.dirname(reading.at), file)) {
-        const moved = movedAside(reading.at, file);
-        if (moved) {
-          reading.failedAt.push(moved);
+        const spelled = path.join(
+          realpathSync(path.dirname(file)),
+          path.basename(file)
+        );
+        if (
+          path.dirname(spelled) === path.dirname(reading.at) &&
+          spelled !== reading.at
+        ) {
+          reading.failedAt.push(spelled);
           throw Object.assign(new Error(`${reading.code}: cannot read`), {
             code: reading.code,
           });
@@ -90,10 +88,7 @@ const providers: [string, Create, string, string][] = [
 
 async function setup() {
   // 임시 폴더가 링크 뒤에 있으면(macOS /var → /private/var) 그 실제 경로로 둔다. 링크 뒤 데이터 폴더는 container-mounts 시험이 본다.
-  const root = await realpath(
-    await mkdtemp(path.join(tmpdir(), "babojubot-org-folders-"))
-  );
-  folders.adopt(root);
+  const root = await realpath(await folders.make("babojubot-org-folders-"));
   const dump = path.join(root, "env.jsonl");
   // 받은 환경을 한 줄로 남기고 끝나는 프로그램. 프로바이더 실행은 실패하지만 어느 폴더로 띄웠는지는 남는다.
   // 스크립트 파일로 둔다. `node -e`이면 프로바이더가 붙이는 `--print` 같은 인자를 node가 자기 옵션으로 읽는다.
@@ -594,10 +589,10 @@ describe("Antigravity", () => {
     expect(warned.mock.calls.map(([line]) => String(line))).toContain(
       "[provider] the Antigravity run failed (EIO)"
     );
-    // 읽기 실패는 그 조직 자리에서 옮겨 둔 파일 하나에서 났다(대역은 그 자리의 옮긴 이름만 실패시킨다).
-    expect([...new Set(failing.failedAt)]).toEqual([
-      expect.stringMatching(/\.removing$/),
-    ]);
+    // 읽기 실패는 그 조직 자리의 폴더에서, 자리 파일이 아닌 파일 하나(옮겨 둔 자리 표시)에서 났다.
+    const failedAt = [...new Set(failing.failedAt)];
+    expect(failedAt.map(path.dirname)).toEqual([path.dirname(place)]);
+    expect(failedAt).not.toContain(place);
   }, 20000);
 
   it("reports a run without the connection's login as needing one", async () => {

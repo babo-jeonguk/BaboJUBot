@@ -66,8 +66,11 @@ describe("reading a file only if it is a regular file", () => {
     const denied = Object.assign(new Error("permission denied"), {
       code: "EACCES",
     });
-    swap.failing = { path: file, error: denied, failedAt: [] };
+    const failing = { path: file, error: denied, failedAt: [] as string[] };
+    swap.failing = failing;
     await expect(readRegularFile(file)).rejects.toBe(denied);
+    // 주입한 권한 오류는 그 시험의 경로를 연 열기에서 났다.
+    expect(failing.failedAt).toEqual([file]);
   });
 
   // 열 때와 바로 뒤 사이에 자리가 바뀐 것은 없음이 아니라 확인하지 못한 것이다. 없음으로 접으면 부르는 쪽(자리 표시 확인)이
