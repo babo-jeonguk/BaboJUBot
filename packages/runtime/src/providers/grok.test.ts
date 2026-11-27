@@ -52,12 +52,16 @@ async function createProbeFixture(root: string): Promise<string> {
       "  process.exitCode = 1;",
       "} else if (mode === 'signed-out-zero') {",
       "  console.log('Not authenticated. You must be logged in.');",
-      "} else if (mode === 'unknown-zero') {",
-      "  console.log('Unexpected status banner');",
+      "} else if (mode === 'unknown-help') {",
+      "  console.log('Usage: grok [options]');",
+      "  console.log('  - Help');",
+      "  console.log('  - 1. Run diagnostics');",
+      "  console.log('  - non-interactive mode');",
       "} else if (mode === 'broken') {",
       "  console.error('internal failure');",
       "  process.exitCode = 2;",
       "} else if (mode === 'models-only') {",
+      "  console.log('Available models [2]:');",
       "  console.log('  * Grok-4.8 (default)');",
       "} else if (mode === 'json-array') {",
       "  console.log(JSON.stringify([{ id: 'grok-json-1', name: 'Grok JSON 1' }]));",
@@ -201,7 +205,7 @@ describe("Grok readiness and models", () => {
     ]);
   });
 
-  it("accepts model-only exit-0 output with capitalized IDs and top-level JSON model arrays", async () => {
+  it("accepts model-only exit-0 output with bracketed count headers and top-level JSON model arrays", async () => {
     const root = await folders.make("grok-formats-");
     const program = await createProbeFixture(root);
     const signal = new AbortController().signal;
@@ -249,12 +253,12 @@ describe("Grok readiness and models", () => {
     }
   });
 
-  it("fails closed with check_failed on unrecognized exit-0 output or non-zero failures", async () => {
+  it("fails closed with check_failed on help banners with bullets or non-zero failures", async () => {
     const root = await folders.make("grok-fail-closed-");
     const program = await createProbeFixture(root);
     const signal = new AbortController().signal;
     for (const [id, mode] of [
-      ["grok-unknown", "unknown-zero"],
+      ["grok-unknown", "unknown-help"],
       ["grok-broken", "broken"],
     ] as const) {
       const provider = createGrokProvider({

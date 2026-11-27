@@ -1,6 +1,5 @@
 import os from "node:os";
 import type { ModelOption, ProviderConnection } from "@babojubot/contracts";
-import { record } from "./record.ts";
 import {
   commandFor,
   probeEnding,
@@ -8,14 +7,14 @@ import {
   runProbe,
 } from "./process.ts";
 import {
-  extractJsonValue,
+  extractJsonModels,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
   isPositiveLoginLine,
+  parsePlainBulletModels,
   probeErrorFields,
   runAcpSession,
-  stripAnsi,
 } from "./acp-session.ts";
 
 /**
@@ -60,7 +59,12 @@ export function createGrokProvider(options: {
         const output = await probe(["models"], signal);
         if (isExplicitlySignedOut(output))
           return { status: "not_ready", reason: "product_login_missing" };
-        if (modelsFrom(output).length > 0 || isPositiveLoginLine(output))
+        // 도움말·배너의 일반 글머리가 ready로 오판되지 않도록, JSON 모델·숫자 포함 모델 ID 또는 명시적 로그인 문구만 양성 증거로 인정한다.
+        const jsonModels = extractJsonModels(output);
+        const hasVersionedModel =
+          (jsonModels !== undefined && jsonModels.length > 0) ||
+          parsePlainBulletModels(output).some((model) => /\d/.test(model.id));
+        if (hasVersionedModel || isPositiveLoginLine(output))
           return { status: "ready", reason: null };
         console.warn(
           `[provider] the ${connectionId} readiness check returned an unexpected response`
@@ -113,55 +117,5 @@ export function createGrokProvider(options: {
 
 /** `grok models` 출력에서 모델 ID를 읽는다. JSON(객체 `{ models }`·최상위 배열)과 ANSI가 섞인 글머리 줄을 모두 받는다. */
 function modelsFrom(stdout: string): ModelOption[] {
-  const seen = new Set<string>();
-  const models: ModelOption[] = [];
-  const push = (id: string, label?: string) => {
-    const cleanId = id.trim();
-    if (!cleanId || seen.has(cleanId)) return;
-    seen.add(cleanId);
-    models.push({ id: cleanId, label: label?.trim() || cleanId });
-  };
-  const json = extractJsonValue(stdout);
-  const items = Array.isArray(json)
-    ? json
-    : json !== null && typeof json === "object"
-      ? record(json).models
-      : undefined;
-  if (Array.isArray(items)) {
-    for (const item of items) {
-      if (typeof item === "string") {
-        push(item);
-        continue;
-      }
-      const row = record(item);
-      const id =
-        typeof row.id === "string"
-          ? row.id
-          : typeof row.model_id === "string"
-            ? row.model_id
-            : "";
-      const label =
-        typeof row.label === "string"
-          ? row.label
-          : typeof row.name === "string"
-            ? row.name
-            : typeof row.model_name === "string"
-              ? row.model_name
-              : undefined;
-      if (id) push(id, label);
-    }
-    return models;
-  }
-  for (const row of stripAnsi(stdout).split("\n")) {
-    const match =
-      /^\s*[*+-]\s+([A-Za-z0-9][A-Za-z0-9._:/-]*)(?:\s+(.*))?$/.exec(row);
-    const id = match?.[1];
-    if (!id) continue;
-    const trailing = (match?.[2] ?? "").trim();
-    // 구분자(`-`·`.`·`:`·`/`·숫자)가 있거나 뒤가 비어 있거나 `(default)` 메타데이터인 줄만 모델 ID로 인정해 안내 문장을 배제한다.
-    const looksLikeModelId =
-      /[-.:/0-9]/.test(id) || trailing === "" || /^\([^)]*\)$/.test(trailing);
-    if (looksLikeModelId) push(id);
-  }
-  return models;
+  return extractJsonModels(stdout) ?? parsePlainBulletModels(stdout);
 }
