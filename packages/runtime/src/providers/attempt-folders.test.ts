@@ -372,11 +372,12 @@ describe("an attempt whose programs were not confirmed ended", () => {
       path.resolve("test-fixtures/replay.mjs"),
       path.resolve("test-fixtures/claude-finish.synthetic.json"),
     ]);
-    folders.treeScene({ failProductStop: "after-stopping" });
     const input = request();
     const logged = diagnostics();
 
-    await provider.adapter.execute(input, control());
+    await folders.treeScene({ failProductStop: "after-stopping" }, () =>
+      provider.adapter.execute(input, control())
+    );
 
     const kept = await attemptFolders(root);
     expect(kept).toHaveLength(1);

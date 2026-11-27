@@ -138,35 +138,36 @@ setInterval(() => {}, 1000);
       // 프로그램이 있다고 답한다(`TREE_LEFT`, 실행기가 끝난 뒤의 답). 이 장면은 그 코드 하나만 받고, 그 밖의 실패(실행기의 끝을 확인하지
       // 못함 등)는 정리 실패다. 프로그램의 끝은 따로 맡긴 것의 정리가 확인한다: 대표는 그 연결(`leader`), 시험이 띄운 프로그램은 그
       // 자식(`ownChild`).
-      folders.treeScene({ expectStop: "TREE_LEFT" });
-      const run = folders.ownBrokenRun(
-        startProcess({
-          command: [
-            process.execPath,
-            "-e",
-            `
+      const run = folders.treeScene({ expectStop: "TREE_LEFT" }, () =>
+        folders.ownBrokenRun(
+          startProcess({
+            command: [
+              process.execPath,
+              "-e",
+              `
 ${leader.code}
 process.stdin.once("data", () => process.exit(0));
 setInterval(() => {}, 1000);
 `,
-          ],
-          args: [],
-          cwd: process.cwd(),
-          env: { PATH: process.env.PATH },
-          stateDir,
-          onFrame: async () => {
-            // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 입력의 진행 신호로 대표를 끝낸다.
-            // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
-            hidden = folders.ownChild(
-              spawn("python3", ["-c", hide], {
-                detached: true,
-                stdio: ["ignore", "pipe", "ignore"],
-              })
-            );
-            await readyLine(hidden, "ready");
-            run.write({ go: true });
-          },
-        })
+            ],
+            args: [],
+            cwd: process.cwd(),
+            env: { PATH: process.env.PATH },
+            stateDir,
+            onFrame: async () => {
+              // 대표가 돌기 시작한 뒤, 이 시험(서버 쪽)이 환경을 숨긴 프로그램을 띄우고 준비를 기다린 다음 입력의 진행 신호로 대표를 끝낸다.
+              // 시험이 띄운 프로그램이라 시험이 끈다(정리가 끝과 출력 닫힘까지 확인한다).
+              hidden = folders.ownChild(
+                spawn("python3", ["-c", hide], {
+                  detached: true,
+                  stdio: ["ignore", "pipe", "ignore"],
+                })
+              );
+              await readyLine(hidden, "ready");
+              run.write({ go: true });
+            },
+          })
+        )
       );
       const exit = await within(run.done, 30_000, "the run did not finish");
       if (hidden?.pid === undefined)
