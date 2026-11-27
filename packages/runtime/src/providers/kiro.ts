@@ -12,10 +12,10 @@ import {
 } from "./process.ts";
 import {
   extractJsonObject,
+  hasPositiveLoginLine,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
-  isPositiveLoginLine,
   parseCliModels,
   probeErrorFields,
   stripAnsi,
@@ -73,12 +73,13 @@ function classifyWhoamiJson(
 }
 
 function classifyPlainWhoami(
-  output: string,
+  stdout: string,
+  stderr: string,
   connectionId: string
 ): ProviderReadinessCheck {
-  if (isExplicitlySignedOut(output))
+  if (isExplicitlySignedOut(`${stdout}\n${stderr}`))
     return { status: "not_ready", reason: "product_login_missing" };
-  if (isPositiveLoginLine(output)) return { status: "ready", reason: null };
+  if (hasPositiveLoginLine(stdout)) return { status: "ready", reason: null };
   console.warn(
     `[provider] the ${connectionId} readiness check returned an unexpected response`
   );
@@ -92,7 +93,8 @@ function classifyProbeFailure(
   const detail = probeErrorFields(error);
   if (detail.code === "ENOENT")
     return { status: "not_ready", reason: "program_missing" };
-  const parsed = extractJsonObject(detail.stdout);
+  const parsed =
+    extractJsonObject(detail.stdout) ?? extractJsonObject(detail.stderr);
   if (parsed && classifyWhoamiJson(parsed) === "signed_out")
     return { status: "not_ready", reason: "product_login_missing" };
   const text = `${detail.stdout}\n${detail.stderr}`;
@@ -128,18 +130,22 @@ export function createKiroProvider(options: {
       maxBuffer: 1024 * 1024,
     });
 
-  /** `--format json`을 우선 시도하고, 구버전 CLI가 `--format`을 거절하면 평문 인자로 한 번 fallback한다. */
+  /** `--format json`을 우선 시도하고, 구버전 CLI가 `--format`을 거절하면 같은 시한 안에서 평문 인자로 한 번 fallback한다. */
   async function probeWithFormatFallback(
     jsonArgs: string[],
     plainArgs: string[],
     signal: AbortSignal
   ): Promise<{ stdout: string; stderr: string; usedPlain: boolean }> {
+    const deadline = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(probeTimeoutMs),
+    ]);
     try {
-      const output = await probe(jsonArgs, signal);
+      const output = await probe(jsonArgs, deadline);
       return { ...output, usedPlain: false };
     } catch (error) {
-      if (!rejectedFormatFlag(error)) throw error;
-      const output = await probe(plainArgs, signal);
+      if (deadline.aborted || !rejectedFormatFlag(error)) throw error;
+      const output = await probe(plainArgs, deadline);
       return { ...output, usedPlain: true };
     }
   }
@@ -162,7 +168,6 @@ export function createKiroProvider(options: {
           ["whoami"],
           signal
         );
-        const combined = `${result.stdout}\n${result.stderr}`;
         if (!result.usedPlain) {
           const parsed = extractJsonObject(result.stdout);
           if (parsed) {
@@ -176,7 +181,7 @@ export function createKiroProvider(options: {
             return { status: "not_ready", reason: "check_failed" };
           }
         }
-        return classifyPlainWhoami(combined, connectionId);
+        return classifyPlainWhoami(result.stdout, result.stderr, connectionId);
       } catch (error) {
         return classifyProbeFailure(error, connectionId);
       }

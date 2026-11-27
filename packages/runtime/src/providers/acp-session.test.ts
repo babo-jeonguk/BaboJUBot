@@ -1,16 +1,19 @@
-import { realpath, writeFile } from "node:fs/promises";
+import { access, realpath, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runAcpSession } from "./acp-session.ts";
 import {
   acpOrganizationMcp,
   acpRpc,
+  readRecordedFrames,
   runAcpSessionReplay,
   runOwnedAcpSession,
+  writeRecordingAcpPeer,
 } from "./acp-test-support.ts";
 import {
   extractJsonModels,
   extractJsonObject,
+  hasPositiveLoginLine,
   isAcpAuthProblem,
   isExplicitlySignedOut,
   isPositiveLoginLine,
@@ -25,17 +28,23 @@ const folders = testFolders();
 describe("ACP session client", () => {
   it("refuses container execution fail-closed without spawning a program", async () => {
     const root = await folders.make("acp-container-");
-    const result = await runAcpSession(
+    const marker = path.join(root, "spawned");
+    const { result } = await runOwnedAcpSession(
+      folders,
       {
         logName: "TestAcp",
         dataDir: root,
         connectionId: "test-acp",
-        command: [process.execPath, "-e", "process.exitCode = 99"],
+        command: [
+          process.execPath,
+          "-e",
+          "require('node:fs').writeFileSync(process.argv[1], 'ran')",
+          marker,
+        ],
         args: ["acp"],
         env: { ...process.env },
       },
-      { ...request(), execution: "container" },
-      { signal: new AbortController().signal, emit: async () => {} }
+      { ...request(), execution: "container" }
     );
     expect(result).toEqual({
       stopReason: "failed",
@@ -45,6 +54,7 @@ describe("ACP session client", () => {
       usage: null,
       nextSession: null,
     });
+    await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("places workspace-less planning runs in an organization folder separate from recovery records", async () => {
@@ -107,16 +117,22 @@ describe("ACP session client", () => {
     );
   });
 
-  it("returns a failed RunResult instead of throwing when workspace.cwd does not exist", async () => {
+  it("returns a failed RunResult without spawning when workspace.cwd does not exist", async () => {
     const root = await folders.make("acp-missing-cwd-");
     const missing = path.join(root, "does-not-exist");
-    // 실행 가능한 명령을 넘겨 spawn 실패가 아니라 realpath 단계에서 실패로 잡히는지 확인한다.
-    const result = await runAcpSession(
+    const marker = path.join(root, "spawned");
+    const { result } = await runOwnedAcpSession(
+      folders,
       {
         logName: "TestAcp",
         dataDir: root,
         connectionId: "test-acp",
-        command: [process.execPath, "-e", "process.exitCode = 99"],
+        command: [
+          process.execPath,
+          "-e",
+          "require('node:fs').writeFileSync(process.argv[1], 'ran')",
+          marker,
+        ],
         args: ["acp"],
         env: { ...process.env },
       },
@@ -128,8 +144,7 @@ describe("ACP session client", () => {
           personal: root,
           peers: [],
         },
-      },
-      { signal: new AbortController().signal, emit: async () => {} }
+      }
     );
     expect(result).toEqual({
       stopReason: "failed",
@@ -138,6 +153,7 @@ describe("ACP session client", () => {
       usage: null,
       nextSession: null,
     });
+    await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reports login_required when the process exits early with an auth error on stderr", async () => {
@@ -174,23 +190,19 @@ describe("ACP session client", () => {
 
   it("keeps model refusal intact even when stderr logged a normal authentication banner", async () => {
     const root = await folders.make("acp-model-stderr-");
-    const script = path.join(root, "banner-refuse.mjs");
-    await writeFile(
-      script,
-      [
-        "import { createInterface } from 'node:readline';",
-        "console.error('Authenticated with IAM Identity Center');",
-        "const out = (v) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...v }) + '\\n');",
-        "for await (const line of createInterface({ input: process.stdin })) {",
-        "  if (!line.trim()) continue;",
-        "  const { id, method } = JSON.parse(line);",
-        "  if (method === 'initialize') out({ id, result: { protocolVersion: 1 } });",
-        "  else if (method === 'session/new') out({ id, result: { sessionId: 's-banner', configOptions: [{ id: 'model', category: 'model' }] } });",
-        "  else if (method === 'session/set_config_option') out({ id, error: { code: -32602, message: 'model unavailable' } });",
-        "}",
-        "",
-      ].join("\n")
-    );
+    const { script, logFile } = await writeRecordingAcpPeer(root, {
+      expectedArgs: ["acp"],
+      body: [
+        "  if (msg.method === 'initialize') {",
+        "    console.error('Authenticated with IAM Identity Center');",
+        "    out({ id: msg.id, result: { protocolVersion: 1 } });",
+        "  } else if (msg.method === 'session/new') {",
+        "    out({ id: msg.id, result: { sessionId: 's-banner', configOptions: [{ id: 'model', category: 'model' }] } });",
+        "  } else if (msg.method === 'session/set_config_option') {",
+        "    out({ id: msg.id, error: { code: -32602, message: 'model unavailable' } });",
+        "  }",
+      ].join("\n"),
+    });
     const { result } = await runOwnedAcpSession(
       folders,
       {
@@ -214,29 +226,27 @@ describe("ACP session client", () => {
       usage: null,
       nextSession: null,
     });
+    const received = await readRecordedFrames(logFile);
+    expect(received.map((frame) => frame.method)).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_config_option",
+    ]);
   });
 
   it("reports login_required when session/prompt returns a generic RPC error alongside auth failure on stderr", async () => {
     const root = await folders.make("acp-prompt-stderr-auth-");
-    const script = path.join(root, "prompt-auth-stderr.mjs");
-    await writeFile(
-      script,
-      [
-        "import { createInterface } from 'node:readline';",
-        "const out = (v) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...v }) + '\\n');",
-        "for await (const line of createInterface({ input: process.stdin })) {",
-        "  if (!line.trim()) continue;",
-        "  const { id, method } = JSON.parse(line);",
-        "  if (method === 'initialize') out({ id, result: { protocolVersion: 1 } });",
-        "  else if (method === 'session/new') out({ id, result: { sessionId: 's-stderr-auth' } });",
-        "  else if (method === 'session/prompt') {",
+    const { script } = await writeRecordingAcpPeer(root, {
+      expectedArgs: ["acp"],
+      body: [
+        "  if (msg.method === 'initialize') out({ id: msg.id, result: { protocolVersion: 1 } });",
+        "  else if (msg.method === 'session/new') out({ id: msg.id, result: { sessionId: 's-stderr-auth' } });",
+        "  else if (msg.method === 'session/prompt') {",
         "    console.error('401 Unauthorized: token expired');",
-        "    out({ id, error: { code: -32603, message: 'Internal error' } });",
+        "    out({ id: msg.id, error: { code: -32603, message: 'Internal error' } });",
         "  }",
-        "}",
-        "",
-      ].join("\n")
-    );
+      ].join("\n"),
+    });
     const { result } = await runOwnedAcpSession(
       folders,
       {
@@ -262,7 +272,7 @@ describe("ACP session client", () => {
     });
   });
 
-  it("answers string JSON-RPC permission IDs preferring allow_once and redacts run tokens in tool titles", async () => {
+  it("answers string JSON-RPC permission IDs preferring allow_once and omits raw tool_call updates from public activity", async () => {
     const { result, activity } = await runAcpSessionReplay(folders, {
       prefix: "acp-perm-",
       steps: [
@@ -314,80 +324,86 @@ describe("ACP session client", () => {
       usage: null,
       nextSession: { id: "s-1" },
     });
-    expect(activity).toContainEqual({
-      type: "tool_use",
-      tool: "curl -H Bearer [redacted]",
-      summary: "curl -H Bearer [redacted]",
-    });
+    expect(activity).toEqual([
+      { type: "progress", text: "프로바이더가 작업을 시작했습니다." },
+    ]);
   });
 
-  it("answers in-flight permission requests with cancelled once the run is aborted", async () => {
-    const { result } = await runAcpSessionReplay(folders, {
-      prefix: "acp-cancel-perm-",
-      onEmit: (item, abort) => {
-        if (
-          item !== null &&
-          typeof item === "object" &&
-          "type" in item &&
-          item.type === "tool_use"
-        )
-          abort();
-      },
-      steps: [
-        { input: { method: "initialize" } },
-        acpRpc(1, { result: { protocolVersion: 1 } }),
-        { input: { method: "session/new", params: acpOrganizationMcp } },
-        acpRpc(2, { result: { sessionId: "s-cancel" } }),
-        {
-          input: {
-            method: "session/prompt",
-            params: { sessionId: "s-cancel" },
-          },
-        },
-        {
-          frame: {
-            jsonrpc: "2.0",
-            method: "session/update",
-            params: {
-              sessionId: "s-cancel",
-              update: { sessionUpdate: "tool_call", title: "send_message" },
-            },
-          },
-        },
-        {
-          input: {
-            method: "session/cancel",
-            params: { sessionId: "s-cancel" },
-          },
-        },
-        {
-          frame: {
-            jsonrpc: "2.0",
-            id: "perm-after-cancel",
-            method: "session/request_permission",
-            params: {
-              sessionId: "s-cancel",
-              options: [
-                { optionId: "once", kind: "allow_once", name: "Allow once" },
-              ],
-            },
-          },
-        },
-        {
-          input: {
-            id: "perm-after-cancel",
-            result: { outcome: { outcome: "cancelled" } },
-          },
-        },
-        acpRpc(3, { result: { stopReason: "cancelled" } }),
-      ],
+  it("sends session/cancel and answers in-flight permission requests with cancelled once aborted", async () => {
+    const root = await folders.make("acp-cancel-perm-");
+    const stop = new AbortController();
+    const trigger = createServer((socket) => {
+      stop.abort();
+      socket.end();
     });
+    await new Promise<void>((resolve) =>
+      trigger.listen(0, "127.0.0.1", () => resolve())
+    );
+    folders.own(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          trigger.close((error) => (error ? reject(error) : resolve()))
+        ),
+      "the cancel trigger server"
+    );
+    const address = trigger.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const { script, logFile } = await writeRecordingAcpPeer(root, {
+      expectedArgs: ["acp"],
+      body: [
+        "  if (msg.method === 'initialize') out({ id: msg.id, result: { protocolVersion: 1 } });",
+        "  else if (msg.method === 'session/new') out({ id: msg.id, result: { sessionId: 's-cancel' } });",
+        "  else if (msg.method === 'session/prompt') {",
+        "    promptId = msg.id;",
+        `    const { createConnection } = await import('node:net');`,
+        `    createConnection({ host: '127.0.0.1', port: ${port} });`,
+        "  } else if (msg.method === 'session/cancel') {",
+        "    out({ id: 'perm-after-cancel', method: 'session/request_permission', params: { sessionId: 's-cancel', options: [{ optionId: 'once', kind: 'allow_once', name: 'Allow once' }] } });",
+        "  } else if (msg.id === 'perm-after-cancel') {",
+        "    out({ id: promptId, result: { stopReason: 'cancelled' } });",
+        "  }",
+      ].join("\n"),
+    });
+    const { result } = await runOwnedAcpSession(
+      folders,
+      {
+        logName: "TestAcp",
+        dataDir: root,
+        connectionId: "test-acp",
+        command: [process.execPath, script],
+        args: ["acp"],
+        env: { ...process.env },
+      },
+      {
+        ...request(),
+        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      },
+      { controller: stop }
+    );
     expect(result).toEqual({
       stopReason: "cancelled",
       error: null,
       summary: null,
       usage: null,
       nextSession: null,
+    });
+    const received = await readRecordedFrames(logFile);
+    expect(received.map((frame) => frame.method ?? frame.id)).toEqual([
+      "initialize",
+      "session/new",
+      "session/prompt",
+      "session/cancel",
+      "perm-after-cancel",
+    ]);
+    expect(received.at(-2)).toEqual({
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: "s-cancel" },
+    });
+    expect(received.at(-1)).toEqual({
+      jsonrpc: "2.0",
+      id: "perm-after-cancel",
+      result: { outcome: { outcome: "cancelled" } },
     });
   });
 
@@ -527,24 +543,31 @@ describe("ACP session client", () => {
   });
 
   it("reports login_required and sends no prompt when session/set_config_option rejects due to authentication", async () => {
-    const { result } = await runAcpSessionReplay(folders, {
-      prefix: "acp-auth-refusal-",
-      steps: [
-        { input: { method: "initialize" } },
-        acpRpc(1, { result: { protocolVersion: 1 } }),
-        { input: { method: "session/new", params: acpOrganizationMcp } },
-        acpRpc(2, { result: { sessionId: "s-auth" } }),
-        {
-          input: {
-            method: "session/set_config_option",
-            params: { sessionId: "s-auth", configId: "model", value: "m1" },
-          },
-        },
-        acpRpc(3, { error: { code: -32000, message: "Not signed in" } }),
-        { inputEnd: true },
-      ],
-      patch: { model: "m1" },
+    const root = await folders.make("acp-auth-refusal-");
+    const { script, logFile } = await writeRecordingAcpPeer(root, {
+      expectedArgs: ["acp"],
+      body: [
+        "  if (msg.method === 'initialize') out({ id: msg.id, result: { protocolVersion: 1 } });",
+        "  else if (msg.method === 'session/new') out({ id: msg.id, result: { sessionId: 's-auth' } });",
+        "  else if (msg.method === 'session/set_config_option') out({ id: msg.id, error: { code: -32000, message: 'Not signed in' } });",
+      ].join("\n"),
     });
+    const { result } = await runOwnedAcpSession(
+      folders,
+      {
+        logName: "TestAcp",
+        dataDir: root,
+        connectionId: "test-acp",
+        command: [process.execPath, script],
+        args: ["acp"],
+        env: { ...process.env },
+      },
+      {
+        ...request(),
+        model: "m1",
+        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      }
+    );
     expect(result).toEqual({
       stopReason: "failed",
       error: "프로바이더 실행이 실패했습니다.",
@@ -553,6 +576,12 @@ describe("ACP session client", () => {
       usage: null,
       nextSession: null,
     });
+    const received = await readRecordedFrames(logFile);
+    expect(received.map((frame) => frame.method)).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_config_option",
+    ]);
   });
 
   it("skips session/load when initialize advertises loadSession: false and starts a new session", async () => {
@@ -580,10 +609,13 @@ describe("ACP session client", () => {
       usage: null,
       nextSession: { id: "fresh" },
     });
-    expect(activity).toContainEqual({
-      type: "progress",
-      text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
-    });
+    expect(activity).toEqual([
+      {
+        type: "progress",
+        text: "이전 세션을 이어 갈 수 없어 새 세션으로 시작합니다.",
+      },
+      { type: "progress", text: "프로바이더가 작업을 시작했습니다." },
+    ]);
   });
 
   it("resets configOptions from a failed session/load before falling back to session/new", async () => {
@@ -664,7 +696,7 @@ describe("Host CLI parsing and login classification helpers", () => {
     );
   });
 
-  it("distinguishes positive login confirmations from negative or ambiguous text", () => {
+  it("distinguishes positive login confirmations from negative, expired, or ambiguous text", () => {
     expect(isPositiveLoginLine("Authenticated with IAM Identity Center")).toBe(
       true
     );
@@ -673,7 +705,15 @@ describe("Host CLI parsing and login classification helpers", () => {
     );
     expect(isPositiveLoginLine("You are logged in with grok.com.")).toBe(true);
     expect(
+      hasPositiveLoginLine(
+        "Notice: cache error\nLogged in with IAM Identity Center"
+      )
+    ).toBe(true);
+    expect(
       isPositiveLoginLine("Authenticated with IAM: 401 Unauthorized")
+    ).toBe(false);
+    expect(
+      isPositiveLoginLine("Session expired (previously logged in as alice)")
     ).toBe(false);
     expect(isPositiveLoginLine("Not authenticated")).toBe(false);
     expect(isPositiveLoginLine("You must be logged in to continue.")).toBe(
@@ -697,15 +737,18 @@ describe("Host CLI parsing and login classification helpers", () => {
     ).toEqual([{ id: "grok-4.7", label: "grok-4.7" }]);
   });
 
-  it("parses plain bullet models including parenthetical and column rows while rejecting prose bullets", () => {
+  it("parses structured plain bullet models while rejecting prose and help bullets", () => {
     expect(
       parsePlainBulletModels(
         [
           "  - Help",
+          "  - Help (show usage)",
+          "  - login   Sign in",
           "  - 1. Run login first",
           "  - non-interactive mode",
           "  - v2 API enabled",
           "  * auto  Automatic selection",
+          "  * grok-fast  Fast coding model",
           "  * grok-fast (default)",
           "  * claude-opus (default) - Fast reasoning model",
           "  * Grok-4.8 (default)",

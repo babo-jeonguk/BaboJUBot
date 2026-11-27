@@ -151,8 +151,7 @@ export async function runAcpSession(
         : null;
     let sequence = 0;
     let activeSessionId: string | undefined;
-    let configOptionsKnown = false;
-    let configOptions: unknown;
+    let configOptions: unknown[] | undefined;
     let prompting = false;
     const pending = new Map<
       number,
@@ -196,25 +195,8 @@ export async function runAcpSession(
             Array.isArray(update.configOptions) &&
             (params.sessionId === activeSessionId ||
               (!activeSessionId && params.sessionId === previous))
-          ) {
-            configOptionsKnown = true;
+          )
             configOptions = update.configOptions;
-            return;
-          }
-          if (!prompting || params.sessionId !== activeSessionId) return;
-          if (update.sessionUpdate !== "tool_call") return;
-          const rawTitle =
-            typeof update.title === "string" && update.title.trim()
-              ? update.title.trim()
-              : "tool";
-          const safeTitle = request.access.token
-            ? rawTitle.replaceAll(request.access.token, "[redacted]")
-            : rawTitle;
-          await control.emit({
-            type: "tool_use",
-            tool: safeTitle.slice(0, 100),
-            summary: safeTitle.slice(0, 2_000),
-          });
           return;
         }
         if (typeof frame.id !== "number" && typeof frame.id !== "string")
@@ -279,19 +261,6 @@ export async function runAcpSession(
     let outcome: Record<string, unknown> | undefined;
     let done: Awaited<ReturnType<typeof startProcess>["done"]> | undefined;
 
-    /** 인증 오류가 아닌 모델 거절은 `modelRefused`로 표시한 뒤 호출을 종료한다. */
-    const requireModel = async (
-      attempt: () => Promise<Record<string, unknown>>
-    ): Promise<void> => {
-      try {
-        await attempt();
-      } catch (error) {
-        if (error instanceof AcpRejection && !isAcpAuthProblem(error.message))
-          modelRefused = true;
-        throw error;
-      }
-    };
-
     /** 첫 시도가 `fallbackCodes`에 해당하는 거절일 때만 `fallback`을 한 번 더 시도한다. */
     const tryModelWithFallback = async (
       primary: () => Promise<Record<string, unknown>>,
@@ -300,7 +269,6 @@ export async function runAcpSession(
     ): Promise<void> => {
       try {
         await primary();
-        return;
       } catch (error) {
         if (
           error instanceof AcpRejection &&
@@ -308,11 +276,9 @@ export async function runAcpSession(
           error.code !== undefined &&
           fallbackCodes.includes(error.code)
         ) {
-          await requireModel(fallback);
+          await fallback();
           return;
         }
-        if (error instanceof AcpRejection && !isAcpAuthProblem(error.message))
-          modelRefused = true;
         throw error;
       }
     };
@@ -332,26 +298,32 @@ export async function runAcpSession(
           sessionId: targetSessionId,
           modelId: model,
         });
-      const discovered = findModelConfigId(configOptions);
-      if (discovered !== undefined) {
-        await requireModel(() => setByConfigOption(discovered));
-        return;
-      }
-      if (configOptionsKnown) {
-        // configOptions가 내려왔지만 모델 항목이 없는 과도기 ACP 에이전트는 session/set_model을 먼저 시도한다.
+      try {
+        const discovered = findModelConfigId(configOptions);
+        if (discovered !== undefined) {
+          await setByConfigOption(discovered);
+          return;
+        }
+        if (configOptions !== undefined) {
+          // configOptions가 내려왔지만 모델 항목이 없는 과도기 ACP 에이전트는 session/set_model을 먼저 시도한다.
+          await tryModelWithFallback(
+            setByLegacyMethod,
+            () => setByConfigOption("model"),
+            [jsonRpcMethodNotFound]
+          );
+          return;
+        }
+        // configOptions 자체가 없는 경우: 표준 session/set_config_option 후 -32601/-32602일 때만 session/set_model로 fallback한다.
         await tryModelWithFallback(
-          setByLegacyMethod,
           () => setByConfigOption("model"),
-          [jsonRpcMethodNotFound]
+          setByLegacyMethod,
+          [jsonRpcMethodNotFound, jsonRpcInvalidParams]
         );
-        return;
+      } catch (error) {
+        if (error instanceof AcpRejection && !isAcpAuthProblem(error.message))
+          modelRefused = true;
+        throw error;
       }
-      // configOptions 자체가 없는 경우: 표준 session/set_config_option 후 -32601/-32602일 때만 session/set_model로 fallback한다.
-      await tryModelWithFallback(
-        () => setByConfigOption("model"),
-        setByLegacyMethod,
-        [jsonRpcMethodNotFound, jsonRpcInvalidParams]
-      );
     };
 
     try {
@@ -371,15 +343,12 @@ export async function runAcpSession(
           try {
             const loaded = await rpc("session/load", sessionParams(previous));
             activeSessionId = previous;
-            if (Array.isArray(loaded.configOptions)) {
-              configOptionsKnown = true;
+            if (Array.isArray(loaded.configOptions))
               configOptions = loaded.configOptions;
-            }
           } catch (error) {
             if (!(error instanceof AcpRejection)) throw error;
             if (isAcpAuthProblem(error.message)) throw error;
             // 실패한 session/load 도중 받은 configOptions가 새 세션으로 누출되지 않게 초기화한다.
-            configOptionsKnown = false;
             configOptions = undefined;
           }
         if (!activeSessionId) {
@@ -387,10 +356,8 @@ export async function runAcpSession(
           if (typeof opened.sessionId !== "string" || !opened.sessionId)
             throw new AcpRejection("session id missing");
           activeSessionId = opened.sessionId;
-          if (Array.isArray(opened.configOptions)) {
-            configOptionsKnown = true;
+          if (Array.isArray(opened.configOptions))
             configOptions = opened.configOptions;
-          }
           if (previous)
             await control.emit({
               type: "progress",

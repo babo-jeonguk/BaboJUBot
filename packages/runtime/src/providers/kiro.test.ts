@@ -6,8 +6,11 @@ import {
   acpOpening,
   acpOrganizationMcp,
   acpRpc,
+  readRecordedFrames,
   runProviderAcpReplay,
+  writeRecordingAcpPeer,
 } from "./acp-test-support.ts";
+import { request } from "./test-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // `kiro-cli acp` 대화를 재생한다. 프레임 순서는 ACP v1의 initialize, session/new(또는 session/load), session/prompt다.
@@ -49,14 +52,17 @@ async function createProbeFixture(root: string): Promise<string> {
       "if (key === JSON.stringify(['whoami', '--format', 'json'])) {",
       "  if (mode === 'ready') console.log(JSON.stringify({ account: { provider: 'iam' } }));",
       "  else if (mode === 'signed-out-json') { console.log(JSON.stringify({ account: null })); process.exitCode = 1; }",
+      "  else if (mode === 'signed-out-json-stderr') { console.error(JSON.stringify({ account: null })); process.exitCode = 1; }",
       "  else if (mode === 'signed-out-stderr') console.error('Not logged in');",
       "  else if (mode === 'unknown-json') console.log(JSON.stringify({}));",
       "  else if (mode === 'legacy-cli') { console.error(\"error: unexpected argument '--format' found\"); process.exitCode = 2; }",
+      "  else if (mode === 'legacy-stderr-warn') { console.error(\"error: unexpected argument '--format' found\"); process.exitCode = 2; }",
       "  else if (mode === 'legacy-empty') { console.error(\"error: unexpected argument '--format' found\"); process.exitCode = 2; }",
       "  else if (mode === 'broken') { console.error('internal failure'); process.exitCode = 2; }",
       "  else process.exitCode = 9;",
       "} else if (key === JSON.stringify(['whoami'])) {",
       "  if (mode === 'legacy-cli') console.log('Authenticated with IAM Identity Center');",
+      "  else if (mode === 'legacy-stderr-warn') { console.log('Authenticated with IAM Identity Center'); console.error('warning: cache error'); }",
       "  else if (mode === 'legacy-empty') console.log('');",
       "  else process.exitCode = 9;",
       "} else if (key === JSON.stringify(['chat', '--list-models', '--format', 'json'])) {",
@@ -118,11 +124,9 @@ describe("Kiro ACP", () => {
       usage: null,
       nextSession: { id: "saved" },
     });
-    expect(activity).toContainEqual({
-      type: "tool_use",
-      tool: "send_message",
-      summary: "send_message",
-    });
+    expect(activity).toEqual([
+      { type: "progress", text: "프로바이더가 작업을 시작했습니다." },
+    ]);
   });
 
   it("loads the previous session with organization MCP servers instead of starting another", async () => {
@@ -154,22 +158,26 @@ describe("Kiro ACP", () => {
   });
 
   it("fails the run without sending session/prompt when the chosen model is refused", async () => {
-    const { result } = await runProviderAcpReplay(folders, createKiroProvider, {
-      prefix: "kiro-model-refused-",
-      argv: { acp: true },
-      steps: [
-        ...acpOpening,
-        {
-          input: {
-            method: "session/set_config_option",
-            params: { configId: "model", value: "claude-haiku-5.5" },
-          },
-        },
-        acpRpc(3, { error: { message: "model unavailable" } }),
-        { inputEnd: true },
-      ],
-      patch: { model: "claude-haiku-5.5" },
+    const root = await folders.make("kiro-model-refused-");
+    const { script, logFile } = await writeRecordingAcpPeer(root, {
+      expectedArgs: ["acp"],
+      body: [
+        "  if (msg.method === 'initialize') out({ id: msg.id, result: { protocolVersion: 1 } });",
+        "  else if (msg.method === 'session/new') out({ id: msg.id, result: { sessionId: 'saved' } });",
+        "  else if (msg.method === 'session/set_config_option') out({ id: msg.id, error: { message: 'model unavailable' } });",
+      ].join("\n"),
     });
+    const result = await createKiroProvider({
+      dataDir: root,
+      command: [process.execPath, script],
+    }).adapter.execute(
+      {
+        ...request(),
+        model: "claude-haiku-5.5",
+        workspace: { cwd: root, organization: root, personal: root, peers: [] },
+      },
+      { signal: new AbortController().signal, emit: async () => {} }
+    );
     expect(result).toEqual({
       stopReason: "failed",
       error: "고른 모델을 쓸 수 없어 실행하지 않았습니다.",
@@ -177,6 +185,12 @@ describe("Kiro ACP", () => {
       usage: null,
       nextSession: null,
     });
+    const received = await readRecordedFrames(logFile);
+    expect(received.map((frame) => frame.method)).toEqual([
+      "initialize",
+      "session/new",
+      "session/set_config_option",
+    ]);
   });
 });
 
@@ -216,6 +230,15 @@ describe("Kiro readiness and models", () => {
       { id: "auto", label: "auto" },
       { id: "model-legacy-1", label: "model-legacy-1" },
     ]);
+    const warned = createKiroProvider({
+      dataDir: root,
+      id: "kiro-legacy-warn",
+      command: [process.execPath, program, "legacy-stderr-warn"],
+    });
+    await expect(warned.adapter.checkReadiness(signal)).resolves.toEqual({
+      status: "ready",
+      reason: null,
+    });
   });
 
   it("reports product_login_missing when whoami JSON reports account: null or exit-0 stderr reports logged out", async () => {
@@ -224,6 +247,7 @@ describe("Kiro readiness and models", () => {
     const signal = new AbortController().signal;
     for (const [id, mode] of [
       ["kiro-out", "signed-out-json"],
+      ["kiro-out-json-stderr", "signed-out-json-stderr"],
       ["kiro-out-stderr", "signed-out-stderr"],
     ] as const) {
       const provider = createKiroProvider({
