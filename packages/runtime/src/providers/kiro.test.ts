@@ -49,6 +49,7 @@ async function createProbeFixture(root: string): Promise<string> {
       "if (key === JSON.stringify(['whoami', '--format', 'json'])) {",
       "  if (mode === 'ready') console.log(JSON.stringify({ account: { provider: 'iam' } }));",
       "  else if (mode === 'signed-out-json') { console.log(JSON.stringify({ account: null })); process.exitCode = 1; }",
+      "  else if (mode === 'signed-out-stderr') console.error('Not logged in');",
       "  else if (mode === 'unknown-json') console.log(JSON.stringify({}));",
       "  else if (mode === 'legacy-cli') { console.error(\"error: unexpected argument '--format' found\"); process.exitCode = 2; }",
       "  else if (mode === 'legacy-empty') { console.error(\"error: unexpected argument '--format' found\"); process.exitCode = 2; }",
@@ -217,20 +218,24 @@ describe("Kiro readiness and models", () => {
     ]);
   });
 
-  it("reports product_login_missing when whoami JSON reports account: null", async () => {
+  it("reports product_login_missing when whoami JSON reports account: null or exit-0 stderr reports logged out", async () => {
     const root = await folders.make("kiro-signed-out-");
     const program = await createProbeFixture(root);
-    const provider = createKiroProvider({
-      dataDir: root,
-      id: "kiro-out",
-      command: [process.execPath, program, "signed-out-json"],
-    });
-    await expect(
-      provider.adapter.checkReadiness(new AbortController().signal)
-    ).resolves.toEqual({
-      status: "not_ready",
-      reason: "product_login_missing",
-    });
+    const signal = new AbortController().signal;
+    for (const [id, mode] of [
+      ["kiro-out", "signed-out-json"],
+      ["kiro-out-stderr", "signed-out-stderr"],
+    ] as const) {
+      const provider = createKiroProvider({
+        dataDir: root,
+        id,
+        command: [process.execPath, program, mode],
+      });
+      await expect(provider.adapter.checkReadiness(signal)).resolves.toEqual({
+        status: "not_ready",
+        reason: "product_login_missing",
+      });
+    }
   });
 
   it("fails closed with check_failed on unrecognized JSON, empty plain stdout, or non-zero failure", async () => {

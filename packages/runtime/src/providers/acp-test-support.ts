@@ -5,7 +5,8 @@ import type {
   RunRequest,
   RunResult,
 } from "@babojubot/contracts";
-import { runAcpSession } from "./acp-session.ts";
+import { settled } from "@babojubot/contracts";
+import { runAcpSession, type AcpSessionOptions } from "./acp-session.ts";
 import { request } from "./test-support.ts";
 import type { testFolders } from "./test-folders.ts";
 
@@ -32,9 +33,33 @@ export const acpOpening = [
 ];
 
 /**
- * 공용 ACP replay 실행기. `folders.own`으로 중단·종료 대기를 등록해 시험이 실패하거나
- * 중단돼도 자식이 끝난 뒤에만 임시 폴더를 지우게 한다(CODING_STANDARDS.md#정리).
+ * `runAcpSession`을 실행하면서 `folders.own`에 중단·종료 대기를 등록한다.
+ * 시험이 실패하거나 중단돼도 자식이 끝난 뒤에만 임시 폴더를 지운다(CODING_STANDARDS.md#정리).
  */
+export async function runOwnedAcpSession(
+  folders: ReturnType<typeof testFolders>,
+  options: AcpSessionOptions,
+  runRequest: RunRequest,
+  onEmit?: (activity: unknown, abort: () => void) => void
+): Promise<{ result: RunResult; activity: unknown[] }> {
+  const activity: unknown[] = [];
+  const stop = new AbortController();
+  const running = runAcpSession(options, runRequest, {
+    signal: stop.signal,
+    emit: async (item) => {
+      activity.push(item);
+      onEmit?.(item, () => stop.abort());
+    },
+  });
+  folders.own(async () => {
+    stop.abort();
+    await settled(running);
+  }, "an ACP session run");
+  const result = await running;
+  return { result, activity };
+}
+
+/** 공용 ACP replay 실행기. `runOwnedAcpSession`으로 자식 수명을 소유한다. */
 export async function runAcpSessionReplay(
   folders: ReturnType<typeof testFolders>,
   options: {
@@ -69,9 +94,8 @@ export async function runAcpSessionReplay(
       : options.steps;
   const fixture = path.join(root, "fixture.json");
   await writeFile(fixture, JSON.stringify({ argv: { acp: true }, steps }));
-  const activity: unknown[] = [];
-  const stop = new AbortController();
-  const running = runAcpSession(
+  const { result, activity } = await runOwnedAcpSession(
+    folders,
     {
       logName: "TestAcp",
       dataDir: root,
@@ -85,19 +109,8 @@ export async function runAcpSessionReplay(
       env: { ...process.env },
     },
     runRequest,
-    {
-      signal: stop.signal,
-      emit: async (item) => {
-        activity.push(item);
-        options.onEmit?.(item, () => stop.abort());
-      },
-    }
+    options.onEmit
   );
-  folders.own(async () => {
-    stop.abort();
-    await running.catch(() => undefined);
-  }, "an ACP replay run");
-  const result = await running;
   return { result, activity, root, realRoot, runRequest };
 }
 

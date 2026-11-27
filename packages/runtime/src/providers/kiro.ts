@@ -1,6 +1,5 @@
 import os from "node:os";
 import type {
-  ModelOption,
   ProviderConnection,
   ProviderReadinessCheck,
 } from "@babojubot/contracts";
@@ -12,21 +11,22 @@ import {
   runProbe,
 } from "./process.ts";
 import {
-  extractJsonModels,
   extractJsonObject,
   hostProviderEnvironment,
   isAcpAuthProblem,
   isExplicitlySignedOut,
   isPositiveLoginLine,
-  parsePlainBulletModels,
+  parseCliModels,
   probeErrorFields,
-  runAcpSession,
   stripAnsi,
-} from "./acp-session.ts";
+} from "./host-cli.ts";
+import { runAcpSession } from "./acp-session.ts";
 
 /** 구버전 Kiro CLI가 `--format` 옵션을 알지 못해 거절했는지 판단한다. */
-const rejectedFormatFlag = (text: string): boolean => {
-  const clean = stripAnsi(text);
+const rejectedFormatFlag = (error: unknown): boolean => {
+  const detail = probeErrorFields(error);
+  if (detail.code === "ENOENT") return false;
+  const clean = stripAnsi(`${detail.stdout}\n${detail.stderr}`);
   return (
     /--format\b/i.test(clean) &&
     /unexpected|unknown|unrecognized|invalid/i.test(clean)
@@ -119,24 +119,28 @@ export function createKiroProvider(options: {
   const connectionId = options.id ?? "kiro";
   const command = options.command ?? commandFor(connectionId, "kiro-cli");
   const env = () => hostProviderEnvironment(connectionId);
-  const probe = async (args: string[], signal: AbortSignal) =>
-    (
-      await runProbe(command, args, {
-        cwd: os.tmpdir(),
-        env: env(),
-        signal,
-        timeout: probeTimeoutMs,
-        maxBuffer: 1024 * 1024,
-      })
-    ).stdout;
+  const probe = (args: string[], signal: AbortSignal) =>
+    runProbe(command, args, {
+      cwd: os.tmpdir(),
+      env: env(),
+      signal,
+      timeout: probeTimeoutMs,
+      maxBuffer: 1024 * 1024,
+    });
 
-  async function checkPlainWhoami(
+  /** `--format json`을 우선 시도하고, 구버전 CLI가 `--format`을 거절하면 평문 인자로 한 번 fallback한다. */
+  async function probeWithFormatFallback(
+    jsonArgs: string[],
+    plainArgs: string[],
     signal: AbortSignal
-  ): Promise<ProviderReadinessCheck> {
+  ): Promise<{ stdout: string; stderr: string; usedPlain: boolean }> {
     try {
-      return classifyPlainWhoami(await probe(["whoami"], signal), connectionId);
+      const output = await probe(jsonArgs, signal);
+      return { ...output, usedPlain: false };
     } catch (error) {
-      return classifyProbeFailure(error, connectionId);
+      if (!rejectedFormatFlag(error)) throw error;
+      const output = await probe(plainArgs, signal);
+      return { ...output, usedPlain: true };
     }
   }
 
@@ -153,24 +157,27 @@ export function createKiroProvider(options: {
     loginCommand: `pnpm provider:login ${connectionId}`,
     async checkReadiness(signal) {
       try {
-        const output = await probe(["whoami", "--format", "json"], signal);
-        const parsed = extractJsonObject(output);
-        if (parsed) {
-          const verdict = classifyWhoamiJson(parsed);
-          if (verdict === "ready") return { status: "ready", reason: null };
-          if (verdict === "signed_out")
-            return { status: "not_ready", reason: "product_login_missing" };
-          console.warn(
-            `[provider] the ${connectionId} readiness check returned an unexpected JSON shape`
-          );
-          return { status: "not_ready", reason: "check_failed" };
+        const result = await probeWithFormatFallback(
+          ["whoami", "--format", "json"],
+          ["whoami"],
+          signal
+        );
+        const combined = `${result.stdout}\n${result.stderr}`;
+        if (!result.usedPlain) {
+          const parsed = extractJsonObject(result.stdout);
+          if (parsed) {
+            const verdict = classifyWhoamiJson(parsed);
+            if (verdict === "ready") return { status: "ready", reason: null };
+            if (verdict === "signed_out")
+              return { status: "not_ready", reason: "product_login_missing" };
+            console.warn(
+              `[provider] the ${connectionId} readiness check returned an unexpected JSON shape`
+            );
+            return { status: "not_ready", reason: "check_failed" };
+          }
         }
-        return classifyPlainWhoami(output, connectionId);
+        return classifyPlainWhoami(combined, connectionId);
       } catch (error) {
-        const detail = probeErrorFields(error);
-        const text = `${detail.stdout}\n${detail.stderr}`;
-        if (detail.code !== "ENOENT" && rejectedFormatFlag(text))
-          return checkPlainWhoami(signal);
         return classifyProbeFailure(error, connectionId);
       }
     },
@@ -198,26 +205,14 @@ export function createKiroProvider(options: {
     adapter,
     models: [],
     async listModels(signal) {
-      let stdout: string;
-      try {
-        stdout = await probe(
-          ["chat", "--list-models", "--format", "json"],
-          signal
-        );
-      } catch (error) {
-        const detail = probeErrorFields(error);
-        const text = `${detail.stdout}\n${detail.stderr}`;
-        if (detail.code === "ENOENT" || !rejectedFormatFlag(text)) throw error;
-        stdout = await probe(["chat", "--list-models"], signal);
-      }
-      const parsed = modelsFrom(stdout);
+      const { stdout } = await probeWithFormatFallback(
+        ["chat", "--list-models", "--format", "json"],
+        ["chat", "--list-models"],
+        signal
+      );
+      const parsed = parseCliModels(stdout);
       if (parsed.length === 0) throw new Error("Kiro returned no models");
       return parsed;
     },
   };
-}
-
-/** 목록 JSON(객체 `{ models }` 또는 최상위 배열)과 구버전 평문 글머리 출력을 모두 읽는다. */
-function modelsFrom(stdout: string): ModelOption[] {
-  return extractJsonModels(stdout) ?? parsePlainBulletModels(stdout);
 }
