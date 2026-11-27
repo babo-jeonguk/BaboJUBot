@@ -3,33 +3,43 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   afterAll,
-  afterEach,
   beforeAll,
   describe,
   expect,
   it,
+  onTestFinished,
   vi,
 } from "vitest";
+import { callArming } from "./call-arming-support.ts";
 import { lifelineHolder } from "./test-cleanup.ts";
 import { launchTree, runTree } from "./launch.ts";
+import type { TreeLaunch } from "./supervised.ts";
 import { openLifelines, type Lifelines } from "./lifeline-support.ts";
 import { testFolders } from "./test-folders.ts";
 
 // 끄기가 실패하는 길(#263 외부 리뷰 1회차 S2·SP1·SP2). 실제 감독 실행기로는 그룹을 끄지 못한 답, 시작 응답 전에 멈춘 실행기를 만들 수
 // 없어, 실행기만 같은 약속으로 답하는 가짜(Node.js 프로그램)로 바꾸고 나머지는 실제 프로세스로 본다(#268).
-const fault = vi.hoisted(() => ({
+// 띄우기는 그 시험만의 경로로 가를 수 없어(시작 응답 전에 멈춘 실행기 시험의 명령은 `node` 하나다) 시험은 트리 띄우기를
+// `supervisorCalls.run(결함, () => 띄우기, onTestFinished)`로 감싸고, 대역은 불린 순간 그 호출의 결함을 잡는다. 다른 시험의 늦은
+// 띄우기와 감싸지 않은 띄우기는 진짜 실행기를 쓴다(#286).
+type SupervisorFault = {
   /** 진짜 감독 실행기 대신 이 Node.js 프로그램을 띄운다. 프로그램은 약속 판과 띄울 명령(JSON), SIGTERM 기록 파일을 인수로 받는다. */
-  supervisor: undefined as string | undefined,
+  supervisor: string;
   /** 가짜 실행기가 SIGTERM을 받으면 이 파일에 남긴다. */
-  termLog: undefined as string | undefined,
-}));
+  termLog?: string;
+  /** 가짜 실행기로 바꾼 띄우기의 명령. 결함이 실제로 그 시험의 트리에서 났는지 시험이 본다. */
+  replaced: string[][];
+};
+const supervisorCalls = callArming<SupervisorFault>();
 vi.mock("./supervisor.ts", async (original) => {
   const real = await original<typeof import("./supervisor.ts")>();
   return {
     ...real,
     supervisorLaunch: (...args: Parameters<typeof real.supervisorLaunch>) => {
-      if (fault.supervisor === undefined) return real.supervisorLaunch(...args);
+      const fault = supervisorCalls.current();
+      if (!fault) return real.supervisorLaunch(...args);
       const [command, rest] = args;
+      fault.replaced.push([...command]);
       return {
         kind: "launch" as const,
         launch: {
@@ -54,10 +64,6 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await lifelines.close();
-});
-afterEach(() => {
-  fault.supervisor = undefined;
-  fault.termLog = undefined;
 });
 let count = 0;
 const unique = (label: string) => `${label}-${++count}`;
@@ -146,6 +152,11 @@ async function fakeSupervisor(body: string) {
   return file;
 }
 
+/** `fault`의 가짜 실행기로 트리를 띄운다. */
+function launchFaulted(fault: SupervisorFault, options: TreeLaunch) {
+  return supervisorCalls.run(fault, () => launchTree(options), onTestFinished);
+}
+
 describe.skipIf(process.platform === "win32")(
   "stopping a tree on Linux and macOS",
   () => {
@@ -154,13 +165,17 @@ describe.skipIf(process.platform === "win32")(
     it("fails with the supervisor's answer and signals nothing by number itself", async () => {
       const leader = await holder("leader");
       const moved = await holder("moved");
-      fault.supervisor = await fakeSupervisor(stubbornSupervisor(0));
-      const tree = launchTree({
-        command: [
-          process.execPath,
-          "-e",
-          `${leader.script} require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(moved.script)}], { stdio: "ignore", detached: true });`,
-        ],
+      const command: [string, ...string[]] = [
+        process.execPath,
+        "-e",
+        `${leader.script} require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(moved.script)}], { stdio: "ignore", detached: true });`,
+      ];
+      const fault: SupervisorFault = {
+        supervisor: await fakeSupervisor(stubbornSupervisor(0)),
+        replaced: [],
+      };
+      const tree = launchFaulted(fault, {
+        command,
         args: [],
         cwd: process.cwd(),
         env: { PATH: process.env.PATH },
@@ -177,6 +192,7 @@ describe.skipIf(process.platform === "win32")(
       });
       expect(lifelines.open(moved.name)).toBe(true);
       expect(lifelines.open(leader.name)).toBe(true);
+      expect(fault.replaced).toEqual([command]);
     }, 60_000);
 
     // #274 외부 리뷰 1회차 STD-1/SPEC-1: 감독 실행기는 트리의 관리자다. 실행기가 트리의 끝을 확인하지 못했다고 답하고 아직 끝나지
@@ -185,10 +201,19 @@ describe.skipIf(process.platform === "win32")(
     it("never signals the supervisor with SIGTERM while it answers the stop", async () => {
       const leader = await holder("leader");
       const folder = await folders.make("babojubot-launch-stop-term-");
-      fault.termLog = path.join(folder, "term");
-      fault.supervisor = await fakeSupervisor(stubbornSupervisor(1500));
-      const tree = launchTree({
-        command: [process.execPath, "-e", leader.script],
+      const termLog = path.join(folder, "term");
+      const command: [string, ...string[]] = [
+        process.execPath,
+        "-e",
+        leader.script,
+      ];
+      const fault: SupervisorFault = {
+        supervisor: await fakeSupervisor(stubbornSupervisor(1500)),
+        termLog,
+        replaced: [],
+      };
+      const tree = launchFaulted(fault, {
+        command,
         args: [],
         cwd: process.cwd(),
         env: { PATH: process.env.PATH },
@@ -196,18 +221,27 @@ describe.skipIf(process.platform === "win32")(
       });
       await lifelines.connected(leader.name);
       await expect(tree.stop()).rejects.toThrow(/process group did not end/);
-      expect(existsSync(fault.termLog)).toBe(false);
+      expect(fault.replaced).toEqual([command]);
+      expect(existsSync(termLog)).toBe(false);
     }, 60_000);
 
     // #274 외부 리뷰 2회차 SPEC-4: 트리가 끝났다는 답(`ended`)은 프로그램의 끝(`exit`)이 온 뒤에만 받는다. 프로그램의 끝 없이 온 답은
     // 약속 위반이라 끄기를 성공으로 보지 않는다.
     it("refuses an end reply that comes without the program's end", async () => {
       const leader = await holder("leader");
-      fault.supervisor = await fakeSupervisor(
-        stubbornSupervisor(0, { reply: "ended", code: 0 })
-      );
-      const tree = launchTree({
-        command: [process.execPath, "-e", leader.script],
+      const command: [string, ...string[]] = [
+        process.execPath,
+        "-e",
+        leader.script,
+      ];
+      const fault: SupervisorFault = {
+        supervisor: await fakeSupervisor(
+          stubbornSupervisor(0, { reply: "ended", code: 0 })
+        ),
+        replaced: [],
+      };
+      const tree = launchFaulted(fault, {
+        command,
         args: [],
         cwd: process.cwd(),
         env: { PATH: process.env.PATH },
@@ -220,17 +254,24 @@ describe.skipIf(process.platform === "win32")(
         protocolFailure: expect.stringContaining("broke the protocol"),
         message: expect.stringMatching(/broke the protocol/),
       });
+      expect(fault.replaced).toEqual([command]);
     }, 60_000);
 
     // #274 외부 리뷰 2회차 SPEC-4: 실행기가 프로그램의 끝을 알리지 않고 끝나면, 프로그램의 끝은 모르는 것이다. 실행기 자신의 종료
     // 코드를 프로그램의 끝으로 대신 쓰지 않는다.
     it("does not report the supervisor's own exit code as the program's end", async () => {
       const leader = await holder("leader");
-      fault.supervisor = await fakeSupervisor(
-        stubbornSupervisor(0, { code: 5 })
-      );
-      const tree = launchTree({
-        command: [process.execPath, "-e", leader.script],
+      const command: [string, ...string[]] = [
+        process.execPath,
+        "-e",
+        leader.script,
+      ];
+      const fault: SupervisorFault = {
+        supervisor: await fakeSupervisor(stubbornSupervisor(0, { code: 5 })),
+        replaced: [],
+      };
+      const tree = launchFaulted(fault, {
+        command,
         args: [],
         cwd: process.cwd(),
         env: { PATH: process.env.PATH },
@@ -239,27 +280,42 @@ describe.skipIf(process.platform === "win32")(
       await lifelines.connected(leader.name);
       await expect(tree.stop()).rejects.toThrow(/process group did not end/);
       expect(await tree.exited).toEqual({ code: null, signal: null });
+      expect(fault.replaced).toEqual([command]);
     }, 60_000);
 
     // SP1: 끄기를 시작한 뒤의 끝은 끄기의 결과로 정한다. 트리가 끝나지 않으면 끄기는 원인과 함께 실패하고, 그 실패로 끝나야 한다.
     // 대표의 끝만 기다리면 끝나지 않는다.
     it("ends a run at its limit with the stop failure when the leader does not end", async () => {
       const leader = await holder("stuck-run");
-      fault.supervisor = await fakeSupervisor(stubbornSupervisor(0));
+      const command: [string, ...string[]] = [
+        process.execPath,
+        "-e",
+        leader.script,
+      ];
+      const fault: SupervisorFault = {
+        supervisor: await fakeSupervisor(stubbornSupervisor(0)),
+        replaced: [],
+      };
       await expect(
-        runTree({
-          command: [process.execPath, "-e", leader.script],
-          args: [],
-          cwd: process.cwd(),
-          env: { PATH: process.env.PATH },
-          limitMs: 500,
-          maxOutputBytes: 1024,
-          overflow: "stop",
-        })
+        supervisorCalls.run(
+          fault,
+          () =>
+            runTree({
+              command,
+              args: [],
+              cwd: process.cwd(),
+              env: { PATH: process.env.PATH },
+              limitMs: 500,
+              maxOutputBytes: 1024,
+              overflow: "stop",
+            }),
+          onTestFinished
+        )
       ).rejects.toMatchObject({
         code: "TREE_LEFT",
         message: expect.stringMatching(/process group did not end/),
       });
+      expect(fault.replaced).toEqual([command]);
     }, 60_000);
   }
 );
@@ -297,8 +353,11 @@ describe.runIf(process.platform === "linux")("stopping a tree on Linux", () => {
 describe("stopping a tree whose supervisor never reports its start", () => {
   it("ends the supervisor and fails with the cause within its limit", async () => {
     const silent = await holder("silent-supervisor");
-    fault.supervisor = await fakeSupervisor(silent.script);
-    const tree = launchTree({
+    const fault: SupervisorFault = {
+      supervisor: await fakeSupervisor(silent.script),
+      replaced: [],
+    };
+    const tree = launchFaulted(fault, {
       command: [process.execPath],
       args: [],
       cwd: process.cwd(),
@@ -308,5 +367,6 @@ describe("stopping a tree whose supervisor never reports its start", () => {
     await lifelines.connected(silent.name);
     await expect(tree.stop()).rejects.toThrow(/did not report its start/);
     await lifelines.closed(silent.name);
+    expect(fault.replaced).toEqual([[process.execPath]]);
   }, 60_000);
 });

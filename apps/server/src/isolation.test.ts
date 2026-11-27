@@ -17,21 +17,29 @@ import {
   folderCleanup,
   removeFolderWithin,
 } from "@babojubot/process/test-cleanup";
+import { insideFolder } from "@babojubot/process/test-support";
 
-/** 링크 만들기를 거절하는 오류 코드(링크를 모르는 파일 시스템). 비어 있으면 실제로 만든다. */
-let refusal: string | null = null;
+/**
+ * 링크 만들기 거절(링크를 모르는 파일 시스템). 그 시험의 폴더(`in`, 시험이 만든 dataDir. 제품은 그 이름으로 경로를 만든다) 안에 링크를
+ * 만들면 그 오류 코드로 거절하고, 거절한 링크 경로를 `failedAt`에 남긴다. 비어 있거나 다른 폴더의 링크는 실제로 만든다(#286).
+ */
+let refusal: { in: string; code: string; failedAt: string[] } | null = null;
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
-    symlink: (...args: Parameters<typeof actual.symlink>) =>
-      refusal
-        ? Promise.reject(
-            Object.assign(new Error(`${refusal}: cannot link`), {
-              code: refusal,
-            })
-          )
-        : actual.symlink(...args),
+    symlink: (...args: Parameters<typeof actual.symlink>) => {
+      const fault = refusal;
+      const [, link] = args;
+      if (fault?.in === undefined || !insideFolder(fault.in, String(link)))
+        return actual.symlink(...args);
+      fault.failedAt.push(String(link));
+      return Promise.reject(
+        Object.assign(new Error(`${fault.code}: cannot link`), {
+          code: fault.code,
+        })
+      );
+    },
   };
 });
 
@@ -474,7 +482,23 @@ describe.each([
         readIsolated: async () => true,
         hostUrl: () => "http://127.0.0.1:1",
       });
-      refusal = "EOPNOTSUPP";
+      const fault = {
+        in: dataDir,
+        code: "EOPNOTSUPP",
+        failedAt: [] as string[],
+      };
+      refusal = fault;
+      const folder = path.join(dataDir, "providers", connection.id);
+      // 이 컴퓨터가 링크를 만들 수 없다는 것은 연결 확인이 로그인 자리를 준비할 때 드러난다. 확인은 링크를 시도해 거절당하고, 로그인을
+      // 연결 폴더의 자리로 둔다. 거절이 실제로 그 자리의 임시 링크에서 났는지 본다(임시 링크 이름의 무작위 부분은 뗀다).
+      await provider.adapter.checkReadiness(AbortSignal.timeout(10_000));
+      expect([
+        ...new Set(
+          fault.failedAt.map((link) =>
+            link.replace(/\.[0-9a-f-]{36}\.link$/, "")
+          )
+        ),
+      ]).toEqual([path.join(folder, ...connection.place)]);
       // 로그인이 어디에도 없다. 격리 실행의 모델 요청이 중계 실패로 끝난다.
       const relayServer = http.createServer((req, res) =>
         relay.handle(req, res)
@@ -508,7 +532,6 @@ describe.each([
         reason: "credential_relay_failed",
       });
       await expect(gate.place(target)).rejects.toThrow("로그인을 쓰지 못해");
-      const folder = path.join(dataDir, "providers", connection.id);
       /** 다시 로그인한다. 로그인 명령은 연결 폴더에서 돌아 그 자리에 쓴다. */
       const logIn = async () => {
         const at = path.join(folder, ...connection.place);

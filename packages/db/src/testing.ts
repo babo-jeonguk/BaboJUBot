@@ -260,15 +260,20 @@ export async function failRunEnd(
 
 /**
  * 산출물 기록 Event(`artifact.recorded`) 저장이 실패하게 한다. 산출물 행을 넣은 뒤 같은 정산 transaction이 실패하는 실제 DB 실패다.
- * 돌려준 함수가 되돌린다. 한 DB에 하나만 걸 수 있다.
+ * DB는 시험마다 복제하므로 그 시험의 DB에만 걸린다. `failed`는 트리거가 실패시킨 기록 수다: 실패한 transaction이 되돌려져도 남도록
+ * sequence로 센다(Postgres는 sequence 증가를 되돌리지 않는다). 시험은 이 수로 결함이 실제로 그 기록에서 났는지 본다. `remove`가
+ * 되돌린다. 한 DB에 하나만 걸 수 있다.
  */
-export async function failArtifactRecord(
-  db: Database
-): Promise<() => Promise<void>> {
+export async function failArtifactRecord(db: Database): Promise<{
+  failed: () => Promise<number>;
+  remove: () => Promise<void>;
+}> {
   await db.execute(`
+    create sequence fail_artifact_record_failed;
     create function fail_artifact_record() returns trigger as $$
     begin
       if new.type = 'artifact.recorded' then
+        perform nextval('fail_artifact_record_failed');
         raise exception 'artifact record could not be saved';
       end if;
       return new;
@@ -276,10 +281,18 @@ export async function failArtifactRecord(
     create trigger fail_artifact_record before insert on events
       for each row execute function fail_artifact_record();
   `);
-  return async () => {
-    await db.execute(
-      "drop trigger fail_artifact_record on events; drop function fail_artifact_record();"
-    );
+  return {
+    failed: async () => {
+      const result = await db.execute(
+        sql`select case when is_called then last_value else 0 end::int as n from fail_artifact_record_failed`
+      );
+      return (result.rows[0] as { n: number }).n;
+    },
+    remove: async () => {
+      await db.execute(
+        "drop trigger fail_artifact_record on events; drop function fail_artifact_record(); drop sequence fail_artifact_record_failed;"
+      );
+    },
   };
 }
 

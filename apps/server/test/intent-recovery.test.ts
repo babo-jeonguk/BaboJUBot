@@ -1437,10 +1437,13 @@ describe("file artifact preparation outside the locks and its settlement through
     const input = await fileOf(held, task.id, "실패.md", "# 수락 때 내용");
     // 넣은 DB 장애는 시험이 실패해도 걷어 내고, 그 뒤의 복구를 이어서 본다.
     await withCleanup(async (defer) => {
-      defer(await failArtifactRecord(db));
+      const fault = await failArtifactRecord(db);
+      defer(fault.remove);
       expect(
         await api.tool(held.access.token, "/artifacts", input, "k-fail")
       ).toEqual({ status: 500, body: { error: { code: "internal" } } });
+      // 500은 넣은 장애가 그 정산의 산출물 기록을 실제로 실패시킨 결과다(한 번).
+      expect(await fault.failed()).toBe(1);
     });
     // 수락한 의도와 고정 자료는 남고(복구 대상), 정산 transaction의 것은 모두 없다.
     expect(await findIntentByKey(db, org.lead.id, "k-fail")).toMatchObject({

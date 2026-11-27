@@ -38,23 +38,33 @@ import {
 import { reportedPid, within } from "@babojubot/process/test-support";
 
 /**
- * 붙잡을 단계(#286). 놓기 전까지 그 단계는 끝나지 않는다. `stop`은 다음 `pg_ctl stop` 호출, `remove`는 그 폴더의 다음 지우기다.
- * 붙잡지 않으면 실제 함수를 그대로 부른다.
+ * 붙잡을 단계(#286). 놓기 전까지 그 단계는 끝나지 않는다. `stop`은 그 폴더(`target`, 그 시험의 dataDir)의 다음 `pg_ctl stop` 호출,
+ * `remove`는 그 폴더의 다음 지우기다. 붙잡지 않으면 실제 함수를 그대로 부른다.
  */
+type Hold = {
+  target: string;
+  reached: () => void;
+  released: Promise<void>;
+  /** 붙잡은 대상. 붙잡기가 실제로 그 시험의 대상에서 났는지 시험이 본다. */
+  heldAt: string[];
+};
 const holds = vi.hoisted(() => ({
-  stop: undefined as
-    { reached: () => void; released: Promise<void> } | undefined,
-  remove: undefined as
-    | { target: string; reached: () => void; released: Promise<void> }
-    | undefined,
+  stop: undefined as Hold | undefined,
+  remove: undefined as Hold | undefined,
 }));
 vi.mock("@babojubot/process", async (original) => {
   const real = await original<typeof import("@babojubot/process")>();
   const runCommand = (async (...args: Parameters<typeof real.runCommand>) => {
     // 칸은 불린 순간(첫 await를 담은 문장 앞) 읽고 비운다. 기다림은 잡아 둔 것만 본다(tests/hoisted-state-at-call).
-    const hold = holds.stop && args[1][0] === "stop" ? holds.stop : undefined;
-    if (hold) {
+    // 인수는 `["stop", "-D", dataDir, …]`다(embedded.ts).
+    const [verb, , dataDir] = args[1];
+    const hold =
+      verb === "stop" && dataDir !== undefined && holds.stop?.target === dataDir
+        ? holds.stop
+        : undefined;
+    if (hold && dataDir !== undefined) {
       holds.stop = undefined;
+      hold.heldAt.push(dataDir);
       hold.reached();
     }
     await hold?.released;
@@ -72,6 +82,7 @@ vi.mock("node:fs/promises", async (original) => {
         : undefined;
     if (hold) {
       holds.remove = undefined;
+      hold.heldAt.push(String(target));
       hold.reached();
     }
     await hold?.released;
@@ -80,19 +91,22 @@ vi.mock("node:fs/promises", async (original) => {
   return { ...real, rm, default: { ...real, rm } };
 });
 
-/** 다음 그 단계를 붙잡는다. `reached`는 그 단계에 닿았을 때, `release`는 놓는다(여러 번 불러도 된다). */
-function holdNext(step: "stop" | "remove", target = "") {
+/**
+ * 그 폴더(`target`)의 다음 그 단계를 붙잡는다. `reached`는 그 단계에 닿았을 때, `release`는 놓는다(여러 번 불러도 된다). `heldAt`은
+ * 붙잡은 대상이다.
+ */
+function holdNext(step: "stop" | "remove", target: string) {
   let reach!: () => void;
   let release!: () => void;
   const reached = new Promise<void>((resolve) => (reach = resolve));
   const released = new Promise<void>((resolve) => (release = resolve));
-  if (step === "stop") holds.stop = { reached: reach, released };
-  else holds.remove = { target, reached: reach, released };
+  const heldAt: string[] = [];
+  holds[step] = { target, reached: reach, released, heldAt };
   onTestFinished(() => {
     holds[step] = undefined;
     release();
   });
-  return { reached, release };
+  return { reached, release, heldAt };
 }
 
 describe("embedded Postgres lifetime", () => {
@@ -106,7 +120,7 @@ describe("embedded Postgres lifetime", () => {
     const handle = await openDatabase({
       embedded: { dataDir, persistent: false },
     });
-    const stop = holdNext("stop");
+    const stop = holdNext("stop", dataDir);
     const remove = holdNext("remove", dataDir);
     // 닫기는 이 시험의 대상이다. 시험이 닫기 전에 실패해도 정리가 붙잡은 단계를 놓고 닫은 뒤에 폴더를 지운다(한 번만 닫는다).
     let closing: Promise<void> | undefined;
@@ -142,6 +156,7 @@ describe("embedded Postgres lifetime", () => {
     );
     await within(stop.reached, 30_000, "closing did not stop Postgres");
     expect(handle.progress()).toBe("stopping Postgres (fast)");
+    expect(stop.heldAt).toEqual([dataDir]);
     stop.release();
     await within(
       remove.reached,
@@ -149,6 +164,7 @@ describe("embedded Postgres lifetime", () => {
       "closing did not remove its temporary folder"
     );
     expect(handle.progress()).toBe("removing its temporary folder");
+    expect(remove.heldAt).toEqual([dataDir]);
     remove.release();
     await within(closed, 30_000, "closing the database did not finish");
     expect(handle.progress()).toBe("closed");

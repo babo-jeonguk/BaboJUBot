@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   symlink,
@@ -18,18 +19,25 @@ import { unused } from "./stand-ins.ts";
 import { removeFolder } from "@babojubot/process/remove-folder";
 
 /**
- * 공용 실행(`runTree`)의 결과를 갈음한다. 비어 있으면 실제로 돈다. 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그 트리를 끝낸 신호를
- * 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
+ * 공용 실행(`runTree`)의 결과를 갈음한다. 정확히 그 폴더(`at`, 그 시험 root의 `organizations` 실제 경로)에서 도는 실행만 `result`로
+ * 갈음하고 그 폴더를 `ranAt`에 남긴다. 비어 있거나 다른 폴더의 실행은 실제로 돈다(#286). 상한에 닿아 끈 명령은 끈 이유(`stopped`)와 그
+ * 트리를 끝낸 신호를 함께 가질 수 있다. 두 값을 함께 가진 결과를 주입해 둘 다 남는지 본다(#286 리뷰 1회차 STD-2).
  */
 const tree = vi.hoisted(() => ({
-  run: undefined as undefined | (() => unknown),
+  fault: undefined as
+    undefined | { at: string; result: () => unknown; ranAt: string[] },
 }));
 vi.mock("@babojubot/process", async (importOriginal) => {
   const real = await importOriginal<typeof import("@babojubot/process")>();
   return {
     ...real,
-    runTree: (...args: Parameters<typeof real.runTree>) =>
-      tree.run ? Promise.resolve(tree.run()) : real.runTree(...args),
+    runTree: (...args: Parameters<typeof real.runTree>) => {
+      const { fault } = tree;
+      const [{ cwd }] = args;
+      if (fault?.at !== cwd) return real.runTree(...args);
+      fault.ranAt.push(cwd);
+      return Promise.resolve(fault.result());
+    },
   };
 });
 /** 상한에 닿아 끈 트리의 결과: 끈 이유와 끝낸 신호를 함께 가진다. */
@@ -51,7 +59,7 @@ const withHardLinks = it.skipIf(lacks.hardLink !== "");
 const roots: string[] = [];
 const writers: ReturnType<typeof keepAppending>[] = [];
 afterEach(async () => {
-  tree.run = undefined;
+  tree.fault = undefined;
   // 진행 중인 덧붙이기가 모두 끝난 것을 확인한 뒤에만 폴더를 지운다. 확인하지 못하면 폴더를 남기고 그 실패를 알린다. 정리 실패는
   // hook 오류로 따로 보고되어 시험의 단언 실패를 가리지 않는다.
   const folders = roots.splice(0);
@@ -140,10 +148,16 @@ withLinks.each(["shared", "."])(
 // 읽는 프로세스를 상한에서 끈 것은 서버 쪽 문제다. 끈 이유와 끝낸 신호를 함께 남긴다(#286 리뷰 1회차 STD-2).
 it("names both why the file reader was stopped and the signal that ended it", async () => {
   const { root } = await folder();
-  tree.run = stoppedBySignal;
+  const fault = {
+    at: await realpath(path.join(root, "organizations")),
+    result: stoppedBySignal,
+    ranAt: [] as string[],
+  };
+  tree.fault = fault;
   await expect(read(root, "notes.md")).rejects.toThrow(
     "file reader was stopped at its limit limit (signal SIGKILL)"
   );
+  expect(fault.ranAt).toEqual([fault.at]);
 });
 
 it("refuses another organization's real folder moved to this organization's name", async () => {
